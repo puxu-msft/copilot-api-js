@@ -44,6 +44,7 @@ owner: task-3-implementer
 - §6b 对账：review fix 前 first-parent 13 commits；本修复提交后共 14 commits。
 - Production-shaped probes：live owner、buffered block-level、hedge 共 9 tests passed、0 failed。
 - Second review Critical C1：Responses adapter不再以 `item.id`／裸 `output_index`直接作为 grammar identity；每个 `response.output_item.added` 分配 candidate-local ordered unit token，并以 `output_index→token` 状态关联 delta／done。既有 `responses-buffered.it` committed-prefix正样本由稳定失败转为通过，`BLOCK_ZERO` 在后续 RST 前提交。
-- Second review Critical C2：待下一个 semantic commit 提交 Chat production finish producer与 route seam测试。
-- Second review验证（C1 checkpoint）：既有 Responses committed-prefix正样本通过；typecheck通过。结构怪味处置：canonical outcome与object identity compatibility projection耦合已改为ordered token。
-- §6b 对账：second-review fix前 first-parent 14 commits；C1提交后为15 commits。
+- Second review Critical C2：Chat production candidate新增 finish producer：streamError→terminal-failure，无 finishReason→truncated，有 finishReason→valid-terminal-without-boundary，并保留 renderer finish frames。真实 route-factory seam 的 finish_reason→usage→finish产生一个 successful terminal，responseFrames含两帧，兼容 projection为 messageStop true／upstreamError false。
+- Second review Minors：同步 Chat／Responses WS旧接线注释；正式测试加入同实例 capability正样本、跨 adapter实例真实 capability与结构伪造负样本。
+- Second review验证：Task3／Chat seam／Responses committed-prefix选择集通过；driver suite 46／46；typecheck、target lint、diff-check通过。结构怪味处置：Chat shared finish mapping缺producer已在route candidate层闭合，未把协议事实塞入shared helper。
+- §6b 对账：second-review fix前 first-parent 14 commits；C1 `f8be1941` 后15 commits；本提交后共16 commits。

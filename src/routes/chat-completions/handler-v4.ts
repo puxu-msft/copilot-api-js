@@ -17,13 +17,11 @@
  * The non-streaming path still renders + settles directly (no sink).
  *
  * P3 (block-level buffered retry, terminal-only): `chatCompletionsBufferedRetry` selects
- * `driver.runResponseBufferedSink` instead of `runResponseSink` — CC has no mid-stream block
- * boundary (deltas carry no structural terminator), so the commit predicate
- * (`ccCommitBoundaries`) is terminal-only: only an in-band upstream `error` frame is a
- * frame-level boundary; the real terminal commit is `sawMessageStop = () => acc.finishReason
- * !== ""`. The handler's post-loop `[DONE]` synthesis stays UNCHANGED and runs after the
- * buffered outcome resolves (the driver drops every upstream `[DONE]`, so `[DONE]` is always
- * handler-synthesized regardless of buffered/live routing).
+ * `driver.runResponseBufferedSink` instead of `runResponseSink`. CC has no mid-stream block
+ * boundary; the candidate adapter stages finish_reason and usage as response frames, then its
+ * finish producer emits one typed terminal. The grammar-derived compatibility projection drives
+ * buffered commit/error decisions. The handler's post-loop `[DONE]` synthesis remains after the
+ * buffered outcome resolves (the driver drops every upstream `[DONE]`).
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -290,7 +288,7 @@ type ChatCandidateResponseSnapshot =
       eventsIn: number
     }>
 
-const createChatCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
+export const createChatCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const mapper = input.env.ctx.toolNameMapper
   const startedAtMs = Date.now()
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
@@ -341,6 +339,12 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
       eventsIn: 0,
     }),
     onUpstreamFrame: (state, frame) => state.diag.observe(frame as ServerSentEventMessage),
+    finish(state, _renderer, rendererFrames) {
+      if (state.acc.streamError !== undefined) return { kind: "terminal-failure", frames: rendererFrames, error: state.acc.streamError }
+      if (state.acc.finishReason === "")
+        return { kind: "truncated", frames: rendererFrames, reason: "Upstream stream truncated before completion (no finish_reason)" }
+      return { kind: "valid-terminal-without-boundary", frames: rendererFrames, terminal: state.acc.finishReason }
+    },
     onRenderedFrame(state, frame) {
       state.bytesIn += frame.data?.length ?? 0
       state.eventsIn++
@@ -472,13 +476,13 @@ interface PumpStreamingV4Options {
  *     `[DONE]`; passthrough AND via-responses both terminate with exactly one — P2.2-D2),
  *   - maps the outcome + its own accumulator to the terminal ctx state. An in-band upstream
  *     `error` frame (H2, `acc.streamError`) is a clean drain WITHOUT `finishReason` — the
- *     buffered path commits it via `sawUpstreamError` (see `ccCommitBoundaries`) instead of
+ *     buffered path commits it via the grammar-derived terminal/error projection instead of
  *     retrying it as a truncation; on BOTH buffered/live it fails via `acc.streamError` below,
  *     mirroring Anthropic/Responses' H2. The remaining failure paths are H3 (`stream-error`) /
  *     client-abort (`settled-abort`).
  *
  * P3 (block-level buffered retry, terminal-only): `resolveCcBufferedAndHeartbeat` selects
- * `driver.runResponseBufferedSink` (terminal-only commit — `ccCommitBoundaries` treats only an
+ * `driver.runResponseBufferedSink` (terminal-only commit — the adapter classifies an
  * in-band upstream `error` frame as a frame-level boundary; the real terminal commit is
  * `sawMessageStop = () => acc.finishReason !== ""`) instead of `runResponseSink`.
  *
@@ -543,7 +547,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         // Block-commit boundary (terminal-only degenerate case, P3 §3.1): CC has no mid-stream
-        // block structure, so `ccCommitBoundaries` only recognizes an in-band upstream `error`
+        // block structure, so only an in-band upstream `error` creates an early terminal
         // frame as a frame-level boundary — every content delta returns false. The real terminal
         // commit is `sawMessageStop` below (finish_reason on the last chunk).
         // H2 — a terminal upstream `error` frame (clean drain, no finish_reason). Committing it
@@ -616,7 +620,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // outcome.kind === "complete" — the upstream drained cleanly.
   if (acc.streamError) {
     // H2 — a TERMINAL upstream `error` frame reached the client as a real content frame:
-    // forwarded live, OR flushed by the buffered commit (`ccCommitBoundaries` / `sawUpstreamError`).
+    // forwarded live, OR flushed by the grammar-derived buffered terminal/error projection.
     // It drains cleanly (never a thrown error → outcome is `complete`) but never carries a
     // finish_reason — must be handled HERE, BEFORE the finish_reason truncation gate below (which
     // would otherwise misfire: a SECOND synthetic error frame double-terminating the stream, and

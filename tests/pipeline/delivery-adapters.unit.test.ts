@@ -74,8 +74,13 @@ describe("delivery protocol adapters", () => {
     const frame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
     const capability = adapter.createProtocolPingCapability()
     const forged = { controlKind: "protocol-ping" } as DeliveryControlCapability
+    const siblingCapability = createAnthropicDeliveryProtocolAdapter().createProtocolPingCapability()
 
     expect(adapter.classify({ frame, controlCapability: capability })).toEqual({ kind: "control", frame, capability })
+    expect(adapter.classify({ frame, controlCapability: siblingCapability })).toMatchObject({
+      kind: "protocol-error",
+      error: { semantic: "unexpected-frame", sourceFrame: frame },
+    })
     expect(adapter.classify({ frame, controlCapability: forged })).toMatchObject({
       kind: "protocol-error",
       error: { semantic: "unexpected-frame", sourceFrame: frame },

@@ -372,10 +372,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
   // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
   // is DELIBERATELY OMITTED: per `RunBufferedOpts.commitBoundaries`'s doc (types.ts), UNDEFINED means
-  // terminal-only — the buffer commits exactly once, at the terminal drain (`sawMessageStop` /
-  // `sawUpstreamError`), never mid-generation. WS must NOT reuse the HTTP block-level predicate
-  // (`isResponsesCommitBoundary`): that predicate treats `response.output_item.done` (an output ITEM
-  // finishing, not the whole response) as a commit boundary, which would commit a block live and close
+  // terminal-only — the buffer commits exactly once, at the terminal drain through the grammar-derived
+  // terminal/error projection, never mid-generation. WS stays response-terminal: treating
+  // `response.output_item.done` (an output ITEM finishing, not the whole response) as a commit boundary would commit a block live and close
   // the retry window (`committedAny`) before the response actually reaches a terminal — a drop after
   // `output_item.done` but before `response.completed` would then wrongly degrade to `partial-degrade`
   // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
