@@ -13,7 +13,10 @@
 - GREEN 3：session owner／dispatch／operation 共用单一 refcount，append 发布后消费 evidence、发布前失败不消费；session close 后 operation lease 仍读 bytes，最后 release 归零；duplicate freeze／release 与 release 后读均 fail loud。Targeted test 为 5 pass、0 fail；typecheck exit 0。
 - RED 4：shared violation tests 为 5 pass、3 fail，精确缺失 `recordUnattributedProtocolError()`。
 - GREEN 4：shared one-shot first reason wins，后到返回 `already-recorded` 且不覆盖；stream-first／session-first 双向可区分 reason；zero-event error 冻结为 `unavailable-at-source`，ordinary zero-event 保持 not-observed，observed event 保留 violation。Targeted test 为 8 pass、0 fail；typecheck exit 0。
-- 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
+- RED／GREEN 5：补 `appendUnavailable`、Task 7 `GoawaySnapshot` 类型构造证明与 per-dispatch immutable prefix。新增 test 先因 `appendUnavailable` 缺失而 9 pass、1 fail，完成后为 10 pass、0 fail。
+- 四项 exact mutation 均命中目标机制并经 `git apply --reverse --check` 后恢复：fan-out 9 pass／1 fail；zero-event violation drop 8 pass／2 fail；owner close 早丢 bytes 9 pass／1 fail；duplicate operation release 9 pass／1 fail。每次恢复后最终套件 10 pass／0 fail。
+- 收口验证：targeted 10 pass／0 fail；`bun run typecheck` exit 0；目标 ESLint exit 0（仅 `baseline-browser-mapping` 既有提示）；`git diff --check` exit 0。
+- 工作树内报告 `.superpowers/sdd/task-8-report.md` 已更新完成，但按约定不纳入功能提交。Task 7 Minor receiver mutation 保留为 Task 10／11 gate，本任务未改 AST guard。
 
 ## 已完成
 
@@ -27,13 +30,14 @@
 - `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：当前已完成 ordered append 及 owner／dispatch／operation ownership slice。
 - 当前没有其他未提交产品源码或测试。
 
+## §6b first-parent 对账
+
+从 BASE 到收口前 HEAD 的 first-parent lineage 为：`9b4178e3` progress checkpoint → `dcfc889a` RED 意图澄清 → `98cf30ef` test-first RED → `aef8d661` ordinary zero-event GREEN → `169beb26` ordered events → `6c33380f` ownership/refcount → `9290b6c1` shared violation。每个 commit 均可从本文件对应 RED／GREEN 条目恢复意图；最终收口 commit 将补齐 unavailable event、mutation 与验证证据。
+
 ## 剩余项
 
-1. 核心 ordered append、ownership、zero-event 三态与 shared first-reason-wins slices 已完成。
-2. 下一轮补 `appendUnavailable`、剩余 validation 与 mutation controls；production module 继续只导入 Task 7 serializable schema 与 `DispatchHandle`。
-3. 跑 targeted GREEN、typecheck、lint；随后分别做 fan-out、zero-event violation drop、close-owner early byte loss、duplicate release mutation controls。
-4. 完成报告、自审与最终精确 pathspec `feat: add in-memory ordered GOAWAY ledger` commit。
-5. 把 Task 7 Minor receiver mutation记录为 Task 10／11 gate；本 Task 不改 AST guard。
+- Task 8 实现、测试、mutation 与验证均完成；待提交最终收口 commit。
+- Task 10／11 必须补 Task 7 Minor receiver mutation gate；本 Task 按边界未改 AST guard，也未接 production wiring。
 
 ## 已作废路子
 

@@ -1,5 +1,6 @@
 import type { DispatchHandle } from "~/lib/context/model-operation-record"
 import type {
+  //
   BoundedObservationText,
   EvidenceCapture,
   GoawayEventSnapshot,
@@ -15,6 +16,12 @@ type AppendObservedInput = {
   lastStreamID: number
   opaqueDataLength: SnapshotScalar<number>
   evidence: RegisteredGoawayEvidence
+}
+type AppendUnavailableInput = {
+  errorCode: number
+  lastStreamID: number
+  opaqueDataLength: SnapshotScalar<number>
+  evidence: Extract<EvidenceCapture, { availability: "unavailable-at-source" | "unavailable-at-capture" }>
 }
 
 type EvidenceEntry = {
@@ -52,11 +59,11 @@ export class RegisteredGoawayEvidence {
 
 export class OperationGoawayLease {
   readonly dispatch: DispatchHandle
-  readonly events: readonly GoawayEventSnapshot[]
+  readonly events: ReadonlyArray<GoawayEventSnapshot>
   readonly #ledger: SessionGoawayLedger
   #released = false
 
-  constructor(ledger: SessionGoawayLedger, dispatch: DispatchHandle, events: readonly GoawayEventSnapshot[]) {
+  constructor(ledger: SessionGoawayLedger, dispatch: DispatchHandle, events: ReadonlyArray<GoawayEventSnapshot>) {
     this.#ledger = ledger
     this.dispatch = dispatch
     this.events = events
@@ -128,22 +135,32 @@ export class SessionGoawayLedger {
     if (!this.#ownerOpen) throw new Error("session GOAWAY ledger owner closed")
     const incomingBytes = input.evidence.bytes()
     const existing = this.#evidence.get(input.evidence.capture.digest)
-    if (existing && !Buffer.from(existing.bytes).equals(Buffer.from(incomingBytes))) throw new Error(`GOAWAY evidence digest collision: ${input.evidence.capture.digest}`)
+    if (existing && !Buffer.from(existing.bytes).equals(Buffer.from(incomingBytes)))
+      throw new Error(`GOAWAY evidence digest collision: ${input.evidence.capture.digest}`)
 
+    const result = this.#appendEvent({ ...input, evidence: input.evidence.capture })
+    const consumedBytes = input.evidence.consume()
+    if (!existing) this.#evidence.set(input.evidence.capture.digest, { capture: input.evidence.capture, bytes: consumedBytes })
+    return result
+  }
+
+  appendUnavailable(input: AppendUnavailableInput): "appended" | "appended-protocol-error" {
+    if (!this.#ownerOpen) throw new Error("session GOAWAY ledger owner closed")
+    return this.#appendEvent(input)
+  }
+
+  #appendEvent(input: Omit<GoawayEventSnapshot, "sequence" | "lastStreamIdOrder">): "appended" | "appended-protocol-error" {
     const previous = this.#events.at(-1)
     const sequence = this.#events.length + 1
     const increased = previous !== undefined && input.lastStreamID > previous.lastStreamID
+    let lastStreamIdOrder: GoawayEventSnapshot["lastStreamIdOrder"] = "first"
+    if (previous !== undefined) lastStreamIdOrder = increased ? "protocol-error-increase" : "non-increasing"
     const event: GoawayEventSnapshot = Object.freeze({
+      ...input,
       sequence,
-      errorCode: input.errorCode,
-      lastStreamID: input.lastStreamID,
-      lastStreamIdOrder: previous === undefined ? "first" : increased ? "protocol-error-increase" : "non-increasing",
-      opaqueDataLength: input.opaqueDataLength,
-      evidence: input.evidence.capture,
+      lastStreamIdOrder,
     })
     this.#events.push(event)
-    const consumedBytes = input.evidence.consume()
-    if (!existing) this.#evidence.set(input.evidence.capture.digest, { capture: input.evidence.capture, bytes: consumedBytes })
     if (!increased) return "appended"
     this.#protocolViolation = { availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: sequence }
     return "appended-protocol-error"

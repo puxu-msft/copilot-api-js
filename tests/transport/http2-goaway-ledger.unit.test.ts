@@ -1,19 +1,31 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
 import type { DispatchHandle } from "~/lib/context/model-operation-record"
+import type { GoawaySnapshot } from "~/lib/transport/http2-observation-types"
 
 import {
+  //
   RegisteredGoawayEvidence,
   SessionGoawayLedger,
 } from "~/lib/transport/http2-goaway-ledger"
 
 const dispatch = "dispatch:ordinary-zero" as DispatchHandle
 
+function expectTask7Snapshot(snapshot: GoawaySnapshot): GoawaySnapshot {
+  return snapshot
+}
+
 test("freezes an ordinary zero-event dispatch with the Task 7 snapshot shape", () => {
   const ledger = new SessionGoawayLedger()
   const lease = ledger.acquireDispatchLease(dispatch)
 
-  expect(lease.freezeAtTerminal()).toEqual({
+  const result = lease.freezeAtTerminal()
+  expectTask7Snapshot(result.snapshot)
+  expect(result).toEqual({
     snapshot: {
       availability: "not-observed-before-snapshot",
       events: [],
@@ -27,12 +39,13 @@ test("preserves repeated GOAWAY callbacks in order without merging equal evidenc
   const ledger = new SessionGoawayLedger()
   const lease = ledger.acquireDispatchLease("dispatch:ordered" as DispatchHandle)
   const capture = { availability: "captured" as const, digest: "same-digest", byteLength: 4, encoding: "binary" as const }
-  const append = (lastStreamID: number) => ledger.appendObserved({
-    errorCode: 0,
-    lastStreamID,
-    opaqueDataLength: { availability: "observed", value: 4 },
-    evidence: new RegisteredGoawayEvidence(capture.digest, new Uint8Array([1, 2, 3, 4])),
-  })
+  const append = (lastStreamID: number) =>
+    ledger.appendObserved({
+      errorCode: 0,
+      lastStreamID,
+      opaqueDataLength: { availability: "observed", value: 4 },
+      evidence: new RegisteredGoawayEvidence(capture.digest, new Uint8Array([1, 2, 3, 4])),
+    })
 
   expect(append(9)).toBe("appended")
   expect(append(7)).toBe("appended")
@@ -44,12 +57,79 @@ test("preserves repeated GOAWAY callbacks in order without merging equal evidenc
     availability: "observed-before-snapshot",
     events: [
       { sequence: 1, errorCode: 0, lastStreamID: 9, lastStreamIdOrder: "first", opaqueDataLength: { availability: "observed", value: 4 }, evidence: capture },
-      { sequence: 2, errorCode: 0, lastStreamID: 7, lastStreamIdOrder: "non-increasing", opaqueDataLength: { availability: "observed", value: 4 }, evidence: capture },
-      { sequence: 3, errorCode: 0, lastStreamID: 7, lastStreamIdOrder: "non-increasing", opaqueDataLength: { availability: "observed", value: 4 }, evidence: capture },
-      { sequence: 4, errorCode: 0, lastStreamID: 8, lastStreamIdOrder: "protocol-error-increase", opaqueDataLength: { availability: "observed", value: 4 }, evidence: capture },
+      {
+        sequence: 2,
+        errorCode: 0,
+        lastStreamID: 7,
+        lastStreamIdOrder: "non-increasing",
+        opaqueDataLength: { availability: "observed", value: 4 },
+        evidence: capture,
+      },
+      {
+        sequence: 3,
+        errorCode: 0,
+        lastStreamID: 7,
+        lastStreamIdOrder: "non-increasing",
+        opaqueDataLength: { availability: "observed", value: 4 },
+        evidence: capture,
+      },
+      {
+        sequence: 4,
+        errorCode: 0,
+        lastStreamID: 8,
+        lastStreamIdOrder: "protocol-error-increase",
+        opaqueDataLength: { availability: "observed", value: 4 },
+        evidence: capture,
+      },
     ],
     protocolViolation: { availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: 4 },
   })
+  operationLease?.release()
+})
+
+test("freezes one shared ledger prefix per dispatch without fan-out mutation", () => {
+  const ledger = new SessionGoawayLedger()
+  const first = ledger.acquireDispatchLease("dispatch:first-prefix" as DispatchHandle)
+  const second = ledger.acquireDispatchLease("dispatch:second-prefix" as DispatchHandle)
+  const append = (digest: string, lastStreamID: number) =>
+    ledger.appendObserved({
+      errorCode: 0,
+      lastStreamID,
+      opaqueDataLength: { availability: "observed", value: 1 },
+      evidence: new RegisteredGoawayEvidence(digest, new Uint8Array([lastStreamID])),
+    })
+
+  append("first-prefix", 5)
+  const firstResult = first.freezeAtTerminal()
+  append("second-prefix", 3)
+  const secondResult = second.freezeAtTerminal()
+
+  expect(firstResult.snapshot.events.map((event) => event.sequence)).toEqual([1])
+  expect(secondResult.snapshot.events.map((event) => event.sequence)).toEqual([1, 2])
+  firstResult.operationLease?.release()
+  secondResult.operationLease?.release()
+})
+
+test("appends unavailable evidence without manufacturing bytes", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:unavailable" as DispatchHandle)
+  const evidence = {
+    availability: "unavailable-at-capture" as const,
+    byteLength: null,
+    reason: { value: "capture failed", originalByteLength: 14, truncated: false },
+  }
+
+  expect(
+    ledger.appendUnavailable({
+      errorCode: 2,
+      lastStreamID: 4,
+      opaqueDataLength: { availability: "unavailable-at-source", reason: { value: "runtime", originalByteLength: 7, truncated: false } },
+      evidence,
+    }),
+  ).toBe("appended")
+  const { snapshot, operationLease } = lease.freezeAtTerminal()
+  expect(snapshot.events[0]?.evidence).toEqual(evidence)
+  expect(operationLease?.evidenceBytes("missing")).toBeNull()
   operationLease?.release()
 })
 
@@ -58,12 +138,14 @@ test("keeps evidence readable after session close until the operation lease rele
   const lease = ledger.acquireDispatchLease("dispatch:ownership" as DispatchHandle)
   const evidence = new RegisteredGoawayEvidence("owned", new Uint8Array([8, 6, 7]))
 
-  expect(ledger.appendObserved({
-    errorCode: 0,
-    lastStreamID: 5,
-    opaqueDataLength: { availability: "observed", value: 3 },
-    evidence,
-  })).toBe("appended")
+  expect(
+    ledger.appendObserved({
+      errorCode: 0,
+      lastStreamID: 5,
+      opaqueDataLength: { availability: "observed", value: 3 },
+      evidence,
+    }),
+  ).toBe("appended")
   expect(() => evidence.bytes()).toThrow("registered GOAWAY evidence already consumed")
   ledger.closeSessionOwner()
 
@@ -82,12 +164,14 @@ test("does not consume registered evidence when append fails before publication"
   ledger.closeSessionOwner()
   const evidence = new RegisteredGoawayEvidence("rejected", new Uint8Array([1]))
 
-  expect(() => ledger.appendObserved({
-    errorCode: 0,
-    lastStreamID: 1,
-    opaqueDataLength: { availability: "observed", value: 1 },
-    evidence,
-  })).toThrow("session GOAWAY ledger owner closed")
+  expect(() =>
+    ledger.appendObserved({
+      errorCode: 0,
+      lastStreamID: 1,
+      opaqueDataLength: { availability: "observed", value: 1 },
+      evidence,
+    }),
+  ).toThrow("session GOAWAY ledger owner closed")
   expect(evidence.bytes()).toEqual(new Uint8Array([1]))
   evidence.release()
   expect(() => evidence.bytes()).toThrow("registered GOAWAY evidence already released")
