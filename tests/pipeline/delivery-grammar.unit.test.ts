@@ -207,6 +207,105 @@ describe("delivery grammar", () => {
     expect(last).toEqual([{ kind: "response-terminal", terminal: terminal("terminal"), responseFrames: [structural, append] }])
   })
 
+  test("stages unit structural frames without mixing them into a completed unit before a legal terminal", () => {
+    const grammar = createDeliveryGrammar({ mode: "unit" })
+    const envelope = frame("envelope")
+    const opening = frame("open")
+    const closing = frame("close")
+    const responseTerminal = terminal("terminal")
+
+    expect(consume(grammar, { kind: "structural", frame: envelope, structuralKind: "envelope-open" })).toEqual([
+      { kind: "stage-structural-frame", frame: envelope, structuralKind: "envelope-open" },
+    ])
+    consume(grammar, { kind: "unit-open", unit: contentBlock, frame: opening })
+    const completed = consume(grammar, { kind: "unit-close", unit: contentBlock, frame: closing })
+    expect(completed).toEqual([{ kind: "complete-unit", unit: { boundary: "content-block", frames: [opening, closing] } }])
+    expect(completed[0]?.kind === "complete-unit" && completed[0].unit.frames).not.toContain(envelope)
+    expect(consume(grammar, { kind: "response-terminal", terminal: responseTerminal })).toEqual([
+      { kind: "response-terminal", terminal: responseTerminal, responseFrames: [] },
+    ])
+  })
+
+  test("transfers each response frame by identity once and never replays it after a duplicate terminal", () => {
+    const grammar = createDeliveryGrammar({ mode: "response-terminal" })
+    const buffered = frame("buffered")
+    const firstTerminal = terminal("first")
+
+    consume(grammar, { kind: "response-append", frame: buffered })
+    const firstOutcome = consume(grammar, { kind: "response-terminal", terminal: firstTerminal })
+    expect(firstOutcome[0]).toMatchObject({ kind: "response-terminal", terminal: firstTerminal })
+    if (firstOutcome[0]?.kind !== "response-terminal") throw new Error("expected response terminal")
+    expect(firstOutcome[0].responseFrames).toHaveLength(1)
+    expect(firstOutcome[0].responseFrames[0]).toBe(buffered)
+
+    expect(consume(grammar, { kind: "response-terminal", terminal: terminal("second") })).toMatchObject([
+      { kind: "protocol-error", error: { semantic: "duplicate-terminal" } },
+    ])
+    expect(consume(grammar, { kind: "response-terminal", terminal: terminal("third") })).toEqual([])
+  })
+
+  test("truncation discards every frame of an open unit without returning a half block", () => {
+    const grammar = createDeliveryGrammar({ mode: "unit" })
+    const opening = frame("open")
+    const appending = frame("append")
+    consume(grammar, { kind: "unit-open", unit: contentBlock, frame: opening })
+    consume(grammar, { kind: "unit-append", unit: contentBlock, frame: appending })
+
+    const outcomes = finish(grammar, { kind: "truncated", error: protocolError("truncated") })
+    expect(outcomeFrames(outcomes)).not.toContain(opening)
+    expect(outcomeFrames(outcomes)).not.toContain(appending)
+    expect(outcomes).toMatchObject([{ kind: "discard-open-unit" }, { kind: "protocol-error", error: { semantic: "truncated" } }])
+  })
+
+  test("natural drain closes a response terminal once without exposing its source frame for replay", () => {
+    const grammar = createDeliveryGrammar({ mode: "response-terminal" })
+    const buffered = frame("buffered")
+    const responseTerminal = terminal("terminal")
+    consume(grammar, { kind: "response-append", frame: buffered })
+
+    const outcomes = consume(grammar, { kind: "response-terminal", terminal: responseTerminal })
+    if (outcomes[0]?.kind !== "response-terminal") throw new Error("expected response terminal")
+    expect(outcomes[0].responseFrames).toEqual([buffered])
+    expect(outcomes[0].responseFrames).not.toContain(responseTerminal.sourceFrame)
+    expect(finish(grammar, { kind: "natural-drain" })).toEqual([])
+    const late = consume(grammar, { kind: "response-append", frame: frame("late") })
+    expect(late).toMatchObject([{ kind: "protocol-error", error: { semantic: "post-terminal-frame" } }])
+    expect(late.some((outcome) => outcome.kind === "response-terminal")).toBe(false)
+  })
+
+  test("rejects a second close after a completed unit without re-emitting that unit", () => {
+    const grammar = createDeliveryGrammar({ mode: "unit" })
+    const opening = frame("open")
+    const closing = frame("close")
+    consume(grammar, { kind: "unit-open", unit: contentBlock, frame: opening })
+    expect(consume(grammar, { kind: "unit-close", unit: contentBlock, frame: closing })).toEqual([
+      { kind: "complete-unit", unit: { boundary: "content-block", frames: [opening, closing] } },
+    ])
+    expect(consume(grammar, { kind: "unit-close", unit: contentBlock, frame: frame("second-close") })).toMatchObject([
+      { kind: "protocol-error", error: { semantic: "mismatched-unit" } },
+    ])
+  })
+
+  test("turns control after terminal into a post-terminal error without a control delivery outcome", () => {
+    const grammar = createDeliveryGrammar({ mode: "response-terminal" })
+    consume(grammar, { kind: "response-terminal", terminal: terminal("terminal") })
+
+    const outcomes = consume(grammar, { kind: "control", frame: frame("late-control"), capability: controlCapability })
+    expect(outcomes).toMatchObject([{ kind: "protocol-error", error: { semantic: "post-terminal-frame" } }])
+    expect(outcomes.some((outcome) => outcome.kind === "deliver-control-frame")).toBe(false)
+  })
+
+  test("atomically transfers buffered frames for a valid terminal without boundary and permits its natural drain", () => {
+    const grammar = createDeliveryGrammar({ mode: "response-terminal" })
+    const buffered = frame("buffered")
+    const completion = terminal("finish-terminal")
+    consume(grammar, { kind: "response-append", frame: buffered })
+
+    const outcomes = finish(grammar, { kind: "valid-terminal-without-boundary", terminal: completion })
+    expect(outcomes).toEqual([{ kind: "response-terminal", terminal: completion, responseFrames: [buffered] }])
+    expect(finish(grammar, { kind: "natural-drain" })).toEqual([])
+  })
+
   test("recognizes every frozen semantic literal", () => {
     const semantics = [
       "malformed-frame",
@@ -225,3 +324,34 @@ describe("delivery grammar", () => {
     expect(semantics).toHaveLength(11)
   })
 })
+
+function outcomeFrames(outcomes: ReadonlyArray<ReturnType<ReturnType<typeof createDeliveryGrammar>["consume"]>[number]>): Array<ClientFrame> {
+  return outcomes.flatMap((outcome) => {
+    switch (outcome.kind) {
+      case "buffer-real-frame":
+      case "stage-structural-frame":
+      case "deliver-control-frame": {
+        return [outcome.frame]
+      }
+      case "complete-unit": {
+        return [...outcome.unit.frames]
+      }
+      case "response-terminal": {
+        return [...outcome.responseFrames, ...(outcome.terminal.sourceFrame ? [outcome.terminal.sourceFrame] : [])]
+      }
+      case "protocol-error": {
+        return outcome.error.sourceFrame ? [outcome.error.sourceFrame] : []
+      }
+      case "discard-open-unit": {
+        return []
+      }
+      default: {
+        return assertNever(outcome)
+      }
+    }
+  })
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected outcome: ${String(value)}`)
+}
