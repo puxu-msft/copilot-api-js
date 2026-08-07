@@ -22,7 +22,7 @@ status: active
 - [x] 按用户裁决把 `canonical-performance` 收敛为粗粒度合并安全上限：三个代表性 workload 的整次测试运行须 `<10s`，Bun test 硬 timeout `15s`，CPU／heap 明细只报告；当前正常样本约 0.4s，注入 `0ms` 上限后同一测试红，恢复后 2 pass／0 fail。撤销 `edb66c96` 引入的 production work observer、resetter 与手写 AST SCC guard——用户并未要求复杂度证明，不再维护那套无意义且可绕过的门。
 - [x] 最终 merged-state reviewer 发现真实 producer wire blocker：`ModelOperationRecord.attempts` 是 P4–P8 进程内 non-enumerable deprecated getter，canonical JSON／structured-clone wire 按设计不含该字段；协议此前误将其当必填。现以 `CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">` 明确 wire 契约、拒绝 enumerable 双份投影，并由真实 recorder→structuredClone→protocol→真 Worker 正样本验收，34 pass／0 fail。
 - [x] 闭合最终 reviewer 的 publication ACK revision 对账 major：pending start/update request 保存自身 expected revision；ready/config-applied 先核 request ID、kind、expected revision 与 raw descriptor，再 resolve。A/B config ACK 任意顺序均各自 settle waiter，只有 `revision === latestDesiredRevision` 才发布，迟到 A 不回退 B；39 pass／0 fail、typecheck／lint 绿。当前 `resume-history-worker` 已无冲突合并 `master@9922cb45` 与 feature `c3f15c2c`，待复审与最终门后合回 `master`。
-- [x] 最终 fast 门暴露 `h2-keepalive-ping` 的 55ms wall-clock 假红：高 shard 负载下只调度一次，并非 scheduler 被 throw 停止。测试改为等待第二次真实 ping 事件；第一次 throw 后仍到达第二次即证明 interval 存活，clear 后调用数不再增长。单文件 `--rerun-each 25` 为 75 pass／0 fail，typecheck／lint 绿。
+- [x] 最终 fast 门暴露 `h2-keepalive-ping` 的 55ms wall-clock 假红：高 shard 负载下只调度一次，并非 scheduler 被 throw 停止。重复／throw 后继续／clear 停止改用事件 oracle；reviewer 指出这会丢失 cadence 判别力后，scheduler 增加窄注入 seam，独立断言精确传入 `15ms`。注入 `intervalMs * 10` 后 cadence test 收到 150≠15 而红、其余事件用例仍绿；恢复后单文件 `--rerun-each 25` 为 100 pass／0 fail，typecheck／lint 绿。
 
 ## 在途意图
 

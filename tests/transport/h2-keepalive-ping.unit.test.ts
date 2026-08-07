@@ -41,7 +41,26 @@ function waitForCalls(target: number, invoke: (onCall: () => void) => NodeJS.Tim
 }
 
 describe("scheduleH2KeepalivePing", () => {
-  test("pings on the given cadence until cleared", async () => {
+  test("passes the configured cadence to the interval scheduler", () => {
+    let scheduledDelay: number | undefined
+    const timer = { unref: mock(() => {}) } as unknown as NodeJS.Timeout
+    const schedule = mock((_callback: () => void, delay: number) => {
+      scheduledDelay = delay
+      return timer
+    })
+
+    expect(
+      scheduleH2KeepalivePing(
+        fakeSession(() => {}),
+        15,
+        schedule,
+      ),
+    ).toBe(timer)
+    expect(scheduledDelay).toBe(15)
+    expect(timer.unref).toHaveBeenCalledTimes(1)
+  })
+
+  test("pings repeatedly until cleared", async () => {
     const ping = mock((cb: () => void) => cb())
     const timer = await waitForCalls(2, (onCall) =>
       scheduleH2KeepalivePing(
