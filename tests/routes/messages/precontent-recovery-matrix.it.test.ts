@@ -18,6 +18,7 @@ import {
 
 import { setModels } from "~/lib/models/cache"
 import { setStateForTests } from "~/lib/state"
+import { StreamShutdownError } from "~/lib/stream"
 
 import {
   //
@@ -54,7 +55,7 @@ function completeFrames(id: string): Array<string> {
   ]
 }
 
-async function request(app: Awaited<ReturnType<typeof import("../../helpers/test-app")["createFullTestApp"]>>, sessionId: string): Promise<Response> {
+async function request(app: Awaited<ReturnType<(typeof import("../../helpers/test-app"))["createFullTestApp"]>>, sessionId: string): Promise<Response> {
   return app.request("/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-session-id": sessionId },
@@ -85,7 +86,10 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     applyFetchMock(
       mock(() => {
         calls += 1
-        if (calls === 1) return Promise.resolve(new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary unavailable" } }), { status: 529 }))
+        if (calls === 1)
+          return Promise.resolve(
+            new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary unavailable" } }), { status: 529 }),
+          )
         return Promise.resolve(createSseResponse(completeFrames("msg_recovery")))
       }),
     )
@@ -101,12 +105,52 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(frameTypesInOrder(text)).toContain("message_stop")
   })
 
+  test("COMMIT nonretryable HTTP 418 before content keeps the primary terminal and makes no fresh dispatch", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(
+          new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "primary rejected" } }), { status: 418 }),
+        )
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-418-no-replay")
+    expect(response.status).toBe(200)
+    const text = await response.text()
+
+    expect(calls).toBe(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "invalid_request_error", message: "Failed to create messages" })
+  })
+
+  test("shutdown-classified ready error is never replayed", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(createSseResponseThenError([messageStartFrame({ id: "msg_shutdown", model: MODEL, inputTokens: 5 })], new StreamShutdownError()))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-shutdown-no-replay")
+    const text = await response.text()
+
+    expect(calls).toBe(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "overloaded_error" })
+  })
+
   test("ready live stream-error before content makes exactly one fresh dispatch and exposes one coherent turn", async () => {
     let calls = 0
     applyFetchMock(
       mock(() => {
         calls += 1
-        if (calls === 1) return Promise.resolve(createSseResponseThenError([messageStartFrame({ id: "msg_primary", model: MODEL, inputTokens: 5 })], new Error("primary transport-close")))
+        if (calls === 1)
+          return Promise.resolve(
+            createSseResponseThenError([messageStartFrame({ id: "msg_primary", model: MODEL, inputTokens: 5 })], new Error("primary transport-close")),
+          )
         return Promise.resolve(createSseResponse(completeFrames("msg_ready_recovery")))
       }),
     )

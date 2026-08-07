@@ -26,15 +26,39 @@ function abortInputWithThrowingReads(abortKind: PostCommitAbortKind) {
 }
 
 describe("shouldAttemptPreContentRecovery", () => {
-  test("deterministic HTTP and network failures recover when enabled before semantic content", () => {
-    for (const kind of ["http-error", "network-error"] as const) {
+  test("retryable server/network failure classifications recover when enabled before semantic content", () => {
+    for (const failure of [
+      { kind: "http-error" as const, errorType: "server_error" as const },
+      { kind: "http-error" as const, errorType: "upstream_rate_limited" as const },
+      { kind: "http-error" as const, errorType: "rate_limited" as const },
+    ]) {
       expect(
         shouldAttemptPreContentRecovery({
-          failure: { kind },
+          failure,
           session: deliveryWithoutContent(),
           config: { enabled: true },
         }),
       ).toBe(true)
+    }
+  })
+
+  test("nonretryable HTTP classifications fail closed even before semantic content", () => {
+    for (const errorType of [
+      "network_error",
+      "bad_request",
+      "auth_expired",
+      "quota_exceeded",
+      "content_filtered",
+      "payload_too_large",
+      "token_limit",
+    ] as const) {
+      expect(
+        shouldAttemptPreContentRecovery({
+          failure: { kind: "http-error", errorType },
+          session: deliveryWithoutContent(),
+          config: { enabled: true },
+        }),
+      ).toBe(false)
     }
   })
 
@@ -45,7 +69,7 @@ describe("shouldAttemptPreContentRecovery", () => {
   test("disabled runtime config excludes deterministic upstream failures", () => {
     expect(
       shouldAttemptPreContentRecovery({
-        failure: { kind: "http-error" },
+        failure: { kind: "http-error", errorType: "server_error" },
         session: deliveryWithoutContent(),
         config: { enabled: false },
       }),

@@ -127,6 +127,7 @@ import {
 } from "~/lib/config/model-overrides"
 import {
   //
+  classifyError,
   HTTPError,
   isAbortError,
 } from "~/lib/error"
@@ -180,7 +181,9 @@ import {
   buildOpenAIResponseData,
   buildResponsesResponseData,
 } from "~/lib/request"
+import { isShutdownCausedAbort } from "~/lib/shutdown"
 import { state } from "~/lib/state"
+import { classifyStreamError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -204,7 +207,11 @@ import {
   classifyPostCommitAbort,
   postCommitAbortFrame,
 } from "./post-commit-error"
-import { shouldAttemptPreContentRecovery, type PreContentRecoveryFailure } from "./precontent-recovery-gate"
+import {
+  //
+  shouldAttemptPreContentRecovery,
+  type PreContentRecoveryFailure,
+} from "./precontent-recovery-gate"
 import { createPreContentRecoverySinkChain } from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
@@ -776,7 +783,8 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           await writeTerminalThenSettle(ctx, postCommitAbortFrame(kind), () => ctx?.fail(resolvedName, error))
           return
         }
-        const recoveryFailure: PreContentRecoveryFailure = error instanceof HTTPError ? { kind: "http-error" } : { kind: "network-error" }
+        const classifiedRecoveryError = classifyError(error)
+        const recoveryFailure: PreContentRecoveryFailure = { kind: "http-error", errorType: classifiedRecoveryError.type }
         if (
           shouldAttemptPreContentRecovery({
             failure: recoveryFailure,
@@ -1374,7 +1382,7 @@ interface PumpAnthropicStreamingV4Options {
 }
 
 /** {@link pumpAnthropicStreamingDispatch} options — the pump options plus the codec (for the translate leg). */
-interface PumpAnthropicStreamingDispatchOptions extends PumpAnthropicStreamingV4Options {}
+type PumpAnthropicStreamingDispatchOptions = PumpAnthropicStreamingV4Options
 
 /**
  * Dispatch the streaming pump by OUTBOUND leg (RFC §3.1 二维门控). The DIRECT `/v1/messages` leg (upstream
@@ -1428,14 +1436,21 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const tryResponseRecovery = async (error: unknown): Promise<boolean> => {
+    // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
+    // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
+    if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
     // Abort provenance is never a deterministic upstream death. In particular, shutdown/reaper/deadline
     // aborts may leave upstream thinking alive, so a fresh dispatch would violate never-false-kill.
     if (error instanceof Error && isAbortError(error)) return false
+    // A returned live `stream-error` means the already-ready upstream body died. The driver classifies
+    // such a transport-close as the recovery's network path; only a provenance-bearing cancellation above
+    // is excluded from this mount point.
+    const failure: PreContentRecoveryFailure = { kind: "network-error" }
     if (
       opts.precontentRecoveryAttempted
       || buffered
       || !shouldAttemptPreContentRecovery({
-        failure: { kind: "network-error" },
+        failure,
         session: opts.deliverySession,
         config: state.preContentRecovery,
       })
@@ -1572,6 +1587,40 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
 
     if (outcome.kind === "stream-error") {
+      if (classifyStreamError(outcome.error) === "shutdown" || isShutdownCausedAbort(outcome.error)) {
+        const shutdownError = new HTTPError(
+          "Server is shutting down",
+          529,
+          JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
+          undefined,
+          undefined,
+          undefined,
+          outcome.error,
+        )
+        const partial = buildAnthropicResponseData(acc, model)
+        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
+        if (
+          settleMessagesOwnerFailure(
+            ownerDecision,
+            env,
+            acc.model || model,
+            recordForwarded,
+            { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+            { cause: shutdownError },
+          )
+        )
+          return
+        await sink.writeSynthetic?.(anthropicHttpErrorFrame(shutdownError)).catch(() => undefined)
+        recordForwarded()
+        env.ctx.fail(acc.model || model, shutdownError, {
+          usage: partial.usage,
+          stop_reason: partial.stop_reason,
+          stopDetails: partial.stopDetails,
+          content: partial.content,
+        })
+        await sink.finalize?.()
+        return
+      }
       if (await tryResponseRecovery(outcome.error)) return
       // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
       // Anthropic error frame + record it into the forwarded track (the client receives it, so
