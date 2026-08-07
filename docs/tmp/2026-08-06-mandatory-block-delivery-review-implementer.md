@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第七轮 `0 blocker / 0 major`，实施者视角已放行；整体定稿仍待事实／判据视角第七轮
+> 状态：第七轮 `0 blocker / 0 major`，实施者视角已放行；两个正交视角均已放行同一固定提交
 >
 > reviewer：独立异模型实施者视角 reviewer
 >

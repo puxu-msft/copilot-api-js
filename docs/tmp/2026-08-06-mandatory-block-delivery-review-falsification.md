@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——事实与判据证伪
 
-> 状态：第六轮 `0 blocker / 2 major` 已采纳并整改，待原 reviewer 第七轮复审
+> 状态：第七轮 `0 blocker / 0 major`，事实／判据视角已放行；两个正交视角均已放行同一固定提交
 >
 > reviewer：独立事实／判据证伪 reviewer
 >
@@ -225,4 +225,49 @@ Spec 要求先保存 offending event 再 `PROTOCOL_ERROR`，但 Node v24.16.0 �
 | Finding | 级别 | 处置 | 整改方向 |
 |---|---|---|---|
 | ORDER-r6 | C | 采纳 | Stream／session 的 protocol-error path 共用 ledger one-shot recorder；最早观察者必须先记录，再触发 `controller.error`／first-terminal freeze 或 session cleanup，后到者去重。§9.2／§9.4 覆盖 stream-first 与 session-first 两种顺序及错误延后记录变异。 |
-| PROVENANCE-r6 | C | 采纳 | 两次 fixture 调用使用 run 内唯一且彼此不同的 opaque token；`fixture-clamped`／`raw-invalid-visible` 必须恰有 first／second 两条有序 callback，构造器核对 `firstSequence < secondSequence`、digest 分别匹配对应 token，再比较两条 callback 的 ID。只有 first callback、只有 second callback、额外／重复 callback、token digest collision、null／未知 digest 等无法建立唯一 provenance 的形状必须是 `unsupported`；零 callback或单一 first-token callback + `PROTOCOL_ERROR` 可正确分类为 `runtime-rejected`。不得靠 attempted call 判 clamped。 |
+| PROVENANCE-r6 | C | 采纳 | 两次 fixture 调用使用 run 内唯一且彼此不同的 opaque token；`fixture-clamped`／`raw-invalid-visible` 必须恰有 first／second 两条有序 callback，构造器核对 `firstSequence < secondSequence`、digest 分别匹配对应 token，再比较两条 callback 的 ID。只有 first callback、只有 second callback、额外／重复 callback、token digest collision、null／未知 digest 等无法建立唯一 provenance 的形状必须是 `unsupported`；零 callback 或单一 first-token callback + `PROTOCOL_ERROR` 可正确分类为 `runtime-rejected`。不得靠 attempted call 判 clamped。 |
+
+## 第七轮复审
+
+> 固定目标提交：`0e524438cfa9d7197484731b9f89fc8c263223cb`（base `2f706e7d4891e5018c8b7c6ab3f57a12f29a5a1f`）
+>
+> 审查方式：因隔离树保留本报告未提交追加，未 checkout 目标；以 `git show <target>:<spec>` 和固定 diff 审查。Verdict：`0 blocker / 0 major`，事实／判据视角可定稿。
+
+### Gate 与双视角覆盖
+
+- 机械核对：`git rev-parse 0e524438` 得完整 SHA；读取第六轮与 disposition；逐行对账目标 spec 的三态 `GoawaySnapshot`、shared one-shot recorder、capability provenance、RFC 9113 证据边界、释放表和 §9.2／§9.4。
+- 第一人称执行：模拟 ordinary zero-event、error-bearing zero-event、visible prefix + stream-first／session-first protocol error、clamped／runtime-rejected／raw-invalid-visible／unsupported 全形状，以及 only-first／only-second／额外／重复／null／unknown／digest collision；同时造错误状态全绿候选并检查正确样本不过严。
+
+### 命题①：三态 snapshot／freeze／释放／验收一致——闭合
+
+- 目标 spec `:403-420` 的 union 只允许：zero+none→not-observed、zero+unattributed error→source-unavailable、non-empty events→observed。`:449-456` prose、`:532` freeze、`:542-544` 释放表与 `:820-821` 验收完全对齐。
+- False-green 控制明确覆盖 error-bearing zero 被降级、ordinary zero 被升格、source-unavailable+none、observed empty；ordinary zero 正样本单列通过。因此错误状态不能绿，正确无 GOAWAY／无 error 也不会被误拒。
+
+### 命题②：shared one-shot recorder 与事件顺序——闭合
+
+- 目标 spec `:348-356` 把“同 terminal signal 首次暴露 PROTOCOL_ERROR”置于 first-terminal CAS／freeze 前；`:499` API 返回 `recorded|already-recorded`；`:530` 明确 stream／session 最早观察者先记录，后到者不得覆盖 reason。
+- `:822` 同时验 stream-first `prefix→stream error→record→freeze→session error` 与 session-first，并以“移到 controller.error 后／只 session 记录／覆盖 reason”三变异防假绿。正确两种顺序均有正样本，不会 false-red。
+
+### 命题③：capability provenance 全形状——闭合
+
+- 目标 spec `:735-775` 的闭合 union：clamped／raw 恰两 callback，rejected 仅 0 或 1 callback；`:777-784` 要 first／second run-unique token、严格 sequence、digest 一一匹配。
+- `:779-782` 明确 only-first／no-error、only-second、额外／重复／null／unknown、digest collision 全归 unsupported；0 callback 或单 first + PROTOCOL_ERROR 正确归 rejected。`:784` 禁止 attempted call 自证 clamped；`:856` 对 unsupported 无 attemptedOracle、伪造 provenance、吞 error 等设独立变异。
+- 未发现可让错误形状进入三种强结论的缺口，也未把合法 rejected 0／1 callback 或合法 clamped／raw 两 callback 误拒。
+
+### 命题④：wire oracle 与生产归因——闭合
+
+- 目标 spec `:777-784` 明确 public fixture 参数不自证 wire，raw-invalid-visible 仅在独立帧级 oracle + visible callback 时成立；runtime-rejected 不伪造 event；unsupported 必须记录 attemptedOracle。
+- 生产 `GoawayProtocolViolation` 在 `:388-401` 只表达 visible callback 或 unattributed pre-callback error；`:441-453,530` 禁止从 fixture intent／错误时序推断 offending frame。Harness 分类与生产 attribution 分层清楚。
+
+### 相邻契约回归
+
+- `RegisteredGoawayEvidence` ownership 未回归：`:479-482,528` 仍是 append 成功消费、发布前失败调用方 release；`:534-552` session close 只释 owner ref，dispatch／operation／History lease 与 transient retry 职责不变。
+- Ordered ledger、same-digest event 保序、raw evidence、SSE／adapter／History migration／performance harness 前轮已闭合部分未被本 diff 削弱。
+
+### 主会话证据引用复核
+
+Reviewer 原报告在命题③把 capability 变异验收写成 `:815`、在命题④把 public-fixture／wire-oracle 规则写成 `:740-747`；主会话对固定提交逐行复核后更正为 `:856` 与 `:777-784`。这是行号引用漂移，不改变 reviewer 对应命题或 verdict。
+
+### 第七轮 verdict
+
+**事实性发现：0 blocker / 0 major。未发现阻断性或 major 问题；事实／判据视角可定稿。**
