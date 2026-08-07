@@ -202,6 +202,17 @@ function readyMessage(generation: number, requestId = 1, configRevision = 1): un
   }
 }
 
+function configAppliedMessage(generation: number, requestId: number, revision: number): unknown {
+  return {
+    type: "config-applied",
+    protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+    workerGeneration: generation,
+    requestId,
+    revision,
+    rawTarget: { configRevision: revision, requested: false, maxObjectBytes: 1024 },
+  }
+}
+
 describe("HistoryPersistenceRuntime synchronous send failures", () => {
   test("rejects start and enters terminal-failed when initialize send throws", async () => {
     const transport = new ThrowingTransport("initialize")
@@ -247,6 +258,81 @@ describe("HistoryPersistenceRuntime synchronous send failures", () => {
 
     await expect(runtime.drain()).rejects.toThrow("not started")
     expect(transport.sent).toHaveLength(sentBeforeDrain)
+  })
+})
+
+describe("HistoryPersistenceRuntime config publication ACK state", () => {
+  test("fails startup when ready does not publish the latest desired revision", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const config = { ...startConfig(), configRevision: 2 }
+    const start = runtime.start(config)
+
+    transport.emitMessage(readyMessage(1, 1, 1))
+
+    await expect(start).rejects.toThrow("ready revision 1 does not match expected revision 2")
+    expect(runtime.snapshot()).toMatchObject({ ready: false, terminalFailed: true, latestDesiredRevision: 2, publishedRevision: 0 })
+  })
+
+  test("fails an update when config-applied does not match that request revision", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+    const update = runtime.updateConfig(2, {
+      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
+      maintenanceIntervalMs: 30_000,
+    })
+
+    transport.emitMessage(configAppliedMessage(1, 2, 1))
+
+    await expect(update).rejects.toThrow("config-applied revision 1 does not match expected revision 2")
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, latestDesiredRevision: 2, publishedRevision: 1 })
+  })
+
+  test("settles each update waiter by its own revision and publishes only the latest desired revision", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+    const config = {
+      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
+      maintenanceIntervalMs: 30_000,
+    }
+    const updateA = runtime.updateConfig(2, config)
+    const updateB = runtime.updateConfig(3, config)
+
+    transport.emitMessage(configAppliedMessage(1, 2, 2))
+    expect(await updateA).toMatchObject({ configRevision: 2 })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, latestDesiredRevision: 3, publishedRevision: 1 })
+
+    transport.emitMessage(configAppliedMessage(1, 3, 3))
+    expect(await updateB).toMatchObject({ configRevision: 3 })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, latestDesiredRevision: 3, publishedRevision: 3 })
+  })
+
+  test("settles a late older update ACK without regressing the latest publication", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+    const config = {
+      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
+      maintenanceIntervalMs: 30_000,
+    }
+    const updateA = runtime.updateConfig(2, config)
+    const updateB = runtime.updateConfig(3, config)
+
+    transport.emitMessage(configAppliedMessage(1, 3, 3))
+    expect(await updateB).toMatchObject({ configRevision: 3 })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, latestDesiredRevision: 3, publishedRevision: 3 })
+
+    transport.emitMessage(configAppliedMessage(1, 2, 2))
+    expect(await updateA).toMatchObject({ configRevision: 2 })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, latestDesiredRevision: 3, publishedRevision: 3 })
   })
 })
 

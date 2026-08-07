@@ -465,6 +465,9 @@ function assertHistoryWorkerReady(value: unknown, messageGeneration: number): as
   }
   assertNonNegativeInteger(value.configRevision, "ready.ready.configRevision")
   assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
+  if (value.rawTarget.configRevision !== value.configRevision) {
+    throw new HistoryWorkerProtocolError("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")
+  }
 }
 
 function assertHistoryWorkerStatusPatch(value: unknown): asserts value is HistoryWorkerStatusPatch {

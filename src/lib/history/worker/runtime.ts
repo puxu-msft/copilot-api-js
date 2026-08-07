@@ -66,6 +66,7 @@ interface CompletedAck {
 
 interface PendingRequest {
   readonly kind: "start" | "update-config" | "stop-maintenance" | "drain" | "shutdown"
+  readonly expectedRevision?: number
   readonly resolve: (value: unknown) => void
   readonly reject: (error: Error) => void
 }
@@ -102,7 +103,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     })
 
     const requestId = this.nextRequestId++
-    const promise = this.request<HistoryWorkerReady>(requestId, "start")
+    const promise = this.request<HistoryWorkerReady>(requestId, "start", config.configRevision)
     this.send({
       type: "initialize",
       protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
@@ -137,7 +138,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   updateConfig(revision: number, config: HistoryWorkerHotConfig): Promise<RawTargetDescriptor> {
     const requestId = this.nextRequestId++
-    const promise = this.request<RawTargetDescriptor>(requestId, "update-config")
+    const promise = this.request<RawTargetDescriptor>(requestId, "update-config", revision)
     this.status = { ...this.status, latestDesiredRevision: Math.max(this.status.latestDesiredRevision, revision) }
     this.publishStatus()
     this.send({
@@ -185,10 +186,10 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     return promise
   }
 
-  private request<T>(requestId: number, kind: PendingRequest["kind"]): Promise<T> {
+  private request<T>(requestId: number, kind: PendingRequest["kind"], expectedRevision?: number): Promise<T> {
     if (this.status.terminalFailed) return Promise.reject(new Error(this.status.lastError ?? "History Worker runtime is terminal-failed"))
     return new Promise<T>((resolve, reject) => {
-      this.pendingRequests.set(requestId, { kind, resolve: resolve as (value: unknown) => void, reject })
+      this.pendingRequests.set(requestId, { kind, expectedRevision, resolve: resolve as (value: unknown) => void, reject })
     })
   }
 
@@ -225,6 +226,17 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
     switch (message.type) {
       case "ready": {
+        const request = this.validateResponseRequest(message.requestId, "start", message.ready.configRevision)
+        if (!request) break
+        if (message.ready.configRevision !== this.status.latestDesiredRevision) {
+          this.failTerminal(
+            new HistoryWorkerProtocolError(
+              `ready revision ${message.ready.configRevision} does not match latest desired revision ${this.status.latestDesiredRevision}`,
+            ),
+          )
+          break
+        }
+        this.pendingRequests.delete(message.requestId)
         this.status = {
           ...this.status,
           ready: true,
@@ -232,13 +244,18 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
           selectedDriver: message.ready.selectedDriver,
           publishedRevision: message.ready.configRevision,
         }
-        this.resolveRequest(message.requestId, "start", message.ready)
+        request.resolve(message.ready)
         this.publishStatus()
         break
       }
       case "config-applied": {
-        this.status = { ...this.status, publishedRevision: Math.max(this.status.publishedRevision, message.revision) }
-        this.resolveRequest(message.requestId, "update-config", message.rawTarget)
+        const request = this.validateResponseRequest(message.requestId, "update-config", message.revision)
+        if (!request) break
+        this.pendingRequests.delete(message.requestId)
+        if (message.revision === this.status.latestDesiredRevision) {
+          this.status = { ...this.status, publishedRevision: message.revision }
+        }
+        request.resolve(message.rawTarget)
         this.publishStatus()
         break
       }
@@ -323,6 +340,23 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       const oldest = this.completedAckOrder.shift()
       if (oldest && this.completedAcks.get(oldest.messageId) === oldest.outcome) this.completedAcks.delete(oldest.messageId)
     }
+  }
+
+  private validateResponseRequest(requestId: number, expected: PendingRequest["kind"], revision: number): PendingRequest | undefined {
+    const request = this.pendingRequests.get(requestId)
+    if (!request || request.kind !== expected) {
+      this.failTerminal(new HistoryWorkerProtocolError(`unexpected ${expected} response for request ${requestId}`))
+      return undefined
+    }
+    if (request.expectedRevision !== revision) {
+      this.failTerminal(
+        new HistoryWorkerProtocolError(
+          `${expected === "start" ? "ready" : "config-applied"} revision ${revision} does not match expected revision ${String(request.expectedRevision)}`,
+        ),
+      )
+      return undefined
+    }
+    return request
   }
 
   private resolveRequest(requestId: number, expected: PendingRequest["kind"], value: unknown): void {

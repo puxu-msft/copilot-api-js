@@ -94,6 +94,24 @@ describe("History Worker protocol", () => {
     ).toThrow(HistoryWorkerProtocolError)
   })
 
+  test("rejects ready when its raw target revision does not match its published config revision", () => {
+    expect(() =>
+      parseWorkerToMainMessage({
+        type: "ready",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        ready: {
+          workerGeneration: 1,
+          threadId: 1,
+          selectedDriver: "bun:sqlite",
+          configRevision: 2,
+          rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+        },
+      }),
+    ).toThrow("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")
+  })
+
   test("rejects persistence envelopes without a canonical terminal", () => {
     const base = envelope()
     const terminalCases: Array<unknown> = [null, {}, { sequence: 2, outcome: "completed" }, { sequence: 1, outcome: "maybe" }]
