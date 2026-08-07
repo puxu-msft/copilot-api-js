@@ -252,8 +252,8 @@ describe("delivery grammar", () => {
     consume(grammar, { kind: "unit-append", unit: contentBlock, frame: appending })
 
     const outcomes = finish(grammar, { kind: "truncated", error: protocolError("truncated") })
-    expect(outcomeFrames(outcomes)).not.toContain(opening)
-    expect(outcomeFrames(outcomes)).not.toContain(appending)
+    expect(deliveryFrames(outcomes)).not.toContain(opening)
+    expect(deliveryFrames(outcomes)).not.toContain(appending)
     expect(outcomes).toMatchObject([{ kind: "discard-open-unit" }, { kind: "protocol-error", error: { semantic: "truncated" } }])
   })
 
@@ -306,26 +306,112 @@ describe("delivery grammar", () => {
     expect(finish(grammar, { kind: "natural-drain" })).toEqual([])
   })
 
-  test("recognizes every frozen semantic literal", () => {
-    const semantics = [
-      "malformed-frame",
-      "unexpected-frame",
-      "nested-unit",
-      "mismatched-unit",
-      "terminal-with-open-unit",
-      "finish-before-terminal",
-      "duplicate-terminal",
-      "post-terminal-frame",
-      "truncated",
-      "terminal-failure",
-      "adapter-exception",
-    ] as const satisfies ReadonlyArray<ClientProtocolError["semantic"]>
+  test("discards unit structural staging exactly once on every failing successor", () => {
+    const scenarios: ReadonlyArray<{
+      readonly name: string
+      readonly consumeFailure: (grammar: ReturnType<typeof createDeliveryGrammar>, diagnostic: ClientFrame) => ReadonlyArray<GrammarOutcome>
+      readonly semantic: ClientProtocolError["semantic"]
+    }> = [
+      {
+        name: "adapter protocol error",
+        consumeFailure: (grammar, diagnostic) => consume(grammar, { kind: "protocol-error", error: protocolError("malformed-frame", diagnostic) }),
+        semantic: "malformed-frame",
+      },
+      {
+        name: "truncated finish",
+        consumeFailure: (grammar, diagnostic) => finish(grammar, { kind: "truncated", error: protocolError("truncated", diagnostic) }),
+        semantic: "truncated",
+      },
+      {
+        name: "terminal failure finish",
+        consumeFailure: (grammar, diagnostic) => finish(grammar, { kind: "terminal-failure", error: protocolError("terminal-failure", diagnostic) }),
+        semantic: "terminal-failure",
+      },
+      {
+        name: "early natural drain",
+        consumeFailure: (grammar) => finish(grammar, { kind: "natural-drain" }),
+        semantic: "finish-before-terminal",
+      },
+      {
+        name: "mismatched unit",
+        consumeFailure: (grammar, diagnostic) => consume(grammar, { kind: "unit-append", unit: contentBlock, frame: diagnostic }),
+        semantic: "mismatched-unit",
+      },
+      {
+        name: "mode-incompatible response append",
+        consumeFailure: (grammar, diagnostic) => consume(grammar, { kind: "response-append", frame: diagnostic }),
+        semantic: "unexpected-frame",
+      },
+    ]
 
-    expect(semantics).toHaveLength(11)
+    for (const scenario of scenarios) {
+      const grammar = createDeliveryGrammar({ mode: "unit" })
+      const structural = frame(`structural-${scenario.name}`)
+      const diagnostic = frame(`diagnostic-${scenario.name}`)
+      const staged = consume(grammar, { kind: "structural", frame: structural, structuralKind: "envelope-open" })
+      expect(staged).toEqual([{ kind: "stage-structural-frame", frame: structural, structuralKind: "envelope-open" }])
+      if (staged[0]?.kind !== "stage-structural-frame") throw new Error("expected staged structural frame")
+      expect(staged[0].frame).toBe(structural)
+
+      const outcomes = scenario.consumeFailure(grammar, diagnostic)
+      expect(outcomes).toMatchObject([{ kind: "discard-open-unit" }, { kind: "protocol-error", error: { semantic: scenario.semantic } }])
+      expect(outcomes.filter((outcome) => (outcome as { kind?: unknown }).kind === "discard-open-unit")).toHaveLength(1)
+      expect(deliveryFrames(outcomes)).not.toContain(structural)
+      expect(diagnosticSourceFrames(outcomes)).toEqual(scenario.semantic === "finish-before-terminal" ? [] : [diagnostic])
+    }
+  })
+
+  test("clears unit structural staging on a legal terminal without a discard", () => {
+    const grammar = createDeliveryGrammar({ mode: "unit" })
+    const structural = frame("structural")
+    const opening = frame("open")
+    const closing = frame("close")
+    const responseTerminal = terminal("terminal")
+
+    const staged = consume(grammar, { kind: "structural", frame: structural, structuralKind: "envelope-open" })
+    if (staged[0]?.kind !== "stage-structural-frame") throw new Error("expected staged structural frame")
+    expect(staged[0].frame).toBe(structural)
+    consume(grammar, { kind: "unit-open", unit: contentBlock, frame: opening })
+    consume(grammar, { kind: "unit-close", unit: contentBlock, frame: closing })
+    const outcomes = consume(grammar, { kind: "response-terminal", terminal: responseTerminal })
+    expect(outcomes).toEqual([{ kind: "response-terminal", terminal: responseTerminal, responseFrames: [] }])
+    expect(outcomes.some((outcome) => outcome.kind === "discard-open-unit")).toBe(false)
+  })
+
+  test("recognizes every frozen semantic literal in both directions", () => {
+    const semantics: Record<ClientProtocolError["semantic"], true> = {
+      "malformed-frame": true,
+      "unexpected-frame": true,
+      "nested-unit": true,
+      "mismatched-unit": true,
+      "terminal-with-open-unit": true,
+      "finish-before-terminal": true,
+      "duplicate-terminal": true,
+      "post-terminal-frame": true,
+      truncated: true,
+      "terminal-failure": true,
+      "adapter-exception": true,
+    }
+
+    expect(Object.keys(semantics).sort()).toEqual([
+      "adapter-exception",
+      "duplicate-terminal",
+      "finish-before-terminal",
+      "malformed-frame",
+      "mismatched-unit",
+      "nested-unit",
+      "post-terminal-frame",
+      "terminal-failure",
+      "terminal-with-open-unit",
+      "truncated",
+      "unexpected-frame",
+    ])
   })
 })
 
-function outcomeFrames(outcomes: ReadonlyArray<ReturnType<ReturnType<typeof createDeliveryGrammar>["consume"]>[number]>): Array<ClientFrame> {
+type GrammarOutcome = ReturnType<ReturnType<typeof createDeliveryGrammar>["consume"]>[number]
+
+function deliveryFrames(outcomes: ReadonlyArray<GrammarOutcome>): Array<ClientFrame> {
   return outcomes.flatMap((outcome) => {
     switch (outcome.kind) {
       case "buffer-real-frame":
@@ -337,11 +423,9 @@ function outcomeFrames(outcomes: ReadonlyArray<ReturnType<ReturnType<typeof crea
         return [...outcome.unit.frames]
       }
       case "response-terminal": {
-        return [...outcome.responseFrames, ...(outcome.terminal.sourceFrame ? [outcome.terminal.sourceFrame] : [])]
+        return [...outcome.responseFrames]
       }
-      case "protocol-error": {
-        return outcome.error.sourceFrame ? [outcome.error.sourceFrame] : []
-      }
+      case "protocol-error":
       case "discard-open-unit": {
         return []
       }
@@ -350,6 +434,10 @@ function outcomeFrames(outcomes: ReadonlyArray<ReturnType<ReturnType<typeof crea
       }
     }
   })
+}
+
+function diagnosticSourceFrames(outcomes: ReadonlyArray<GrammarOutcome>): Array<ClientFrame> {
+  return outcomes.flatMap((outcome) => (outcome.kind === "protocol-error" && outcome.error.sourceFrame ? [outcome.error.sourceFrame] : []))
 }
 
 function assertNever(value: never): never {

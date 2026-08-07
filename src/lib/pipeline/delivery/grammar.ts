@@ -27,15 +27,17 @@ export function createDeliveryGrammar({ mode }: CreateDeliveryGrammarOptions): D
   let state: GrammarState = "active"
   let openUnit: DeliveryUnitIdentity | undefined
   let openFrames: Array<ClientFrame> = []
+  let structuralFrames: Array<ClientFrame> = []
   let responseFrames: Array<ClientFrame> = []
 
   const error = (semantic: ClientProtocolError["semantic"], detail: string, sourceFrame: ClientFrame | null, cause: unknown): DeliveryOutcome =>
     Object.freeze({ kind: "protocol-error", error: Object.freeze({ semantic, detail, sourceFrame, cause }) })
 
   const discardOpen = (reason: string): DeliveryOutcome | undefined => {
-    if (!openUnit && openFrames.length === 0 && responseFrames.length === 0) return undefined
+    if (!openUnit && openFrames.length === 0 && structuralFrames.length === 0 && responseFrames.length === 0) return undefined
     openUnit = undefined
     openFrames = []
+    structuralFrames = []
     responseFrames = []
     return Object.freeze({ kind: "discard-open-unit", reason })
   }
@@ -68,6 +70,7 @@ export function createDeliveryGrammar({ mode }: CreateDeliveryGrammarOptions): D
       ])
     }
     const frames = responseFrames
+    structuralFrames = []
     responseFrames = []
     state = "terminal"
     return Object.freeze([Object.freeze({ kind: "response-terminal", terminal, responseFrames: Object.freeze([...frames]) })])
@@ -79,7 +82,8 @@ export function createDeliveryGrammar({ mode }: CreateDeliveryGrammarOptions): D
         return Object.freeze([Object.freeze({ kind: "deliver-control-frame", frame: classified.frame, capability: classified.capability })])
       }
       case "structural": {
-        if (mode === "response-terminal") responseFrames.push(classified.frame)
+        if (mode === "unit") structuralFrames.push(classified.frame)
+        else responseFrames.push(classified.frame)
         return Object.freeze([Object.freeze({ kind: "stage-structural-frame", frame: classified.frame, structuralKind: classified.structuralKind })])
       }
       case "protocol-error": {
