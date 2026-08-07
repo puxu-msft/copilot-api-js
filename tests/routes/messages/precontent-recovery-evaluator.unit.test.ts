@@ -25,6 +25,7 @@ interface Snapshot {
     readonly streamError?: { readonly type: string; readonly message: string }
     readonly contentBlocks: ReadonlyArray<unknown>
   }
+  readonly unrepairableToolInput?: string
 }
 
 function candidate(patch: Partial<Snapshot["acc"]> = {}): Snapshot {
@@ -100,6 +101,34 @@ describe("evaluateDirectRecovery", () => {
     const result = await evaluate(outcome, snapshot)
 
     expect(result.kind).toBe(kind)
+  })
+
+  test("does not inherit a primary repair verdict and recognizes only the candidate-local repair verdict", async () => {
+    const validRecovery = await evaluate({ kind: "complete", headers: new Headers() }, candidate())
+    expect(validRecovery.kind).toBe("complete")
+    validRecovery.disposition.discard()
+
+    const unrepairableRecovery = await evaluate({ kind: "complete", headers: new Headers() }, { ...candidate(), unrepairableToolInput: "WriteFile" })
+    expect(unrepairableRecovery).toMatchObject({ kind: "unrepairable-tool-input", tool: "WriteFile" })
+    unrepairableRecovery.disposition.discard()
+  })
+
+  test("rejects every duplicate disposition combination", async () => {
+    const commitThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
+    commitThenCommit.disposition.commit()
+    expect(() => commitThenCommit.disposition.commit()).toThrow("already consumed")
+
+    const commitThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
+    commitThenDiscard.disposition.commit()
+    expect(() => commitThenDiscard.disposition.discard()).toThrow("already consumed")
+
+    const discardThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
+    discardThenCommit.disposition.discard()
+    expect(() => discardThenCommit.disposition.commit()).toThrow("already consumed")
+
+    const discardThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
+    discardThenDiscard.disposition.discard()
+    expect(() => discardThenDiscard.disposition.discard()).toThrow("already consumed")
   })
 
   test("maps a candidate throw without settling the shared context", async () => {
