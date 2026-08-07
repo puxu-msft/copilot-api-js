@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第六轮 `0 blocker / 1 major` 已采纳并整改，待原 reviewer 第七轮复审
+> 状态：第七轮 `0 blocker / 0 major`，实施者视角已放行；整体定稿仍待事实／判据视角第七轮
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -200,3 +200,29 @@ Canonical record／journal 保留 dispatch event sequence 与 digest；CAS 只�
 | Finding | 级别 | 处置 | 整改方向 |
 |---|---|---|---|
 | G1-r6 | C | 采纳 | `freezeAtTerminal()` 改为按 ledger 的 event／violation 联合状态构造三种结果：仅“零 event + violation none”是 not-observed；“零 event + unattributed violation”是 unavailable-at-source 且保留 violation；有 event 是 observed prefix。纯标量 violation 不需要 evidence lease。§9.2 增加 ordinary zero-event 正样本、error-bearing zero-event 正样本及双向变异。 |
+
+## 第七轮复审
+
+> 目标提交：`0e524438cfa9d7197484731b9f89fc8c263223cb`（上一被审 `2f706e7d4891e5018c8b7c6ab3f57a12f29a5a1f`）
+>
+> 证据：已以 `git rev-parse 0e524438` 解析完整 SHA，并读取本报告第六轮。因隔离树保留历史 unresolved index merge，未 checkout；以 `git show <target>:docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md` 与 `git diff 2f706e7d..0e524438 -- docs/spec/...` 审阅目标版本。未修改 spec。
+
+### G1 · 关闭：freeze 三态与 ordinary zero-event
+
+§5.3～§5.4 现明确 `freezeAtTerminal()` 仅“零 event 且 violation none”产生 `not-observed-before-snapshot`；“零 event 且 unattributed violation”产生 `unavailable-at-source` 并逐字保留 violation；非空 ledger prefix 产生 observed。前两者均为 null operation lease。故普通无 GOAWAY 的正确 dispatch 不会 false-red，而 callback 前 `PROTOCOL_ERROR` 也不会被零 event 分支吞掉；退出责任表与验收逐项覆盖三种结果。
+
+### G2 · 关闭：stream／session earliest-signal one-shot
+
+§5.4 规定 stream 与 session error path 共用 session-scoped one-shot recorder，最早观察者必须在 `controller.error`／first-terminal freeze、cleanup 等动作之前记录；后到信号只能 `already-recorded`，不得覆盖原 reason。由此 stream-first 与 session-first 都使 freeze 看见同一 unattributed violation，且终端 snapshot 不被后到事件改写。验收要求吞掉 early record、覆盖 reason 和错误顺序的变异变红。
+
+### G3 · 关闭：InvalidGoawayCapability provenance
+
+§8.3 的 capability union 令 clamped／raw-visible 都严格为两条 callback，rejected 严格为零条或唯一 first-token callback；两个 unique opaque token、ordered digest provenance、wire oracle 与 ambiguous→unsupported 均可机械实施。only-first callback 不再误判 clamped，runtime-rejected 不伪造第二 event；正确 clamped 的 two-token non-increasing callback 仍可通过。
+
+### G4 · 维持关闭：ledger／evidence／History
+
+本轮不改变 append-only ledger、`RegisteredGoawayEvidence` 成功消费／发布前释放、dispatch→operation lease 转移或 History envelope 责任。早 signal 只写无 bytes 的 violation，不与 evidence ownership 竞争；ordered event prefix、CAS digest 去重但不合并 sequence／lease、loser dispatch 持久化与 transient retry 均仍闭合。
+
+### 第七轮 verdict
+
+`0 blocker / 0 major`。G1、G2、G3、G4 均通过双向核验；**可定稿**。
