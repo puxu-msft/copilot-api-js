@@ -8,7 +8,9 @@
 - RED：`bun test /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4/tests/transport/http2-goaway-ledger.unit.test.ts` 为 0 pass、1 fail、1 error；精确失败是 `Cannot find module '~/lib/transport/http2-goaway-ledger'`。
 - GREEN 1：新增只满足首测的最小 `SessionGoawayLedger`／dispatch source 后，同命令为 1 pass、0 fail；typecheck exit 0。
 - RED 2：ordered-event 测试先因 `RegisteredGoawayEvidence` export 缺失而 0 pass、1 fail、1 error。
-- GREEN 2：实现 captured evidence 与 append-only events 后 targeted test 为 2 pass、0 fail；typecheck exit 0。覆盖 first／decrease／equal／increase order、same digest 不合并、visible increase 的 `appended-protocol-error` 与 violation；仍未实现 session close／refcount／duplicate release。
+- GREEN 2：实现 captured evidence 与 append-only events 后 targeted test 为 2 pass、0 fail；typecheck exit 0。覆盖 first／decrease／equal／increase order、same digest 不合并、visible increase 的 `appended-protocol-error` 与 violation。
+- RED 3：ownership tests 为 2 pass、3 fail，精确缺失 `closeSessionOwner()` 与 dispatch `release()`。
+- GREEN 3：session owner／dispatch／operation 共用单一 refcount，append 发布后消费 evidence、发布前失败不消费；session close 后 operation lease 仍读 bytes，最后 release 归零；duplicate freeze／release 与 release 后读均 fail loud。Targeted test 为 5 pass、0 fail；typecheck exit 0。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
 
 ## 已完成
@@ -20,13 +22,13 @@
 ## 未提交文件及在途意图
 
 - `.superpowers/sdd/task-8-report.md`：worktree-local 实施证据报告，后续逐步补充 RED／GREEN、mutation、验证、ownership proof、结构怪味与三方向反思。
-- `src/lib/transport/http2-goaway-ledger.ts`：只满足 ordinary zero-event 首测的最小骨架，纳入本 checkpoint。
+- `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：当前已完成 ordered append 及 owner／dispatch／operation ownership slice。
 - 当前没有其他未提交产品源码或测试。
 
 ## 剩余项
 
-1. 下一轮逐个以 RED→GREEN 添加 zero-event violation freeze、first-reason-wins、ownership 与 duplicate fail-loud；ordered append slice 已完成。
-2. `src/lib/transport/http2-goaway-ledger.ts` 只导入 Task 7 serializable schema 与 `DispatchHandle`，最终实现 registry／session owner／dispatch lease／operation lease 的单一 refcount。
+1. 下一轮以 RED→GREEN 添加 zero-event violation freeze 与 shared first-reason-wins；ordered append 与 ownership slices 已完成。
+2. 补 `appendUnavailable`、剩余 validation 与 mutation controls；production module 继续只导入 Task 7 serializable schema 与 `DispatchHandle`。
 3. 跑 targeted GREEN、typecheck、lint；随后分别做 fan-out、zero-event violation drop、close-owner early byte loss、duplicate release mutation controls。
 4. 完成报告、自审与最终精确 pathspec `feat: add in-memory ordered GOAWAY ledger` commit。
 5. 把 Task 7 Minor receiver mutation记录为 Task 10／11 gate；本 Task 不改 AST guard。

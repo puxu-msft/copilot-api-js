@@ -39,7 +39,7 @@ test("preserves repeated GOAWAY callbacks in order without merging equal evidenc
   expect(append(7)).toBe("appended")
   expect(append(8)).toBe("appended-protocol-error")
 
-  const { snapshot } = lease.freezeAtTerminal()
+  const { snapshot, operationLease } = lease.freezeAtTerminal()
   expect(snapshot).toEqual({
     availability: "observed-before-snapshot",
     events: [
@@ -50,4 +50,56 @@ test("preserves repeated GOAWAY callbacks in order without merging equal evidenc
     ],
     protocolViolation: { availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: 4 },
   })
+  operationLease?.release()
+})
+
+test("keeps evidence readable after session close until the operation lease releases the last ref", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:ownership" as DispatchHandle)
+  const evidence = new RegisteredGoawayEvidence("owned", new Uint8Array([8, 6, 7]))
+
+  expect(ledger.appendObserved({
+    errorCode: 0,
+    lastStreamID: 5,
+    opaqueDataLength: { availability: "observed", value: 3 },
+    evidence,
+  })).toBe("appended")
+  expect(() => evidence.bytes()).toThrow("registered GOAWAY evidence already consumed")
+  ledger.closeSessionOwner()
+
+  const { operationLease } = lease.freezeAtTerminal()
+  expect(operationLease?.evidenceBytes("owned")).toEqual(new Uint8Array([8, 6, 7]))
+  expect(() => lease.freezeAtTerminal()).toThrow("dispatch GOAWAY lease already frozen")
+
+  operationLease?.release()
+  expect(ledger.retainedReferenceCount).toBe(0)
+  expect(() => operationLease?.evidenceBytes("owned")).toThrow("operation GOAWAY lease already released")
+  expect(() => operationLease?.release()).toThrow("operation GOAWAY lease already released")
+})
+
+test("does not consume registered evidence when append fails before publication", () => {
+  const ledger = new SessionGoawayLedger()
+  ledger.closeSessionOwner()
+  const evidence = new RegisteredGoawayEvidence("rejected", new Uint8Array([1]))
+
+  expect(() => ledger.appendObserved({
+    errorCode: 0,
+    lastStreamID: 1,
+    opaqueDataLength: { availability: "observed", value: 1 },
+    evidence,
+  })).toThrow("session GOAWAY ledger owner closed")
+  expect(evidence.bytes()).toEqual(new Uint8Array([1]))
+  evidence.release()
+  expect(() => evidence.bytes()).toThrow("registered GOAWAY evidence already released")
+})
+
+test("fails loud when a dispatch lease is released twice or frozen after release", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:release" as DispatchHandle)
+
+  lease.release()
+  expect(() => lease.release()).toThrow("dispatch GOAWAY lease already released")
+  expect(() => lease.freezeAtTerminal()).toThrow("dispatch GOAWAY lease already released")
+  ledger.closeSessionOwner()
+  expect(ledger.retainedReferenceCount).toBe(0)
 })
