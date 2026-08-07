@@ -853,7 +853,7 @@ Responses request 带 session/previous_response_id 且路由到 `/chat/completio
 
 - [ ] **Step 6b.4: 重试与双入口稳定性**
 
-prefetch 每 request／inspection 一次；retry candidates 共享同一 immutable entries snapshot，不得在每 attempt 重查 History。测试在 retry 后断言 RPC count=1、rebuiltMessages 引用/字节稳定。Driver unit test 以调用顺序 probe 同时证明 `runRequest()` 与 `inspectRequest()` 的 callback 都发生在 route decision 后、`outboundTranslateOut` 前；删除任一入口对 helper 的调用后，其对应正样本必须变红。Debug HTTP test 用可识别的 session history 证明 fallback dry-run 的 translate output 实际包含历史重建结果；direct Responses negative control 保留 RPC count=0，防止用“所有 inspection 都预取”修出 false-red。
+prefetch 每 request／inspection 一次；retry candidates 共享同一 immutable entries snapshot，不得在每 attempt 重查 History。测试在 retry 后断言 RPC count=1、rebuiltMessages 引用/字节稳定。Driver unit test 以调用顺序 probe 同时证明 `runRequest()` 与 `inspectRequest()` 的 callback 都发生在 route decision 后、`outboundTranslateOut` 前；删除任一入口对 helper 的调用后，其对应正样本必须变红。Debug HTTP test 用可识别的 session history 证明 fallback dry-run 的 `prepare-wire` output 已把历史 messages prepend 到当前 Responses→CC wire；`translate`／`rewrite-in` 正样本只断言 RPC 恰一次、调用顺序正确、requestState 中 snapshot 已冻结并可被后续 `prepareWire()` 消费，不要求其 stage body 提前变成 CC wire。Direct Responses negative control 保留 RPC count=0，防止用“所有 inspection 都预取”修出 false-red。
 
 - [ ] **Step 6b.5: 门禁与提交**
 
