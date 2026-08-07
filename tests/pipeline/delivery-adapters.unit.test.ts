@@ -9,6 +9,7 @@ import type { DeliveryControlCapability } from "~/lib/pipeline/delivery/protocol
 
 import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
 import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
 import { createDeliveryControlCapability } from "~/lib/pipeline/delivery/control-capability"
 
@@ -214,6 +215,54 @@ describe("delivery protocol adapters", () => {
       kind: "terminal-failure",
       error: { semantic: "terminal-failure", cause: failure },
     })
+  })
+
+  test("classifies Gemini response content and terminal frames", () => {
+    const adapter = createGeminiDeliveryProtocolAdapter()
+    const content = { data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "hello" }] } }] }) }
+    const terminal = {
+      data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "done" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1 } }),
+    }
+    const wireError = {
+      data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "boom" }] }, finishReason: "OTHER" }], error: { code: 500, status: "INTERNAL", message: "boom" } }),
+    }
+
+    expect(adapter.deliveryMode).toBe("response-terminal")
+    expect(adapter.classify({ frame: content })).toEqual({ kind: "response-append", frame: content })
+    expect(adapter.classify({ frame: terminal })).toEqual({
+      kind: "response-terminal",
+      terminal: { semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "STOP" } },
+    })
+    expect(adapter.classify({ frame: wireError })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "failed" } })
+    expect(adapter.renderTerminal({ semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "STOP" } })).toEqual([terminal])
+    expect(adapter.renderDone()).toEqual([])
+  })
+
+  test("maps Gemini finish variants and renders mapped errors", () => {
+    const adapter = createGeminiDeliveryProtocolAdapter()
+    const failure = new Error("transport failed")
+
+    expect(adapter.classifyFinish({ kind: "complete", frames: [] })).toEqual({ kind: "natural-drain" })
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: "SAFETY" })).toMatchObject({
+      kind: "valid-terminal-without-boundary",
+      terminal: { semantic: "complete", diagnostic: { source: "finish-result", terminal: "SAFETY" } },
+    })
+    expect(adapter.classifyFinish({ kind: "truncated", frames: [], reason: "missing finishReason" })).toMatchObject({
+      kind: "truncated",
+      error: { semantic: "truncated", detail: "missing finishReason" },
+    })
+    expect(adapter.classifyFinish({ kind: "terminal-failure", frames: [], error: failure })).toMatchObject({
+      kind: "terminal-failure",
+      error: { semantic: "terminal-failure", cause: failure },
+    })
+    expect(adapter.renderError({ semantic: "terminal-failure", detail: "transport failed", sourceFrame: null, cause: failure })).toEqual([
+      {
+        data: JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: "transport failed" }] }, finishReason: "OTHER", index: 0 }],
+          error: { code: 500, status: "INTERNAL", message: "transport failed" },
+        }),
+      },
+    ])
   })
 
   test("maps every response finish variant without consuming its frames", () => {
