@@ -41,6 +41,7 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { setCaptureWorkObserverForTests } from "~/lib/context/model-operation-record"
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
@@ -121,6 +122,7 @@ import {
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
   { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
+  { name: "setCaptureWorkObserverForTests", reset: () => setCaptureWorkObserverForTests(undefined) },
   { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
