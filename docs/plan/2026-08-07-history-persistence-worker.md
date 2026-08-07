@@ -1,12 +1,12 @@
 # History Persistence Worker Implementation Plan
 
-> **状态：待独立评审。** 评审收口后改为“已评审，待执行”，并填写最终 plan commit。
+> **评审状态门：** 以配套 kickoff 的 `REVIEWED_PLAN_COMMIT` 为唯一机器可判真相源。该值为空或 plan blob 与该提交不一致时禁止实施；不在本文件写自引用 commit SHA。
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** 把 History semantic/raw 持久化、backfill、maintenance 与最终查询逐批迁入单个专用 Worker；使用有界 operation reservation、Worker crash 重放和 startup/shutdown durability barrier；每个 batch 独立验收后立即合入 `master`。
 
-**Architecture:** 主线程拥有 `HistoryAdmissionController`、未 ACK envelope 和 in-flight/recent overlay；单个 `node:worker_threads.Worker` 拥有 History 写入和最终全部 SQLite。写入先行阶段允许主线程 readonly connection，Batch 6b 删除它。所有主线程↔Worker 行为通过版本化 protocol 和 `HistoryPersistenceRuntime` 端口完成。
+**Architecture:** 主线程拥有 `HistoryAdmissionController`、未 ACK envelope 和 in-flight/recent overlay；单个 `node:worker_threads.Worker` 拥有 History 写入和最终全部 SQLite。写入先行阶段允许主线程 readonly connection，Batch 6c 删除它。所有主线程↔Worker 行为通过版本化 protocol 和 `HistoryPersistenceRuntime` 端口完成。
 
 **Tech Stack:** TypeScript 5.9、Bun 1.3.14、Node 24、`node:worker_threads`、`bun:sqlite`／`node:sqlite`、Hono、tsdown、Bun test、SQLite WAL。
 
@@ -65,10 +65,14 @@ status: active
 - `src/lib/history/worker/runtime.ts`：主线程 `HistoryPersistenceRuntime`、generation、未 ACK、restart、ACK tombstone。
 - `src/lib/history/worker/history-worker.ts`：Worker entry；文件 basename 固定产出 `dist/history-worker.mjs`，只接 protocol 并调用 backend。
 - `src/lib/history/worker/backend.ts`：Worker 内 semantic/raw/query/maintenance ownership。
-- `src/lib/history/worker/admission.ts`：有界 reservation、FIFO waiter、publication barrier。
-- `src/lib/history/worker/registry.ts`：生产 runtime 单例与测试注入端口。
+- `src/lib/history/worker/admission.ts`：有界 reservation、FIFO waiter；唯一 reservation owner。
+- `src/lib/history/worker/status.ts`：组合 admission 与 Worker 两个独立 snapshot，生成对外 History subsystem status。
+- `src/lib/history/worker/legacy-terminal-sink.ts`：Batch 1b 到 2b 的旧 writer adapter；Batch 2b 删除。
+- `src/lib/history/worker/registry.ts`：生产 runtime/admission 单例与测试注入端口。
 - `src/lib/history/worker/asset-url.ts`：source 与 dist Worker URL 解析。
-- `src/lib/history/sqlite/read-connection.ts`：写入先行阶段的主线程 readonly handle registry；Batch 2b 安装，Batch 6b 删除。
+- `src/lib/history/terminal-publication.ts`：唯一 terminal bus payload；携 canonical record 与 operation-owned raw attachment。
+- `src/lib/history/recent-terminal.ts`：未 ACK 全量 overlay 与已 ACK 有界 recent cache。
+- `src/lib/history/sqlite/read-connection.ts`：写入先行阶段的主线程 readonly handle registry；Batch 2b 安装，Batch 6c 删除。
 - `tests/history/worker/fixtures/worker-entry.ts`：协议测试 Worker fixture。
 - `tests/history/worker/*.unit.test.ts`：纯状态机与 fake backend。
 - `tests/history/worker/*.it.test.ts`：真 Worker、SQLite、crash、source/dist runtime。
@@ -85,6 +89,7 @@ status: active
 - `src/routes/status/route.ts`、`src/lib/metrics-exposition.ts`：status 和 Prometheus。
 - `src/lib/shutdown.ts`、`packages/cli/src/start.ts`：startup hard gate 与 durability barrier。
 - `src/lib/history/{queries,sessions,stats}.ts`、`src/routes/history/handler.ts`：Batch 6 query RPC cutover。
+- `src/routes/responses/conversation-rebuild.ts`、`src/lib/codec/openai-responses/{codec,openai-responses-leg}.ts`、`src/lib/pipeline/{driver,types}.ts`：Batch 6a async fallback-history prefetch seam。
 
 ---
 
@@ -118,11 +123,19 @@ export interface RawTargetDescriptor {
   readonly workerLocalGeneration?: string
 }
 
-export interface HistoryOperationEnvelope {
-  readonly protocolVersion: typeof HISTORY_WORKER_PROTOCOL_VERSION
-  readonly record: ModelOperationRecord
+export interface RawOperationAttachment {
   readonly rawTarget: RawTargetDescriptor
   readonly rawCommands: ReadonlyArray<RawCaptureCommand>
+}
+
+export interface ModelOperationTerminalPublication {
+  readonly record: ModelOperationRecord
+  readonly rawAttachment: RawOperationAttachment
+}
+
+export interface HistoryOperationEnvelope {
+  readonly protocolVersion: typeof HISTORY_WORKER_PROTOCOL_VERSION
+  readonly publication: ModelOperationTerminalPublication
 }
 
 export interface RawCaptureCommand {
@@ -171,12 +184,12 @@ export interface HistoryDrainResult {
 
 export interface HistoryWorkerStatus {
   readonly workerGeneration: WorkerGeneration
+  readonly threadId?: number
+  readonly selectedDriver?: "bun:sqlite" | "node:sqlite"
   readonly ready: boolean
   readonly terminalFailed: boolean
-  readonly reserved: number
-  readonly unacked: number
-  readonly waitingRequests: number
-  readonly estimatedBytes: number
+  readonly pendingEnvelopes: number
+  readonly pendingBytes: number
   readonly latestDesiredRevision: number
   readonly publishedRevision: number
   readonly restartsTotal: number
@@ -199,7 +212,7 @@ export interface HistoryPersistenceRuntime {
 }
 ```
 
-Batch 0 即定义 production-shaped `HistoryOperationEnvelope`：至少包含 `record: ModelOperationRecord`、冻结 raw descriptor 和空的 `rawCommands`；这让 Batch 1b 的 legacy sink 无需临时 envelope。Batch 0 Worker fixture只做协议 round-trip，不得伪造 production persistence success。
+Batch 0 即定义 production-shaped `ModelOperationTerminalPublication` 与 `HistoryOperationEnvelope`：publication 含 canonical record 与冻结 raw attachment；Batch 1b attachment 先为空 commands。这让 legacy sink 与 Worker sink 使用同一 terminal payload。Batch 0 Worker fixture 只做协议 round-trip，不得伪造 production persistence success。
 
 - [ ] **Step 0.1: 写 protocol red tests**
 
@@ -215,7 +228,7 @@ Expected: FAIL，模块不存在。
 
 - [ ] **Step 0.2: 实现 protocol types 与 runtime 纯状态机**
 
-`runtime.ts` 只管理 Worker transport、generation、pending RPC 和状态；不得 import SQLite。completed-ACK tombstone 设有界容量并测试淘汰。
+`runtime.ts` 只管理 Worker transport、generation、pending envelope/RPC 和状态；不得 import SQLite。completed-ACK tombstone 设有界容量并测试淘汰。Runtime snapshot 只暴露 `pendingEnvelopes/pendingBytes`，不得出现 `reserved/waitingRequests`；这些字段唯一属于 admission。
 
 - [ ] **Step 0.3: 写真 Worker source-mode red test**
 
@@ -314,6 +327,9 @@ export interface HistoryAdmissionController {
   acceptTerminal(envelope: HistoryOperationEnvelope): Promise<HistoryPersistenceOutcome>
   failBeforeTerminal(operationId: string, error: unknown): void
   updateCapacity(capacity: number): void
+  pause(reason: string): Promise<void>
+  waitForQuiescence(): Promise<void>
+  resume(): void
   replaceTerminalSink(sink: HistoryTerminalSink): void
   close(error: Error): void
   snapshot(): HistoryAdmissionStatus
@@ -360,12 +376,18 @@ Commit: `feat(history): add persistence admission controller`
 
 **Files:**
 - Create: `src/lib/history/worker/http-admission.ts`
+- Create: `src/lib/history/worker/legacy-terminal-sink.ts`
+- Create: `src/lib/history/worker/status.ts`
 - Modify: `src/routes/{chat-completions,responses,messages,embeddings,gemini}/route.ts`
 - Modify: `src/routes/azure-openai/route.ts`
 - Modify: `src/routes/responses/ws.ts`
 - Modify: `src/lib/context/manager.ts`
 - Modify: `src/lib/context/request.ts`
 - Modify: `src/lib/context/lightweight-model-operation.ts`
+- Modify: `src/lib/history/v3/terminal-bus.ts`
+- Create: `src/lib/history/terminal-publication.ts`
+- Create: `src/lib/history/recent-terminal.ts`
+- Modify: `src/lib/shutdown.ts`
 - Modify: four codec files under `src/lib/codec/`
 - Modify: `src/routes/status/route.ts`
 - Modify: `src/lib/metrics-exposition.ts`
@@ -373,38 +395,46 @@ Commit: `feat(history): add persistence admission controller`
 - Modify: `packages/telemetry/src/request-telemetry.ts`
 - Test: `tests/history/worker/admission-wiring.http.test.ts`
 - Test: `tests/history/worker/admission-ws.it.test.ts`
+- Test: `tests/history/worker/admission-shutdown.unit.test.ts`
+- Test: `tests/history/worker/pending-overlay.it.test.ts`
 - Test: `tests/architecture/history-worker-boundaries.unit.test.ts`
 
-**Wiring rule:** 不把同步 `manager.create()` 改 async。模型 route 在 parse/dispatch 前 await reservation，并把 `HistoryReservation` 作为显式参数传给 codec／lightweight producer。dry-run 不传 reservation。Responses WS 每条 `response.create` 独立 acquire。
+**Wiring rule:** 不把同步 `manager.create()` 改 async。模型 route 在 parse/dispatch 前 await reservation，并把 `HistoryReservation` 作为显式参数传给 codec／lightweight producer。dry-run 不传 reservation。Responses WS 每条 `response.create` 独立 acquire。Terminal publication 只有一个 owner：`ModelOperationTerminalPublication { record, rawAttachment }` 经 terminal bus 发布，subscriber 消费；context/lightweight 不直接 enqueue persistence。
 
 - [ ] **Step 1b.1: 写入口矩阵 red test**
 
 从 route registration 与 operation producers 枚举：OpenAI CC／Responses、Anthropic Messages／count_tokens、Gemini generate／stream／count、embeddings、Azure、Responses WS。使用 capacity=1 且预先持有唯一 reservation 的 test controller，使每个新模型入口必须等待；liveness、status、metrics、History、dry-run 必须通过。
 
-- [ ] **Step 1b.2: 扩展 context/lightweight 接口**
+- [ ] **Step 1b.2: 冻结 terminal publication 与 raw attachment ownership**
 
-`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；创建 operation ID 后立即调用 `bindOperationId(id)`。context/lightweight **不得自行 enqueue/transfer terminal**：现有唯一 terminal bus subscriber 调 controller `acceptTerminal(recordEnvelope)`。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
+新增 `ModelOperationTerminalPublication { record, rawAttachment }`。`rawAttachment` 是 operation-owned、一次性 seal/transfer 对象：Batch 1b 先为空 attachment，Batch 3a 扩为 commands/descriptor。RequestContext 和 lightweight operation 在 terminal commit 时 seal attachment，并把完整 publication 交 `publishModelOperationTerminal()`；terminal bus subscriber 类型同步升级。subscriber 是唯一 `acceptTerminal()` 调用者。attachment 第二次 seal/transfer 必须抛错；finalizer publish 前失败由 manager 调 `failBeforeTerminal`。这条接缝必须在 Batch 1b 落地，Batch 3a 不再另造全局 registry。
 
-- [ ] **Step 1b.3: 接 HTTP routes**
+- [ ] **Step 1b.3: 扩展 context/lightweight reservation 接口**
 
-新增 `withHistoryAdmission(c, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper 必须监听 `c.req.raw.signal` 和 shutdown signal。生产 controller 在本 batch 安装 `LegacyHistoryTerminalSink`：它把 envelope 的 canonical record 交现有 `enqueueModelOperationWithOutcome`，再把 outcome 回调给 reservation；这条 adapter 在 Batch 2b 删除。
+`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；创建 operation ID 后立即调用 `bindOperationId(id)`。context/lightweight 不直接 enqueue persistence。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
 
-- [ ] **Step 1b.4: 接 Responses WS**
+- [ ] **Step 1b.4: 接 HTTP routes 与 shutdown Step 1**
+
+新增 `withHistoryAdmission(c, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper 监听 `c.req.raw.signal` 和专用 admission-stop signal。生产 controller 安装 `LegacyHistoryTerminalSink`：它把 publication.record 交现有 `enqueueModelOperationWithOutcome`，再回调 outcome；Batch 2b 删除 adapter。`gracefulShutdown` Step 1 必须在统计 active context 前同步调用 `stopHistoryAdmission(shutdownError)`，拒绝全部 pre-context waiter；新增 `drainHistoryAdmissionWaiters()` barrier，确保 waiter 全 settled 后才允许 History close。不得等到 Batch 5 才接。
+
+- [ ] **Step 1b.5: 接 Responses WS**
 
 在每个合法 `response.create` 解析后、创建 abort controller 后 acquire；socket close abort waiter；每条 operation 独立 release。
 
-- [ ] **Step 1b.5: 接 status/metrics**
+- [ ] **Step 1b.6: 接 pending/recent overlay 与 status/metrics**
 
-`HistoryReservation.historyAdmissionWaitMs` 在 bind 时写入 RequestContext／lightweight operation，并在 terminal telemetry assembly 进入独立 `history_admission_wait_ms` histogram；不得复用上游 rate-limit `queueWaitMs`。`/api/status` 暴露 queue snapshot；Prometheus 增加 gauges/counters 与该 histogram。扩展 `renderPrometheusMetrics` 参数，保持 pure renderer 测试，并断言非模型管理请求不产生该 observation。
+Terminal publication 立即进入全量 `pendingDurability` map，直到 legacy/Worker sink outcome；该 map 不受 256 recent cap，天然受 admission capacity 上限。ACK 后从 pending 移到独立 256 条 acknowledged-recent cache。所有 History overlay 查询合并 pending＋acknowledged recent＋DB。用 capacity=512、Worker/sink outcome 暂停、发布 512 条 terminal 的测试证明最早 256 条仍可见；临时恢复旧 `RECENT_CAPACITY` FIFO 行为时测试必须红。
 
-- [ ] **Step 1b.6: mutation 正控**
+`HistoryReservation.historyAdmissionWaitMs` 在 bind 时写入 RequestContext／lightweight operation，并在 terminal telemetry assembly 进入独立 `history_admission_wait_ms` histogram；不得复用上游 rate-limit `queueWaitMs`。`/api/status` 使用 `history-worker/status.ts` 聚合 admission snapshot 与 runtime snapshot；聚合层断言 `admission.unacked === runtime.pendingEnvelopes`（legacy sink 阶段 runtime pending 为 0，聚合明确标 backend=`legacy`，不做该等式）。Runtime status 不含 reserved/waiting。Prometheus 增加 gauges/counters 与 histogram。扩展 pure renderer 测试，并断言管理请求不产生 observation。
 
-冻结 exact patch，临时移除任一入口 wrapper，确认 architecture/wiring test 红；反向应用 patch 后全绿。
+- [ ] **Step 1b.7: shutdown/pending-overlay 正负控与 mutation**
 
-- [ ] **Step 1b.7: 门禁与提交**
+冻结 exact patch，临时移除任一入口 wrapper，确认 architecture/wiring test 红。另在 pre-context waiter pending 时触发 shutdown：waiter 必须立即 reject，active tracker 可为 0，History close 后不得出现新 context/terminal。临时移除 Step 1 `stopHistoryAdmission` 时测试必须红。反向应用 patch 后全绿。
+
+- [ ] **Step 1b.8: 门禁与提交**
 
 ```bash
-bun test tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/infra/basic-routes.http.test.ts
+bun test tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/history/worker/pending-overlay.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/infra/basic-routes.http.test.ts
 bun run typecheck
 bun run test:backend
 ```
@@ -428,7 +458,7 @@ Commit: `feat(history): gate model operations on persistence capacity`
 - Test: `tests/history/worker/crash-replay.it.test.ts`
 - Test: `tests/history/worker/fatal-state.unit.test.ts`
 
-**Interfaces:** `persist-operation` carries canonical `ModelOperationRecord`; backend returns `persisted | conflict | failed`. Runtime owns message state `reserved → unacked → terminal`, completed tombstones, generation and restart backoff.
+**Interfaces:** `persist-operation` carries canonical `ModelOperationRecord`; backend returns `persisted | conflict | failed`. Runtime owns envelope state `pending → terminal`、completed tombstones、generation 和 restart backoff；admission 独占 reservation/waiter 状态。Worker sink 接线后，composition status 必须断言 `admission.unacked === runtime.pendingEnvelopes`，但两个对象不得各自增减对方计数。
 
 - [ ] **Step 2a.1: 写真实 semantic write red test**
 
@@ -491,7 +521,7 @@ Publish canonical terminal，断言唯一 terminal bus subscriber 调 controller
 
 - [ ] **Step 2b.3: 删除生产旧 writer ownership**
 
-删除 `LegacyHistoryTerminalSink` 的生产安装和 adapter 文件；保留脚本/测试明确依赖的纯 primitive。architecture test 禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`，并禁止 production registry 再引用 legacy adapter。
+删除 `src/lib/history/worker/legacy-terminal-sink.ts` 及其生产安装；保留脚本/测试明确依赖的纯 primitive。architecture test 禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`，并禁止 production registry 再引用 legacy adapter。
 
 - [ ] **Step 2b.4: 线程隔离正负对照**
 
@@ -532,7 +562,7 @@ Commit: `refactor(history): route terminal persistence through worker`
 
 - [ ] **Step 3a.2: 实现 command accumulator**
 
-RequestContext 收集纯数据；此 batch 可 shadow-capture，同时旧 raw writer 仍为生产 authority。禁止双写两个 raw DB。
+RequestContext 与 lightweight operation 各自拥有一个 accumulator；terminal 时通过 Batch 1b 的一次性 `rawAttachment.seal()` 进入 terminal publication。此 batch 可 shadow-capture，同时旧 raw writer 仍为生产 authority，Legacy sink 明确忽略 attachment；禁止全局旁路 registry，禁止双写 raw DB。
 
 - [ ] **Step 3a.3: 实现 descriptor/revision state machine**
 
@@ -584,13 +614,22 @@ descriptor 的 durable identity 为 path+storeId；worker-local token 只管理 
 
 Worker 先处理 raw commands，raw failure 记录 gap，再提交 semantic terminal；raw failure 不回滚 semantic。
 
-- [ ] **Step 3b.4: 切生产 request path**
+- [ ] **Step 3b.4: 实现单写者 quiesce handoff**
 
-删除 `request.ts` 的 `acquireRawCaptureLease`、`putObject`、`appendRef`；只累积 command。把 `config.ts` 对 raw `enabled/db_path/max_object_bytes` 的三个 `setHistoryConfig` 调用合并为一个 patch，一次 effective config 只分配一个 revision。foundation 的同步 desired-config listener 只发布 snapshot/revision；History coordinator 异步调用 `runtime.updateConfig` 并维护 `waitForHistoryRawCaptureConfigApplied()`。全局每请求 `applyConfigToState()` **不等待**该 Promise，避免 status／History／管理 API 被 Worker config 阻塞；模型 `withHistoryAdmission` 在 acquire 前等待 latest publication barrier；`PUT /api/config` 路由在返回成功前显式 await publication。config module 不直接 import History runtime，避免 config↔history 环。ACK 发布后关闭旧主线程 raw manager，并由 Worker 成为唯一 raw authority。
+为旧 raw manager 增加 `quiesceRawCapture()`：同步停止发放新 lease，返回 `drainLeases(): Promise<void>`，只在最后一个既有 lease release 后关闭全部 generation handles。History admission 增加可恢复 `pause(reason)`／`resume()`；`pause` 阻止新 acquire、等待 pre-context waiter settled，但不进入 terminal-failed，也不复用 shutdown 的永久 `close()`。这套 quiesce 只用于 Batch 3b 的一次性“主线程 raw manager → Worker raw owner”切换；切换完成后的 config hot reload 完全在 Worker 内用 active/retiring generations 处理，不再 quiesce 全局 admission。一次性 authority 切换固定顺序：
 
-- [ ] **Step 3b.5: 活路径与性能测试**
+1. `pause("raw-authority-handoff")`，阻止新的模型 admission，并等待 pre-context waiter settled；
+2. 等所有已获 reservation operation terminal，确保旧 request path 不再调用 putObject/appendRef；
+3. `quiesceRawCapture()` 并等待 leasedOperations=0、handles closed；
+4. 删除 `request.ts` 的旧 lease/write 调用，启用 command accumulator；
+5. Worker `updateConfig` 打开/验证 target 并 ACK；
+6. 原子发布 descriptor，调用 `resume()` 恢复 admission。
 
-真实高帧 stream 产生 raw refs；禁用旧 raw manager 写 injector 后仍落盘。Worker 注入慢 compression 时 liveness 不冻结。另用 pending config ACK 证明模型请求等待，而 `/health/liveness`、`/api/status`、History query 仍返回；`PUT /api/config` 直到 ACK 后才返回成功。
+Worker **不得在第 3 步前打开旧 manager 指向的任何 raw artifact**。第 5 步前失败时 `pause` 保持，coordinator 进入 terminal-failed/graceful shutdown；成功路径必须且只能 resume 一次。不得回退双 writer。把 `config.ts` 的 raw 三字段合并为一个 revision。全局每请求 `applyConfigToState()` 不等待 publication；模型 admission 等 barrier；`PUT /api/config` 等整个 quiesce handoff。config module 不直接 import runtime。
+
+- [ ] **Step 3b.5: handoff 正负控与活路径性能**
+
+用一个阻塞旧 operation 持 lease：触发 raw config handoff 后，Worker open injector 必须在 lease release/旧 handle close 后才调用；任一采样时刻 writer-owner 数恰为 0 或 1，永不为 2。临时把 Worker open 移到 drain 前，测试必须红。handoff 期间 liveness/status/History query 可用，模型请求等待。完成后真实高帧 stream 只经 Worker产生 raw refs；旧 raw write injector 不再调用。Worker 慢 compression 不冻结 liveness。
 
 - [ ] **Step 3b.6: architecture mutation**
 
@@ -713,7 +752,7 @@ Spawn 非 4141 proxy／最小 composition fixture：Worker migration/recovery fa
 
 - [ ] **Step 5.3: shutdown ordering red test**
 
-Controllable barriers 精确断言：stop admission→accepted terminal→subscriber drain→stop maintenance→Worker drain→DB close→History barrier→Telemetry/Diagnostic→stopped。
+复用 Batch 1b 已接通的 Step 1 `stopHistoryAdmission`，不得另建第二套 close。Controllable barriers 精确断言：stop admission＋pre-context waiter drain→accepted terminal→subscriber drain→stop maintenance→Worker drain→DB close→History barrier→Telemetry/Diagnostic→stopped。
 
 - [ ] **Step 5.4: 普通 crash 与 fatal 分流**
 
@@ -747,10 +786,11 @@ Commit: `feat(history): close worker lifecycle barriers`
 - Modify: `src/lib/history/worker/{protocol,backend,runtime}.ts`
 - Refactor: `src/lib/history/{queries,sessions,stats}.ts` to parameterized DB/query primitives
 - Modify: `src/lib/history/v3/{store,summary-store}.ts`
+- Modify: `src/lib/history/search.ts`
 - Test: `tests/history/worker/query-rpc.it.test.ts`
 - Test: `tests/history/worker/query-equivalence.it.test.ts`
 
-**RPC surface:** `get-entry`、`get-summary`、`list-summaries`、`list-session-entries`、`list-sessions`、`get-stats`、`export`、`set-pinned`。Search sidecar 协议保持独立；其返回 IDs 的 summary hydrate 通过 Worker query RPC。
+**RPC surface:** `get-entry`、`get-summary`、`list-summaries`、`list-session-entries`、`list-sessions`、`get-stats`、`export`、`set-pinned`、`freeze-search-target`、`get-summaries-by-ids`、`has-summary-matching`。Search sidecar 协议保持独立，但 DB snapshot、ID hydration 与 persisted-match 均由 Worker RPC 完成。`freeze-search-target` 返回 committed boundary＋boundary IDs；后续 hydrate 必须针对该 target 验证 missing/non-ready refs，并保留现有 attestation/poison/stale-reference 503 语义。
 
 - [ ] **Step 6a.1: 写 query protocol red tests**
 
@@ -762,7 +802,7 @@ Commit: `feat(history): close worker lifecycle barriers`
 
 - [ ] **Step 6a.3: 真实 fixture equivalence**
 
-同一 DB 分别通过旧 direct facade 和 RPC 查询；比较 detail、summary page、direction、cursor、filters、sessions、stats、export bytes、pin outcome。
+同一 DB 分别通过旧 direct facade 和 RPC 查询；比较 detail、summary page、direction、cursor、filters、sessions、stats、export bytes、pin outcome。另驱动真实 search sidecar fake：freeze target→sidecar IDs/attestation→batch hydrate→persisted-match，比较 total/cursor/poison/stale-reference。
 
 - [ ] **Step 6a.4: read-after-ACK ordering**
 
@@ -775,7 +815,7 @@ Commit: `feat(history): close worker lifecycle barriers`
 - [ ] **Step 6a.6: 门禁与提交**
 
 ```bash
-bun test tests/history/worker/query-rpc.it.test.ts tests/history/worker/query-equivalence.it.test.ts tests/history/history-api.it.test.ts tests/history/history-sessions.it.test.ts
+bun test tests/history/worker/query-rpc.it.test.ts tests/history/worker/query-equivalence.it.test.ts tests/history/history-api.it.test.ts tests/history/history-sessions.it.test.ts tests/history/search/search-rest-cutover.it.test.ts tests/history/search/protocol.unit.test.ts
 bun run typecheck
 ```
 
@@ -785,7 +825,48 @@ bun run typecheck
 
 Commit: `feat(history): add worker query RPC backend`
 
-### Task 6b / Batch 6b: Read Cutover and Exclusive SQLite Ownership
+### Task 6b / Batch 6b: Responses Fallback Async History Prefetch
+
+**Files:**
+- Modify: `src/routes/responses/handler-v4.ts`
+- Modify: `src/routes/responses/ws.ts`
+- Modify: `src/routes/responses/conversation-rebuild.ts`
+- Modify: `src/lib/codec/openai-responses/{codec,openai-responses-leg}.ts`
+- Modify: `src/lib/pipeline/{driver,types,request-state}.ts`
+- Test: `tests/responses/fallback-history-prefetch.it.test.ts`
+- Test: `tests/responses/responses-conversation-rebuild.unit.test.ts`
+
+- [ ] **Step 6b.1: 写 prefetch red tests**
+
+Responses request 带 session/previous_response_id 且路由到 `/chat/completions` fallback 时，在任何同步 `translateOut/prepareWire` 前必须 await `list-session-entries` RPC；direct `/responses`、Anthropic/Gemini/CC cells 不发该 RPC。HTTP 与 Responses WS 都覆盖。
+
+- [ ] **Step 6b.2: 增加 driver async pre-translate seam**
+
+在 `runRequest` 的 parse＋route decision 之后、`outboundTranslateOut` 之前增加可选 `prepareRequestState(env): Promise<RequestEnvelope>`。Responses codec/handler 注册该 hook，将 RPC entries 写入 requestState 的 `responsesFallbackHistoryEntries`。不把 `OutboundLeg.translateOut` 或 `prepareWire` 改 async，不改变其他 cells。
+
+- [ ] **Step 6b.3: 纯 rebuild core 消费 prefetched entries**
+
+`rebuildConversationMessages` 拆为 async fetch wrapper 与既有纯 `rebuildMessagesFromEntries`。`ResponsesFallbackScratch.ensure()` 只读 prefetched entries 并同步构造 messages；若 fallback cell 缺 prefetch，抛 wiring error，不同步读 DB，不接受 Promise。
+
+- [ ] **Step 6b.4: 重试稳定性**
+
+prefetch 每 request 一次，retry candidates 共享同一 immutable entries snapshot；不得在每 attempt 重查 History。测试在 retry 后断言 RPC count=1、rebuiltMessages 引用/字节稳定。
+
+- [ ] **Step 6b.5: 门禁与提交**
+
+```bash
+bun test tests/responses/fallback-history-prefetch.it.test.ts tests/responses/responses-conversation-rebuild.unit.test.ts tests/openai/openai-responses-codec.unit.test.ts
+bun run typecheck
+bun run test:backend
+```
+
+**证明：** Responses fallback 的同步翻译链已具备 Worker RPC 历史输入，不需要把 pipeline cell 接口全改 async。
+
+**不证明：** HTTP/management consumers 已切 RPC；主线程 readonly connection 仍存在。
+
+Commit: `refactor(responses): prefetch fallback history asynchronously`
+
+### Task 6c / Batch 6c: Read Cutover and Exclusive SQLite Ownership
 
 **Files:**
 - Modify: `src/lib/history/{queries,sessions,stats,state}.ts`
@@ -799,35 +880,35 @@ Commit: `feat(history): add worker query RPC backend`
 - Test: `tests/history/worker/read-cutover.it.test.ts`
 - Test: `tests/history/worker/query-isolation.it.test.ts`
 
-- [ ] **Step 6b.1: 写 consumer matrix red test**
+- [ ] **Step 6c.1: 写 consumer matrix red test**
 
 枚举所有 production imports of History SQLite/store query primitives。目标：只有 Worker entry/backend 和独立 search sidecar daemon 可打开 History DB；主 server modules 不得 import connection/driver/raw manager。
 
-- [ ] **Step 6b.2: 切 History APIs**
+- [ ] **Step 6c.2: 切 History APIs 与 list-search**
 
-detail/list/session/stats/export/pin/unpin 全部 await RPC。Recent/in-flight overlay 在主线程末端去重合并；invalid cursor/error/status 保持现有 HTTP 形状。
+detail/list/session/stats/export/pin/unpin 全部 await RPC。List-search 顺序固定为 Worker `freeze-search-target` → sidecar query/attestation → Worker `get-summaries-by-ids`/`has-summary-matching`；preserve poison、boundary coverage、stale-reference 与 invalid-cursor 503/400 语义。Recent/in-flight/pending-durability overlay 在主线程末端去重合并；invalid cursor/error/status 保持现有 HTTP 形状。
 
-- [ ] **Step 6b.3: 切非 History-route consumers**
+- [ ] **Step 6c.3: 切非 History-route consumers**
 
-logs、debug replay、hook toolkit、Responses rebuild、status count 等通过 async History facade/RPC；不得留下同步 SQLite fallback。
+logs、debug replay、hook toolkit、status count 等通过 async History facade/RPC；Responses fallback 已在 Batch 6b 使用 prefetched RPC entries，本批只删除其旧同步 fetch wrapper。不得留下同步 SQLite fallback。
 
-- [ ] **Step 6b.4: 删除主线程 readonly connection**
+- [ ] **Step 6c.4: 删除主线程 readonly connection**
 
 `initHistory` 不再 open/install readonly DB；删除 `read-connection.ts` 及所有 `getHistoryReadDatabase()` 调用；`closeDatabase` 仅 Worker backend 使用。Search sidecar 作为独立进程 readonly owner 保留明确 architecture exception。
 
-- [ ] **Step 6b.5: query isolation 正负对照**
+- [ ] **Step 6c.5: query isolation 正负对照**
 
 Worker query 注入 500ms block，模型 endpoint 与 liveness 保持响应；in-process direct query negative control 观察冻结。
 
-- [ ] **Step 6b.6: API byte/cursor regression**
+- [ ] **Step 6c.6: API byte/cursor/search regression**
 
-运行现有 History HTTP、sessions、stats、export、pin tests；对 JSON shape、cursor、total、404/400/503 做 golden。
+运行现有 History HTTP、sessions、stats、export、pin 与 strict list-search tests；对 JSON shape、cursor、total、attestation、poison、stale reference、404/400/503 做 golden。
 
-- [ ] **Step 6b.7: architecture mutation**
+- [ ] **Step 6c.7: architecture mutation**
 
 临时给主 server module 加 `openDatabaseReadonly` import，guard 必须红；恢复 patch。
 
-- [ ] **Step 6b.8: 全量门与提交**
+- [ ] **Step 6c.8: 全量门与提交**
 
 ```bash
 bun test tests/history/worker/read-cutover.it.test.ts tests/history/worker/query-isolation.it.test.ts tests/history/v3/read-consumer-guard.unit.test.ts tests/architecture/history-worker-boundaries.unit.test.ts
@@ -846,7 +927,7 @@ Commit: `refactor(history): make worker the sqlite owner`
 
 ## Final Merged-State Verification
 
-每个 batch 已各自 review 不等于合并态通过。Batch 6b 后另派 merged-state reviewer 和 verifier，至少执行：
+每个 batch 已各自 review 不等于合并态通过。Batch 6c 后另派 merged-state reviewer 和 verifier，至少执行：
 
 ```bash
 bun run typecheck
@@ -871,7 +952,7 @@ bun test tests/architecture/history-worker-boundaries.unit.test.ts tests/history
 ## Rollback Discipline
 
 - Batch 0/1a/2a/3a/4a/6a 是未接线自洽能力，可整 commit revert，不影响生产路径。
-- 接线 batch 1b/2b/3b/4b/5/6b 若失败，优先 revert 当前 batch commit 回到上一个已验收主树，不保留双轨 feature flag。
+- 接线 batch 1b/2b/3b/4b/5/6b/6c 若失败，优先 revert 当前 batch commit 回到上一个已验收主树，不保留双轨 feature flag。Batch 6b 虽未切全局 History API，但已改变 Responses fallback pipeline，属于接线 batch。
 - 不以“临时 fallback 到主线程 writer/read”作为最终修复；fallback 会重新引入本规格要消灭的 event-loop 阻塞。
 - 任何数据文件迁移只由既有 forward migration/journal 处理；不得手工改用户 DB。
 
