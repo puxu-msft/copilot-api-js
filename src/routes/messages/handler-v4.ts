@@ -212,6 +212,7 @@ import {
   //
   classifyPreContentRecoveryFailure,
   shouldAttemptPreContentRecovery,
+  type PreContentRecoveryFailure,
 } from "./precontent-recovery-gate"
 import {
   //
@@ -1731,21 +1732,15 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
-  const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
+  const anthropicPayload = env.body as MessagesPayload
+  const model = anthropicPayload.model
+  const tryReadyLiveRecovery = async (failure: PreContentRecoveryFailure, originalError: unknown): Promise<boolean> => {
     // Task #3's evaluator owns only the direct Anthropic accumulator contract. Forward translate
     // legs keep their existing terminal path until they gain an equally exhaustive evaluator.
     if (env.targetEndpoint !== ENDPOINT.MESSAGES) return false
-    // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
-    // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
-    if (source !== "upstream-transport") return false
-    if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
-    // Abort provenance is never a deterministic upstream death. In particular, shutdown/reaper/deadline
-    // aborts may leave upstream thinking alive, so a fresh dispatch would violate never-false-kill.
-    if (error instanceof Error && isAbortError(error)) return false
-    // A returned live `stream-error` means the already-ready upstream body died. The driver classifies
-    // such a transport-close as the recovery's network path; only a provenance-bearing cancellation above
-    // is excluded from this mount point.
-    const failure = classifyPreContentRecoveryFailure({ error, clientAborted: false, lifecycleSignal: env.ctx.lifecycleSignal })
+    // Both body transport throws and clean EOF before message_stop are deterministic upstream deaths.
+    // Abort provenance remains fail-closed because upstream may still be legitimate long thinking.
+    if (failure.kind === "abort") return false
     if (
       opts.precontentRecoveryAttempted
       || buffered
@@ -1766,7 +1761,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         driver,
         recovered.upstream,
         recovered.env,
-        opts.recoveryOriginalError ?? error,
+        opts.recoveryOriginalError ?? originalError,
         opts.deliverySession,
         recoveryAnchorState(opts.deliverySession, anchorState),
         anchorHooks,
@@ -1811,8 +1806,17 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     })
     return settlement === "handled"
   }
-  const anthropicPayload = env.body as MessagesPayload
-  const model = anthropicPayload.model
+  const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
+    // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
+    // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
+    if (source !== "upstream-transport") return false
+    if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
+    if (error instanceof Error && isAbortError(error)) return false
+    const failure = classifyPreContentRecoveryFailure({ error, clientAborted: false, lifecycleSignal: env.ctx.lifecycleSignal })
+    return tryReadyLiveRecovery(failure, error)
+  }
+  const tryCleanEofRecovery = async (): Promise<boolean> =>
+    tryReadyLiveRecovery({ kind: "network-error" }, new Error("upstream stream truncated: closed without message_stop"))
 
   // Snapshot the forwarded track onto the ctx (R3-④: forwardedSseEvents is aliased by
   // entry.inboundResponse — `close()` in runResponseSink's finally already stopped the
@@ -2118,6 +2122,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     } else if (!acc.sawMessageStop) {
       if (opts.recoveryOriginalError !== undefined)
         throw new RecoveryAttemptFailure(opts.recoveryOriginalError, new Error("upstream stream truncated: closed without message_stop"))
+      // A clean EOF before semantic content is a deterministic ready-live upstream death. Try the
+      // same single B2 seam as a thrown transport close before constructing any truncation terminal.
+      if (await tryCleanEofRecovery()) return
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
       // never finished. Settle as FAIL (not a silent `[ OK ]`) — preserving the accumulated

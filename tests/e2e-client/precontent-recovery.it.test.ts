@@ -104,7 +104,7 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
   })
   afterEach(() => setUpstreamFetchForTests(undefined))
 
-  test.each(["ping", "enveloped_ping", "empty_text"] as const)("pre-ready %s recovery yields one coherent SDK message", async (mode) => {
+  test.each(["ping", "enveloped_ping", "empty_text"] as const)("ready-live %s recovery yields one coherent SDK message", async (mode) => {
     setStateForTests({ streamKeepaliveMode: mode, streamKeepalivePingSec: 0.001 })
     let calls = 0
     setUpstreamFetchForTests(async () => {
@@ -128,6 +128,22 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
       const entry = getHistory({ endpoint: "anthropic-messages", sessionId: SESSION_HEADER["x-session-id"] }).entries[0]
       expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
     }
+  })
+
+  test("ready-live clean EOF before semantic content recovers one coherent SDK message", async () => {
+    // Commit immediately so the first 200 response is consumed by the live pump before its body cleanly EOFs.
+    setStateForTests({ streamCommitAfterSec: 0 })
+    const upstream = sequencedUpstream([
+      () => createSseResponse([messageStartFrame({ id: "msg_sdk_ready_eof_primary", model: MODEL, inputTokens: 5 })]),
+      () => createSseResponse(completeFrames("msg_sdk_ready_eof_recovery", "ready clean EOF recovered")),
+    ])
+    setUpstreamFetchForTests(upstream.handler)
+
+    const final = await client.messages.stream(REQUEST).finalMessage()
+
+    expect(upstream.callCount()).toBe(2)
+    expect(final.stop_reason).toBe("end_turn")
+    expect(textOf(final)).toBe("ready clean EOF recovered")
   })
 
   test("ready-live transport close recovers one coherent SDK message", async () => {

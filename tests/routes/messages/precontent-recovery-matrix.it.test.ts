@@ -17,7 +17,6 @@ import {
 } from "bun:test"
 
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
-
 import { tagTransportError } from "~/lib/error/transport-reason"
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
@@ -141,7 +140,8 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     const firstFetchStartedP = new Promise<void>((resolve) => (firstFetchStarted = resolve))
     let releasePrimary!: () => void
     const primaryP = new Promise<Response>((resolve) => {
-      releasePrimary = () => resolve(new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: `primary ${mode} failed` } }), { status: 529 }))
+      releasePrimary = () =>
+        resolve(new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: `primary ${mode} failed` } }), { status: 529 }))
     })
     let calls = 0
 
@@ -759,6 +759,73 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(errors[0]?.error).toMatchObject({ message: "primary refused stream" })
     expect(text).not.toContain("recovery H2 failure")
     expect(text).not.toContain("recovery throw")
+  })
+
+  test("ready-live clean EOF before semantic content publishes the complete direct recovery as winner", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1) return Promise.resolve(createSseResponse([messageStartFrame({ id: "msg_ready_clean_eof_primary", model: MODEL, inputTokens: 5 })]))
+        return Promise.resolve(createSseResponse(completeFrames("msg_ready_clean_eof_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), "precontent-ready-clean-eof")).text()
+
+    expect(calls).toBe(2)
+    expect(text).toContain("msg_ready_clean_eof_primary")
+    expect(text).not.toContain("msg_ready_clean_eof_recovery")
+    expect(text).toContain("recovered response")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-clean-eof" }).entries[0]
+    expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "discarded" })
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
+  })
+
+  test("ready-live clean EOF after semantic content stays on the truncation terminal", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(
+          createSseResponse([
+            messageStartFrame({ id: "msg_ready_content_eof", model: MODEL, inputTokens: 5 }),
+            textBlockStartFrame(0),
+            textDeltaFrame(0, "already delivered"),
+          ]),
+        )
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), "precontent-ready-content-clean-eof")).text()
+
+    expect(calls).toBe(1)
+    expect(text).toContain("already delivered")
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "api_error" })
+  })
+
+  test("ready-live recovery clean EOF never opens a third dispatch", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return Promise.resolve(createSseResponse([messageStartFrame({ id: "msg_ready_clean_eof_primary_again", model: MODEL, inputTokens: 5 })]))
+        return Promise.resolve(createSseResponse([messageStartFrame({ id: "msg_ready_clean_eof_recovery_again", model: MODEL, inputTokens: 5 })]))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), "precontent-ready-recovery-clean-eof")).text()
+
+    expect(calls).toBe(2)
+    expect(text).toContain("msg_ready_clean_eof_primary_again")
+    expect(text).not.toContain("msg_ready_clean_eof_recovery_again")
+    expect(dataFramesOfType(text, "error")).toHaveLength(1)
   })
 
   test("ready live stream-error publishes the complete direct recovery as winner", async () => {
