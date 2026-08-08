@@ -6,9 +6,17 @@
 >
 > **分支与 worktree：** 阶段 1 在隔离 worktree `/home/xp/src/copilot-api-js/.claude/worktrees/nghttp2-header-deadline`（分支 `worktree-nghttp2-header-deadline`）完成，已 fast-forward 进 `master`。阶段 2 请**另开新 worktree**，不要复用该树。
 >
+> **收尾后的分支状态（2026-08-08）：** 该分支的全部提交已是 `master` 祖先（判据：`git merge-base --is-ancestor worktree-nghttp2-header-deadline master` 退出 0）。**用户已裁决：分支删除、worktree 目录保留**；删除在最后一次 fast-forward 之后执行，本行写作时尚未执行——以 `git branch --list worktree-nghttp2-header-deadline` 的实际输出为准。无论删与不删，阶段 1 的历史都完整在 `master` 上，不依赖该分支引用。
+>
 > **未提交 WIP：** 本交接落盘时，共享主树 `/home/xp/src/copilot-api-js` 有其他会话的未提交改动（`config.yaml`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md` 及若干未追踪 `docs/` 文件）。**那些不是本任务的**，不得 stage、commit、stash 或还原。接手时自行 `git -C /home/xp/src/copilot-api-js status --short` 重取。
 >
 > **已跑门禁（阶段 1 合并态，锚定 `bea1dfa3`）：** `bun run typecheck` 绿；`bun run lint:all` 绿；`bun run test:backend` = `7279 executed / 30 skipped / 0 fail`。独立 code reviewer 与 verifier 各自复评 PASS（0 blocker / 0 major / 0 minor）。
+>
+> **⚠️ 收尾时刷新（2026-08-08 23:21 UTC，`master` = `5720855929c78b6b601b64c57b9329513edcd98e`）：** 上面那组数字仍然成立，但**只在它锚定的 `bea1dfa3` 上成立**；此后主线大幅前进，你现在跑会得到**不同的数字**，那不是回归：
+>
+> - 最近一次合并态实测（`f4efacfe`）是 `7297 executed / 35 skipped / 0 fail`。executed 涨是主线新增测试；skipped 从 30 涨到 35，是 peer 给 history-search 加的 `describe.skipIf(!NATIVE)` 测试（本机无 native 产物即 skip，属预期，见 CLAUDE.md 测试分档节）。
+> - `tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped` 目前是 **31** 条而实测 35 条，差的 4 条来自 peer 的 `08046d5c`（strict persisted list search）尚未登记。**这不是本任务引入的，也不归你修**——`bun run test:backend` 不读它，只有 `scripts/capture-entry-evidence.ts` 的 exact multiset 门会红。若你要跑 entry evidence producer 而它报 `skipped identity multiset mismatch`，先去看那 4 条是否已被 peer 补上。
+> - **阶段 1 的验收证据不因主线前进而失效**（user-rule `moving-shared-head-is-not-failure`）；要重新验证时按上面的锚点重跑，别拿新数字去对旧断言。
 
 **阅读顺序：** ① 本文；② 同目录 [KICKOFF.md](KICKOFF.md)（可直接复制成新会话第一条消息）；③ 冻结规格 [spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md](../../spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md) 的 §3 不变量、§5.2/§5.3 阶段产物与 §6 夹具纪律；④ 实施计划 [2026-08-06-http2-cancel-provenance-and-header-deadline.md](../2026-08-06-http2-cancel-provenance-and-header-deadline.md) 的阶段 2/3 任务；⑤ 需要 transport 背景时读 [DESIGN.md](../../DESIGN.md) 的 transport 活架构行。**spec 是阶段契约的 SSOT**，本文只交接状态、证据、冲突与开工顺序。
 
