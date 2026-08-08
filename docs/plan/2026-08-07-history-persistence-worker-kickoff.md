@@ -1,8 +1,8 @@
 # Kickoff：History Persistence Worker 渐进实施
 
-> 状态：Batch 0、1a、1b 已完成；Batch 1b 已于 2026-08-08 落地 `master@d3b4ac77`，其状态回填提交 `542007c9` 已由原文档 reviewer 逐条核验并判 0 blocker／major。允许按启动前硬门开始 Task 2a。`REVIEWED_PLAN_COMMIT=542007c9be26c16c9e1acf8378544979f7abdd6c`。该 SHA 是 reviewer 明确判定 0 blocker／major 的当前计划提交；plan blob 与该提交不一致时禁止实施。
+> 状态：Batch 0、1a、1b 已完成；Batch 1b 已于 2026-08-08 落地 `master@d3b4ac77`。合入最新 `master@d59a622c` 后，Task 2a 的四字段持久化重试契约已同步为候选但尚待独立复审；**当前禁止开始 Task 2a**。`REVIEWED_PLAN_COMMIT=542007c9be26c16c9e1acf8378544979f7abdd6c` 仍指向上一版已评计划，因此下方 plan-blob 门应当判红；复审通过后由单独闭环提交更新该 SHA 并恢复执行许可。
 
-请在独立 worktree 中从 Task 2a 继续执行 `docs/plan/2026-08-07-history-persistence-worker.md`，行为权威是 `docs/spec/2026-08-06-history-persistence-worker.md`。Batch 0、1a、1b 的完成事实与证据已冻结在计划状态行及 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`，不得重复实施。
+复审放行后，在独立 worktree 中从 Task 2a 继续执行 `docs/plan/2026-08-07-history-persistence-worker.md`，行为权威是 `docs/spec/2026-08-06-history-persistence-worker.md`。Batch 0、1a、1b 的完成事实与证据已冻结在计划状态行及 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`，不得重复实施。
 
 ## 启动前硬门
 
@@ -26,7 +26,7 @@
 ## 下一批动作
 
 - 从Task 2a创建`backend.ts`、`restart-policy.ts`及semantic backend／crash replay／fatal state测试；复用现有protocol/runtime/Worker骨架，不重复实现Batch 0～1b。
-- 第一条红灯：`bun test tests/history/worker/semantic-backend.it.test.ts` 应因semantic backend尚不存在而失败；测试必须用临时磁盘DB和独立readonly connection验证operation、summary、tracks及journal收敛，不能用假ACK代替持久化。
+- 第一条红灯：`bun test tests/history/worker/semantic-backend.it.test.ts` 应因semantic backend尚不存在而失败；测试必须用临时磁盘DB和独立readonly connection验证operation、summary、tracks及journal收敛，不能用假ACK代替持久化。Initialize携完整`maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`；用非默认`maxBackoffMs`与injectable delay证明真实backend消费每次等待上限，删除该字段传递后测试必须红。
 - 同一批覆盖before journal、after journal、mid transaction、after commit before ACK四个crash window，以及restart recovery fatal对未ACK、reservation、drain和后续enqueue的终结。
 - Task 2a只证明未接生产的semantic Worker backend可真实持久化并从crash window收敛；不证明terminal subscriber已使用Worker，也不改变主线程legacy writer authority。
 

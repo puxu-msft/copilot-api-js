@@ -61,6 +61,7 @@ status: active
 
 新增文件路径与职责固定如下；若实现证据表明路径必须改变，先修改并重新评审本计划，不能由执行者静默改名：
 
+- `src/lib/history/persist-retry-config.ts`：主线程 V3 store 与 Worker protocol 共享的完整四字段持久化重试类型 owner；两侧禁止平行重定义。
 - `src/lib/history/worker/protocol.ts`：structured-clone-safe 消息、envelope、status 和 type guards。
 - `src/lib/history/worker/runtime.ts`：主线程 `HistoryPersistenceRuntime`、generation、未 ACK、restart、ACK tombstone。
 - `src/lib/history/worker/history-worker.ts`：Worker entry；文件 basename 固定产出 `dist/history-worker.mjs`，只接 protocol 并调用 backend。
@@ -154,7 +155,8 @@ export interface HistoryWorkerRawConfig {
 export interface HistoryPersistRetryConfig {
   readonly maxAttempts: number
   readonly backoffMs: number
-  readonly maxTotalMs?: number
+  readonly maxBackoffMs: number
+  readonly maxTotalMs: number
 }
 
 export interface HistoryWorkerHotConfig {
@@ -464,7 +466,7 @@ Commit: `feat(history): gate model operations on persistence capacity`
 
 - [ ] **Step 2a.1: 写真实 semantic write red test**
 
-用临时磁盘 DB，启动真 Worker，发送 fixture record，等待 ACK，再用独立 readonly connection 验 operation、summary、tracks、journal empty。
+用临时磁盘 DB，启动真 Worker，发送 fixture record，等待 ACK，再用独立 readonly connection 验 operation、summary、tracks、journal empty。Initialize 必须携完整 `maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`；用非默认 `maxBackoffMs` 和 injectable delay 证明真实 Worker backend 的每次等待上限消费该值，不能只断言 protocol round-trip。缺失或负值须在 protocol 边界拒绝。删除 backend 对 `maxBackoffMs` 的传递后，该用例必须红。
 
 - [ ] **Step 2a.2: 抽取 backend primitives**
 

@@ -1,7 +1,7 @@
 # History Worker Batch 1b 评审转录与处置
 
-> 状态：全部代码、判据与文档复审已达 0 blocker／major；已于 2026-08-08 fast-forward 合入 `master@d3b4ac77`。
-> 评审基线：`661e1792`；合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；最终实现候选：`94205e89`；文档闭合与主线落地：`d3b4ac77`，基于 `master@44457047`。
+> 状态：Batch 1b 代码、判据与文档已复审至 0 blocker／major，并于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；合入最新 `master@d59a622c` 后发现的 M2 四字段重试契约漂移已整改，当前候选待原合并态 reviewer 复审，Task 2a 暂禁开工。
+> 评审基线：`661e1792`；原合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；Batch 1b 实现候选：`94205e89`；原文档闭合与主线落地：`d3b4ac77`；最新主线合并候选：`da1b6cc5`，其 M2 整改尚待复审。
 > 来源：生命周期 reviewer、overlay／判据 reviewer、lossless shutdown 合并态 reviewer 的工具回传；主会话转录并按 C 级代码裁定处置。
 
 ## 发现与处置
@@ -20,6 +20,7 @@
 | B4 | false-red gate | lossless shutdown合法收敛测试人口后，两次完整backend均为7255 executed，而冻结floor 7258让正确状态无法通过后继evidence producer。 | **采纳（C），复审通过**。两组16份JUnit均为7285 testcase－30 skipped＝7255 executed；同一集合对7256返回非零、对7255返回零；`94205e89`只校准floor，不改文件人口、skip身份或runner blob。原reviewer判可合、0 blocker／major。 |
 | D1 | major | DESIGN同一架构行前段正确写在线overlay，末段却称生产History list只显示终态，与代码和D-2权威backlog冲突。 | **采纳（C）**。按`docs/todo/deferred-backlog.md`正文的权威口径改为：在线REST／WebSocket可见in-flight，真实缺口是进程崩溃或SIGKILL时在途operation不落盘、不可恢复发现；同轮全仓审计并同步修正`DESIGN.md`另一处复述、`history.md`两处活口径及backlog的陈旧标题，历史计划／归档保留当时结论。 |
 | D2 | major | 进度文档的接力历史仍以当前时态写“尚待复验”，与下文已闭合证据和只剩master集成的清单冲突。 | **采纳（C）**。改为“接力当时尚待复验”，明确旧证据未直接继承，并指向下文当前worktree的复验与最终闭合记录。 |
+| M2 | major | Batch 1b 收尾分支合入最新 `master@d59a622c` 后，生产 `V3PersistRetryConfig` 已扩为 `maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`，但 Worker protocol 与 Task 2a 计划仍是旧三字段契约；照计划实施会让 Worker cutover 静默丢失 `maxBackoffMs`。 | **采纳（C）**。新增 `history/persist-retry-config.ts` 作为两侧唯一四字段类型 owner；initialize protocol 对两个 cap 均要求必填非负，现有 fixture 全部显式传四字段；Task 2a 计划与 kickoff 要求真实 backend 用非默认 `maxBackoffMs`＋injectable delay 证明消费，并以删除字段传递的 mutation 变红。 |
 
 ## 整改验证
 
@@ -30,6 +31,8 @@
 - `cca342ff`定向入口／status／overlay集合：24 pass／0 fail；原overlay／判据reviewer复审判0 blocker／major。
 - `df0c7bf4`搜索／overlay／SCC／discovery联合集合：57 pass／0 fail；最终代码重写复审判0 blocker／major。
 - `94205e89`精确Batch 1b计划门：44 pass／0 fail；完整backend：16 shards、7255 executed、30 skipped、0 fail、52.45s；build成功。
+- M2 RED：缺失 `maxBackoffMs` 的 initialize 在旧 protocol 上被接受，protocol 单文件 15 pass／1 fail；补第一项后，缺失 `maxTotalMs` 仍被接受，第二轮同为15 pass／1 fail。两次失败均来自目标字段未校验。
+- M2 GREEN：共享四字段类型 owner、protocol validator与现有Worker fixture同步后，Worker／V3 retry／config／architecture联合集合68 pass／0 fail，typecheck与精确lint通过；Task 2a 的真实backend消费正控保留为执行期gate，未冒充当前已实现。
 
 ## 复审结论
 
