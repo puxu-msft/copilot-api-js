@@ -331,7 +331,11 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 **根因：该数组在那一刻是空的**，而 `[].every(...)` 恒为 `true`。也就是 `:181`/`:184`（以及 client-abort 用例的 `:207`/`:209`）的
 `expect(clock.liveTimerDelaysMs.every((delay) => delay > 2_000)).toBe(true)`
-在本用例里是**空真（vacuously true）**，鉴别力为零——它既不是被我改坏的，也不是本轮引入的，是既有状态。这条发现登记在「未处置」节交独立裁决（放宽/收紧既有 guard 不由实施者自判）。
+在本次运行中是**真空通过（vacuously true）**，因此**这三次 mutation 不可能由它们来染红**——这解释了我为什么白试三次。
+
+> **更正（协调方指出，2026-08-08 当轮）**：本节最初写的是「鉴别力为零」，**那是过头的断言，已撤回**。「真空通过」只说明该断言守的不变量在当前基线下成立，**不等于**它抓不到目标缺陷——心跳若真泄漏，数组非空且延迟很短，`.every()` 就会为 false。「这条断言抓不到东西」是否定性结论、不自证，必须用「注入真实泄漏后它是否变红」来判。待验证项 V1/V2 见文末「未处置」第 3 条。（本节对应的 commit `48a6c246` 的 message 里也写了 "discriminate nothing"，同属过头表述；提交历史不改写，以本处更正为准。）
+
+它既不是被我改坏的，也不是本轮引入的，是既有状态。这条发现登记在「未处置」节交独立裁决（放宽/收紧既有 guard 不由实施者自判）。
 
 **注意这不改变第 4 条的 B 类定性**：该用例真正承重的 oracle 是逐字节 wire 与 `detail` 序列，它们与耗时无关且**确实咬得住**（见下）。
 
@@ -357,7 +361,14 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 1. **`store-performance.it.test.ts:166` `liveRatio >= 10` 对「去重丢失」几乎没有鉴别力。** 实测：破坏跨 operation CAS 去重时 `physicalRatio` 掉到 9.10（红），`liveRatio` 只掉到 10.54（**仍绿**）。两条断言量的是不同的东西，都该留；但若将来只保留 `liveRatio`，这条 guard 就是假绿。证据见本文第 2 节。
 2. **`store-performance.it.test.ts:100-105` `timedCommit` 单次采样。** 同文件的 `timedPrepare` 取 5 次中位数，`timedCommit` 只取单次，`commitRatio < 5` 因此比 `prepareRatio < 3` 更易受争用方差影响。**不改的理由是机械的**：同一 record 重复 commit 会命中 CAS 去重，第 2–5 次样本天然更快，照搬中位数写法会改变被测量的量；要正确修必须为每个样本造不同 `operationId`。
-3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 是空真断言。** 探针实测该数组在断言点为 `[]`，`[].every()` 恒 `true`。同族背景见 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md`（`driver.unit.test.ts` 那一例的解药是换成直接观测目标机制的 oracle）。这里的正确修法多半是：改为断言「终态后 forwarded 轨帧集合不变」（`:185` 已经在做）并**删掉**这条空真断言，或换一个真能观测到心跳定时器的 oracle。
+3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 在当前基线下以真空方式通过——鉴别力尚未验证。**
+   探针实测：断言点该数组为 `[]`，故 `[].every(...)` 恒 `true`，这四条**在本次运行中**没有对任何东西施加约束。
+   **但「真空通过」不等于「抓不到目标缺陷」**——这是一个否定性结论，不自证。该断言守的是「终态 / client-abort 之后不得有短周期心跳存活」（用例名即 "...stops heartbeat"，`tests/helpers/fake-clock.ts:52-53` 的 docstring 明写该 getter 是为了「把泄漏的短周期心跳与无关的长生命期运行时定时器区分开」）。若心跳真的泄漏，数组就非空、且该项剩余延迟很短 → `.every()` 为 false → 红。所以我观测到 `[]`，只能说明**它守的不变量在当前基线下成立**，即这是一次通过，不是空转。
+   **待验证（本轮未做）**：
+   - **V1** 注入一个「终态后心跳定时器不被 clear」的真实泄漏（打生产代码，不翻测试状态），跑该文件，记录这四条是红是绿。红 → 有鉴别力，本条从未处置清单撤下；绿 → 才成立「盲」。
+   - **V2** 仅在 V1 为绿时才需要：查 `2_000` 阈值与该测试里 keepalive 实际周期的关系——若被泄漏的定时器剩余延迟本来就 > 2000，`.every()` 照样为真，那才是真的盲。阈值与周期都要给实测值。
+   **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
+   同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 
 ## 收口验收（四条全部落地后）
@@ -374,7 +385,81 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 **本轮没有跑 T0.0f 的 15 连跑。** 那才是 faithful 的分片复现，也正是该门本身要做的事；本文件只负责把四条从「会被争用误杀」变成「不会」。四条里只有第 2 条（`store-performance`）在本会话用 spinner 直接复现出了原始失败形态并验证修复，第 1、3、4 条的复现依据分别是：第 1 条真实分片日志 `run-02.log:20-32`（spinner 复现失败，已标注）、第 3、4 条真实分片日志 + 「宽预算下完成、收紧预算下仍绿」的双向分型。
 
-## 本轮**没有**做的事（显式声明）
+## 第二批：4 条同形但**本轮没红**的 wall-clock 上界
+
+> **与第一批的关键差别，必须先声明**：这 4 条**没有**在 `run-02.log` 里红过，因此**没有实测失败可引**。下面每条只写「余量是多少、已观测到的放大倍数是多少」，**不写「它会红」**——那是未经证实的断言。
+>
+> 第一批第 1 条的结论**不可照抄**：那条的 `elapsed < SILENCE_MS` 经验证是**冗余**的（因果判据完全覆盖它），这 4 条要各自读代码判一遍「同处的因果判据是否真的蕴含该时间性质」。不蕴含的，处置是**换成能表达该性质的因果判据**，而不是简单放宽数值。
+>
+> 一个对我们有利的事实：这 4 处的原注释本来就写着 "not hang" / "deadline fired well before handler finished"——**作者的意图本就是 outlier 兜底**，只是数值取得过紧。所以本批不是推翻作者意图，而是让数值与实现符合作者已写下的意图。
+
+## 5. `tests/streaming/stream-shutdown-race.it.test.ts` — `returns STREAM_ABORTED when signal fires during blocked next()`
+
+**它守的不变量**：`raceIteratorNext` 在底层 `iterator.next()` **永不 resolve** 时，必须能被 abort 信号**打断**并返回 `STREAM_ABORTED`，而不是一直挂着等一个永远不来的 SSE 事件。这正是文件 header `:1-8` 声明的整体目的。
+
+**依据来源**：
+- 用例 `:148-165`。`stalledIterator`（`:97-103`）的 `next()` 返回 `new Promise(() => {})`，**永不 resolve**；`idleTimeoutMs: 0` 关掉了空闲超时腿。
+- 因果判据 `:162` `expect(result).toBe(STREAM_ABORTED)`。
+- 被测实现 `packages/foundation/src/stream.ts:241-282`：`Promise.race([promise, ...])`，abort 腿是 `abortSignal.addEventListener("abort", () => resolve(STREAM_ABORTED), { once: true })`——**事件驱动，没有轮询**。
+
+**逐条判定：`:164` 的 `elapsed < 200` 是不是冗余？——结论：不是纯冗余，但它表达该性质的方式是错的。**
+
+- `expect(result).toBe(STREAM_ABORTED)` **不蕴含**「及时返回」。设想一个**轮询式**的 abort 实现（每 1s 检查一次 `signal.aborted`）：它照样返回 `STREAM_ABORTED`，只是慢——因果判据全绿，`elapsed < 200` 才会红。所以这条上界**确实覆盖了一个因果判据覆盖不到的退化形态**，不能照第 1 条那样简单降级删掉。
+- 但另一头也要说清：**「彻底挂住」并不由它守**。若 abort 腿根本没接（`stream.ts:268` 那个分支被删），`Promise.race` 只剩永不 resolve 的那条，用例会一直挂到 per-test 预算超时而红——那是**预算**在守，不是这条断言。
+- 它当前的取值为什么紧：abort 在 `:153` 由 `setTimeout(..., 50)` 触发，`elapsed` 从 `:155` 起算，于是 200ms 的预算里只有 **150ms** 是留给「`setTimeout(50)` 实际什么时候被调度 + 事件派发 + 微任务」的。**争用下最先被拉长的恰恰是那个 `setTimeout(50)` 本身**，而它属于测试脚手架、不属于被测机制——这与第一批第 1 条的「错帧比较」是同一个毛病：计时窗口里混进了与被测机制无关的成分。
+
+**处置（不是放宽数值，是换判据 + 修帧）**：
+
+1. **新增一条时间无关的因果判据**：abort 之前，用一个**微任务探针**证明该 race **仍处于 pending**——`Promise.race([racePromise, Promise.resolve(PENDING)])` 必须得到 `PENDING`。这直接钉住「不是别的东西把它 resolve 掉的」，是 `elapsed < 200` **从来没有提供过**的信息（原写法在 abort 已经排定之后才开始 await，根本区分不了「abort 促成的」与「本来就会 resolve 的」）。该探针不读任何时钟。
+2. **把 abort 从 `setTimeout(50)` 改为显式调用**，并把计时窗口的起点挪到 `controller.abort()` **之前一行**。这样窗口里只剩「abort 事件派发 → race resolve」这一段被测机制，脚手架调度不再计入。
+3. 保留一条上界，但降为**只抓粗大 outlier 的兜底**，取 `5_000`——它仍能打到「轮询式 abort」这类退化（合理的轮询周期 1s 量级会被打到），同时对争用免疫（窗口内只剩事件派发与微任务，没有可被拉长的定时器）。
+
+**净效果是严格增强，不是放宽**：原来只有一条紧的、错帧的上界；现在是「时间无关的因果 pending 探针」+「正确帧的宽松 outlier 兜底」，且原有的 `:162` 因果判据一字未动。
+
+上界取 `1_000` 而非更大：**必须小于 per-test 预算（默认 5000ms）才可能被求值**——否则退化会先撞超时，这条断言等于不存在（第一批第 1 条也有同样的结构关系，那里靠文件级 30s 预算 > 25s 上界解决）。1000ms 同时满足两头：足以打到 ~1s 量级的轮询式退化，而对争用免疫（理由见下面实测）。
+
+### 验收证据
+
+**方向二：错误状态仍被拦住（mutation）——两半各证一次**
+
+**Mutation B —— 「已中止」快路径对一个尚未中止的信号误触发**（冻结件 `/tmp/mut-item5-fastpath-misfires.patch`）：
+`packages/foundation/src/stream.ts:248` `if (abortSignal?.aborted)` → `if (abortSignal)`。
+
+- 结果：**0 pass / 1 fail**，红在新增的 pending 探针 `:164`，`Expected: Symbol(still-pending) / Received: Symbol(STREAM_ABORTED)`。
+- **关键对照：旧写法对这个退化是假绿的。** 把改前的用例体逐字放回、与新写法在同一次运行里并跑（临时 patch，跑完即撤）：
+  ```
+  REVERSE CONTROL legacy form PASSED under mutation, elapsed = 0
+  ```
+  旧的两条断言（`result === STREAM_ABORTED`、`elapsed < 200`）**全部通过**——因为快路径误触发时它立刻返回 `STREAM_ABORTED`，`elapsed` 就是 0。
+  **所以本次改动不只是「降低负载敏感度」，而是补上了一个旧判据完全看不见的缺陷类别。** 这也正是「这条断言是多余的」属否定性结论的实例：读起来 `result === STREAM_ABORTED` 像是覆盖了一切，实测才发现它连「是不是 abort 促成的」都分不出来。
+
+**Mutation A —— abort 被观测到但惰性处理**（冻结件 `/tmp/mut-item5-lazy-abort.patch`）：
+`stream.ts:272` `onAbort = () => resolve(STREAM_ABORTED)` → `onAbort = () => setTimeout(() => resolve(STREAM_ABORTED), 3_000)`（即「轮询式/延迟式 abort」的最小形态）。
+
+- 结果：**0 pass / 1 fail**，红在 outlier 上界 `:181`，`Expected: < 1000 / Received: 3006`。**失败落在该断言上，不是超时**（3s < 5s 默认预算，用例跑完了）。
+- 这证明降级后的上界**仍然保有作者原注释 "not hang" 想要的那份鉴别力**。
+
+两个 patch 均 `git apply --reverse --check` 后反向恢复；`git status --short -- packages/ src/` 为空。**全程未用整文件 `git checkout`。**
+
+**方向一：正确状态不被误拒（本批最重要的一半——这批本来就没红过）**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改后，全文件） | **25 pass / 0 fail，1.03s** |
+| 64 spinner 争用（全文件） | **25 pass / 0 fail，2.76s** |
+
+并且**直接量了两种取帧方式的余量**（临时探针，64 spinner 争用下，跑完即撤）：
+
+```
+PROBE windows: new(abort→resolve) = 0 ms ; legacy(start→resolve, includes setTimeout(50)) = 57 ms
+```
+
+- **旧帧**：57ms / 200ms 上界 → 只剩约 **3.5x** 余量，而窗口里那 50ms 是个**真实定时器**，正是争用下最先被拉长的东西。
+- **新帧**：0ms / 1000ms 上界 → 窗口在毫秒分辨率下**根本不显示**，因为里面没有任何定时器，只有同步事件派发 + 一个微任务。
+
+**诚实边界**：本条**从未在 `run-02.log` 里红过**，上面也没有「它会红」的断言——只有「旧帧余量 3.5x、新帧余量在毫秒分辨率下不可测」这两个实测数字，以及本会话在其它文件上观测到的 4–6x 争用放大。旧写法在更重争用下是否真的会红，**未验证**。
+
+
 
 - 没有退役（删除/skip）任何一条用例——四条全部保留，用户裁决按目标而非字面执行。
 - 没有放宽任何断言的**阈值或内容**：`10x` 比值、逐字节 wire、`detail` 序列、`exitCode`、stderr 正则，全部逐字未改。改的只有 per-test / 文件级**预算**，以及第 1 条那条被证明冗余且错帧的 wall-clock 上界。

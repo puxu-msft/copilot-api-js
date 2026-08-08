@@ -102,6 +102,9 @@ function stalledIterator<T>(): AsyncIterator<T> {
   }
 }
 
+/** Sentinel for the time-free "this promise has not settled yet" probe (see the abort-signal case). */
+const STILL_PENDING = Symbol("still-pending")
+
 function makeSseMsg(data: string, event?: string): ServerSentEventMessage {
   return { data, event, id: undefined, retry: undefined }
 }
@@ -149,19 +152,33 @@ describe("raceIteratorNext", () => {
     const controller = new AbortController()
     const iter = stalledIterator<number>()
 
-    // Abort after 50ms
-    setTimeout(() => controller.abort(), 50)
-
-    const start = Date.now()
-    const result = await raceIteratorNext(iter.next(), {
+    const racePromise = raceIteratorNext(iter.next(), {
       idleTimeoutMs: 0,
       abortSignal: controller.signal,
     })
-    const elapsed = Date.now() - start
+
+    // Causal half, and the part the old `elapsed < 200` never supplied: BEFORE the abort, nothing
+    // may settle this race. The iterator never resolves and the idle timeout is off, so anything
+    // that settles here would not have been caused by the abort. A microtask probe — reads no clock,
+    // so contention cannot move it.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+
+    const abortedAt = Date.now()
+    controller.abort()
+    const result = await racePromise
 
     expect(result).toBe(STREAM_ABORTED)
-    // Should complete quickly after abort, not hang
-    expect(elapsed).toBeLessThan(200)
+    // Outlier tripwire only — the causal proof is above. This still catches a POLLED abort path (one
+    // that returns STREAM_ABORTED eventually rather than on the event), which the assertion above
+    // cannot: any poll interval of ~1s or more trips it. A never-wired abort path is caught by the
+    // per-test budget instead, since the race would simply never settle.
+    //
+    // Why 1s is generous rather than tight: measured from the abort itself, this window contains NO
+    // timer at all — synchronous listener dispatch plus one microtask — so contention has almost
+    // nothing to stretch. The old form started its clock before a `setTimeout(..., 50)` and allowed
+    // 200ms total, leaving 150ms to cover that timer's scheduling; that framing is what made it
+    // fragile, not the bound being small.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
   })
 
   test("rejects with StreamIdleTimeoutError when idle timeout fires first", async () => {
