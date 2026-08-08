@@ -119,11 +119,15 @@ const buckets = balance(files, timings, n)
 const start = performance.now()
 const procs = buckets.map((b) => Bun.spawn(["bun", "test", ...b], { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }))
 const results = await Promise.all(
-  procs.map(async (p, i) => ({
-    bucket: buckets[i],
-    code: await p.exited,
-    err: (await new Response(p.stderr).text()) + (await new Response(p.stdout).text()),
-  })),
+  procs.map(async (p, i) => {
+    // Start draining both pipes BEFORE awaiting exit. Awaiting `p.exited` first
+    // leaves nobody reading, so a shard whose output exceeds the pipe buffer
+    // blocks in write() and its summary line can be lost or truncated — which
+    // silently under-counts a different subset of shards on every run while the
+    // aggregate still looks plausible enough to quote as evidence.
+    const [code, err, out] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()])
+    return { bucket: buckets[i], code, err: err + out }
+  }),
 )
 const wall = ((performance.now() - start) / 1000).toFixed(2)
 
