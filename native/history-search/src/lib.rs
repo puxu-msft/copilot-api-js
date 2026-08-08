@@ -360,7 +360,7 @@ fn resolve_contains(column: Option<&StrColumn>, needle: &str) -> Result<Vec<u64>
     let term_count = column.num_terms() as u64;
     let mut ordinals = Vec::new();
     let mut ordinal = 0u64;
-    column
+    let complete = column
         .dictionary()
         .sorted_ords_to_term_cb(0..term_count, |bytes| {
             let term = std::str::from_utf8(bytes)
@@ -372,6 +372,13 @@ fn resolve_contains(column: Option<&StrColumn>, needle: &str) -> Result<Vec<u64>
             Ok(())
         })
         .map_err(native_error)?;
+    // Silently returning a short ordinal set here would under-match the filter rather than
+    // fail, so a dictionary that does not yield every ordinal it claims is an error.
+    if !complete || ordinal != term_count {
+        return Err(native_error(
+            "term dictionary did not yield every ordinal while resolving a substring filter",
+        ));
+    }
     Ok(ordinals)
 }
 
