@@ -28,3 +28,11 @@
 ## 主观建议
 
 无。
+
+## 固定 commit `a47d9e11` 复评
+
+- **M1：FIXED。** `/home/xp/src/copilot-api-js/.claude/worktrees/fix-shutdown-review-findings/docs/tmp/2026-08-08-lossless-shutdown-terminal-report.md:36` 已改为两批提交均进入 master，并给出 `git merge-base --is-ancestor 954a1bff master`；该命令退出 0。原 `:99` 残留已由 `f31d2bdd` 修正。
+- **M2：FIXED。** 四处均改为“已合入 master”并保留原状态的时间语境与可复跑命令。实跑 `git merge-base --is-ancestor <sha> master`，`30a483df`、`8e0376d4`、`2a77bf7c`、`bd3aafe0` 四条均退出 0。改动只是依据 Git ancestry 更新可机械裁决的当前状态，不改变原任务结论、规格或取舍，因此不越界，也不需要原作者裁决。
+- **M3：FIXED。** `/home/xp/src/copilot-api-js/.claude/worktrees/fix-shutdown-review-findings/docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md:18-21` 已覆盖“事实发生或被察觉”、非用户触发、继承断言、五字段登记载体、语义载体扫描、逐条 disposition 与“零命中不等于完备”，并纳入第十处反例。
+- **M4：FIXED。** `/home/xp/src/copilot-api-js/.claude/worktrees/fix-shutdown-review-findings/docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md:7-18,51,57,60` 已把 53／0／0、无未分类项、`msg*.txt` 输入侧和进程／数据状态明确降为作者当时自报、当前不可复核，并写明升级所需持久化证据。
+- **复评 verdict：** 可进入下一阶段；0 blocker／0 major。
