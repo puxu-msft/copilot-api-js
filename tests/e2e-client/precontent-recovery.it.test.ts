@@ -131,9 +131,9 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
   })
 
   test("ready-live clean EOF before semantic content recovers one coherent SDK message", async () => {
-    // Commit immediately so the first 200 response is consumed by the live pump before its body cleanly EOFs.
-    setStateForTests({ streamCommitAfterSec: 0 })
     const upstream = sequencedUpstream([
+      // `messageStartFrame()` is already a complete `event: ...\ndata: ...\n\n` SSE string;
+      // `createSseResponse()` writes it verbatim, then closes the body after the live pump consumes it.
       () => createSseResponse([messageStartFrame({ id: "msg_sdk_ready_eof_primary", model: MODEL, inputTokens: 5 })]),
       () => createSseResponse(completeFrames("msg_sdk_ready_eof_recovery", "ready clean EOF recovered")),
     ])
