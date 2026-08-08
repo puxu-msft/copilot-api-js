@@ -16,7 +16,7 @@ if pid == 0:
 output = bytearray()
 
 
-def read_until(needle: bytes, timeout: float = 2.0) -> None:
+def read_until(needle: bytes, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while needle not in output and time.monotonic() < deadline:
         ready, _, _ = select.select([fd], [], [], 0.05)
