@@ -458,10 +458,20 @@ describe("History V3 transport evidence substrate", () => {
     // exists for.
     db.exec("DROP TABLE v3_operation_evidence_refs")
 
-    expect(() => hydrateManifest(db, row.manifest_gz, prepared.id)).toThrow()
+    expect(() => hydrateManifest(db, row.manifest_gz, prepared.id)).toThrow(/no such table: v3_operation_evidence_refs/i)
   })
 
-  test("the commit-time strict gate aborts transaction B when persisted refs stop matching the manifest", async () => {
+  test.each([
+    {
+      label: "a ref goes missing",
+      corrupt: (id: string) => getDatabase().prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(id),
+    },
+    {
+      label: "a ref is written with the wrong byte length",
+      corrupt: (id: string) =>
+        getDatabase().prepare("UPDATE v3_operation_evidence_refs SET byte_length=byte_length+1 WHERE operation_id=? AND sequence=2").run(id),
+    },
+  ])("the commit-time strict gate aborts transaction B when $label", async ({ corrupt }) => {
     const db = getDatabase()
     ensureV3Schema(db)
     await applyForwardMigrations(db)
@@ -473,10 +483,11 @@ describe("History V3 transport evidence substrate", () => {
     // Corrupt REAL data inside transaction B rather than throwing at a stage
     // marker. A thrown injector proves only "we roll back at this point" — it
     // stays green even if the strict re-hydrate is deleted outright, because the
-    // two are independent. Deleting a ref the manifest still claims is the only
-    // shape that fails iff the gate actually runs.
+    // two are independent. Mutating a ref the manifest still claims is the only
+    // shape that fails iff the gate actually runs. Both directions are covered:
+    // a ref that vanishes, and one that is present but wrong.
     setV3TransactionBFailureInjectorForTests((stage) => {
-      if (stage === "refs") db.prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(prepared.id)
+      if (stage === "refs") corrupt(prepared.id)
     })
 
     expect(() => commitPreparedOperation(db, prepared)).toThrow(/operation evidence refs mismatch/i)

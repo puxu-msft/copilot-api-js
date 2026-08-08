@@ -17,12 +17,14 @@ import {
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
+import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
   //
   commitPreparedOperation,
   drainV3Writer,
   enqueueModelOperation,
+  ensureV3Schema,
   getV3StoreStatus,
   prepareModelOperation,
   resetV3WriterForTests,
@@ -117,6 +119,59 @@ afterEach(async () => {
 })
 
 describe("History V3 store performance", () => {
+  test("a commit never full-scans a table that grows with history length", async () => {
+    // The deterministic replacement for the retired wall-clock ratio. Timing
+    // could not discriminate: measured 0.649/0.308 at N=256 while a genuine
+    // per-commit full-table aggregate was live, and it went false-red under CPU
+    // contention. The invariant is "commit work does not grow with history
+    // length", and SQLite answers that directly — a plan that SCANs a
+    // history-length table is exactly the violation, at any N.
+    const db = getDatabase()
+    // Migrations, not just ensureV3Schema: the derived summaries table is created
+    // by them, and the readiness aggregate this guards returns early when that
+    // table is absent. Without this the probe runs against a database where the
+    // offending statement can never execute, and the guard passes vacuously.
+    ensureV3Schema(db)
+    await applyForwardMigrations(db)
+    // Two prior commits, not a flood: a query PLAN is chosen from the schema, not
+    // from row counts (no ANALYZE stats here), so the check is independent of N.
+    // Keeping this cheap matters — this file's other cases already sit near the
+    // default timeout, and an expensive setup here turns them red for no reason.
+    for (const record of countTokensFloodFixtures(2)) commitPreparedOperation(db, prepareModelOperation(record))
+
+    const executed: Array<string> = []
+    const realPrepare = db.prepare.bind(db)
+    ;(db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      executed.push(sql)
+      return realPrepare(sql)
+    }
+    try {
+      commitPreparedOperation(db, prepareModelOperation(highBranchFixture("plan-probe", 2, 128)))
+    } finally {
+      ;(db as unknown as { prepare: (sql: string) => unknown }).prepare = realPrepare
+    }
+
+    // Tables whose row count tracks history length. A SCAN of any of them inside
+    // a single commit is O(history) work on the write path.
+    const historyLengthTables = ["v3_operations", "v3_operation_summaries", "v3_objects", "v3_tracks", "v3_timeline_chunks"]
+    const offenders: Array<string> = []
+    for (const sql of executed) {
+      if (!/^\s*(?:SELECT|UPDATE|DELETE|INSERT)/i.test(sql)) continue
+      let plan: Array<{ detail: string }>
+      try {
+        plan = realPrepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>
+      } catch {
+        continue // not planable standalone (e.g. needs bound params in a CTE); covered by the others
+      }
+      for (const { detail } of plan) {
+        for (const table of historyLengthTables) if (detail.includes(`SCAN ${table}`)) offenders.push(`${detail} :: ${sql}`)
+      }
+    }
+
+    expect(executed.length).toBeGreaterThan(0)
+    expect(offenders).toEqual([])
+  })
+
   test("reports prepare and commit timing before and after prior session history", () => {
     const target = highBranchFixture("target-operation", 10, 8_192)
     const coldPrepareMs = timedPrepare(target)
