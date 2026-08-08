@@ -39,3 +39,16 @@
 | P6 | Plan 把 `failureRegistered` 偷换成 context-owned ledger，违背 spec“已进入 shutdown lifecycle failure barrier” | 采纳（C） | 保持 spec 不变；`onLifecycleFailure` 改为同步返回 boolean，只有 manager barrier 确认持有 error 才置 `failureRegistered:true`／`canonical:failed`；无 callback／登记失败保持 blocker，不得伪装 terminal |
 
 两条均经主会话对照 `coordinator.ts` 的 `candidateReservations` 所有权和 spec §§5.3／7.3 独立复核确认。修订后必须恢复同一 reviewer 复评 P5／P6，并检查没有新增 blocker／major。
+
+## 第三轮复评
+
+- Reviewer：恢复同一个内置 Agent `reviewer`。
+- 冻结 commit：`6d28b1b7`。
+- Verdict：**0 blocker／0 major，计划可执行。**
+
+| ID | 结论 | 证据摘要 |
+|---|---|---|
+| P5 | closed | Task 3 将 `coordinator.ts` 明确列为 candidate reservation／active runtime 的真实 owner；focused test 与 commit pathspec 均包含 `generation-coordinator.it.test.ts` 和 `coordinator.ts` |
+| P6 | closed | `onLifecycleFailure(...): boolean` 只在 shutdown barrier 已持有错误时返回 true；缺 callback、抛错或 false 均保持非终态 blocker，不误删 registry或伪装成功 |
+
+Reviewer 还确认 Task 1～8 编号、其余接口和路径一致，修订没有引入新的 blocker／major。

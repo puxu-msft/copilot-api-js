@@ -1,6 +1,6 @@
 # 超长驻留 operation 生命周期收敛实施计划
 
-> **状态：** 已完成主会话自审，待独立 plan review。
+> **状态：** 已完成主会话自审；独立 plan review 两轮 findings 全部关闭，最终复评 0 blocker／0 major，计划可执行。
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
