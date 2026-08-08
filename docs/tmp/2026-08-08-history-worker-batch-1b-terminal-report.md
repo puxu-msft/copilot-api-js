@@ -63,6 +63,8 @@
 - **已实现，项目代码／测试：** `HistoryPersistRetryConfig`共享类型owner；触发是主线程store与Worker wire共用配置字段，关闭“平行类型一侧漏字段”的缺口。现有architecture／protocol测试体系足以承载，无需新增agent soul。
 - **已实现，执行oracle：** initialize四字段合法逐值保留＋缺失／负值拒绝；Task 2a保留真实backend消费mutation。无需另建skill，因为这是History领域契约，应留在plan与测试。
 - **不新增rule／skill：** master移动后的范围化复验、共享worktree碰撞集、instruction文本复审均已有always-on规则和现成skills覆盖；新增同义资产会制造双源。
+- **已实现，`session-closeout` skill 条款（归属见下）：** 本轮为该 skill 新增了返工轴候选发现（§4 六类候选来源 + provisional + 可达评审门）、`fd` 枚举陷阱（`fd -H` 遵守 `.gitignore`，实测同目录 `find`=56 / `fd -H`=42 / `fd -H -I`=56）、删除门的两条机械化判据（manifest fingerprint 驱动回流；reviewer 的显式 positive receipt 才放行删除）。经独立 reviewer 八轮评审（2 blocker + 十余 major，无一轮重复同错）。
+- ⚠️ **该 skill 的归属正在迁移，本轮条款须由后合并方接管。** 用户 2026-08-08 裁决把项目 skill `session-closeout` 并入 user-level `closing-a-development-session`、不保留两个收尾入口；执行件为 `2a4898e8`（其「零未映射」门当时未通过）。该目标是**生成产物**，只能改 `source.json` 再渲染。**用户同日裁决「谁后合并谁负责」**：本会话先合，故上述新增条款作为源文件的一部分，由 batch-6 会话在做映射时一并处置——**若映射表未收录它们，这批条款会随源文件一起消失**（正是本轮反复防的「产物没有接收者」形态）。
 - **已实现，新记忆条目：** `docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md` —— 从本轮 D2（把不可控的 harness 清理写成受控 Git 门）提炼。触发是「写下任何 X 必须晚于 Y 的顺序前置」，动作内核是先分型（状态门／因果·capability 门）再按该型判，两型共用隔离目标门的双控。**该条目经独立 reviewer 连打五轮**（前四轮各判 1–2 major、方向互不相同：收在直接执行者上→误杀因果门；放松成「有谁读过 Y」→放行旁路日志与 fail-open；四条全局合取→又误杀 capability 门；双控未隔离目标门→兄弟门代咬；「权威」按物理载体定义→误杀线性一致副本），第五轮 0 blocker／0 major 定稿。正文保留完整翻车史与两条可迁移判据。相关评审记录：`docs/tmp/2026-08-08-ordering-gate-lesson-review.md`。
 - **未升为 skill 正文条目：** 上述形态在 `session-closeout/verification-log.md` 2026-08-08 节标为「新增负样本、建议入表」，**未自行改写 SKILL.md 正文**——按 `instruction-text-must-be-reviewed`，是否升为正式自验条目须另经评审裁决。
 
