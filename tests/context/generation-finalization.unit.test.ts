@@ -1,5 +1,7 @@
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -8,7 +10,12 @@ import {
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 
 import { createRequestContext } from "~/lib/context/request"
-import { getRawCaptureStatus } from "~/lib/history/raw/manager"
+import {
+  //
+  configureRawCapture,
+  getRawCaptureStatus,
+  resetRawCaptureManagerForTests,
+} from "~/lib/history/raw/manager"
 import {
   //
   resetModelOperationTerminalBusForTests,
@@ -20,6 +27,15 @@ function complete(ctx: ReturnType<typeof createRequestContext>): void {
 }
 
 describe("generation delivery and observability terminal", () => {
+  beforeEach(() => {
+    resetRawCaptureManagerForTests()
+    expect(configureRawCapture({ enabled: true, dbPath: ":memory:", maxObjectBytes: 1024 })).toBe(true)
+  })
+
+  afterEach(() => {
+    resetRawCaptureManagerForTests()
+  })
+
   test("delivery first waits for the later logical terminal before finalizing", async () => {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     const clientPayload = { role: "assistant", content: "ok" }
@@ -109,6 +125,7 @@ describe("generation delivery and observability terminal", () => {
         },
       }),
     })
+    expect(getRawCaptureStatus().leasedOperations).toBe(baselineLeases + 1)
     ctx.beginGenerationCandidate({ role: "recovery" })
 
     complete(ctx)
