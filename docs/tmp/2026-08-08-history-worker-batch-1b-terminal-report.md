@@ -1,7 +1,7 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）。终审两轮闭环：首轮 0 blocker／2 major，整改后复审 **0 blocker／0 major、可定稿**。本报告、清单与终审报告的闭环提交待再次 fast-forward 进 `master`。
-> 核验基线：`master@d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；日期 2026-08-08。
+> 状态：**已集成主线**（Batch 1b 实现于 `master@d3b4ac77`，收尾证据首次 fast-forward 至 `master@d1011fe7`）。终审两轮闭环：首轮 0 blocker／2 major，整改后复审 **0 blocker／0 major、可定稿**。此后共享 `master` 前进至 `475bed45`，已合入并范围化复验通过；本报告与教训沉淀的剩余提交待再次 fast-forward。
+> 核验基线：候选 `bc8af51f`（含 `master@475bed45`）；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
 ## 交付内容
@@ -21,6 +21,9 @@
 - `master@82c0664e`只新增三份协议中立推理文档，与本轮代码／plan／kickoff／测试零路径交集；候选无冲突合入为`926b2478`，按moving-HEAD规则未重复全量验证。
 - `master@bea1dfa3`（nghttp2 header-deadline线13笔）确实触及Batch 1b相关路径——`tests/history/worker/admission-shutdown.unit.test.ts`、`tests/history/worker/overlay-read-surfaces.it.test.ts`、`tests/infra/entry-test-discovery-baseline.json`及五个History源文件，故按升级信号做了范围化复验，未按moving-HEAD规则免验。该合并未触及`src/lib/history/worker/protocol.ts`与`src/lib/history/v3/store.ts`，四字段重试契约不受影响。合入为`8f9a7214`（ort，145文件／+2377／−839）后：typecheck通过；Worker目标集9文件68 pass／0 fail；retry契约目标集3文件23 pass／0 fail。`git diff --check`报的两处EOF空行经`git diff --check master`确认源自master自身，非本轮引入。
 - `master@d47492a6`只在`docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md`一份文件上追加落地记录，与本轮零路径交集，合入为`0ecbca65`，按moving-HEAD规则未复验。
+- `master@475bed45`（28笔，含 History search tail-cursor 修复、entries 查询参数校验、state/success 过滤交集、以及另一会话的收尾文档）**触及 History 源码与测试**（`queries.ts`／`stats.ts`／`v3/projection.ts`／`v3/summary-store.ts`／`routes/history/handler.ts`／`history-api.it.test.ts` 等），故按升级信号做范围化复验、未按moving-HEAD规则免验。合入为`bc8af51f`后：typecheck通过；Worker＋retry 目标集12文件**91 pass／0 fail**、296 expect。
+  合并冲突仅 `.claude/skills/session-closeout/verification-log.md` 一处，成因是两个会话在同一位置各自追加了一节收尾自验记录；按行级共存**两节全保留**（本轮「Batch 1b 收尾证据终审」＋对方「HTTP/2 header deadline 阶段 1 收尾」），未做整文件退让。`docs/memory/MEMORY.md` 自动合并，四条钩子共存。
+  **一处取证陷阱记录在案**：首次复验以 exit 1 结束，实为 bun 写覆盖率报告的 `WriteFailed` 内部错误，且命令里的 `| tail -8` 截掉了计数行；重跑完整命令为 exit 0、91 pass／0 fail。**按退出码就会把它误判成回归**。
 
 ## Git、发布与工作树状态
 
@@ -56,6 +59,8 @@
 - **已实现，项目代码／测试：** `HistoryPersistRetryConfig`共享类型owner；触发是主线程store与Worker wire共用配置字段，关闭“平行类型一侧漏字段”的缺口。现有architecture／protocol测试体系足以承载，无需新增agent soul。
 - **已实现，执行oracle：** initialize四字段合法逐值保留＋缺失／负值拒绝；Task 2a保留真实backend消费mutation。无需另建skill，因为这是History领域契约，应留在plan与测试。
 - **不新增rule／skill：** master移动后的范围化复验、共享worktree碰撞集、instruction文本复审均已有always-on规则和现成skills覆盖；新增同义资产会制造双源。
+- **已实现，新记忆条目：** `docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md` —— 从本轮 D2（把不可控的 harness 清理写成受控 Git 门）提炼。触发是「写下任何 X 必须晚于 Y 的顺序前置」，动作内核是先分型（状态门／因果·capability 门）再按该型判，两型共用隔离目标门的双控。**该条目经独立 reviewer 连打五轮**（前四轮各判 1–2 major、方向互不相同：收在直接执行者上→误杀因果门；放松成「有谁读过 Y」→放行旁路日志与 fail-open；四条全局合取→又误杀 capability 门；双控未隔离目标门→兄弟门代咬；「权威」按物理载体定义→误杀线性一致副本），第五轮 0 blocker／0 major 定稿。正文保留完整翻车史与两条可迁移判据。相关评审记录：`docs/tmp/2026-08-08-ordering-gate-lesson-review.md`。
+- **未升为 skill 正文条目：** 上述形态在 `session-closeout/verification-log.md` 2026-08-08 节标为「新增负样本、建议入表」，**未自行改写 SKILL.md 正文**——按 `instruction-text-must-be-reviewed`，是否升为正式自验条目须另经评审裁决。
 
 ## 尚待动作
 
