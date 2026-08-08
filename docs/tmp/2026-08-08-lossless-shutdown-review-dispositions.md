@@ -59,7 +59,7 @@
 ## 既有测试 guard 第二处处置：entry evidence validator 的默认 5 秒超时
 
 - **守护的不变量：** validator 的 provenance／dependency-integrity fail-closed——任一 runtime 依赖被改被删、SAX 包图或 manifest 不符时必须 rc=7 且不发布 receipt。
-- **依据：** 该文件 43 个用例几乎每条都 fork 真实 validator 跑真实 git fixture，单文件独跑约 45 秒；Bun 默认 5 秒是 wall-clock 预算，不属于该文件任何判据。
-- **现象：** 16-shard 下每轮会有 1～2 条随机越过 5 秒被判超时（实测 7.3／9.5／7.4 秒），而单文件 43/43 全绿——典型 false-red，且逐条加 timeout 是打地鼠。逐用例耗时原始数据归档在 [2026-08-08-validate-entry-evidence-timings.xml](2026-08-08-validate-entry-evidence-timings.xml)（单文件独跑，最慢 4.56 秒、全文件 45.4 秒）。
+- **依据：** 该文件 43 个用例几乎每条都 fork 真实 validator 跑真实 git fixture，单文件独跑 45.395 秒、最慢用例 4.562 秒。Bun 默认 5 秒是 wall-clock 预算，不属于该文件任何判据。
+- **现象：** 16-shard 下每轮会有 1～2 条随机越过 5 秒被判超时，而单文件 43/43 全绿——典型 false-red，且逐条加 timeout 是打地鼠。有原始输出的两次分别是 7369.01ms 与 7355.61ms，**落在不同用例上**，原始输出归档在 [2026-08-08-validate-entry-evidence-shard-timeouts.md](2026-08-08-validate-entry-evidence-shard-timeouts.md)；会话中还观察到第三次同类超时，但其运行输出未落盘，具体数字**未交叉验证**、不作为证据引用。逐用例耗时原始数据在 [2026-08-08-validate-entry-evidence-timings.xml](2026-08-08-validate-entry-evidence-timings.xml)。
 - **处置（C）：** 用 `setDefaultTimeout(30_000)` 给该文件设机制对齐的预算，断言一行未改。修后 backend 16 shards、6641 tests 全绿。
 
