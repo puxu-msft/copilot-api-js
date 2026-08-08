@@ -92,7 +92,7 @@
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染
 - [随机 false-red 的另一半嫌疑：判据挂在进程全局量上](methodology-false-red-from-process-global-quantities-not-the-mechanism.md) — 「修完一条换一条」即信号；与污染并列查、可同时成立；全局 timer 集合当 retry oracle、wall-clock 预算当通过条件；换直接观测目标机制的 oracle 或按机制设文件级预算，别逐条打地鼠
-- [收尾文档在合并落地那一刻变陈旧](methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md) — 写「待合并/尚未/下一步是 X」时就登记为会过期断言；用户说「已合并」是收尾中段不是终点；grep 全部携带者、把判定翻成正向可复跑命令（方向也要翻）；合并后新写的那批也要声明自己未合并
+- [收尾文档在合并落地那一刻变陈旧](methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md) — 写「待合并/尚未/下一步是 X」时就登记为会过期断言（五个必填字段）；用户说「已合并」是收尾中段不是终点、且继承来的他人断言同样在范围内；扫描按语义载体走、零命中不等于完备；**描述本文档自身的无时间锚点合并状态改给判定命令**（理由是静态文本不适合当动态状态源，**不是**「无穷回归」——那个强表述已被评审证否，反例留在正文）
 - [并发 agent 不得共享 worktree 做 mutation](methodology-concurrent-agents-must-not-share-worktree-for-mutation.md) — 主会话调度责任
 - [transport-config 新字段：纯路由标志绝不进 change-detection](methodology-new-transport-config-field-routing-vs-connection-rebuild.md) — 任一追踪字段变化 fire 全体 listener(含 h2 session retire)
 - [append 日志 tail 游标两静默丢失陷阱](methodology-append-log-tail-cursor-silent-loss-traps.md) — 同毫秒 tie-break 永久丢行+per-row hydrate 抛错卡死
