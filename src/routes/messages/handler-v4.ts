@@ -88,7 +88,6 @@ import {
   makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
-import { reconcileLiveFrame } from "~/lib/anthropic/live-reconcile"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
@@ -214,7 +213,12 @@ import {
   classifyPreContentRecoveryFailure,
   shouldAttemptPreContentRecovery,
 } from "./precontent-recovery-gate"
-import { createPreContentRecoverySinkChain } from "./precontent-recovery-sink-chain"
+import {
+  //
+  createPreContentRecoverySinkChain,
+  stageDirectRecoveryBatch,
+  type StagedDirectRecoveryBatch,
+} from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
@@ -378,57 +382,7 @@ function anthropicCandidateSnapshot(driver: ReturnType<typeof createPipelineDriv
   return session.snapshot()
 }
 
-/**
- * Evaluate a fresh direct-Anthropic candidate without giving it downstream or terminal authority.
- * Both B2 mounts call this exact collector; Task #4 becomes the sole publisher of its `complete` frames.
- */
-function isRecoveryAnchorTerminus(frame: ClientFrame): boolean {
-  if (typeof frame.data !== "string") return false
-  try {
-    const type = (JSON.parse(frame.data) as { type?: unknown }).type
-    return type === "content_block_start" || type === "message_delta" || type === "message_stop" || type === "error"
-  } catch {
-    return false
-  }
-}
-
-export interface StagedDirectRecoveryFrames {
-  readonly state: AnchorState
-  readonly entries: ReadonlyArray<StagedRecoveryWrite>
-}
-
-export type StagedRecoveryWrite = Readonly<{ readonly kind: "anchor" | "real"; readonly frame: ClientFrame }>
-
-export function recoveryBatchSpecs(
-  entries: ReadonlyArray<StagedRecoveryWrite>,
-  envelope: Pick<import("~/lib/pipeline/types").WireEnvelopeFactory, "anchor" | "real">,
-): ReadonlyArray<import("~/lib/pipeline/types").WireWriteSpec> {
-  return entries.map((entry) => (entry.kind === "anchor" ? envelope.anchor(entry.frame) : envelope.real(entry.frame)))
-}
-
-export function stageDirectRecoveryFrames(
-  frames: ReadonlyArray<ClientFrame>,
-  anchorState: AnchorState,
-  anchorHooks: AnchorHooks | undefined,
-  openAnchorIndex: number | undefined,
-): StagedDirectRecoveryFrames {
-  const state: AnchorState = { ...anchorState }
-  const entries: Array<StagedRecoveryWrite> = []
-  let needsAnchorClose = openAnchorIndex !== undefined && !anchorState.anchorClosed
-  for (const frame of frames) {
-    const reconciled = reconcileLiveFrame(frame, state, anchorHooks)
-    if (needsAnchorClose && reconciled.some((entry) => isRecoveryAnchorTerminus(entry))) {
-      if (!anchorHooks || openAnchorIndex === undefined) throw new Error("[Anthropic:v4] open anchor lacks reconciliation hooks")
-      entries.push({ kind: "anchor", frame: anchorHooks.stopFrame(openAnchorIndex) })
-      state.anchorClosed = true
-      needsAnchorClose = false
-    }
-    entries.push(...reconciled.map((entry) => ({ kind: "real" as const, frame: entry })))
-  }
-  if (needsAnchorClose) throw new Error("[Anthropic:v4] recovery batch ended without closing the open anchor")
-  return { state, entries }
-}
-
+/** Evaluate a fresh direct-Anthropic candidate without giving it downstream or terminal authority. */
 type CompleteDirectRecoveryEvaluation = Extract<Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>, { kind: "complete" }>
 
 type DirectRecoveryPublication =
@@ -491,14 +445,14 @@ async function evaluateAndPublishDirectAnthropicRecovery(
     if (cleanupError !== undefined) throw cleanupError
     return { kind: "fallback" }
   }
-  let staged: StagedDirectRecoveryFrames | undefined
+  let staged: StagedDirectRecoveryBatch | undefined
   let publication
   try {
     publication = await deliverySession.allocationPort.publishRecoveryBatch(
       { candidateId: evaluation.candidate, dispatchId: evaluation.dispatch },
       ({ envelope, openAnchorIndex }) => {
-        staged = stageDirectRecoveryFrames(evaluation.frames, anchorState, anchorHooks, openAnchorIndex)
-        return recoveryBatchSpecs(staged.entries, envelope)
+        staged = stageDirectRecoveryBatch(evaluation.frames, anchorState, anchorHooks, openAnchorIndex)
+        return staged.specs(envelope)
       },
     )
   } catch (error) {

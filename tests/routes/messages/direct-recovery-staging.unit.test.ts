@@ -17,11 +17,7 @@ import {
   createGenerationWireState,
   remapAnthropicBlockIndex,
 } from "~/lib/anthropic/keepalive-anchor"
-import {
-  //
-  recoveryBatchSpecs,
-  stageDirectRecoveryFrames,
-} from "~/routes/messages/handler-v4"
+import { stageDirectRecoveryBatch } from "~/routes/messages/precontent-recovery-sink-chain"
 
 const frame = (type: string, payload: Record<string, unknown> = {}): ClientFrame => ({ event: type, data: JSON.stringify({ type, ...payload }) })
 
@@ -44,7 +40,7 @@ test("staging marks only the synthetic anchor stop when leading candidate pings 
     anchorBlockOpen: true,
     anchorClosed: false,
   }
-  const result = stageDirectRecoveryFrames(
+  const result = stageDirectRecoveryBatch(
     [
       frame("ping"),
       frame("ping"),
@@ -71,7 +67,7 @@ test("staging marks only the synthetic anchor stop when leading candidate pings 
     "real:message_stop",
   ])
   expect(JSON.parse(result.entries[3]?.frame.data ?? "{}").index).toBe(1)
-  const specs = recoveryBatchSpecs(result.entries, {
+  const specs = result.specs({
     anchor: (entry) => ({ kind: "anchor", frame: entry }),
     real: (entry) => ({ kind: "real", frame: entry }),
   })
