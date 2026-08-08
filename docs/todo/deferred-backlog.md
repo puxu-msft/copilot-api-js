@@ -1215,3 +1215,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：它是**性能/架构**改动而非 correctness 缺陷（本轮已闭合的三条 A3 都是 correctness），要主张改善必须先有**可复现基线**（合成语料下的分档计时），否则等于用推理冒充测量；且顺序、`total`、`hasOlder`/`hasNewer`、`invalidCursor` 四项语义必须逐条保持不变，值得配自己的 mutation 对照，塞进本轮会让本轮的验证链变糊。
 - **触发条件（值得做）**：① History 语料规模上一个数量级、或 `search=` 列表请求出现可观测延迟；② 因别的原因已经要动 `schema()` / bump `FORMAT_MARKER` 时（顺手把 fast 列一起加上，省一次全量重建）；③ 有人打算放宽「精确 total」契约时——那会改变本条的最优解形状，需要先重裁契约。
 - **发现方**：NGHTTP2_CANCEL 系列 A3 独立评审 finding 4（`docs/plan/2026-08-06-nghttp2-cancel-series/review-core-a3.md`），2026-08-08 对照 current master 源码逐行复核仍成立；同轮已闭合 finding 3（`state ∧ success`）、5（list query 校验）、6（cursor↔index generation 绑定）。
+
+## `pipelineInfo.responseHeaderTimeoutMs` 声明了但从无生产写点（2026-08-08，客户端连接 skill 事实订正的邻域发现）
+
+- **根因 / 现状**：`src/lib/history/types.ts:233` 声明了 `responseHeaderTimeoutMs`，`ctx.setStreamTimeouts()` 的签名（`src/lib/context/types.ts:538`、`src/lib/context/request.ts:1304`）也收这个 patch 键，但**六处生产调用点全都只传 `streamIdleTimeoutMs`**：`src/routes/messages/handler-v4.ts:811,1155`、`src/routes/chat-completions/handler-v4.ts:250`、`src/routes/responses/handler-v4.ts:204`、`src/routes/responses/ws.ts:347`、`src/routes/gemini/handler-v4.ts:221`。唯一写过它的是单测 `tests/context/request-context.unit.test.ts:1225`。
+- **当前行为**：功能无缺陷——这是纯诊断字段，缺失不影响请求处理。代价落在**事后归因**：一条 header-timeout 事故的 entry 里没有任何结构化的阈值快照，而 `stale_request_max_age` / `request_deadline` 反倒能从终端 error 文案里取回嵌入秒数（`src/lib/context/manager.ts:329,440` → `_index.derived.failureReason`，`src/lib/history/v3/projection.ts:437`）。于是**四个 wall-clock terminator 里，最像超时的那一个反而最没有证据**，最容易被凭记忆的默认值补上——正是 2026-07-28 那次「609ms 请求被报成 900s header 超时」的同族陷阱。
+- **理想架构 / 若做需改什么**：在已经调 `resolveStreamIdleTimeoutMs(...)` 的同六处，一并传 `responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(resolvedName)`（该 resolver 已存在，见 `src/lib/transport/send.ts:222`、`src/lib/anthropic/client.ts:164` 等调用点）。`setStreamTimeouts` 本就是 merge 语义（单测 `:1222` 守着「两次调用累加」），无需改契约、无需 schema 变更。**注意 per-model override 与 `0`=禁用两种情形都要能忠实落盘**，否则字段存在却撒谎，比缺失更糟。
+- **为何暂缓**：本轮任务是订正 skill 的陈旧事实，不是补产品接线；且这条要做就该**四个 terminator 一起走结构化字段**（现在 stale/deadline 靠解析错误文案取值，是同一个缺陷的另一面），那是一次独立的可观测性改动，值得自己的判据与 mutation 对照。skill `debugging-claude-client-connection` 已按**当前真实接线**写明取证表（哪一格有值、哪一格必须判「未决」），归因不会因此走错。
+- **触发条件（值得做）**：① 又出现一次 header-timeout 归因争议；② 因别的原因要动 `pipelineInfo` 或 `setStreamTimeouts` 时顺手补全；③ 有人打算把 `failureReason` 文案解析写成正式 oracle 时——那说明结构化字段的缺口已经在制造成本。
+- **发现方**：`debugging-claude-client-connection` skill 事实订正的独立评审（复评轮 major 1，`docs/tmp/2026-08-08-batch1-client-connection-skill-review.md`），主会话逐个调用点复核确认。
+
