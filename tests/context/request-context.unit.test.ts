@@ -37,6 +37,91 @@ function makeContext(overrides?: { endpoint?: EndpointType }) {
   return { ctx, events }
 }
 
+// ─── Operation lifecycle ───
+
+describe("createRequestContext - operation lifecycle", () => {
+  test("publishes delivery and canonical settlement after logical completion", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+
+    expect(ctx.operationLifecycle).toMatchObject({ settled: false, delivery: { state: "open" }, canonical: "waiting", blocker: "request-running" })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    expect(ctx.operationLifecycle).toMatchObject({ settled: true, operationScope: { sealed: true }, delivery: { state: "open" }, blocker: "delivery-finalization" })
+
+    ctx.beginModelOperationDeliveryFinalization()
+    expect(ctx.operationLifecycle.delivery).toEqual({ state: "finalizing" })
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+
+    expect(ctx.operationLifecycle).toMatchObject({ delivery: { state: "finalized" }, canonical: "completed", blocker: "none" })
+  })
+
+  test("records a registered delivery failure, publishes canonical terminal metadata, and does not make delivery an operation child", async () => {
+    const failures: Array<{ phase: "delivery" | "canonical"; error: unknown }> = []
+    const ctx = createRequestContext({
+      endpoint: "anthropic-messages",
+      onLifecycleFailure: (_id, failure) => {
+        failures.push(failure)
+        return true
+      },
+    })
+    const error = new Error("delivery write failed")
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    expect(ctx.operationLifecycle.operationScope).toMatchObject({ sealed: true, childCount: 0, quiesced: true })
+    ctx.beginModelOperationDeliveryFinalization()
+    ctx.failModelOperationDelivery(error)
+    await ctx.whenModelOperationFinalized()
+
+    expect(ctx.operationLifecycle).toMatchObject({ delivery: { state: "failed", error, failureRegistered: true }, canonical: "completed", blocker: "none" })
+    expect(failures).toEqual([{ phase: "delivery", error }])
+    expect(ctx.modelOperationTerminalRecord?.terminal?.metadata).toMatchObject({ deliveryFailure: expect.objectContaining({ message: "delivery write failed" }) })
+  })
+
+  const unregisteredCallbacks: ReadonlyArray<readonly [((id: string, failure: { phase: "delivery" | "canonical"; error: unknown }) => boolean) | undefined, string]> = [
+    [undefined, "without callback"],
+    [() => false, "when callback returns false"],
+    [() => {
+      throw new Error("barrier unavailable")
+    }, "when callback throws"],
+  ]
+
+  test.each(unregisteredCallbacks)("keeps delivery failure blocked %s", (_onLifecycleFailure, _label) => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", ...(_onLifecycleFailure !== undefined && { onLifecycleFailure: _onLifecycleFailure }) })
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.failModelOperationDelivery(new Error("delivery write failed"))
+
+    expect(ctx.operationLifecycle).toMatchObject({ delivery: { state: "failed", failureRegistered: false }, canonical: "waiting", blocker: "delivery-finalization" })
+  })
+
+  test("joins operation quiescence before later delivery terminal", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    let release!: () => void
+    ctx.trackOperationBody(new Promise<void>((resolve) => (release = resolve)))
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    release()
+    await ctx.whenOperationQuiesced()
+    expect(ctx.operationLifecycle.blocker).toBe("delivery-finalization")
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+    expect(ctx.operationLifecycle.blocker).toBe("none")
+  })
+
+  test("joins delivery terminal before later operation quiescence", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    let release!: () => void
+    ctx.trackOperationBody(new Promise<void>((resolve) => (release = resolve)))
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    ctx.finalizeModelOperationDelivery()
+    expect(ctx.operationLifecycle).toMatchObject({ operationScope: { childCount: 1, quiesced: false }, delivery: { state: "finalized" }, canonical: "running", blocker: "operation-body" })
+    release()
+    await ctx.whenModelOperationFinalized()
+    expect(ctx.operationLifecycle.blocker).toBe("none")
+  })
+})
+
 // ─── Initialization ───
 
 describe("createRequestContext - initialization", () => {

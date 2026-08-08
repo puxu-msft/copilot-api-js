@@ -34,6 +34,7 @@ import type {
   ModelOperationRecord,
   OperationSyntheticKind,
 } from "./model-operation-record"
+import type { OperationLifecycleSnapshot } from "./operation-lifecycle"
 
 // ─── Request State Machine ───
 
@@ -478,6 +479,8 @@ export interface RequestContext {
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
   /** Whether canonical observability has crossed its immutable terminal seal. */
   readonly modelOperationSealed: boolean
+  /** Independent logical, operation-body, delivery, and canonical finalization facts. */
+  readonly operationLifecycle: OperationLifecycleSnapshot
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -516,8 +519,12 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   /** Record canonical ingress once both the V2 body and inbound headers are available. */
   recordModelOperationIngress(): void
-  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
+  /** Mark the outer delivery owner as entering finalization. */
+  beginModelOperationDeliveryFinalization(): void
+  /** Notify that client delivery completed successfully; this does not synchronously seal canonical observability. */
   finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Preserve a delivery failure and advance canonical finalization only after the shutdown barrier registers it. */
+  failModelOperationDelivery(error: unknown): void
   /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void

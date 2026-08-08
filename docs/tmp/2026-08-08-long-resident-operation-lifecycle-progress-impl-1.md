@@ -19,8 +19,6 @@ status: in-progress — Task 1 complete; Task 2～3 and B1 merged-state review r
 
 ## 剩余项
 
-- Task 2：RequestContext 发布 logical／operation／delivery／canonical 四事实。
-  - 验收：RequestContext 与 generation recorder tests 通过，合法偏序两方向均绿。
 - Task 3：dispatch cleanup rejection 可见；scheduler／candidate／coordinator 所有权释放。
   - 验收：transport、candidate、driver、coordinator focused tests 通过，typecheck exit 0。
 - B1 合并态 review。
@@ -29,7 +27,8 @@ status: in-progress — Task 1 complete; Task 2～3 and B1 merged-state review r
 ## 在途意图
 
 - Task 1 已完成 reviewer 修复：sealed 且 child 未退出时 snapshot 保持 `quiesced: false`；delivery terminal 覆盖全部 state；canonical `failed` 是已登记终态。三项精确 mutation 均已按目标断言转红后恢复，Task 1 仍 complete。
-- Task 2 将把 Task 1 的 `OperationScopeSnapshot` 与 lifecycle pure types 接入 `RequestContext`，发布 logical／operation／delivery／canonical 四事实。
+- Task 2 已完成：RequestContext 发布 logical／operation／delivery／canonical snapshot；delivery/canonical failure 仅在 process shutdown lifecycle failure barrier callback 返回 true 后终结；两种合法 operation/delivery 先后均已覆盖。
+- Task 3 将处理 dispatch cleanup rejection、scheduler／candidate／coordinator 所有权释放。
 - `failureRegistered` 的权威含义是 process shutdown lifecycle failure barrier 已同步持有错误；不得改成 context-local ledger。
 - Candidate reservation 的真实 owner 是 `coordinator.ts`；scheduler 只拥有 dispatch active slot，candidate 只拥有 verdict。
 

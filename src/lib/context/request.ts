@@ -54,6 +54,11 @@ import type {
   PayloadNodeHandle,
 } from "./model-operation-record"
 import type {
+  CanonicalFinalizationState,
+  DeliveryLifecycleState,
+  OperationLifecycleSnapshot,
+} from "./operation-lifecycle"
+import type {
   //
   Attempt,
   EffectiveRequest,
@@ -74,6 +79,10 @@ import type {
 
 import { snapshotWithSummary } from "./activity-summary"
 import { createModelOperationRecorder } from "./model-operation-record"
+import {
+  deriveOperationBlocker,
+  isDeliveryTerminal,
+} from "./operation-lifecycle"
 import { createOperationScope } from "./operation-scope"
 
 export type {
@@ -272,6 +281,8 @@ export function createRequestContext(opts: {
    * event channel (the bus is the single event channel since P0.3).
    */
   onSettled?: (id: string) => void
+  /** Returns true only after the process shutdown failure barrier owns this lifecycle error. */
+  onLifecycleFailure?: (id: string, input: { phase: "delivery" | "canonical"; error: unknown }) => boolean
   /**
    * Scoped publisher for `request.*` ObservabilityEvent emissions. Optional —
    * tests/call sites that omit it leave the emit methods state-only (no bus
@@ -282,6 +293,7 @@ export function createRequestContext(opts: {
   const id = `req_${Date.now()}_${++idCounter}`
   const startTime = Date.now()
   const onSettled = opts.onSettled
+  const onLifecycleFailure = opts.onLifecycleFailure
   const publisher = opts.publisher
   const method = opts.method ?? "UNKNOWN"
   const path = opts.path ?? "/"
@@ -396,7 +408,8 @@ export function createRequestContext(opts: {
   const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
   let syntheticFrameRoot: FrameNodeHandle | undefined
   let unresolvedTransformRoot: FrameNodeHandle | undefined
-  let deliveryFinalizationRequested = false
+  let deliveryState: DeliveryLifecycleState = Object.freeze({ state: "open" })
+  let canonicalState: CanonicalFinalizationState = "waiting"
   let pendingDeliveryClientPayload: unknown
   let pendingGenerationTerminal:
     | {
@@ -861,21 +874,48 @@ export function createRequestContext(opts: {
     startGenerationFinalizerIfReady()
   }
 
+  function registerLifecycleFailure(phase: "delivery" | "canonical", error: unknown): boolean {
+    try {
+      return onLifecycleFailure?.(id, { phase, error }) === true
+    } catch {
+      // A throwing callback has not registered the error with the process barrier.
+      return false
+    }
+  }
+
+  function beginGenerationDeliveryFinalization(): void {
+    if (deliveryState.state !== "open") return
+    deliveryState = Object.freeze({ state: "finalizing" })
+  }
+
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed || generationFinalizerPromise !== undefined) return
-    deliveryFinalizationRequested = true
+    if (modelOperationRecorder.sealed || isDeliveryTerminal(deliveryState)) return
     if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+    deliveryState = Object.freeze({ state: "finalized" })
     startGenerationFinalizerIfReady()
   }
 
+  function failGenerationDelivery(error: unknown): void {
+    if (modelOperationRecorder.sealed || isDeliveryTerminal(deliveryState)) return
+    const failureRegistered = registerLifecycleFailure("delivery", error)
+    deliveryState = Object.freeze({ state: "failed", error, failureRegistered })
+    if (failureRegistered) startGenerationFinalizerIfReady()
+  }
+
   function startGenerationFinalizerIfReady(): void {
-    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !deliveryFinalizationRequested) return
+    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !isDeliveryTerminal(deliveryState)) return
+    canonicalState = "running"
     const clientPayload = pendingDeliveryClientPayload
     const finalizer = withRejectionObserver(
       (async (): Promise<ModelOperationRecord> => {
-        await operationScope.whenOperationQuiesced()
         try {
-          return commitGenerationObservabilityTerminal(clientPayload)
+          await operationScope.whenOperationQuiesced()
+          const record = commitGenerationObservabilityTerminal(clientPayload)
+          canonicalState = "completed"
+          return record
+        } catch (error) {
+          if (registerLifecycleFailure("canonical", error)) canonicalState = "failed"
+          throw error
         } finally {
           rawCaptureLease.release()
         }
@@ -960,6 +1000,7 @@ export function createRequestContext(opts: {
       ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
       ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(deliveryState.state === "failed" && { deliveryFailure: snapshotForRecorder(deliveryState.error) }),
     }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: terminal.outcome,
@@ -1191,6 +1232,15 @@ export function createRequestContext(opts: {
     get modelOperationSealed() {
       return modelOperationRecorder.sealed
     },
+    get operationLifecycle(): OperationLifecycleSnapshot {
+      const base = {
+        settled,
+        operationScope: operationScope.snapshot,
+        delivery: deliveryState,
+        canonical: canonicalState,
+      }
+      return Object.freeze({ logicalState: _state, ...base, blocker: deriveOperationBlocker(base) })
+    },
     get originalRequest() {
       return _originalRequest
     },
@@ -1263,8 +1313,16 @@ export function createRequestContext(opts: {
       })
     },
 
+    beginModelOperationDeliveryFinalization() {
+      beginGenerationDeliveryFinalization()
+    },
+
     finalizeModelOperationDelivery(input) {
       finalizeGenerationDelivery(input?.clientPayload)
+    },
+
+    failModelOperationDelivery(error) {
+      failGenerationDelivery(error)
     },
 
     whenModelOperationFinalized() {
