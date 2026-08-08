@@ -36,8 +36,8 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 1. 候选 `e43d08ec..9f9b0d7b` 的净 patch 已通过 `git apply --check` 后应用并提交为 `c0db13ef`；导入的 substrate 定向集合为 `26 pass / 0 fail`。
 2. 已完成第一个 TDD 子单元并提交为 `7300cd5d`：新增 operation/journal normalized refs schema 与生产 A/B writer，新增 same-digest 双 sequence 正控；红测为 `no such table: v3_operation_evidence_refs`，修复后相关集合 `15 pass / 0 fail`。
 3. 已完成 journal recovery 精确 ref 对账并提交为 `9c1dcc6b`：对 persisted normalized refs 与实际 journal envelope refs 做有序六元组精确比对。红测在删除 sequence=2 后仍恢复（`Expected: 0; Received: 1`）；加入 mismatch 拒绝后为 `13 pass / 0 fail`。
-4. 继续以测试先行落实 strict primitive、20 格 DML final state、A/B recovery、ready snapshot、healthy narrow path。
-5. 对每个语义 commit 更新本文件；最终运行 Task 9 定向、typecheck、target lint 与适用 backend 验证，完成独立评审前不得宣告完成。
+4. 已完成 strict primitive 第一语义单元：`hydrateManifest` 统一执行 manifest refs↔normalized operation refs 有序六元组精确对账、evidence bytes hash/length/encoding 校验，以及按 manifest v1/v2/v3 domain 重算当前 manifest bytes 的 operation digest。红控：normalized refs 漏／多／字段替换共3格均“未抛而红”；stored digest与可解码manifest bytes改写共2格均“未抛而红”。修复后 strict＋legacy＋readonly＋summary compatibility 集合 `41 pass / 0 fail`，typecheck与target lint通过。
+5. 下一子单元以测试先行落实20格DML final-state invalidation；随后完成 A/B recovery、ready snapshot、healthy narrow path。每个语义commit更新本文件；最终运行Task 9定向、typecheck、target lint与适用backend验证，完成独立评审前不得宣告完成。
 
 ## 结构怪味审计
 
@@ -47,13 +47,13 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 
 ## 接手注意
 
-- 下一步先为 strict primitive 写红测：operation normalized refs 漏/多/重排、summary 承重字段被 canonical mutation 后不得 ready，并先定位 migration/summary trigger 接缝再改代码。
+- 下一步先为20格DML final-state invalidation写红测：summary承重字段被canonical mutation后不得ready，并先定位migration/summary trigger接缝再改代码。
 - 不要把 FK ON referenced evidence DELETE 的 ABORT 测试改成 poison；终稿 #16 明确所有 trigger side effects 回滚。对 missing evidence 的历史 corruption 测试必须显式 `PRAGMA foreign_keys = OFF`，因为 FK ON 正常防止直接 DELETE。
 - 不要以 `git commit --amend` 修正此前 commit 的进度文字；已用本次 progress-only commit 保留线性历史。
 
 ## 在途意图
 
-- 四个 substrate checkpoint 已接入当前树；当前未开始 strict primitive 的新产品代码，下一变更从红测开始。
+- 四个 substrate checkpoint 与 strict primitive 已接入当前树；下一变更从20格DML invalidation红测开始。
 - 范围严格排除 Task10 terminal bus、RequestContext、GOAWAY leases 与 production activation；也不实现 native UDF、authority/signing/tamper resistance 或范围 B 双轨。
 
 ## 已作废的路子

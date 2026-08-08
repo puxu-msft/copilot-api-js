@@ -1431,12 +1431,62 @@ function decodeManifestEnvelope(manifestBlob: Uint8Array): ManifestEnvelope {
 function validateTransportEvidenceRefs(refs: ReadonlyArray<TransportEvidenceRef>): void {
   const previousSequence = new Map<number, number>()
   for (const ref of refs) {
+    if (!Object.is(ref.availability, "captured")) throw new Error("[history/v3] invalid transport evidence availability")
     if (!Number.isInteger(ref.dispatchIndex) || ref.dispatchIndex < 0) throw new Error("[history/v3] invalid transport evidence dispatch index")
     if (!Number.isInteger(ref.sequence) || ref.sequence < 1) throw new Error("[history/v3] invalid transport evidence sequence")
+    if (!/^[a-f\d]{64}$/.test(ref.digest)) throw new Error("[history/v3] invalid transport evidence digest")
+    if (!Number.isSafeInteger(ref.byteLength) || ref.byteLength < 0) throw new Error("[history/v3] invalid transport evidence byte length")
+    if (!Object.is(ref.encoding, "binary")) throw new Error("[history/v3] invalid transport evidence encoding")
     const previous = previousSequence.get(ref.dispatchIndex) ?? 0
     if (ref.sequence <= previous) throw new Error("[history/v3] non-increasing transport evidence sequence")
     previousSequence.set(ref.dispatchIndex, ref.sequence)
   }
+}
+
+interface PersistedEvidenceRefRow {
+  dispatch_index: number
+  sequence: number
+  digest: string
+  byte_length: number
+  encoding: string
+}
+
+function persistedEvidenceRef(row: PersistedEvidenceRefRow, scope: "journal" | "operation"): TransportEvidenceRef {
+  if (row.encoding !== "binary") throw new Error(`[history/v3] invalid ${scope} evidence ref encoding: ${row.encoding}`)
+  return {
+    availability: "captured",
+    dispatchIndex: row.dispatch_index,
+    sequence: row.sequence,
+    digest: row.digest,
+    byteLength: row.byte_length,
+    encoding: row.encoding,
+  }
+}
+
+function operationRefs(db: Database, operationId: string): Array<TransportEvidenceRef> {
+  return (
+    db
+      .prepare(
+        "SELECT dispatch_index,sequence,digest,byte_length,encoding FROM v3_operation_evidence_refs WHERE operation_id=? ORDER BY dispatch_index,sequence",
+      )
+      .all(operationId) as Array<PersistedEvidenceRefRow>
+  ).map((row) => persistedEvidenceRef(row, "operation"))
+}
+
+function validateStoredOperationDigest(db: Database, manifestBlob: Uint8Array, manifest: ManifestEnvelope): void {
+  const operationId = manifest.record.identity.operationId
+  const row = db.prepare("SELECT digest FROM v3_operations WHERE operation_id=?").get(operationId) as { digest: string } | undefined
+  if (!row) throw new Error(`[history/v3] missing stored operation digest: ${operationId}`)
+  const actual = digestBytesAt(manifest.formatVersion, "operation", decompressBytes(manifestBlob))
+  if (actual !== row.digest) throw new Error(`[history/v3] operation digest mismatch: ${operationId}`)
+}
+
+function validatePersistedOperationEvidenceRefs(db: Database, manifest: ManifestEnvelope): void {
+  validateTransportEvidenceRefs(manifest.transportEvidenceRefs)
+  const normalized = operationRefs(db, manifest.record.identity.operationId)
+  validateTransportEvidenceRefs(normalized)
+  if (!refsEqual(manifest.transportEvidenceRefs, normalized)) throw new Error("[history/v3] operation evidence refs mismatch")
+  hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
 }
 
 function hydrateTransportEvidenceRefs(db: Database, refs: ReadonlyArray<TransportEvidenceRef>): Array<HydratedTransportEvidence> {
@@ -1509,7 +1559,8 @@ export function garbageCollectTransportEvidence(db: Database = getDatabase()): n
 
 export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
   const manifest = decodeManifestEnvelope(manifestBlob)
-  if (manifest.formatVersion === 3) hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
+  validateStoredOperationDigest(db, manifestBlob, manifest)
+  if (manifest.formatVersion === 3) validatePersistedOperationEvidenceRefs(db, manifest)
   const hashes = [...new Set(Object.values(manifest.objectHashes))]
   const values = new Map<string, unknown>()
   const loadObjects = (requested: ReadonlyArray<string>): void => {
@@ -1635,23 +1686,13 @@ function decodeJournalPayload(formatVersion: number, payload: Uint8Array): { rec
 }
 
 function journalRefs(db: Database, operationId: string, revision: number): Array<TransportEvidenceRef> {
-  return db
-    .prepare(
-      "SELECT dispatch_index,sequence,digest,byte_length,encoding FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? ORDER BY dispatch_index,sequence",
-    )
-    .all(operationId, revision)
-    .map((row) => {
-      const typed = row as { dispatch_index: number; sequence: number; digest: string; byte_length: number; encoding: string }
-      if (typed.encoding !== "binary") throw new Error(`[history/v3] invalid journal evidence ref encoding: ${typed.encoding}`)
-      return {
-        availability: "captured",
-        dispatchIndex: typed.dispatch_index,
-        sequence: typed.sequence,
-        digest: typed.digest,
-        byteLength: typed.byte_length,
-        encoding: typed.encoding as "binary",
-      }
-    })
+  return (
+    db
+      .prepare(
+        "SELECT dispatch_index,sequence,digest,byte_length,encoding FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? ORDER BY dispatch_index,sequence",
+      )
+      .all(operationId, revision) as Array<PersistedEvidenceRefRow>
+  ).map((row) => persistedEvidenceRef(row, "journal"))
 }
 
 function refsEqual(left: ReadonlyArray<TransportEvidenceRef>, right: ReadonlyArray<TransportEvidenceRef>): boolean {

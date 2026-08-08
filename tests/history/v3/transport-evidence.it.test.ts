@@ -128,6 +128,65 @@ describe("History V3 transport evidence substrate", () => {
     ])
   })
 
+  test.each([
+    {
+      name: "missing normalized operation ref",
+      mutate: (operationId: string) => {
+        getDatabase().prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(operationId)
+      },
+    },
+    {
+      name: "extra normalized operation ref",
+      mutate: (operationId: string) => {
+        const source = getDatabase()
+          .prepare("SELECT digest,byte_length,encoding FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=1")
+          .get(operationId) as { digest: string; byte_length: number; encoding: string }
+        getDatabase()
+          .prepare("INSERT INTO v3_operation_evidence_refs(operation_id,dispatch_index,sequence,digest,byte_length,encoding) VALUES(?,?,?,?,?,?)")
+          .run(operationId, 0, 3, source.digest, source.byte_length, source.encoding)
+      },
+    },
+    {
+      name: "changed normalized operation ref field",
+      mutate: (operationId: string) => {
+        getDatabase().prepare("UPDATE v3_operation_evidence_refs SET byte_length=99 WHERE operation_id=? AND sequence=2").run(operationId)
+      },
+    },
+  ])("rejects $name before hydrating canonical detail", ({ mutate }) => {
+    const bytes = new Uint8Array([71, 72])
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("strict-operation-ref-mismatch"), [captured(bytes, 0, 1), captured(bytes, 0, 2)])
+    commitPreparedOperation(getDatabase(), prepared)
+    mutate(prepared.id)
+
+    expect(() => getV3Operation(prepared.id)).toThrow(/operation evidence refs mismatch/i)
+  })
+
+  test.each([
+    {
+      name: "stored operation digest",
+      mutate: (operationId: string) => {
+        getDatabase().prepare("UPDATE v3_operations SET digest=? WHERE operation_id=?").run("0".repeat(64), operationId)
+      },
+    },
+    {
+      name: "decodable manifest bytes",
+      mutate: (operationId: string) => {
+        const row = getDatabase().prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(operationId) as { manifest_gz: Uint8Array }
+        const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(row.manifest_gz))) as { record: Record<string, unknown> }
+        manifest.record = { ...manifest.record, strictMutation: true }
+        getDatabase()
+          .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+          .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), operationId)
+      },
+    },
+  ])("rejects a changed $name before hydrating canonical detail", ({ mutate }) => {
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("strict-operation-digest-mismatch"), [])
+    commitPreparedOperation(getDatabase(), prepared)
+    mutate(prepared.id)
+
+    expect(() => getV3Operation(prepared.id)).toThrow(/operation digest mismatch/i)
+  })
+
   test("shares one evidence entity across operations without merging either operation's event sequence", () => {
     const bytes = new Uint8Array([7, 8, 9])
     const first = prepareModelOperationWithTransportEvidence(terminalRecord("evidence-shared-a"), [captured(bytes, 0, 3), captured(bytes, 1, 1)])
