@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import { createHash } from "node:crypto"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
@@ -23,6 +24,7 @@ import {
   SUMMARY_PROJECTION_READY_KEY,
   tryMarkSummaryProjectionReady,
 } from "~/lib/history/v3/summary-store"
+import { compressBytes } from "~/lib/sqlite/compression"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
@@ -57,6 +59,32 @@ function projection(id = "dml-op"): { projection_status: string; pinned: number 
   return getDatabase().prepare("SELECT projection_status,pinned FROM v3_operation_summaries WHERE operation_id=?").get(id) as {
     projection_status: string
     pinned: number
+  } | null
+}
+
+function seedReferencedEvidence(): { digest: string; bytes: Uint8Array } {
+  const db = getDatabase()
+  const bytes = new Uint8Array([81, 82, 83])
+  const digest = createHash("sha256").update(bytes).digest("hex")
+  db.prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+    digest,
+    "binary",
+    compressBytes(bytes),
+    bytes.byteLength,
+  )
+  db.prepare("INSERT INTO v3_operation_evidence_refs(operation_id,dispatch_index,sequence,digest,byte_length,encoding) VALUES('dml-op',0,1,?,?,?)").run(
+    digest,
+    bytes.byteLength,
+    "binary",
+  )
+  return { digest, bytes }
+}
+
+function evidence(digest: string): { encoding: string; evidence_gz: Uint8Array; byte_length: number } | null {
+  return getDatabase().prepare("SELECT encoding,evidence_gz,byte_length FROM v3_transport_evidence WHERE digest=?").get(digest) as {
+    encoding: string
+    evidence_gz: Uint8Array
+    byte_length: number
   } | null
 }
 
@@ -183,4 +211,166 @@ describe("History V3 canonical operation DML final states", () => {
       expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
     },
   )
+})
+
+describe("History V3 canonical evidence DML final states", () => {
+  test("new evidence INSERT commits without disturbing ready summaries", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const bytes = new Uint8Array([91])
+    const digest = createHash("sha256").update(bytes).digest("hex")
+
+    db.prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+      digest,
+      "binary",
+      compressBytes(bytes),
+      bytes.byteLength,
+    )
+
+    expect(evidence(digest)).not.toBeNull()
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("plain existing-digest INSERT aborts without changing canonical or derived state", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+    const before = evidence(seeded.digest)
+
+    expect(() =>
+      db
+        .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")
+        .run(seeded.digest, "binary", compressBytes(seeded.bytes), seeded.bytes.byteLength),
+    ).toThrow()
+    expect(evidence(seeded.digest)).toEqual(before)
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test.each(["evidence_gz", "byte_length", "encoding"])("updating referenced evidence column %s poisons every dependent summary", async (column) => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+
+    db.exec(`UPDATE v3_transport_evidence SET ${column}=${column} WHERE digest='${seeded.digest}'`)
+
+    expect(projection()?.projection_status).toBe("poisoned")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+  })
+
+  test.each(["evidence_gz", "byte_length", "encoding"])("updating unreferenced evidence column %s does not revoke readiness", async (column) => {
+    await seedReady()
+    const db = getDatabase()
+    const bytes = new Uint8Array([92])
+    const digest = createHash("sha256").update(bytes).digest("hex")
+    db.prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+      digest,
+      "binary",
+      compressBytes(bytes),
+      bytes.byteLength,
+    )
+
+    db.exec(`UPDATE v3_transport_evidence SET ${column}=${column} WHERE digest='${digest}'`)
+
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("evidence identity rename aborts without changing dependents", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+
+    expect(() => db.prepare("UPDATE v3_transport_evidence SET digest=? WHERE digest=?").run("f".repeat(64), seeded.digest)).toThrow(/identity/i)
+    expect(evidence(seeded.digest)).not.toBeNull()
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("referenced evidence DELETE aborts with foreign_keys=ON and rolls back trigger side effects", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+    db.exec("PRAGMA foreign_keys = ON")
+
+    expect(() => db.prepare("DELETE FROM v3_transport_evidence WHERE digest=?").run(seeded.digest)).toThrow()
+    expect(evidence(seeded.digest)).not.toBeNull()
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("referenced evidence DELETE commits fail-closed with foreign_keys=OFF", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+    db.exec("PRAGMA foreign_keys = OFF")
+
+    db.prepare("DELETE FROM v3_transport_evidence WHERE digest=?").run(seeded.digest)
+
+    expect(evidence(seeded.digest)).toBeNull()
+    expect(projection()?.projection_status).toBe("poisoned")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+  })
+
+  test("unreferenced evidence DELETE commits without disturbing readiness", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const bytes = new Uint8Array([93])
+    const digest = createHash("sha256").update(bytes).digest("hex")
+    db.prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+      digest,
+      "binary",
+      compressBytes(bytes),
+      bytes.byteLength,
+    )
+
+    db.prepare("DELETE FROM v3_transport_evidence WHERE digest=?").run(digest)
+
+    expect(evidence(digest)).toBeNull()
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("new evidence REPLACE commits without disturbing readiness", async () => {
+    await seedReady()
+    const db = getDatabase()
+    const bytes = new Uint8Array([94])
+    const digest = createHash("sha256").update(bytes).digest("hex")
+
+    db.prepare("INSERT OR REPLACE INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+      digest,
+      "binary",
+      compressBytes(bytes),
+      bytes.byteLength,
+    )
+
+    expect(evidence(digest)).not.toBeNull()
+    expect(projection()?.projection_status).toBe("ready")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test.each([
+    ["ON", "OFF"],
+    ["ON", "ON"],
+    ["OFF", "OFF"],
+    ["OFF", "ON"],
+  ])("existing evidence REPLACE commits fail-closed with foreign_keys=%s recursive_triggers=%s", async (foreignKeys, recursiveTriggers) => {
+    await seedReady()
+    const db = getDatabase()
+    const seeded = seedReferencedEvidence()
+    db.exec(`PRAGMA foreign_keys = ${foreignKeys}`)
+    db.exec(`PRAGMA recursive_triggers = ${recursiveTriggers}`)
+
+    db.prepare("INSERT OR REPLACE INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+      seeded.digest,
+      "binary",
+      compressBytes(seeded.bytes),
+      seeded.bytes.byteLength,
+    )
+
+    expect(evidence(seeded.digest)).not.toBeNull()
+    expect(projection()?.projection_status).toBe("poisoned")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+  })
 })

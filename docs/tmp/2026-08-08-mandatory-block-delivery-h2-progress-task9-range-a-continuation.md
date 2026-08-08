@@ -39,7 +39,9 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 4. 已完成 strict primitive 第一语义单元：`hydrateManifest` 统一执行 manifest refs↔normalized operation refs 有序六元组精确对账、evidence bytes hash/length/encoding 校验，以及按 manifest v1/v2/v3 domain 重算当前 manifest bytes 的 operation digest。红控：normalized refs 漏／多／字段替换共3格均“未抛而红”；stored digest与可解码manifest bytes改写共2格均“未抛而红”。修复后 strict＋legacy＋readonly＋summary compatibility 集合 `41 pass / 0 fail`，typecheck与target lint通过。
 5. 已完成20格矩阵的 Operation #1～#9 checkpoint：新增表驱动 final-state 测试覆盖 trusted B insert、direct new-key insert、plain existing-key INSERT、10个受保护列 UPDATE、FK ON/OFF identity rename、pinned overlay、DELETE、FK ON/OFF existing-key REPLACE。首轮 direct INSERT／protected UPDATE／identity rename／REPLACE按目标红；实现后矩阵与既有 summary／evidence migration 集合 `48 pass / 0 fail`，typecheck与target lint通过。
 6. 可信 B 改为同事务两阶段：canonical先以 `summary_json=NULL` 插入pending并撤marker→tracks／normalized refs→共享strict hydrate→写summary→显式publish ready；仅当事务前marker为1时恢复。Operation trigger policy集中在 `summary-schema.ts`，由001新库路径与新增002迁移共用；不再复制policy SQL。
-7. 下一子单元以测试先行落实 Evidence #10～#20；随后完成 A/B recovery、ready snapshot、healthy narrow path。每个语义commit更新本文件；最终运行Task 9定向、typecheck、target lint与适用backend验证，完成独立评审前不得宣告完成。
+7. 已完成 Evidence #10～#20：新增矩阵覆盖 new/plain-existing INSERT、referenced/unreferenced `evidence_gz`／`byte_length`／`encoding` UPDATE、identity rename、FK ON referenced DELETE ABORT、FK OFF referenced DELETE COMMIT＋poison、unreferenced DELETE、new REPLACE、existing REPLACE 的 FK ON/OFF×recursive_triggers ON/OFF 四组合。首轮 referenced UPDATE／identity rename／DELETE／REPLACE按目标红，unreferenced正样本均绿；实现后完整Task9矩阵 `101 pass / 0 fail`，typecheck与target lint通过。
+8. Evidence trigger policy与Operation policy共用 `SUMMARY_PROJECTION_TRIGGER_SQL`；UPDATE／DELETE按OLD digest poison依赖，INSERT-side按NEW digest保证#20不依赖implicit DELETE trigger；identity rename在FK之前明确ABORT。001新库与002升级迁移均装同一policy，迁移清单测试已同步。
+9. 下一子单元以测试先行完成 A/B failure recovery与ready snapshot；随后验证healthy narrow path。每个语义commit更新本文件；最终运行Task9定向、typecheck、target lint与适用backend验证，完成独立评审前不得宣告完成。
 
 ## 结构怪味审计
 
@@ -49,13 +51,13 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 
 ## 接手注意
 
-- 下一步实现 Evidence #10～#20；必须保留 #16 FK ON referenced DELETE 的ABORT全状态不变、#17 FK OFF COMMIT＋poison＋撤marker、#20 REPLACE在FK ON/OFF和recursive_triggers ON/OFF均COMMIT且由INSERT-side trigger fail-closed。
+- 下一步补A/B failure recovery与ready snapshot：B任一步失败必须整体回滚、保留完整A recovery set和事务前marker；marker=1时正确B中间pending不可见、commit后仍ready，原marker缺席时不得擅自发布全库marker。
 - 不要把 FK ON referenced evidence DELETE 的 ABORT 测试改成 poison；终稿 #16 明确所有 trigger side effects 回滚。对 missing evidence 的历史 corruption 测试必须显式 `PRAGMA foreign_keys = OFF`，因为 FK ON 正常防止直接 DELETE。
 - 不要以 `git commit --amend` 修正此前 commit 的进度文字；已用本次 progress-only commit 保留线性历史。
 
 ## 在途意图
 
-- 四个substrate checkpoint、strict primitive与Operation #1～#9已接入当前树；下一变更从Evidence #10～#20红测开始。
+- 四个substrate checkpoint、strict primitive与完整20格DML invalidation已接入当前树；下一变更从A/B failure recovery与ready snapshot红测开始。
 - 范围严格排除 Task10 terminal bus、RequestContext、GOAWAY leases 与 production activation；也不实现 native UDF、authority/signing/tamper resistance 或范围 B 双轨。
 
 ## 已作废的路子

@@ -94,6 +94,10 @@ DROP TRIGGER IF EXISTS v3_operation_summaries_after_pin_update;
 DROP TRIGGER IF EXISTS v3_operation_summaries_before_identity_update;
 DROP TRIGGER IF EXISTS v3_operation_summaries_after_protected_update;
 DROP TRIGGER IF EXISTS v3_operation_summaries_before_delete;
+DROP TRIGGER IF EXISTS v3_transport_evidence_before_identity_update;
+DROP TRIGGER IF EXISTS v3_transport_evidence_after_protected_update;
+DROP TRIGGER IF EXISTS v3_transport_evidence_before_delete;
+DROP TRIGGER IF EXISTS v3_transport_evidence_after_insert;
 
 CREATE TRIGGER v3_operation_summaries_after_insert
 AFTER INSERT ON v3_operations
@@ -130,6 +134,45 @@ BEFORE DELETE ON v3_operations
 BEGIN
   DELETE FROM v3_operation_evidence_refs WHERE operation_id=OLD.operation_id;
   DELETE FROM v3_operation_summaries WHERE operation_id=OLD.operation_id;
+END;
+
+CREATE TRIGGER v3_transport_evidence_before_identity_update
+BEFORE UPDATE OF digest ON v3_transport_evidence
+BEGIN
+  SELECT RAISE(ABORT, 'v3 transport evidence identity cannot be changed');
+END;
+
+CREATE TRIGGER v3_transport_evidence_after_protected_update
+AFTER UPDATE OF evidence_gz,byte_length,encoding ON v3_transport_evidence
+WHEN EXISTS (SELECT 1 FROM v3_operation_evidence_refs WHERE digest=OLD.digest)
+BEGIN
+  UPDATE v3_operation_summaries SET
+    projection_status='poisoned',
+    projection_error='canonical transport evidence changed'
+  WHERE operation_id IN (SELECT operation_id FROM v3_operation_evidence_refs WHERE digest=OLD.digest);
+  DELETE FROM history_meta WHERE key='${SUMMARY_PROJECTION_READY_KEY}';
+END;
+
+CREATE TRIGGER v3_transport_evidence_before_delete
+BEFORE DELETE ON v3_transport_evidence
+WHEN EXISTS (SELECT 1 FROM v3_operation_evidence_refs WHERE digest=OLD.digest)
+BEGIN
+  UPDATE v3_operation_summaries SET
+    projection_status='poisoned',
+    projection_error='canonical transport evidence deleted'
+  WHERE operation_id IN (SELECT operation_id FROM v3_operation_evidence_refs WHERE digest=OLD.digest);
+  DELETE FROM history_meta WHERE key='${SUMMARY_PROJECTION_READY_KEY}';
+END;
+
+CREATE TRIGGER v3_transport_evidence_after_insert
+AFTER INSERT ON v3_transport_evidence
+WHEN EXISTS (SELECT 1 FROM v3_operation_evidence_refs WHERE digest=NEW.digest)
+BEGIN
+  UPDATE v3_operation_summaries SET
+    projection_status='poisoned',
+    projection_error='canonical transport evidence replaced'
+  WHERE operation_id IN (SELECT operation_id FROM v3_operation_evidence_refs WHERE digest=NEW.digest);
+  DELETE FROM history_meta WHERE key='${SUMMARY_PROJECTION_READY_KEY}';
 END;
 `
 

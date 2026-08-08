@@ -109,7 +109,11 @@ describe("HistoryMetaStorage", () => {
 
 describe("applyForwardMigrations", () => {
   test("an explicitly empty migration list is a no-op on a bare DB", async () => {
-    expect(MIGRATIONS.map((migration) => migration.name)).toEqual(["001-operation-summary-projection", "001-transport-evidence-schema"])
+    expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
+      "001-operation-summary-projection",
+      "001-transport-evidence-schema",
+      "002-summary-integrity-invalidation",
+    ])
 
     const db = freshDb()
     await applyForwardMigrations(db, [])
