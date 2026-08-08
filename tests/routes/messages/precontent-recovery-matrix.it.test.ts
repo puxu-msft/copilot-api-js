@@ -678,6 +678,30 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "invalid_request_error", message: "Failed to create messages" })
   })
 
+  test("ready-live request-cancel is excluded before B2 recovery", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(
+          createSseResponseThenError(
+            [messageStartFrame({ id: "msg_ready_abort", model: MODEL, inputTokens: 5 })],
+            cancellationAbortError("request-cancel", "ready request cancelled"),
+          ),
+        )
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), "precontent-ready-request-cancel")).text()
+
+    expect(calls).toBe(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "api_error", message: "ready request cancelled" })
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-request-cancel" }).entries[0]
+    expect(entry?.attempts).toHaveLength(1)
+  })
+
   test("shutdown-classified ready error is never replayed", async () => {
     let calls = 0
     applyFetchMock(
