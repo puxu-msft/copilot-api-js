@@ -160,11 +160,12 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
     return errors
   }
 
-  const throwCoordinatorFailures = (errors: ReadonlyArray<unknown>, message: string): void => {
+  const throwCoordinatorFailures = (errors: ReadonlyArray<unknown>, message: string, wrapUnknown = true): void => {
     if (errors.length === 0) return
     if (errors.length === 1) {
       const error = errors[0]
-      throw error instanceof Error ? error : new Error(message, { cause: error })
+      if (!wrapUnknown || error instanceof Error) throw error
+      throw new Error(message, { cause: error })
     }
     throw new AggregateError(errors, message)
   }
@@ -345,7 +346,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       } finally {
         if (runtime) errors.push(...settleAndRelease(runtime, { verdict: errors.length === 0 ? verdict : "failed", reason: errors.length === 0 ? reason : "settlement-failed" }))
       }
-      throwCoordinatorFailures(distinctErrors(errors), "Consumed ready settlement failed")
+      throwCoordinatorFailures(distinctErrors(errors), "Consumed ready settlement failed", false)
     },
 
     async disposeUnconsumedReady(candidate, input, verdict, reason) {
