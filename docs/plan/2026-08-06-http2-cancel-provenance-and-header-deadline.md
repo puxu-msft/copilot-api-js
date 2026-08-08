@@ -2,9 +2,9 @@
 
 > **执行者必读：** 推荐用 `superpowers:subagent-driven-development`，也可用 `superpowers:executing-plans` 逐任务执行。所有步骤使用 checkbox 跟踪。三个阶段各自验证、评审、提交并立即合并 `master`，不得积成一次最终合并。
 
-**目标：** 让 response-header deadline 在收到 headers 后解除，并让 HTTP/2 local CANCEL、peer RST、session termination 与 unknown 具备结构化、可持久化的来源证据。
+**目标：** 让 response-header deadline 在收到 headers 后解除，并让 HTTP/2 local、peer RST、session、ambiguous 与 unknown 具备结构化、可持久化的 observation/evidence。
 
-**架构：** `upstreamFetch` 统一拥有可解除的 header watchdog，普通生命周期 signal 继续覆盖 body。HTTP/2 transport 在 close 产生点追加 termination evidence，在 quiescence 后派生保守 attribution；local 与 peer/session evidence 并存时标为 ambiguous，而不是用 first-writer 伪造因果顺序。只读 observation accessor 与 error tag交给 driver，canonical `ModelOperationDispatch` 再持久化并投影给 History、日志与 UI。`TransportTerminationObservation` 记录事实，`TransportErrorReason` 保持 retry 语义，两者不合并。
+**架构：** `upstreamFetch` 统一拥有可解除的 header watchdog，普通生命周期 signal 继续覆盖 body。HTTP/2 transport 在 close 产生点追加 termination evidence，并提供可重算的保守 attribution snapshot；local 与 peer/session evidence 并存时标为 ambiguous，而不是用 first-writer 伪造因果顺序。canonical/recovery 在 quiescence 后读取最终 observation，随后持久化并投影给 History、日志与 UI。`TransportTerminationObservation` 记录事实，`TransportErrorReason` 保持 retry 语义，两者不合并。
 
 **技术栈：** TypeScript、Bun、Node `node:http2`、WHATWG `Response`/`ReadableStream`、History V3 canonical manifest、React `ui-v4`。
 
@@ -19,7 +19,7 @@
 - local intent 在调用 `req.close()` 前追加；后续 stream/session evidence 继续保留。`firstObserved` 不是 wire 因果证明，冲突 attribution 必须是 ambiguous。
 - GOAWAY 只 retire session；在途 stream 正常完成时不得记录 session termination。
 - 旧 History 不 backfill；缺字段保持可读，不能伪造为 peer。
-- peer CANCEL=8 fixture 使用显式 Node test server 的 capability-gated `kHandle.rstStream(8)`，并让 Bun production `http2Fetch` 验证实际 wire code；公共 `stream.close(code)` 与 `stream.destroy(error)` 都不能冒充 CANCEL oracle。
+- peer wire oracle使用公开 `stream.destroy(error)` 忠实产生 INTERNAL_ERROR=2，并让Bun production `http2Fetch`验证接线；CANCEL=8字段保真由collector单测独立覆盖。不得用不忠实的`stream.close(code)`或Node私有ABI冒充peer-CANCEL wire oracle。
 - 测试不得访问真实 GHC 或 4141；进程级验证使用非 4141 端口、独立配置和独立 History。
 - 每阶段开始前合并当前本地 `master`；每个 load-bearing 测试按 `proving-where-a-command-ran` gate 绑定 worktree。
 - 每阶段结束必须输出结构怪味记录：`file:line`、类型、本轮修或 backlog及理由。
@@ -46,7 +46,7 @@
 - `packages/foundation/src/stream.ts`、`src/lib/abort-bridge.ts`、`src/lib/shutdown.ts`、`src/lib/transport/dispatch-lifecycle.ts`：让 client/shutdown producer 带结构化 cause，并让 lifecycle owner 原样转发 external reason；显式 dispatch dispose 才生成 `dispatch-cancel`。
 - `tsconfig.json`：core compatibility alias 指向 foundation termination SSOT。
 - `src/lib/transport/upstream-fetch.ts`：`onTerminationEvidence` callback 类型。
-- `src/lib/transport/http2-client.ts`：每 stream evidence collector、session→stream 通知、error snapshot tagging。
+- `src/lib/transport/http2-client.ts`：每 stream evidence collector、active-session evidence 通知、error snapshot tagging。
 - `src/lib/transport/http-transport.ts`、`src/lib/transport/responses-transport.ts`、`src/lib/pipeline/types.ts`：向 live response 暴露只读 observation accessor。
 - `src/lib/pipeline/driver.ts`：buffered recovery 只接受 attribution=`peer|session`，排除 `local|ambiguous|unknown`，同时保留非 H2 legacy 行为。
 - `tests/transport/http2-client.it.test.ts`、`tests/transport/http-transport.it.test.ts`、`tests/transport/responses-transport.it.test.ts`、`tests/pipeline/buffered-sink.unit.test.ts`：方向判别和 recovery 双向控制。
@@ -187,7 +187,7 @@ test("disarming the header deadline does not disarm the request lifecycle signal
 2. timeout-first：先 `clock.advance(timeoutMs)`，再尝试 resolve headers；只得到同一个 `TimeoutError`，`settlements===1`、`liveTimerCount===0`。
 3. external-abort-first：caller reason胜出，header timer清除；`settlements===1`、`liveTimerCount===0`。
 
-“same tick”用同一 `fireAt` 的两个 barrier分别按注册顺序构造 headers-first与timeout-first，不依赖真实 event loop运气。`AbortSignal.any` 的内部 listener不可作为公开测试 seam，不伪造 add/remove计数；listener清理由 H2 integration在具名 post-response listener上验证：给 test-only signal facade记录 add/remove，断言 natural end、external abort、header timeout三路各add/remove一次。同时断言 `onStreamClosed` 只调用一次、reservation最终回0。
+“same tick”用同一 `fireAt` 的两个 barrier分别按注册顺序构造 headers-first与timeout-first，不依赖真实 event loop运气。`AbortSignal.any` 的内部 listener不可作为公开测试 seam，不伪造 add/remove计数；listener清理由 H2 integration在具名 listener上分阶段验证：pre-response header-timeout只注册/移除 pre-response listener，post-response listener严格为0 add/0 remove；natural end与post-header external abort各自断言post-response listener为1 add/1 remove。同时断言`onStreamClosed`只调用一次、reservation最终回0。
 
 - [ ] **Step 7：运行阶段 primitive 测试**
 
@@ -434,11 +434,11 @@ test("collector preserves conflicting evidence and derives ambiguous attribution
 })
 ```
 
-同文件覆盖 local-only→local、peer-only→peer、session-only→session、peer+session无local→session、local+session→ambiguous、bare stream-close code0→unknown、追加顺序不丢 evidence、返回值 deep-frozen。
+同文件覆盖 local-only→local、peer-only→peer、session-only→session、peer+session→ambiguous、local+session→ambiguous、bare stream-close code0→unknown、追加顺序不丢 evidence、返回值 deep-frozen。
 
 - [ ] **Step 2：实现 termination SSOT**
 
-按 spec 定义 evidence union与 observation。collector 不允许写 `unknown` evidence；unknown只由 `observe()` 在已有 failure close但证据不足时派生。归因优先看 evidence集合而非首写：local+非零stream reset/session→ambiguous；无local但有session→session（同时保留stream evidence）；无local/session且有非零stream reset→peer。规则在类型注释中冻结并由Step 1逐格覆盖。Symbol tag只附不可变 observation snapshot，不附 live collector。
+按 spec 定义 evidence union与 observation。collector 不允许写 `unknown` evidence；unknown只由 `observe()` 在已有 failure close但证据不足时派生。归因优先看 evidence集合而非首写：local/非零stream reset/session三类机制中恰一类存在时分别归local/peer/session；任意两类以上共现归ambiguous。规则在类型注释中冻结并由Step 1逐格覆盖。Symbol tag只附不可变 observation snapshot，不附 live collector。
 
 - [ ] **Step 3：扩充 producer cause，但不改变边界结果**
 
@@ -479,7 +479,6 @@ git commit -m "feat: define transport termination evidence"
 **Files:**
 - Modify: `src/lib/transport/upstream-fetch.ts:43-58`
 - Modify: `src/lib/transport/http2-client.ts:95-1185`
-- Create: `tests/transport/fixtures/http2-peer-cancel-server.mjs`
 - Test: `tests/transport/http2-client.it.test.ts`
 
 **Interfaces:**
@@ -502,23 +501,26 @@ expect(observed.map(({ observedAt: _, ...value }) => value)).toContainEqual({
 })
 ```
 
-signal测试用 tagged `request-deadline` reason，headers后 abort；断言先有 local-signal evidence，若 Bun随后发 stream error/close则它们也保留，最终 observation为 local或ambiguous，不允许丢 local cause。
+signal测试用tagged `request-deadline` reason，headers后abort；先用独立事件探针确认本机Bun对该`req.close(CANCEL)`确实发出非零stream error/close回声，再断言production evidence同时包含local-signal与该raw stream evidence，最终observation严格为ambiguous且保留local cause。不得接受“local或ambiguous”。增加定向mutation：仅当collector已含local evidence时跳过stream append，该测试必须变红。
 
-- [ ] **Step 2：建立真实 wire-level peer CANCEL=8 oracle，并跑 production client**
+- [ ] **Step 2：建立公开 API 的真实 peer RST wire oracle，并独立验证 code8 保真**
 
-新增 `tests/transport/fixtures/http2-peer-cancel-server.mjs`，必须由测试显式解析 `node -p process.execPath` 得到 Node executable启动；fixture启动时输出 `{runtime:process.release.name,version,port}`，非 `node` 立即退出非零。server写一帧DATA后，通过 test-only capability probe找到 stream私有 `Symbol(kHandle)`，确认 `typeof handle.rstStream === "function"`，调用 `handle.rstStream(NGHTTP2_CANCEL)`；能力缺失时明确失败，绝不回退 `stream.close()`。
+在现有 `http2-client.it.test.ts` 的本地h2c server handler中写一帧DATA后调用公开 `stream.destroy(new Error("peer reset"))`；Bun测试进程使用production `http2Fetch`消费，先断言body因真实`ERR_HTTP2_STREAM_ERROR/rstCode=2`失败，再断言`onTerminationEvidence`含非零stream reset code2且attribution=`peer`。禁止用不忠实的`stream.close(code)`。该形态已有`exp/curl-transport-rst-arbitration`的Bun/Node/curl交叉实测支撑，本测试直接覆盖wire→Bun production事件提取/callback。
 
-Bun测试进程继续使用 production `http2Fetch` 连接该 Node server，收集 `onTerminationEvidence`，先断言 body/req真实观测 `rstCode===8`，再断言 observation attribution=`peer`、evidence含 stream-close/error code8。这样 Node只产生wire，Bun production代码负责事件提取与callback，不做JSON回灌classifier。
+可选Node交叉腿只在 `Bun.which("node")` 返回绝对路径时运行同一server/client probe；缺Node时显式skip，不阻断Bun-only环境。它不替代主Bun production测试。
+
+另在foundation collector单测直接输入 `{kind:"stream-error",code:8,...}`，断言code8逐字保留且无local/session时归peer；该测试只证明code映射，不声称生成了真实CANCEL wire。两条证据职责分离，均必须通过。
 
 - [ ] **Step 3：分开写 bare close、session、GOAWAY 正负矩阵**
 
-1. bare stream close/rstCode0、无session evidence→最终 unknown。
-2. session error先于stream close→evidence含session-error与stream-close，归session。
-3. stream close先于session close→先只有不足证据，session-close随后仍追加；quiescence后归session，不被unknown封口。
-4. local intent后session error→ambiguous，双方evidence均在。
-5. GOAWAY后在途stream正常end→无failure observation。
+1. bare stream close/rstCode0、无session evidence→最终unknown。
+2. session error/close在stream close前到达→evidence含session与stream close，归session（code0 close不算peer机制）。
+3. 非零peer reset后session error/close也在observer解绑前到达→peer+session共现，归ambiguous，不以session覆盖peer。
+4. stream close后才发生session close→observer已解绑，session event不归当前stream；保留先前peer/unknown attribution。
+5. local intent后session error→ambiguous，双方evidence均在。
+6. GOAWAY后在途stream正常end→无failure observation。
 
-mutation删除session通知后，第2/3正样本必须红；把bare close当peer，第1负样本必须红。
+mutation删除及时session通知后，第2正样本必须红；延迟解绑observer则第4负样本必须红；把bare close当peer则第1负样本必须红；peer+session归单一cause则第3测试必须红。
 
 - [ ] **Step 4：在 entry 增加 active stream evidence observers**
 
@@ -548,16 +550,16 @@ const closeLocally = (evidence: TransportTerminationEvidence): void => {
 - session observer追加session evidence。
 - body `controller.error()` 的 Error附当前 immutable observation snapshot；后续 evidence仍由 accessor在quiescence后提供最终值。
 
-- [ ] **Step 6：在 dispatch quiescence 前完成 evidence finalization**
+- [ ] **Step 6：在 stream close 同步边界完成 evidence finalization**
 
-post-response abort listener改为具名函数，在stream close/natural end时移除。stream `close` 不立即冻结 observation，也不立即从 `activeStreams` 删除 observer；先执行 `finalizeTransportEvidence()`：
+post-response abort listener改为具名函数，在stream close/natural end时移除。session `error`/`close` listener只通知当时仍在 `activeStreams` 的observer；stream `close` handler按同步顺序执行：
 
-1. 读取 entry 已记录的 session error/close evidence；
-2. 若 session listener 尚未运行但 `entry.session.closed || entry.session.destroyed`，追加 session-close evidence；
-3. `await new Promise<void>((resolve) => setImmediate(resolve))`，让同一 transport teardown turn 中反序到达的 session listener有机会追加；
-4. 再读取一次 session terminal state，随后移除 observer、调用 `onStreamClosed`、resolve `requestClosed`。
+1. 追加该stream close/rstCode evidence；
+2. 读取已经由更早session listener追加的evidence；
+3. 从 `activeStreams` 删除observer，之后任何session event都不再归当前stream；
+4. 调用 `onStreamClosed` 并 resolve `requestClosed`。
 
-observation 只在 accessor读取或附到error snapshot时派生，最终 canonical settlement须在 `lifecycle.quiesced` 后读取 accessor。测试用可控 fake session分别触发 `session-error→stream-close` 和 `stream-close→session-close-before-setImmediate`，两者最终evidence/attribution相同；另测普通stream close后下一轮无session事件时归unknown且observer清理。运行 reservation、idle reap、shutdown race，断言 `onStreamClosed`一次、active observer移除、slot回0。
+禁止使用 `setImmediate`、固定延迟或事后读取 `session.closed` 来猜因果。该边界宁可漏记迟到的真实session teardown，也不吸收无关session close。observation accessor在`requestClosed`后稳定；最终canonical settlement仍须在`lifecycle.quiesced`后读取。测试按Step 3六种顺序驱动，并运行reservation、idle reap、shutdown race，断言`onStreamClosed`一次、active observer移除、slot回0。
 
 - [ ] **Step 7：运行 HTTP/2 定向测试与正向变异**
 
@@ -568,7 +570,7 @@ Mutation A：local close前不append，local cause测试红。Mutation B：colle
 - [ ] **Step 8：提交 Task 5**
 
 ```bash
-git add -- src/lib/transport/upstream-fetch.ts src/lib/transport/http2-client.ts tests/transport/fixtures/http2-peer-cancel-server.mjs tests/transport/http2-client.it.test.ts
+git add -- src/lib/transport/upstream-fetch.ts src/lib/transport/http2-client.ts tests/transport/http2-client.it.test.ts
 git commit -m "feat: record HTTP2 termination evidence"
 ```
 
@@ -759,11 +761,18 @@ function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettleme
 
 - [ ] **Step 4：接通 driver recording port 与 RequestContext runtime provider**
 
-`recordOpened(dispatch,response)` 在stream成功打开时调用 `ctx.setGenerationDispatchTerminationProvider(dispatch,response.upstream.getTransportTermination)`；RequestContext 的 `GenerationAttemptCapture` 保存provider但不序列化函数。所有 `settleGenerationAttempt`（包括 `recordGenerationLogicalTerminal` 在 `src/lib/context/request.ts:831-840` 的最终fallback）按优先级 `explicit termination → provider() → error tag` 冻结最终observation，再调用 recorder。scheduler正常settlement仍显式传值；terminal fallback作为防漏最后一道门。
+`recordOpened(dispatch,response)` 在stream成功打开时调用 `ctx.setGenerationDispatchTerminationProvider(dispatch,response.upstream.getTransportTermination)`；RequestContext 的 `GenerationAttemptCapture` 保存provider但不序列化函数。修改 logical terminal/finalizer 顺序：
+
+1. `recordGenerationLogicalTerminal()` 只冻结 `pendingGenerationTerminal`、seal operation scope并启动finalizer；不再当场settle尚未settled的final attempt。
+2. `startGenerationFinalizerIfReady()` 维持现有 `await operationScope.whenOperationQuiesced()` barrier。
+3. `commitGenerationObservabilityTerminal()` 在barrier之后、读取final attempt payload之前，若final attempt尚未settled，则按 `explicit termination → provider() → error tag` 冻结最终observation并调用 `settleGenerationAttempt`。
+4. scheduler已经settled的attempt保持幂等，不重复settle。
+
+这样terminal fallback不会在quiescence前冻结旧snapshot；provider函数在finalizer读完之前不得清理。
 
 - [ ] **Step 5：写真实最终失败 production-path 回归**
 
-从 driver/candidate路径打开一个stream，注入peer evidence后使最终attempt失败且不进入recovery/continuation；驱动 `recordGenerationLogicalTerminal("failed")`，断言 canonical dispatch termination存在。另分别覆盖 `scheduler.settle()` recovery parent 与 `disposeDispatch()` cancellation，三条路径缺一即红。
+从driver/candidate路径打开一个stream，注入peer evidence后使最终attempt失败且不进入recovery/continuation；先调用logical terminal，再让一个tracked operation child在下一microtask追加最后evidence并quiesce，最后请求delivery finalization。断言canonical dispatch包含quiescence后evidence。另分别覆盖`scheduler.settle()` recovery parent与`disposeDispatch()` cancellation，三条路径缺一即红；mutation恢复logical-terminal当场settle时测试必须红。
 
 - [ ] **Step 6：V3 raw manifest round-trip测试**
 
