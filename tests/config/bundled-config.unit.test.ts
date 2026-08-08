@@ -18,6 +18,7 @@ import { statSync } from "node:fs"
 
 import { loadBundledDefaultConfig } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
+import { DEFAULT_V3_PERSIST_RETRY_CONFIG } from "~/lib/history/v3"
 import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 
 describe("bundled config.yaml", () => {
@@ -38,6 +39,16 @@ describe("bundled config.yaml", () => {
     expect(overrides.opus).toBeDefined()
     expect(overrides.sonnet).toBeDefined()
     expect(overrides.haiku).toBeDefined()
+  })
+
+  test("the shipped History retry policy matches the code default", async () => {
+    const config = await loadBundledDefaultConfig()
+    expect(config.history?.persist_retry).toEqual({
+      max_attempts: DEFAULT_V3_PERSIST_RETRY_CONFIG.maxAttempts,
+      backoff_ms: DEFAULT_V3_PERSIST_RETRY_CONFIG.backoffMs,
+      max_backoff_ms: DEFAULT_V3_PERSIST_RETRY_CONFIG.maxBackoffMs,
+      max_total_ms: DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs,
+    })
   })
 
   test("the shipped commit window matches the code default — the two cannot drift apart", async () => {
