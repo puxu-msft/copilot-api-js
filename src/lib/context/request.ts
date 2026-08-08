@@ -888,15 +888,19 @@ export function createRequestContext(opts: {
     deliveryState = Object.freeze({ state: "finalizing" })
   }
 
+  function isDeliveryOutcomeLocked(state: DeliveryLifecycleState): boolean {
+    return state.state === "finalized" || state.state === "failed"
+  }
+
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed || isDeliveryTerminal(deliveryState)) return
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
     if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
     deliveryState = Object.freeze({ state: "finalized" })
     startGenerationFinalizerIfReady()
   }
 
   function failGenerationDelivery(error: unknown): void {
-    if (modelOperationRecorder.sealed || isDeliveryTerminal(deliveryState)) return
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
     const failureRegistered = registerLifecycleFailure("delivery", error)
     deliveryState = Object.freeze({ state: "failed", error, failureRegistered })
     if (failureRegistered) startGenerationFinalizerIfReady()

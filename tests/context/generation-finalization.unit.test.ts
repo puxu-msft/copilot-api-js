@@ -8,6 +8,7 @@ import {
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 
 import { createRequestContext } from "~/lib/context/request"
+import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import {
   //
   resetModelOperationTerminalBusForTests,
@@ -87,15 +88,42 @@ describe("generation delivery and observability terminal", () => {
     resetModelOperationTerminalBusForTests()
   })
 
-  test("exposes a finalizer rejection instead of reporting a successful canonical terminal", async () => {
-    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  const canonicalFailureBarriers: ReadonlyArray<readonly [string, ((id: string, failure: { phase: "delivery" | "canonical"; error: unknown }) => boolean) | undefined, "failed" | "running", "none" | "canonical-finalization"]> = [
+    ["registered", () => true, "failed", "none"],
+    ["unregistered", () => false, "running", "canonical-finalization"],
+    ["missing", undefined, "running", "canonical-finalization"],
+    ["throwing", () => {
+      throw new Error("barrier unavailable")
+    }, "running", "canonical-finalization"],
+  ]
+
+  test.each(canonicalFailureBarriers)("keeps canonical commit failure visible when the barrier is %s", async (_label, onLifecycleFailure, canonical, blocker) => {
+    const baselineLeases = getRawCaptureStatus().leasedOperations
+    const failures: Array<{ phase: "delivery" | "canonical"; error: unknown }> = []
+    const ctx = createRequestContext({
+      endpoint: "anthropic-messages",
+      ...(onLifecycleFailure !== undefined && {
+        onLifecycleFailure: (id, failure) => {
+          failures.push(failure)
+          return onLifecycleFailure(id, failure)
+        },
+      }),
+    })
     ctx.beginGenerationCandidate({ role: "recovery" })
 
     complete(ctx)
     ctx.finalizeModelOperationDelivery()
+    const rejection = await ctx.whenModelOperationFinalized().then(
+      () => undefined,
+      (error: unknown) => error,
+    )
 
-    await expect(ctx.whenModelOperationFinalized()).rejects.toThrow(/open candidate/i)
+    expect(rejection).toBeInstanceOf(Error)
+    expect((rejection as Error).message).toMatch(/open candidate/i)
+    expect(failures).toEqual(onLifecycleFailure === undefined ? [] : [{ phase: "canonical", error: rejection }])
+    expect(ctx.operationLifecycle).toMatchObject({ canonical, blocker })
     expect(ctx.modelOperationTerminalRecord).toBeNull()
+    expect(getRawCaptureStatus().leasedOperations).toBe(baselineLeases)
   })
 
   test("seals a recovery candidate as the winner instead of reopening the failed primary", async () => {
