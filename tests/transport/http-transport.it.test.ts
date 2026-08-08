@@ -88,6 +88,25 @@ describe("createUpstreamHttpTransport", () => {
     await expect(upstream.lifecycle!.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
   })
 
+  test("shared HTTP send passes the configured response-header deadline into the live fetch signal", async () => {
+    setStateForTests({ responseHeaderTimeout: 0.01 })
+    setFetchMock(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason as Error), { once: true })
+        }),
+    )
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const error = await Promise.race([
+      transport.send(makeWire({ stream: true }), makeEnv()).catch((value: unknown) => value),
+      new Promise((resolve) => setTimeout(() => resolve(new Error("test guard expired")), 100)),
+    ])
+
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as Error).name).toBe("TimeoutError")
+  })
+
   test("response-header timeout is disarmed before a delayed streaming body", async () => {
     setStateForTests({ responseHeaderTimeout: 0.01 })
     setFetchMock((_input, init) => {

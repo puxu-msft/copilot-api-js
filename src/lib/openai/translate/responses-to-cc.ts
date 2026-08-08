@@ -1,3 +1,4 @@
+import type { GhcInputTokensDetails } from "~/types/api/ghc-usage"
 import type {
   //
   ChatCompletionResponse,
@@ -13,6 +14,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { HTTPError } from "~/lib/error"
+import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
 export function translateResponsesResponseToCC(response: ResponsesResponse): ChatCompletionResponse {
   if (response.status === "failed") {
@@ -33,7 +35,7 @@ export function translateResponsesResponseToCC(response: ResponsesResponse): Cha
         logprobs: null,
       },
     ],
-    ...(response.usage && { usage: mapUsage(response.usage) }),
+    ...(response.usage && { usage: mapResponsesUsageToCC(response.usage) }),
     ...(response.service_tier !== undefined && { service_tier: response.service_tier }),
   }
 }
@@ -105,17 +107,19 @@ function mapIncompleteFinishReason(incompleteDetails?: { reason: string } | null
   return "length"
 }
 
-function mapUsage(usage: ResponsesUsage) {
-  const inputDetails = usage.input_tokens_details
+export function mapResponsesUsageToCC(usage: ResponsesUsage) {
+  const inputDetails = usage.input_tokens_details as GhcInputTokensDetails | undefined
+  const cachedTokens = nonNegOrUndef(inputDetails?.cached_tokens)
+  const cacheWriteTokens = nonNegOrUndef(inputDetails?.cache_write_tokens)
   return {
     prompt_tokens: usage.input_tokens,
     completion_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
-    ...((inputDetails?.cached_tokens !== undefined || inputDetails?.cache_write_tokens !== undefined) && {
+    ...((cachedTokens !== undefined || cacheWriteTokens !== undefined) && {
       prompt_tokens_details: {
-        ...(inputDetails.cached_tokens !== undefined && { cached_tokens: inputDetails.cached_tokens }),
+        ...(cachedTokens !== undefined && { cached_tokens: cachedTokens }),
         // GHC extension: forward cache_write so the client sees it (spec §7).
-        ...(inputDetails.cache_write_tokens !== undefined && { cache_write_tokens: inputDetails.cache_write_tokens }),
+        ...(cacheWriteTokens !== undefined && { cache_write_tokens: cacheWriteTokens }),
       },
     }),
     ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {

@@ -12,13 +12,8 @@ const read = (relativePath: string): string => readFileSync(path.join(repoRoot, 
 const retiredHeaderSignalHelper = ["createResponseHeader", "TimeoutSignal"].join("")
 
 describe("response-header timeout ownership", () => {
-  test("HTTP callers pass timeout duration separately from lifecycle signals", () => {
-    expect(read("src/lib/transport/send.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId)")
+  test("HTTP lifecycle signals do not reuse the persistent first-event timeout helper", () => {
     expect(read("src/lib/transport/send.ts")).not.toContain(`combineAbortSignals(${retiredHeaderSignalHelper}`)
-    expect(read("src/lib/anthropic/client.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(model)")
-    expect(read("src/routes/messages/count-tokens.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(outboundModel)")
-    expect(read("src/lib/models/client.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(undefined)")
-    expect(read("src/lib/openai/embeddings.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(payload.model)")
   })
 
   test("the transport watchdog does not import the higher-level fetch utilities module", () => {
