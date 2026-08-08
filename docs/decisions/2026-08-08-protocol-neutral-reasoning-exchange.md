@@ -10,7 +10,7 @@
 
 2026-07-14 ADR 正确裁决：non-CC↔non-CC 翻译应使用 per-pair direct bridge，不应经表达力更弱的 Chat Completions hub。但后续独立审计确认，当时实现把“direct”误当成“已经无损”：stream/non-stream和两方向translator仍各自维护领域语义，导致官方SDK生命周期不兼容、多个reasoning item串槽、server-tool四格丢失、Scenario B request consumer漏接和顶层能力静默裁剪。
 
-旧 ADR 还把模型切换 opaque state 的判定完全交给 per-pair手工配置，理由是代理无法自动知道历史carrier由哪个模型签发。该理由对v1/external carrier成立，但新carrier可以携per-block source-model provenance；继续把所有新块都按request级配置整批处理，会失去混合来源history、replay、fork和并发candidate的精确性。
+旧 ADR 还把模型切换 opaque state 的判定完全交给 per-pair手工配置，理由是代理无法自动知道历史carrier由哪个模型签发。该理由对v1/external carrier成立，但新carrier可以携per-block source identity provenance；继续把所有新块都按request级配置整批处理，会失去混合来源history、replay、fork和并发candidate的精确性。
 
 用户进一步提出：thinking block应成为fallback通用透明内容交换基础。协议分析确认目标正确，但Anthropic thinking本身不能作为内部通用格式；它带有Claude专属签名、redacted类型和原样回送要求。Responses reasoning同样有专属item lifecycle与encrypted_content。通用基础必须位于两者之上。
 
@@ -22,13 +22,13 @@ Anthropic↔Responses direct bridge采用protocol-neutral semantic mapper与keye
 
 ### 2．Reasoning Exchange Envelope是fallback透明交换基础
 
-每个reasoning item携：visible summary／omitted／redacted状态、opaque carrier、source protocol/provider/model、response/item identity、fallback boundary和partial状态。Anthropic thinking与Responses reasoning只是envelope的wire投影。
+每个reasoning item携：visible summary／omitted／redacted状态、opaque carrier、source protocol/provider/model、response/item identity和fallback boundary。`complete`／`partial`／`discarded`是所有semantic item统一的terminal语义，不由reasoning envelope独占。Anthropic thinking与Responses reasoning只是envelope的wire投影。
 
 同模型工具续轮仍原样回送原生assistant content；不得先转envelope再重建Claude签名块。
 
 ### 3．Carrier v2 provenance + 配置兜底
 
-新carrier v2携per-block source-model provenance。目标模型匹配时preserve opaque；不匹配时strip opaque并保留visible。v1、external和unknown carrier无provenance，继续由现有per-pair配置决定preserve／strip／reject。
+新carrier v2携per-block source identity，包括protocol、provider与final resolved model。三者与目标identity全部匹配时preserve opaque；任一维不匹配时strip opaque并保留visible。v1、external和unknown carrier无完整provenance，继续由per-pair配置决定preserve／strip／reject。
 
 不使用session-last-model。无provenance且无明确fallback配置时reject，不猜测。
 
@@ -98,4 +98,4 @@ Anthropic→Responses将canonical schema映射为Responses `json_schema`，name�
 
 ## 实施边界
 
-本ADR与RFC先合master，不自动启动代码执行。实施须另有TDD计划和per-task kickoff；每个cutover按方向×transport×stream mode×History sink穷举，并在同一commit删除对应旧production dispatch。
+本ADR与RFC本身只冻结设计，不构成一般性的代码执行授权；实施仍须另有TDD计划和per-task kickoff。用户已在2026-08-08本轮另行明确授权主会话作为协调者拆分小片并逐步实施，因此该TDD计划定稿后可依此授权继续C0，无需把同一个“是否开始”问题再问一次。每个production cutover按方向一次覆盖transport×stream mode×History sink，并在同一commit删除对应旧production dispatch；新的公共契约分叉、范围变化或不可逆动作仍须另行裁决。
