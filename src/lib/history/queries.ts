@@ -165,6 +165,30 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
   return text.toLowerCase().includes(needle.toLowerCase())
 }
 
+export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary> {
+  const merged = new Map<string, EntrySummary>()
+  for (const entry of listInFlight()) {
+    if (inFlightMatchesSearch(entry, search)) merged.set(entry.id, toEntrySummary(entry))
+  }
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (merged.has(operationId)) continue
+    const entry = recordToHistoryEntry(record)
+    if (inFlightMatchesSearch(entry, search)) merged.set(operationId, recentRecordToSummary(record))
+  }
+  return [...merged.values()]
+}
+
+export function listHistoryOverlayEntries(): Array<HistoryEntry> {
+  const merged = new Map<string, HistoryEntry>()
+  for (const entry of listInFlight()) merged.set(entry.id, entry)
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (!merged.has(operationId)) merged.set(operationId, recordToHistoryEntry(record))
+  }
+  return [...merged.values()]
+}
+
 function persistedCandidates(
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
@@ -428,28 +452,21 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, terminalOnly } = options
 
   const operationKind = options.operationKind ?? "generation"
-  const inFlightSummaries = listInFlight()
-    .filter((entry) => inFlightMatchesSearch(entry, options.search))
-    .map((entry) => toEntrySummary(entry))
-    .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
+  const overlaySummaries = listHistoryOverlaySummaries(options.search).filter(
+    (summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options),
+  )
   const cursorSummary = resolveSummaryCursor(options, operationKind)
-  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
-  const persistedSummaries = [
-    ...listRecentModelOperationTerminals()
-      .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-      .map((record) => recentRecordToSummary(record)),
-    ...stored.rows,
-  ]
+  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + overlaySummaries.length + 1, cursorSummary)
 
   const seen = new Set<string>()
   const merged: Array<EntrySummary> = []
-  for (const summary of inFlightSummaries) {
+  for (const summary of overlaySummaries) {
     if (!seen.has(summary.id)) {
       seen.add(summary.id)
       merged.push(summary)
     }
   }
-  for (const summary of persistedSummaries) {
+  for (const summary of stored.rows) {
     if (!seen.has(summary.id)) {
       seen.add(summary.id)
       merged.push(summary)

@@ -14,6 +14,8 @@ import {
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
 
+import { historyTestReservation } from "../helpers/history-terminal-publication"
+
 function complete(ctx: ReturnType<typeof createRequestContext>): void {
   ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "ok" })
 }
@@ -60,10 +62,10 @@ describe("generation delivery and observability terminal", () => {
   test("publishes canonical only after quiescence and ignores every late capture after immutable seal", async () => {
     resetModelOperationTerminalBusForTests()
     const published: Array<ModelOperationRecord> = []
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      published.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      published.push(publication.record)
     })
-    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", historyReservation: historyTestReservation() })
     ctx.beginAttempt({})
     let release!: () => void
     ctx.trackOperationBody(new Promise<void>((resolve) => (release = resolve)))

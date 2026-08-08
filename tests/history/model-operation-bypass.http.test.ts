@@ -168,7 +168,10 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
     expect(payload(record, record.attempts[0]?.upstreamRequest?.payload as string)).toMatchObject({
       tokenizerText: expect.stringContaining("gemini local input"),
     })
-    expect(record.terminal?.metadata).toEqual({ countTokens: { rawCount: body.totalTokens, calibratedCount: body.totalTokens, source: "local" } })
+    expect(record.terminal?.metadata).toEqual({
+      countTokens: { rawCount: body.totalTokens, calibratedCount: body.totalTokens, source: "local" },
+      historyAdmissionWaitMs: expect.any(Number),
+    })
   })
 
   test("all OpenAI-compatible embeddings entries share one operation path and Azure adds deployment metadata without duplication", async () => {

@@ -9,6 +9,7 @@ import {
 
 import type { Database } from "~/lib/history/sqlite/connection"
 
+import { clearInFlight } from "~/lib/history/in-flight"
 import { getHistorySummaries } from "~/lib/history/queries"
 import { getSessionSummaries } from "~/lib/history/sessions"
 import {
@@ -27,6 +28,7 @@ import {
   getV3StoreStatus,
 } from "~/lib/history/v3/store"
 import { SUMMARY_PROJECTION_READY_KEY } from "~/lib/history/v3/summary-store"
+import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 
 const ROW_COUNT = 512
 const LARGE_MANIFEST_BYTES = 256 * 1024
@@ -114,6 +116,8 @@ async function measure<T>(action: () => T): Promise<Measurement<T>> {
 }
 
 beforeEach(async () => {
+  clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   closeDatabase()
   openInMemoryDatabase()
   ensureV3Schema(getDatabase())

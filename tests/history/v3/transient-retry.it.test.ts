@@ -35,6 +35,8 @@ import {
   setAbortableDelayScaleForTests,
 } from "~/lib/util/abortable-delay"
 
+import { historyTestReservation } from "../../helpers/history-terminal-publication"
+
 // DI-5 end-to-end: prove the drain is ACTUALLY wired to runWithTransientRetry
 // (not just that the helper exists). We fail the operation transaction once with
 // a transient (WAL "database is locked") error and check the entry survives —
@@ -54,7 +56,7 @@ function injectTransientTxFailures(n: number): { remaining: () => number } {
 }
 
 async function enqueueOneTerminal(): Promise<string> {
-  const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  const ctx = createRequestContext({ endpoint: "anthropic-messages", historyReservation: historyTestReservation() })
   ctx.beginAttempt({})
   ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: "ok" })
   ctx.finalizeModelOperationDelivery({ clientPayload: { role: "assistant", content: "ok" } })
@@ -67,7 +69,7 @@ beforeEach(() => {
   openInMemoryDatabase()
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
-  subscribeModelOperationTerminals(enqueueModelOperation)
+  subscribeModelOperationTerminals(async (publication) => await enqueueModelOperation(publication.record))
   setAbortableDelayScaleForTests(0) // backoff instant
 })
 

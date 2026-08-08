@@ -319,6 +319,7 @@ export interface HistoryEntryData {
   active: boolean
   lastUpdatedAt: number
   queueWaitMs: number
+  historyAdmissionWaitMs?: number
   durationMs: number
   sessionId?: string
   agentId?: string
@@ -499,6 +500,7 @@ export interface RequestContext {
   /** The initial (attempt-0) Anthropic sanitization-info envelope (re-homed from the codec closure — the retry pipeline-info rebuild reads it). */
   readonly initialSanitizationInfo: SanitizationInfo | undefined
   readonly queueWaitMs: number
+  readonly historyAdmissionWaitMs: number | undefined
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
   /**

@@ -1,4 +1,13 @@
+import type { HistoryReservation } from "~/lib/history/worker/admission"
+
+import {
+  //
+  createModelOperationTerminalPublication,
+  createRawOperationAttachmentOwner,
+} from "~/lib/history/terminal-publication"
 import { publishModelOperationTerminal as publishTerminalToBus } from "~/lib/history/v3/terminal-bus"
+import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
+import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
 import { getProcessIdentity } from "~/lib/process-identity"
 
 import type {
@@ -83,6 +92,7 @@ export interface CreateLightweightModelOperationInput {
   readonly format?: string
   readonly requestedModel?: string
   readonly metadata?: unknown
+  readonly historyReservation?: HistoryReservation
 }
 
 export interface LightweightModelOperation {
@@ -145,9 +155,13 @@ function rawCaptureGap(): OperationTrackInput["rawCapture"] {
   }
 }
 
-function publishTerminal(record: ModelOperationRecord): void {
+function publishTerminal(
+  record: ModelOperationRecord,
+  rawAttachmentOwner: ReturnType<typeof createRawOperationAttachmentOwner>,
+  publishPersistence: boolean,
+): void {
   terminalRegistry.set(record.identity.operationId, record)
-  publishTerminalToBus(record)
+  if (publishPersistence) publishTerminalToBus(createModelOperationTerminalPublication(record, rawAttachmentOwner))
   while (terminalRegistry.size > MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY) {
     const oldest = terminalRegistry.keys().next().value
     if (oldest === undefined) break
@@ -191,6 +205,8 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
   const operationId = crypto.randomUUID()
   const createdAt = Date.now()
   const path = new URL(input.request.url).pathname
+  input.historyReservation?.bindOperationId(operationId)
+  const rawAttachmentOwner = createRawOperationAttachmentOwner()
   inFlightRegistry.set(
     operationId,
     Object.freeze({
@@ -351,17 +367,27 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
             recorder.settleCandidate(primaryCandidate, { verdict: committedAttempt === undefined ? "failed" : "winner", reason: `terminal:${outcome}` })
           }
         }
-        terminalRecord = recorder.commitTerminal({
-          outcome,
-          ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
-          committedDispatch: committedAttempt,
-          ...(error === undefined ? {} : { error: serializeError(error) }),
-          usage: terminalInput.usage,
-          attribution: terminalInput.attribution,
-          metadata: terminalInput.metadata,
-        })
-        publishTerminal(terminalRecord)
-        return terminalRecord
+        try {
+          terminalRecord = recorder.commitTerminal({
+            outcome,
+            ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
+            committedDispatch: committedAttempt,
+            ...(error === undefined ? {} : { error: serializeError(error) }),
+            usage: terminalInput.usage,
+            attribution: terminalInput.attribution,
+            metadata: {
+              ...(terminalInput.metadata as Record<string, unknown> | undefined),
+              ...(isHistoryPersistenceReservation(input.historyReservation) && { historyAdmissionWaitMs: input.historyReservation.historyAdmissionWaitMs }),
+            },
+          })
+          publishTerminal(terminalRecord, rawAttachmentOwner, isHistoryPersistenceReservation(input.historyReservation))
+          return terminalRecord
+        } catch (finalizeError) {
+          if (isHistoryPersistenceReservation(input.historyReservation)) {
+            getHistoryAdmissionController().failBeforeTerminal(operationId, finalizeError)
+          }
+          throw finalizeError
+        }
       } finally {
         inFlightRegistry.delete(operationId)
       }

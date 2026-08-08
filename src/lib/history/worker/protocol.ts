@@ -31,8 +31,8 @@ export interface RawOperationAttachment {
 
 export type CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">
 
-export interface ModelOperationTerminalPublication {
-  readonly record: CanonicalModelOperationWireRecord
+export interface ModelOperationTerminalPublication<TRecord extends CanonicalModelOperationWireRecord = CanonicalModelOperationWireRecord> {
+  readonly record: TRecord
   readonly rawAttachment: RawOperationAttachment
 }
 

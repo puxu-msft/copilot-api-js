@@ -58,13 +58,8 @@ import {
   drainV3Writer,
   resetV3WriterForTests,
 } from "~/lib/history/v3/store"
-import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
-import {
-  //
-  resetHistoryPersistenceRuntimeForTests,
-  setHistoryAdmissionControllerForTests,
-} from "~/lib/history/worker/registry"
+import { resetHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
 import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -135,7 +130,6 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
   { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
   { name: "setCaptureWorkObserverForTests", reset: () => setCaptureWorkObserverForTests(undefined) },
-  { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
@@ -167,7 +161,6 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
   // Injected factory/writer seams: reset to their default (null/undefined) so a
   // mock injected by one test never leaks into the next (RFC §11 R2).
-  { name: "setHistoryAdmissionControllerForTests", reset: () => setHistoryAdmissionControllerForTests(undefined) },
   { name: "resetHistoryPersistenceRuntimeForTests", reset: resetHistoryPersistenceRuntimeForTests },
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },

@@ -71,6 +71,9 @@ const EXEMPT: Record<string, string> = {
   // Handled inside resetTestRuntime (runtime trio), not the RESETTERS table.
   resetBusForTests: "handled by resetTestRuntime",
   resetRequestContextManagerForTests: "handled by resetTestRuntime",
+  resetModelOperationTerminalBusForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  resetHistoryAdmissionLifecycleForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  setHistoryAdmissionControllerForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
   // Path/config injector setters: per-test opt-in, not a default reset. Their
