@@ -182,6 +182,21 @@ describe("History V3 transport evidence substrate", () => {
     expect(hydrateTransportEvidence(getDatabase(), prepared.id).map(({ sequence }) => sequence)).toEqual([1])
   })
 
+  test("rejects journal recovery when persisted normalized refs are missing, reordered, or extra", () => {
+    const evidence = [captured(new Uint8Array([61]), 0, 1), captured(new Uint8Array([62]), 0, 2)]
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("journal-normalized-ref-mismatch"), evidence)
+    ensureV3Schema(getDatabase())
+    getDatabase().exec(`CREATE TRIGGER fail_v3_operation BEFORE INSERT ON v3_operations BEGIN SELECT RAISE(ABORT, 'transaction B failed'); END;`)
+    expect(() => commitPreparedOperation(getDatabase(), prepared)).toThrow(/transaction B failed/i)
+    getDatabase().exec("DROP TRIGGER fail_v3_operation")
+
+    getDatabase().prepare("DELETE FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? AND sequence=2").run(prepared.id, prepared.revision)
+
+    expect(recoverV3Journal()).toBe(0)
+    expect((getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(prepared.id))).toBeNull()
+    expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(prepared.id) as { error: string }).error).toMatch(/journal evidence refs mismatch/i)
+  })
+
   test("rejects invalid manifest versions from detail, evidence, and summary consumers", () => {
     const invalidVersions = [0, -1, 1.5, 999]
     for (const version of invalidVersions) {

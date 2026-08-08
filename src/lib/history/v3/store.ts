@@ -1627,6 +1627,25 @@ function decodeJournalPayload(formatVersion: number, payload: Uint8Array): { rec
   return { record: journal.record, refs: journal.transportEvidenceRefs }
 }
 
+function journalRefs(db: Database, operationId: string, revision: number): Array<TransportEvidenceRef> {
+  return db
+    .prepare(
+      "SELECT dispatch_index,sequence,digest,byte_length,encoding FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? ORDER BY dispatch_index,sequence",
+    )
+    .all(operationId, revision)
+    .map((row) => {
+      const typed = row as { dispatch_index: number; sequence: number; digest: string; byte_length: number; encoding: string }
+      return { dispatchIndex: typed.dispatch_index, sequence: typed.sequence, digest: typed.digest, byteLength: typed.byte_length, encoding: typed.encoding as "binary" }
+    })
+}
+
+function refsEqual(left: ReadonlyArray<TransportEvidenceRef>, right: ReadonlyArray<TransportEvidenceRef>): boolean {
+  return left.length === right.length && left.every((ref, index) => {
+    const other = right[index]
+    return other !== undefined && ref.dispatchIndex === other.dispatchIndex && ref.sequence === other.sequence && ref.digest === other.digest && ref.byteLength === other.byteLength && ref.encoding === other.encoding
+  })
+}
+
 /** Resume terminal journal rows that were appended but never committed. */
 export function recoverV3Journal(db: Database = getDatabase()): number {
   ensureV3Schema(db)
@@ -1644,6 +1663,8 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
   for (const row of rows) {
     try {
       const { record: recoveredRecord, refs } = decodeJournalPayload(row.format_version, row.payload_gz)
+      const persistedRefs = journalRefs(db, row.operation_id, row.revision)
+      if (!refsEqual(refs, persistedRefs)) throw new Error("journal evidence refs mismatch")
       const timingOverride =
         recoveredRecord.terminal?.occurredAt === undefined ? { endedAt: row.created_at, source: "storage-commit-upper-bound" as const } : undefined
       const evidence = hydrateTransportEvidenceRefs(db, refs)
