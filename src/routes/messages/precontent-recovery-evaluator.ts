@@ -45,7 +45,7 @@ interface RecoveryAttemptFailure<TSnapshot extends RecoveryAttemptSnapshot> exte
 export type RecoveryAttemptEvaluationResult<TSnapshot extends RecoveryAttemptSnapshot, TResponse> =
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "complete"; readonly response: TResponse })
   | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "upstream-error" })
-  | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "stream-error"; readonly source: ResponseFailureSource })
+  | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "response-stream-failure"; readonly source: ResponseFailureSource })
   | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "truncation" })
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "settled-abort" })
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "refusal" })
@@ -155,7 +155,7 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
     case "stream-error": {
       return {
         ...base(snapshot),
-        kind: "stream-error",
+        kind: "response-stream-failure",
         recoveryError: outcome.error,
         source: outcome.source,
         ...(outcome.diagnostics && { diagnostics: outcome.diagnostics }),
