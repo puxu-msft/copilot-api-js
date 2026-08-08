@@ -1,6 +1,6 @@
 # SSOT、主线信任与 GHC 408 指令修订计划
 
-> **状态：已完成（2026-08-08；原 reviewer 与未卷入第三方均 0 blocker / 0 major；待提交）**
+> **状态：已完成（2026-08-08；原 reviewer 与未卷入第三方均 0 blocker / 0 major；落地 commits `9db0748c`、`b2480b49`、`7af39d60`，本状态回填见后续 commit）**
 
 **目标：** 修正文档单一事实源的错误绝对化表述，固化共享主线收尾的 trust-first 口径，并把 GHC 请求体读取 408 的实证诊断方法写入既有 upstream transport skill。
 
@@ -29,8 +29,8 @@
 - [x] 全文通读每个修改文件。
 - [x] 跨规则／skill／memory 检索旧绝对化措辞并逐条 disposition。
 - [x] GREEN：同一 agent 场景在新指令下给出目标行为。
-- [ ] 独立 reviewer 对当前状态命题逐条给证据，达到 0 blocker / 0 major（首轮 findings 已整改，复审中）。
-- [ ] 指令文本与计划按语义批次提交；不推送。
+- [x] 独立 reviewer 对当前状态命题逐条给证据，达到 0 blocker / 0 major（原 reviewer Round 4 + 408 reviewer Round 2 + 未卷入第三方终审）。
+- [x] 指令文本与计划按语义批次提交；不推送（`9db0748c`、`b2480b49`、`7af39d60`）。
 
 ## 不拆 skill 的当前裁决
 
