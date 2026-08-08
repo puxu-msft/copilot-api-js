@@ -117,6 +117,22 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - **修法与一次自我纠错**：先去掉版本条件，实测**打红2条legacy可读性测试**——schema-5库根本没有ref表，无条件查询会让旧库整个读不出来，这是真false-red。遂加表存在性守卫。但复评指出该守卫**引入了新的false-green**：docstring论证的是「schema ≤5」而代码判的是「表存不存在」，**判别对象错了一层**——schema-6库若缺ref表，含非空refs的v3 manifest会被整个跳过对账、静默fail-open。最终形态：`if (manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db))`，版本在前、表探测只作legacy allowance。
 - **判据**：v1／v2各一条负控（迁到schema 6后插入多余normalized ref必须拒绝）+ 每条内含正样本（未受污染的legacy行必须仍可hydrate，防false-red）；另加一条守false-green的负控（schema-6库缺ref表时，v3 manifest仍须对账）。**鉴别力已实证**：把守卫改回只判表存在的形态，恰好该条变红；恢复后38全绿。
 
+## 评审第三轮（spec F5／F6，acceptance R2-4）
+
+- **F5（BLOCKER，我在 `756a1b30` 里引入的）已闭合**（commit `f5de686b`）：recovery 从 deprecated adapter 迁到canonical API时，我**无条件**写了 `winnerCandidate`，哪怕该candidate已被settle成 `failed`。旧adapter只传 `committedAttempt`，`commitTerminal` 在无committed dispatch时**不会推导winner**。后果：失败／aborted／interrupted的recovery record会声称「有winner」而对应candidate标 `failed`，canonical History自相矛盾。修法=`winnerCandidate` 与 `committedDispatch` 绑定同出同没。
+  - **同时修了settle顺序**：旧adapter在 `commitTerminal` 内settle candidate（即**egress之后**），我原实现提前到了egress之前——这会改变sequence、timeline与digest，属静默非等价。已把 `settleCandidate` 移回 `recordEgress` 之后。
+  - **判据**：completed／failed／aborted／interrupted 四态回归，逐项断言dispatch verdict、candidate verdict、terminal的winner／committed字段，并冻结「candidate settle晚于egress、早于terminal」的sequence关系。**鉴别力已实证**：把 `winnerCandidate` 改回无条件写，四态中三条变红；恢复后5全绿。
+- **L1（通过）**：`756a1b30` 里usage条件简化、`cell-assembly` 穷尽switch、测试oracle三类改动经逐项核验**未发现字段丢失或断言弱化**。评审给出一手证据：Anthropic SDK的 `cache_creation_input_tokens`／`cache_read_input_tokens` 是 `number | null` 而非optional，故显式null判断与旧 `!= null` 等价；Responses侧details对象optional但非nullable。
+- **F6（MINOR，未处置）**：`756a1b30` 名为 `style:` 却含canonical History与translation的行为重构，message与内容不符。评审建议未发布前按History／translation／pipeline／test分拆历史。**未做**——本轮已在其上叠了7个commit，重写历史的收益不抵风险；在此记录，交付时由用户裁决。
+- **R2-4（acceptance收口复评）verdict：无未闭合blocker。** 三条建议均已采纳：
+  - **更正了一处错误理由**（评审唯一点名的合并前必改项）：我给「N=2足够」写的理由是「此处无ANALYZE统计」——**错的**。`openDatabase` 无条件跑 `seedAnalyzeIfNeeded`，`sqlite_stat1` 确实存在（只是ANALYZE跑在v3表创建之前、且「表存在即返回」故不重跑）。结论对、理由错，而这是给后来者读的指令性文本——错的理由会让下一个人在别处放心用极小样本判计划。已改成实测口径：N=2 / N=200 / N=200+手工ANALYZE 三组下offenders均为0，且N=2下变异即变红。
+  - **黑名单反转为白名单**：原先列举「会增长的表」，忘了加新表不会有任何信号；改为「不得SCAN任何表，除非在有界表白名单内」，失败方向反过来了。
+  - **补上 `db.exec` 这个逃逸口**：一次提交经 `exec` 走4条（`V3_SCHEMA_SQL` + 3条 `DROP TABLE IF EXISTS`），完全绕过 `prepare` 探针。已加断言：exec只许承载DDL。**这里我又踩了一次自己的坑**——初版正则带 `m` 标志，把DDL脚本里**触发器体内**的 `INSERT`／`UPDATE` 行也算成DML、误报整份schema；去掉 `m` 只判整段开头才对。
+  - 复评实测的捕获完整性：一次提交经 `prepare` 共29条（去重21），被 `try/catch` 跳过 **0** 条、被前置正则跳过 **0** 条——我担心的「EQP在带参／CTE／UPSERT上静默跳过一大片」没有发生。
+- **两条门禁失败的判定经独立核实成立**，其中一条已定位机制：
+  - `tests/routes/hooks.http.test.ts` 的 `POST /reload`——`loader.ts` 的 `HOOK_CACHE_DIR` 是**相对路径**，而16个shard都以 `REPO_ROOT` 为cwd ⇒ 共享同一目录；`cacheInitialized` 是进程级，于是每个shard首次加载hook都 `rmSync` 清空整个共享目录，删掉别的shard正要 `import()` 的文件。与本轮改动零交集，已记入 `docs/todo/deferred-backlog.md`。
+  - `states-flush-freeze.it.test.ts:74`——评审在 `cf377959` 之前的Round 1 就抓到**同一文件同一行同一断言**失败，故非本轮引入；也不是drain seam回归（seam改的是另外四行）。**根因不补解释**，只登记形态与已排除假设。
+
 ## 结构怪味审计
 
 - `src/lib/history/queries.ts`：旧实现把 cursor、page、membership overlap 分散到多个 marker check，属于同一 API 拼接多个 SQLite epoch 的职责泄漏。本轮修为高层 API 每次只建立一个 ready snapshot；fallback 只读 canonical，不再借未 ready 的 summary 表算 overlap。

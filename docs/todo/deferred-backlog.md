@@ -1213,3 +1213,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **交付纪律（立即生效，不等修复）**：交付报告**只引 exit code 与失败用例名**，不得引用 tally 数字作为「用例数不减」或「规模」的证据。本轮已按此执行——Task 9 的进度文件里先前写的 `7198 pass` 已作废并标注更正。
 - **复跑**：`bun run test:backend`（连跑 3 次对比汇总行）。**为何暂缓**：与 Task 9 因果链无关，且验收有可靠替代（exit code + 定向套件 + junit 枚举）。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手改 `parallel-test.ts` 时。
 - **与既有条目的关系**：本条**取代**上面 2026-07-30 那条「汇总用例数逐次漂移」的根因段（那条记的四个数是同一现象的早期样本），新增的是「ANSI 与背压两个假说均已排除」这一信息。**发现方**：Task 9 独立验收评审的跨轮累积观测。
+
+## hooks loader 的缓存目录是相对路径，16 个 shard 共享同一目录并互删（2026-08-08，Task 9 收口复评定位）
+
+- **根因（已定位，非猜测）**：`src/lib/pipeline/hooks/loader.ts` 的 `HOOK_CACHE_DIR = ".hooks-cache"` 是**相对路径**，而 `scripts/parallel-test.ts` 用 `cwd: REPO_ROOT` spawn 全部 16 个 shard ⇒ **所有 shard 共享同一个物理目录**。`cacheInitialized` 是**进程级**的，于是每个 shard 首次加载 hook 时都会 `rmSync` 清空整个共享目录，删掉别的 shard 刚写、正要 `import()` 的文件。写入文件名 `hook-${Date.now()}-${loadSeq}` 里的 `loadSeq` 同样是进程级，**同毫秒会撞名**。
+- **当前行为**：`tests/routes/hooks.http.test.ts` 的 `POST /reload > loads a valid hook module and returns ok:true with exports/version` 在 `bun run test:backend`（16 shards）下偶发失败；**单跑 6 pass / 0 fail**。与 History V3 / 迁移 / 判据改动**零交集**（复评独立核实）。
+- **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
+- **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
+- **发现方**：Task 9 独立验收评审的收口复评（`docs/tmp/2026-08-08-task9-review-acceptance.md` R2-4）。

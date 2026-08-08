@@ -608,3 +608,116 @@ v3 manifest **永远**对账（缺表就大声失败），v1/v2 只在表存在�
 | F3 守卫 false-green（我 R2-2 提出） | **闭合**，两个方向各有正控 |
 | #5 写路径退化判据（MAJOR） | **仍未闭合**（你已如实记为未闭合）；建议与 R2-1d 的 fallback 扫描一并用确定性工作量计数收口 |
 | #9 门禁仪表（MAJOR） | 结论不变：exit code 可信、tally 不可信、根因未定；按 3-5 处置 |
+
+---
+
+## R2-4 —— 收口复评（HEAD `c3c792e2`）
+
+基线 `/tmp/t12` 与 `git show c3c792e2:src/lib/history/v3/store.ts` 逐字节一致；`tests/history/` **`556 pass / 23 skip / 0 fail`**（与你报的一致）。全部变异注入后已还原，最终基线复跑仍 `556 / 0 fail`。
+
+### 4-1) 新判据确实覆盖了它声称的不变量（复评问题 1）——但捕获面有一个真实的小洞
+
+**先证它有鉴别力**：把 `store.ts:895` 的 `isSummaryProjectionReady(db)` 改回 `getSummaryProjectionReadiness(db).ready`，在**出厂的 N=2** 设置下跑 `store-performance.it.test.ts` → `3 pass / 1 fail`，失败在 `expect(offenders).toEqual([])`，offender 精确是：
+
+```
+SCAN v3_operation_summaries :: SELECT
+         SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned
+       FROM v3_operation_summaries
+```
+
+**我 Round 1 的 #5 判据侧由此闭合**，而且这次是确定性判据、不受 CPU 争用影响。你自己先做出假判据又证伪它的那一段（表不存在 → 聚合提前返回 → 变异下仍全绿）我复核过成立：`getSummaryProjectionReadiness`（`summary-store.ts:480-481`）确实先查表存在性并早退，所以「只 `ensureV3Schema` 不跑迁移」的库上那条语句根本不会执行——这是一个教科书级的 vacuous-green，补 `applyForwardMigrations` 是对的修法。
+
+**捕获完整性实测**（探针 `/tmp/t12/probe-plan-capture.ts` / `probe-plan-stats.ts`，同时包裹 `db.prepare` 与 `db.exec`）：
+
+| 项 | 实测 |
+|---|---|
+| 一次提交经 `db.prepare` 的语句数 | **29**（去重后 21 条不同 SQL） |
+| 被 `try/catch continue` 跳过的 | **0** —— `EXPLAIN QUERY PLAN` 对带 `?` 绑定参数、CTE、`INSERT OR REPLACE`、`json_each(?)` 全部规划成功，`.all()` 无需绑定 |
+| 被前置 `if (!/^\s*(?:SELECT\|UPDATE\|DELETE\|INSERT)/i)` 跳过的 | **0** |
+| 一次提交经 `db.exec` 的语句数 | **4** —— 一段 `V3_SCHEMA_SQL` 全量 DDL + `DROP TABLE IF EXISTS v3_search_{membership,objects,backlog}`（来自 `ensureV3Schema` 的当前层重刷） |
+
+所以你担心的「try/catch 静默跳过一大片、且恰好是承重的」**没有发生**：跳过数为 0，承重的那条聚合就在被规划的 29 条里（变异实测已证）。
+
+**但 `db.exec` 是一个真实的逃逸口（MINOR，建议补）**：guard 只包裹 `prepare`。今天经 `exec` 走的 4 条都是 DDL、与历史长度无关，所以现在不是缺陷；但它是**判据的盲区**而非「不存在的路径」——将来任何人把一条 DML 写成 `db.exec("DELETE FROM v3_operations WHERE …")`，这道门看不见。一行修法：同样包裹 `db.exec`，并断言经 `exec` 的语句全部匹配 DDL 白名单（`CREATE|DROP|ALTER|PRAGMA|BEGIN|COMMIT`），有 DML 就直接判失败。这比把 exec 的 SQL 也送去 EQP 更简单，也更符合「exec 不该承载 DML」这条真正的意图。
+
+（顺带记录、非本轮问题：`ensureV3Schema` 在**每次提交**里重刷一遍完整 `V3_SCHEMA_SQL` + 3 条 `DROP TABLE IF EXISTS`。它是 O(1) 而非 O(history)，所以新 guard 判它无罪是对的；但它仍是每提交一次的常量开销，可与 R2-1d 的 backlog 条目并列记一笔。）
+
+### 4-2) 「查询计划不依赖行数」这个理由**不成立**；但你砍到 N=2 的**结论**成立（复评问题 2）
+
+**理由不成立的两处，都可实测**：
+
+1. **本仓有 ANALYZE，而且它就在测试用的开库路径上。** `connection.ts:89-90`：`openDatabase()` 无条件调用 `maybeVacuumOnStartup` + **`seedAnalyzeIfNeeded`**（`:235-244`，内部 `database.exec("ANALYZE;")`），而 `openInMemoryDatabase()`（`:296-298`）就是 `openDatabase(":memory:")`。实测该测试库在 setup 阶段 **`sqlite_stat1` 已存在**。另有 `runOptimize`（`:252-256`，`PRAGMA optimize`）在 reaper tick 上持续刷新生产库的统计。所以「no ANALYZE stats here」是错的。
+2. **SQLite 的计划本来就吃统计。** 实测：在同一个库上 seed 200 行后手工 `ANALYZE`，`sqlite_stat1` 立刻出现 `v3_operation_summaries` 三个索引的 `"200 200 1"` 一类选择性统计——计划输入确实随行数变。
+
+**为什么 `sqlite_stat1` 存在却几乎是空的**：`seedAnalyzeIfNeeded` 在 `openDatabase` 早期就跑，那一刻 v3 表还没建（`ensureV3Schema`/迁移在其后），所以 ANALYZE 只记下了 `history_store_identity` 一行；而它又以「`sqlite_stat1` 存在即返回」为条件，此后**永不重跑**。实测该库 `sqlite_stat1` 内容始终只有 `history_store_identity`。
+
+**结论仍然成立，但要用实测而不是这条错理由来支撑**。我用加宽后的 11 张表清单跑了三组：
+
+| 设置 | `v3_operations` 行数 | `sqlite_stat1` | offenders |
+|---|---|---|---|
+| N=2（出厂设置） | 2 | 只有 `history_store_identity` | **0** |
+| N=200，不 ANALYZE | 200 | 同上 | **0** |
+| N=200 + 手工 `ANALYZE` | 200 | 含各 v3 索引真实选择性 | **0** |
+
+即：判据的裁决在 N=2、N=200、以及带真实统计的 N=200 下**一致**。所以砍 flood 没有削弱判据。
+
+**处置建议**：把那条注释里的「a query PLAN is chosen from the schema, not from row counts (no ANALYZE stats here)」换成实测口径——「N=2/N=200/N=200+ANALYZE 三组裁决一致（复跑命令 X）；注意 `openDatabase` 会 `seedAnalyzeIfNeeded`，本库的 `sqlite_stat1` 只含 floor 表，因为 ANALYZE 早于 v3 表创建」。**理由写错比没写更危险**：它是给下一个人读的指令性文本，下一个人会据此认为「计划与数据无关」，从而在别处放心地用极小样本判计划。
+
+### 4-3) `historyLengthTables` 名单确有遗漏，但**目前是潜在缺口不是活缺陷**（复评问题 3）
+
+我把清单加宽到 11 张（补 `v3_sequence_nodes`、`v3_transport_evidence`、`v3_operation_evidence_refs`、`v3_journal_evidence_refs`、`v3_journal`、`v3_summary_backlog`）重跑 —— **三组设置下 offenders 仍为 0**。所以遗漏今天不掩盖任何东西。
+
+但从判据设计上，**黑名单是错的形状**：它要求维护者在新增表时记得回来加一行，而「忘了加」不会有任何信号（`criteria-list-grows`）。`v3_sequence_nodes` 与两张 refs 表都是逐操作增长的，`v3_transport_evidence` 随捕获量增长——它们本来就该在名单里。
+
+**建议改成白名单**：断言「一次提交的计划里不得出现对**任何**表的 `SCAN`，除非该表在有界表白名单里」（`v3_meta`、`history_meta`、`history_store_identity`、`sqlite_schema` 之类）。这样新增表默认被守住，且白名单每加一项都必须写理由——正是 `freeze-hit-set-not-zero-hits` 想要的形状。
+
+### 4-4) 两处加强达到了我原本的意图，且都经变异证实（复评问题 4）
+
+- **#2 第二方向**：`test.each` 参数化为「ref 消失」与「`byte_length+1`」。删掉 `store.ts` 的 commit-time strict hydrate 那一行 → `transport-evidence.it.test.ts` `37 pass / 2 fail`，**两个方向同时变红**。正是我建议的形状（同一注入器改 `UPDATE … byte_length+1`）。
+- **F3 锁消息**：裸 `toThrow()` 已收紧为 `/no such table: v3_operation_evidence_refs/i`，与实测抛出的错误一致（该错误来自 `operationRefs` 对已 DROP 表的 SELECT），机制被钉住了。
+
+### 4-5) 两条门禁失败：判定成立，且其中一条我能给出机制（复评问题 5）
+
+**`tests/routes/hooks.http.test.ts` 的 `POST /reload` —— 与本轮改动无因果关系，且有确定的跨 shard 污染机制。**
+
+`src/lib/pipeline/hooks/loader.ts:92-110`：
+
+```ts
+const HOOK_CACHE_DIR = ".hooks-cache"          // 相对路径 → 解析到 process.cwd()
+let cacheInitialized = false                   // 进程级
+...
+if (!cacheInitialized) {
+  rmSync(HOOK_CACHE_DIR, { recursive: true, force: true })   // 清空整个共享目录
+  mkdirSync(HOOK_CACHE_DIR, { recursive: true })
+  cacheInitialized = true
+}
+const compiledPath = join(HOOK_CACHE_DIR, `hook-${Date.now()}-${++loadSeq}.mjs`)
+writeFileSync(compiledPath, js)
+const mod = await import(join(process.cwd(), compiledPath))
+```
+
+而 `scripts/parallel-test.ts:120` 是 `Bun.spawn(["bun", "test", ...b], { cwd: REPO_ROOT })` —— **16 个 shard 共享同一个 `process.cwd()`，因而共享同一个 `.hooks-cache/`**。`cacheInitialized` 是进程级的，所以**每个 shard 首次加载 hook 时都会 `rmSync` 掉整个共享目录**，把别的 shard 刚写下、正准备 `import()` 的文件删掉；文件名 `hook-${Date.now()}-${loadSeq}` 里 `loadSeq` 也是进程级的，两个 shard 在同一毫秒、同一 seq 会撞出**完全相同的文件名**。
+
+这条路径与 `cf377959`／`2b2c1d43` 改的东西（History 迁移顺序、`hydrateManifest` 守卫、history 测试）**没有任何交集**——hook loader 不 import History 任何模块，History 也不 import 它。**判定成立。** 并且这不只是「flake」，是可修的：把缓存目录与文件名按进程隔离（`mkdtempSync` 或路径里带 `process.pid`），或干脆放进 `XDG_DATA_HOME` 沙箱（那个是 per-process 的）。建议作为独立条目进 backlog。
+
+**`states-flush-freeze.it.test.ts:74` —— 与本轮改动无关，有直接的时间线证据。**
+
+我在 **Round 1**（HEAD 还是 `10891dff` + 同伴 WIP，即 `cf377959`／`2b2c1d43` 之前）跑官方门时就抓到过**同一文件、同一行、同一断言**的失败（本报告 §9d 已记录：`:74` 的 `expect(hasLearnedRejectModel(snapshot1, "claude-sonnet-4-9")).toBe(true)`）。**同一失败在本轮改动之前就存在**，因此不是本轮引入的。我也复核过它不是本轮 drain seam 的回归：`:74` 是 `flushAndFreeze` 的「立即落盘」断言，drain seam 改的是 `:79/:90/:99/:114` 那几条 debounce 等待。
+
+**但我不给它补机制解释**——`readNegotiationDisk` 走的 `XDG_DATA_HOME` 沙箱是 per-process 的（`tests/helpers/sandbox-paths.ts` 用 `mkdtempSync`），所以上面那种跨 shard 文件互删在这里说不通；我隔离复跑（32 个引用 feature-negotiation 的文件同进程连跑 6 次）也是 6/6 绿。**根因未定，按 `verified-by-a-wrong-query` 不编第三个解释**，只登记形态与已排除的假设。
+
+### 4-6) 收口状态表
+
+| 发现 | 状态 |
+|---|---|
+| #7 / spec F1（BLOCKER） | 闭合 |
+| spec F2（BLOCKER） | 闭合 |
+| schema-5 升级路径（BLOCKER，存量） | 闭合，四类库实测 |
+| #2 commit-time strict gate（MAJOR） | 闭合，两个方向变异均红 |
+| F3 守卫 false-green | 闭合，两个方向各有正控 |
+| **#5 写路径退化判据（MAJOR）** | **闭合**——确定性查询计划判据，变异下精确红在 `SCAN v3_operation_summaries` |
+| #9 门禁仪表（MAJOR） | 未闭合但已正确降级：exit code 可信、tally 不引用、根因未定已入 backlog |
+| 新增 MINOR（本轮） | ①guard 未覆盖 `db.exec` 逃逸口 ②N=2 的**理由**写错（结论对）③`historyLengthTables` 宜改白名单 ④hooks `.hooks-cache` 跨 shard 共享，建议入 backlog |
+
+**verdict：无未闭合 blocker；剩余项均为 MINOR 或已登记的 backlog。** 唯一我认为应在合并前顺手做掉的是 4-2 那条**注释里的错误理由**——它是给后来者读的指令性文本，其余三条可进 backlog。

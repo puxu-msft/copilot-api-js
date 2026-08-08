@@ -79,3 +79,32 @@
 **② 剩余判别力缺口：** 当前 malformed `summary_json` 仍能拦截“直接 `JSON.parse(summary_json)`”这种错误实现，但不足以完整证明 count 只依赖 canonical root。F1 修复后 marker-false summary facade会 hydrate合法 manifest并从 canonical重投影，完全不读坏 `summary_json`；把 status count误接到该 facade仍可能返回1而本测试全绿。直接 `COUNT(*) FROM v3_operation_summaries`（不筛 ready）也会在当前一行 fixture上返回1。故 DROP 删除本身合理，但“还有谁守原完整不变量”的答案是：`status/route.ts:128-136` 当前实现确实用 `countV3Operations()`，测试只守住其中“不得解析 summary JSON”的子集，没有守住“不得依赖 summary row存在／状态或 hydrate canonical”的全部语义。
 
 **② 修复建议：** 保留现有坏 JSON case，并增加正交状态：删除该 operation 的 summary row（或同时造 missing／poisoned rows），再把 canonical manifest改成无法 hydrate但 operation root仍存在，断言 `/api/status` 仍为200且 `historyEntryCount` 精确等于 `v3_operations` 行数。这样可同时咬住 summary-table count、ready-only count与 canonical hydrate三类错误接线；正样本保留正常 operation count，避免 false-red。此补强可与①同一修复轮处理，但不要恢复已退役 trigger DROP。
+
+### F5 — BLOCKER — recovery 的 canonical API 迁移不是旧 adapter 的严格等价替换：失败 operation 被写入伪 `winnerCandidate`
+
+**位置：** `src/lib/history/v3/recovery.ts:123-199,223-229`、`src/lib/context/model-operation-record.ts:1002-1009,1164-1198`、`src/lib/context/model-operation-record.ts:348-357`。
+
+**问题：** 新实现只要 projected entry 有 attempts，就在 terminal 上无条件写 `winnerCandidate: candidate`（`recovery.ts:126,194-198,226`），即便没有任何 committed dispatch、candidate verdict 已明确为 `failed`。旧 adapter 只传 `committedAttempt`；`commitTerminal()` 在无 committed dispatch 时不会推导 winner（`model-operation-record.ts:1184-1198`）。因此失败／aborted／interrupted recovery record 从“没有 winner”变成“失败 candidate 是 winner”，与 `winnerCandidate` 的 canonical 语义冲突。
+
+**严格等价核验：** dispatch verdict 保持一致——仅 completed entry 的最后 attempt 为 `committed`，其余最后 attempt 为 `failed`、前序为 `discarded`；candidate verdict 也与旧 adapter 相同——任一 committed dispatch则 `winner`，否则 `failed`（旧 adapter在 `commitTerminal()` 内执行，`model-operation-record.ts:1167-1176`）。`captureTimestamps:false` 下 occurredAt同样保持缺席：旧 `beginAttempt()` 只在 `captureTimestamps` 为真时补 now（`:1002-1009`），新 beginCandidate／beginDispatch未传 occurredAt。不过 settle 顺序并不等价：旧顺序是 dispatch settle → `recordEgress` → adapter在 `commitTerminal` 内 candidate settle → terminal；新顺序是 dispatch settle → candidate settle → `recordEgress` → terminal。这会改变 sequence、timeline与digest。该顺序变化未必本身错误，但不能归类为纯 style／严格等价，必须由 canonical lifecycle契约明确裁决并测试。
+
+**影响：** projection recovery 是把旧 `HistoryEntry` 重新固化为 canonical V3 record 的生产脚本路径。失败记录的 terminal 会声称存在 winner，而对应 candidate 又标 `failed`；任何按 winner做顶层投影、归因或后续迁移的消费者会得到自相矛盾的 canonical History，属于用户可观察的数据语义错误。
+
+**修复建议：** terminal 仅在 `committedDispatch !== undefined` 时同时写 `winnerCandidate` 与 `committedDispatch`；无 committed dispatch 时两者都省略。补充 completed／failed／aborted／interrupted 四态回归，逐项断言 candidate verdict、dispatch verdict、terminal winner／committed fields，并冻结期望 sequence关系；若 canonical API要求 candidate 必须先于 egress settle，则明确接受非等价 sequence并更新 recovery fixture／文档，否则把显式 `settleCandidate` 移到 `recordEgress` 后以保持 adapter顺序。修复方建议 `gpt-souls:implementer`。
+
+### L1 — 通过 — usage 条件、retry switch 与测试 oracle 变更未发现语义丢失
+
+- Anthropic usage：官方安装 SDK 的 `Message.usage` 与 `RawMessageStartEvent.message` 均必填；`Usage.cache_creation_input_tokens`／`cache_read_input_tokens` 是 `number | null`，不是 optional（`node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts:657-769,776-805,937-940,1552-1564`）。因此 `anthropic-to-cc.ts` 的 null／undefined显式判断与旧 `!= null` 等价；`anthropic-to-cc-stream.ts:193-194,261-263` 对真实 null保持不挂载，对0仍挂载，input/output必填赋值等价；`anthropic-to-responses-stream.ts:243` 去掉恒真 `if (msg.usage)` 等价。仓库测试还显式覆盖 Anthropic null cache legs（`tests/openai/anthropic-responses-reverse-roundtrip.unit.test.ts:60-61`）与 cache_write／cached 正向映射（`tests/openai/anthropic-to-cc.unit.test.ts:156-180`）。未发现“类型乐观、真实 wire 可为 undefined”的一手证据；若 GHC 发送缺字段，那已违反当前官方 SDK contract，且新 stream代码最终仍不会挂载 undefined cache field。
+- Responses usage：项目 SSOT 定义 `ResponsesResponse.usage: ResponsesUsage | null`，details对象及其 `cached_tokens`／`cache_write_tokens` optional但非nullable（`src/types/api/openai-responses.ts:260-288`）。`responses-to-cc.ts:109-119` 与 stream版 `:219-236` 把重复属性读取收进局部变量，保留0、缺失时不挂载；reasoning条件未改。`ResponsesReasoningOutput.summary` 元素类型恒为 `summary_text`（`openai-responses.ts:206-215`），移除冗余 type判断不扩大当前合法输入。
+- `cell-assembly.ts:104-191` 的四个 switch与旧 if链返回映射逐支相同；default仍把 `env.targetEndpoint` 传给 `assertExhaustiveEndpoint(te: never)`。`UpstreamEndpoint` 是四字面量union（`src/lib/pipeline/envelope.ts:24`），新增成员会让四处 default参数不再是never而编译失败，穷尽守卫保留。实际上旧if链末尾同样有never守卫，所以这是等价可读性重构，不是新增能力。
+- 测试 oracle：`ts.flattenDiagnosticMessageText`（`tests/architecture/source-ast.ts:583`）把可能为链式对象的diagnostic完整展开，避免旧模板插值产生 `[object Object]`，只增强错误可诊断性，不改变 pass/fail gate；`unknown`显式收窄与未使用捕获组改为非捕获组均未改变断言对象或匹配集合。抽查 `756a1b30^..756a1b30` 对应 test diff未发现删除断言或放宽期望。
+
+### F6 — MINOR — `style:` commit 混入 canonical History 与 translation 行为重构，commit message 与内容不相符
+
+**位置：** commit `756a1b30`（113 files）；重点 `src/lib/history/v3/recovery.ts`、`src/lib/openai/translate/{anthropic-to-cc,anthropic-to-cc-stream,anthropic-to-responses-stream,responses-to-cc,responses-to-cc-stream}.ts`、`src/lib/pipeline/cell-assembly.ts`、`tests/architecture/source-ast.ts`。
+
+**问题：** `style: integrate repository lint baseline` 暗示不改变语义，但同一 commit迁移了 deprecated lifecycle API、改变 canonical sequence与terminal fields（其中 F5 是确定错误）、重写 usage条件、改变retry控制流形状并增强测试diagnostic oracle。未来 `git log`／`git blame`／bisect会把这些变化误分类为可忽略格式噪声；reviewer也无法按语义单元独立审查或回退。
+
+**建议边界：** 在修复 F5 后，最佳长期形状是趁分支尚未发布重写本地历史，把 `756a1b30` 拆成至少四个语义 commits：① `style: integrate repository lint baseline`，仅eslint配置、import/order、format与机械无语义lint；② `refactor(history): migrate projected recovery to candidate dispatch APIs`，含四态lifecycle回归；③ `refactor(translation): align usage mapping with provider type contracts`，含cache null／0与rich-field测试；④ `refactor(pipeline): make retry endpoint handling exhaustive`；测试diagnostic可并入相应guard commit或独立 `test: preserve structured TypeScript diagnostics`。这样每个commit可独立review／bisect，message与内容一致。
+
+**为何推荐重写而非旁注：** `git branch --contains 756a1b30` 当前只返回 `worktree-placeholder`，用户明确说明尚未push；追加文档或后续commit无法修正原commit在blame／bisect中的错误分类，Git notes也不随普通clone可靠传播。代价是重写其后的本地SHA并同步所有进度／评审文档里的SHA引用，因此应由协调方在确认无其他会话基于该lineage写入后，在隔离worktree中一次完成并重跑现有门禁；若并发基线已使安全重写不可行，次优方案是保留历史、追加一个显眼的 `docs:` commit列出 `756a1b30` 的semantic inventory与正确分类，但这只能缓解、不能修复提交边界。建议修复方按代码／历史整理分别由 `gpt-souls:implementer` 与协调方处理。
