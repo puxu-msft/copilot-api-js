@@ -81,3 +81,31 @@
 2. **仍有 false-red。** 对 live mutable-state gate，权威／有效／竞态消除要求正确；但把直接读 Y 与原子 check-and-act 强加给因果 capability 或单调历史谓词并不必要。正文虽提因果事件，四条的全局合取和两个摘要仍与它冲突。
 3. **旧“直接执行者不读即假门”与“存在性读取即够”的活判据均无残留。** 历史 finding 里的旧句是 durable review record，可保留。三处对状态门表述一致，但索引与 verification-log 遗漏正文的因果事件合法路径，存在上述实质不一致。
 4. **A1 三要素齐全，可执行性仍差一个分型。** 具体形态在 `:10-19,32-36`，本轮实例在 `:21,33-34`，动作与验收在 `:23-30,38`；拿到 state gate 可判，但拿到合法 capability gate 会被互相冲突的 `:12-15` 判据卡住，故尚未完成硬化。
+
+
+## 复审轮三（`f5e50554`）
+
+### 复审范围、证据与 verdict
+
+- 复审范围：`5edcc54f..f5e50554` 的 4 个文件；重点核对 A/B 分型、自洽性、穷尽性、机械判法、共同验收及三处同步。
+- 已执行：读取完整 diff 与 `f5e50554` memory 全文；扫描三处活判据及历史 finding；以多前置部署门、线性一致副本两类正确设计分别做 false-red／false-green 对照。
+- 总体 verdict：**修复 major 后可定稿**。
+- Blocker：**0**。Major：**2**。
+
+### 事实性发现
+
+[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md:30-37`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/MEMORY.md:34`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/.claude/skills/session-closeout/verification-log.md:168` — 共同“正控／负控”把 Y 错当成 X 的充分条件，且未要求观测结果确由目标门产生，既会 false-red 合法多前置门，也会 false-green 假门。
+证据：若部署 X 同时要求 Y=测试通过与 Z=人工批准，Y 完成但 Z 缺失时 X 正确地仍被阻断；现行“已知 Y 完成时 X 确实放行”必判红正确门。反向地，在 Y 未完成且 Z 也缺失时 X 被阻断，可能全由 Z 门造成；一个完全不读取 Y 的假门也能通过负控。失效对照同样可能被兄弟门代咬。
+修复建议：双控必须隔离目标机制。正控写成“Y 成立且所有其他独立前置均满足时，目标 Y 门不再阻断 X”；负控保持其他前置满足，只翻转 Y，并核对阻断来自目标 Y 门。失效对照须只破坏目标 gate／permit，并确认失败位置或 provenance 命中目标机制，而非仅看最终 X 没发生。
+
+[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md:17`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/MEMORY.md:34`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/.claude/skills/session-closeout/verification-log.md:168` — A 型把“权威”定义为必须直接读取 Y 真相源、排除任何副本／摘要，误杀具有可验证一致性／新鲜度契约的合法状态门。
+证据：线性一致读副本、受 lease 保护的 materialized state、带 generation／version 并在放行时校验的快照，都可让读取结果在决策契约上等价于权威状态；它们物理上仍是“副本或摘要”，会被 `:17` 字面拒绝。正文 `:19` 又把 lease／generation token 列作合法竞态消除机制，形成内部张力。
+修复建议：把“权威”定义为“该来源的契约足以裁决 Y，或其值可追溯／验证为权威状态且满足所需一致性与新鲜度”；拒绝的是**未经验证、可能滞后的副本／摘要**，不是副本这一载体本身。三处摘要同步避免“权威 Y”被未来读者按物理单写源理解。
+
+### 复核问题逐项结论
+
+1. **A/B 两型已解耦，上一轮串味闭合。** B 明确不要求放行时重读 Y；A 允许单调 Y 免原子 check-and-act。除“权威”定义过窄外，两型内部条件自洽。
+2. **未发现需要新增的第三种闭合形状。** 调度 DAG、消息／回调、签名 token、物理可达性都可归入 B；锁／谓词／时间窗／配额可归入 A；混合实现可分别证明其承担顺序保证的 A 或 B 腿。当前缺陷在两型共同验收与 A 的来源定义，不在二分覆盖面。
+3. **旁路 observer 判法可执行。** 对每个 X 入口验证 Y 结果是否控制放行，并用只翻转／破坏 Y gate 的对照确认其因果作用；但仅做静态 dominance 不足，须按第一条 major 隔离兄弟门。
+4. **A1 三要素齐全。** 具体形态在 `:8-29,45-51`，本轮实例在 `:43,46-47`，判据／动作在 `:12-41,53`；分型本身可执行，但共同 controls 尚不能可靠裁目标门，故仍未完成硬化。
+5. **三处 A/B 分型与翻车史一致，无旧活判据残留。** 历史 finding 保留旧措辞合理；本轮两条新 major 在三处摘要中同源复述，需同步修正。
