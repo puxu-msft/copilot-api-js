@@ -167,3 +167,16 @@
 - 结构怪味：`.claude/skills/session-closeout/SKILL.md:53,65-71`，类型为“统一 disposition 的回流条件仍按 tmp／非文件对象分叉，且 oracle 缺失时 fail-open”；处置为本轮修，因为两条都能越过删除门。
 - Blocker：2。Major：1。总体 verdict：**存在 blocker**。
 - 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`；用统一的“disposition 是否变化”驱动回流，并让无独立 oracle 的删除门 fail-closed。
+
+# 复审轮六（`a2b37589`）——候选双向对账补充
+
+- 证据源：父 transcript 末段 `:11444-11856`；按评审通知、整改摘要及关键词切片独立枚举，未整读全文。
+- ① ff-only 安全诊断／exact reverse patch：命中 transcript `:11444`，已列，承接匹配。
+- ② `git ls-tree` 列序取证陷阱：命中 transcript `:11444`，已列，承接匹配。
+- ③伪“两轴”、④不可达裁决点、⑤自证空清单、⑥过严 clean gate、⑦先删后审、⑧缺回流、⑨无 oracle、⑩按对象类型分叉：均在 `:11458-11856` 的评审／整改链中可独立枚举，已列；新 memory 的表格逐项承接。
+- **漏项 A（第 1／2 类）**：§3b／§4 “两处各判”与非文件候选无法填写文件 schema，不能只并入③伪“两轴”或⑩对象分叉；它是“声明单源、实际双判／schema 混层”的独立被否路线，见既有报告首轮第 2 条与复审轮一第 1 条。新 memory 七形态没有这一格。
+- **漏项 B（第 1 类）**：四类清单最初无候选边界、死路判据为作者自评；后又以“无法廉价重建”在第 6 类入列前自评过滤。二者促成“六类可枚举事件＋一律 provisional”，不等同⑤空清单或⑨无 oracle；新 memory 未承接。
+- **第 4 类（标定值）“无新增”不属实**：本轮新增并反复修订了 job tmp 人口观测；调用方称“56 项冻结人口”，本次独立 `Path.iterdir()` 复算也是 56，而 `fd -H` 只得 42（仍漏 gitignored 文件）。这至少是一条新增口径／工具能力边界，应列 provisional，并指向既有 56 项 manifest／终审记录作为接收载体。
+- **第 5 类（mutation／正负控）“无新增”属实**：末段整改没有实际注入新的 production mutation；“patch 粒度不足则承重”只是规则示例。Batch 1b 既有 mutation／floor 双控已在 dispositions 与 progress 承接，不是本轮新增。
+- **第 6 类（运行态／外部能力探针）“无新增”不属实**：本轮 reviewer 实跑 Git `2.43.0` 的 unmerged-index、resolved-but-uncommitted `MERGE_HEAD`、divergent／dirty-path stderr、不重叠 staged dirt fast-forward，以及 GNU patch／`git apply --directory` 行为；这些结论直接驱动多轮裁决。① memory 承接其大部分，但候选清单应显式 disposition，不能以“已写进①”代替入列。
+- 结论：10 项清单仍漏 A、B 与第 4／6 类新增事实；第 5 类无新增属实。

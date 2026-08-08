@@ -16,6 +16,8 @@ metadata:
    - **多种情况可以同时存在**，解决一个之后要重跑，别假设只剩一个。
 
 > 证据等级：上述三种前置状态、两条 stderr 的对应、以及「不重叠 staged dirt 不妨碍快进」，均由独立 reviewer 在 Git `2.43.0` 临时仓库正反探针实测；**本会话因 worktree 隔离护栏无法自行复跑，未经我方独立复核**。正因如此，正文的判据落在「读 in-progress 状态 + 读实际 stderr」，而不落在这份枚举上。
+>
+> **探针清单（收尾第 6 类的显式 disposition，不以「已写进本文」代替入列）**：① unmerged index 存在时 `--ff-only` 的行为；② 已 `add` 解决但未提交的 merge（`MERGE_HEAD`）；③ divergent 与 dirty-path 两种 stderr 的区别；④ 不重叠 staged dirt 不妨碍快进；⑤ `git apply --directory=` 相对／绝对前缀；⑥ GNU `patch 2.7.6` 对已反向补丁的提示行为。**接收载体即本文**；**边界**：均为 Git `2.43.0` + GNU patch `2.7.6` 的单次临时仓库观测，未跨版本验证，且**不是本会话实跑**。
 
 **脏路径的安全解法（本轮实测）**，顺序不能反：
 
