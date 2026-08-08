@@ -53,7 +53,6 @@ describe("shouldAttemptPreContentRecovery", () => {
   })
 
   for (const abortKind of [
-    "shutdown",
     "header-timeout",
     "request-deadline",
     "reaper-cancel",

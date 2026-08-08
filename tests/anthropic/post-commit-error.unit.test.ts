@@ -159,11 +159,6 @@ describe("classifyPostCommitAbort — provenance beats signal state", () => {
   }
   const reaperFired = lifecycle(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
 
-  test("shutdown teardown is NOT reported as a reaper cancel, even with the lifecycle signal up", () => {
-    const e = tagTransportError(abortNamed("AbortError", "[http2] upstream session pool closed"), "pool-closed")
-    expect(classifyPostCommitAbort(false, reaperFired, e)).toBe("shutdown")
-  })
-
   test("the header watchdog is identified by its TimeoutError, not by elapsed time", () => {
     expect(classifyPostCommitAbort(false, notFired, abortNamed("TimeoutError"))).toBe("header-timeout")
   })
@@ -193,7 +188,6 @@ describe("classifyPostCommitAbort — provenance beats signal state", () => {
 
 describe("postCommitAbortFrame", () => {
   test("each kind names its own cause on the wire — no shared fiction", () => {
-    expect(parse(postCommitAbortFrame("shutdown")).error?.message).toBe("Server is shutting down")
     expect(parse(postCommitAbortFrame("header-timeout")).error?.message).toBe("Upstream timed out before sending response headers")
     expect(parse(postCommitAbortFrame("request-deadline")).error?.message).toContain("hard deadline")
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
@@ -207,14 +201,13 @@ describe("postCommitAbortFrame", () => {
     // answer decided by whether upstream response headers had arrived, which is not a fact
     // about what ended the request. Asserting against the shared table (rather than repeating
     // the literals) is what makes a future local hardcode impossible to sneak back in.
-    const kinds = ["shutdown", "header-timeout", "request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
+    const kinds = ["header-timeout", "request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
     for (const kind of kinds) {
       expect(parse(postCommitAbortFrame(kind)).error?.type).toBe(streamErrorKindToAnthropicErrorType(kind))
     }
     // And spot-check the grouping itself, so a table that goes uniformly wrong is still caught.
     expect(parse(postCommitAbortFrame("request-deadline")).error?.type).toBe("timeout_error")
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.type).toBe("timeout_error")
-    expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("overloaded_error")
     expect(parse(postCommitAbortFrame("unknown-abort")).error?.type).toBe("api_error")
   })
 })

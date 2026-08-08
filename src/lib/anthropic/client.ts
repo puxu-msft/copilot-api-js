@@ -24,22 +24,12 @@ import type {
 } from "~/types/api/anthropic"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import {
-  //
-  HTTPError,
-  isAbortError,
-} from "~/lib/error"
+import { HTTPError } from "~/lib/error"
 import {
   //
   createResponseHeaderTimeoutSignal,
   captureHttpHeaders,
 } from "~/lib/fetch-utils"
-import {
-  //
-  getShutdownSignal,
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
@@ -83,38 +73,14 @@ export interface PostAnthropicUpstreamArgs {
  * `/v1/messages/count_tokens` handler so both send byte-identical wires.
  */
 export async function postAnthropicUpstream(args: PostAnthropicUpstreamArgs): Promise<Response> {
-  try {
-    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
-    // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
-    return await upstreamFetch(`${copilotBaseUrl(state)}${args.path}`, {
-      method: "POST",
-      headers: args.headers,
-      body: JSON.stringify(args.wire),
-      signal: args.signal,
-    })
-  } catch (error) {
-    // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
-    // client backs off and retries against the restarted instance, rather than
-    // surfacing a raw AbortError as a generic 500.
-    //
-    // The gate is CAUSAL, not temporal (same contract as send.ts): "the shutdown
-    // signal has fired" would also be true for a stale-reaper or hard-deadline
-    // cancellation that merely landed inside the drain window, and calling those
-    // "Server is shutting down" is the same fabrication this classifier family
-    // exists to stop. `isShutdownCausedAbort` matches the Phase 3 reason object
-    // itself; the caller's own signal reason is the second probe for transports
-    // that synthesize a fresh error instead of surfacing `signal.reason`.
-    const shutdownCaused = isShutdownCausedAbort(error) || (args.signal?.aborted === true && isShutdownCausedAbort(args.signal.reason))
-    if (shutdownCaused && error instanceof Error && isAbortError(error)) {
-      throw new HTTPError(
-        SHUTDOWN_ABORT_MESSAGE,
-        529,
-        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
-        args.model,
-      )
-    }
-    throw error
-  }
+  // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+  // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
+  return await upstreamFetch(`${copilotBaseUrl(state)}${args.path}`, {
+    method: "POST",
+    headers: args.headers,
+    body: JSON.stringify(args.wire),
+    signal: args.signal,
+  })
 }
 
 /** Options for {@link createAnthropicMessages}. */
@@ -194,11 +160,7 @@ export async function createAnthropicMessages(
   // `model` = `wire.model` (the resolved outbound name, same key space as send.ts's
   // `modelId`) — NOT `payload.model` (client's raw name), so the per-model timeout
   // key matches what the request is actually sent as.
-  const upstreamSignal = combineAbortSignals(
-    createResponseHeaderTimeoutSignal(model),
-    payload.stream ? undefined : getShutdownSignal(),
-    opts?.clientAbortSignal,
-  )
+  const upstreamSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(model), opts?.clientAbortSignal)
 
   const response = await postAnthropicUpstream({
     // web_search bypass hop: append the forwarded client query to the upstream path

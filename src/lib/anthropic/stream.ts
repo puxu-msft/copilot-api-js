@@ -14,13 +14,11 @@ import consola from "consola"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import { getShutdownSignal } from "~/lib/shutdown"
 import {
   //
   raceIteratorNext,
   STREAM_ABORTED,
   StreamClientAbortError,
-  StreamShutdownError,
 } from "~/lib/stream"
 
 import {
@@ -42,29 +40,15 @@ export interface ProcessedAnthropicEvent {
 }
 
 /**
- * Process raw Anthropic SSE stream: parse events, accumulate, check shutdown.
- * Yields each event for the caller to forward to the client.
- *
- * Each `iterator.next()` is raced against the idle timeout (if configured) and a
- * local abort controller fed by the shutdown + client signals — so a stalled
- * upstream connection can be interrupted by either without waiting for the next
- * event. The shutdown signal is stable from process start, so even a `.next()`
- * already blocked before shutdown began observes the Phase 3 abort.
- *
- * Abort semantics: client gone → terminate quietly; shutdown (client still
- * connected) → throw `StreamShutdownError` so the consumer's catch emits a
- * terminal error event instead of silently truncating.
+ * Process raw Anthropic SSE stream: parse events, accumulate, and race each
+ * `iterator.next()` against the idle timeout and downstream client signal. A
+ * client disconnect throws `StreamClientAbortError` so the caller records an
+ * aborted request instead of a successful truncated stream.
  */
 export async function* processAnthropicStream(
   response: AsyncIterable<ServerSentEventMessage>,
   acc: AnthropicStreamAccumulator,
   clientAbortSignal?: AbortSignal,
-  shutdownSignal: AbortSignal = getShutdownSignal(),
-  // Per-model frame-idle timeout (ms; 0 = disabled). INV-2: this deep fn takes a
-  // resolved number, never the model. Default reads the scalar (model-less) so
-  // existing callers behave unchanged; the production caller passes the
-  // per-model value. Appended last (not inserted before shutdownSignal) to keep
-  // the 4-arg `(…, shutdownSignal)` call sites intact.
   idleTimeoutMs: number = resolveStreamIdleTimeoutMs(undefined),
 ): AsyncGenerator<ProcessedAnthropicEvent> {
   const iterator = response[Symbol.asyncIterator]()
@@ -74,9 +58,8 @@ export async function* processAnthropicStream(
   // shutdown signal per stream, removed deterministically (no AbortSignal.any/GC).
   const local = new AbortController()
   const onAbort = () => local.abort()
-  shutdownSignal.addEventListener("abort", onAbort, { once: true })
   clientAbortSignal?.addEventListener("abort", onAbort, { once: true })
-  if (shutdownSignal.aborted || clientAbortSignal?.aborted) local.abort()
+  if (clientAbortSignal?.aborted) local.abort()
 
   try {
     for (;;) {
@@ -90,7 +73,6 @@ export async function* processAnthropicStream(
       // client loses its retry cue). Client gone (and not shutting down) →
       // throw StreamClientAbortError so the consumer settles it as `aborted`.
       if (result === STREAM_ABORTED) {
-        if (shutdownSignal.aborted) throw new StreamShutdownError()
         if (clientAbortSignal?.aborted) throw new StreamClientAbortError()
         return
       }
@@ -126,7 +108,6 @@ export async function* processAnthropicStream(
       if (parsed?.type === "error") break
     }
   } finally {
-    shutdownSignal.removeEventListener("abort", onAbort)
     clientAbortSignal?.removeEventListener("abort", onAbort)
     // Best-effort close of the upstream iterator. Fire-and-forget, NOT awaited:
     // on the abort/throw paths a stalled `iterator.next()` is still pending, and

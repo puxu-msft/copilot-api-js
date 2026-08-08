@@ -21,22 +21,12 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { HeadersCapture } from "~/lib/context/request"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import {
-  //
-  HTTPError,
-  isAbortError,
-} from "~/lib/error"
+import { HTTPError } from "~/lib/error"
 import {
   //
   captureHttpHeaders,
   createResponseHeaderTimeoutSignal,
 } from "~/lib/fetch-utils"
-import {
-  //
-  getShutdownSignal,
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
@@ -204,17 +194,6 @@ export interface SendUpstreamHttpParams {
   reaperSignal?: AbortSignal
   /** Candidate/dispatch-local cancellation signal (loser cancellation / force disposal). */
   dispatchSignal?: AbortSignal
-  /**
-   * When true, a fetch abort that {@link isShutdownCausedAbort} attributes to OUR
-   * shutdown is rewritten to a retryable `HTTPError` 529 (overloaded), so the client
-   * backs off and retries against the restarted instance — parity with the legacy
-   * Anthropic client (client.ts:132-145). Off by default: every other caller (CC /
-   * Responses / Gemini) re-throws the ORIGINAL AbortError object unchanged, preserving
-   * its stack/identity/reason for the existing abort classification. A client-disconnect
-   * abort NEVER becomes 529 (explicit guard), and neither does a reaper / hard-deadline
-   * cancellation that merely happened during the drain. The Anthropic v4 transport opts in.
-   */
-  rewriteShutdownAbort?: boolean
   /** Best-effort HTTP/2 response-trailers sink (h2 path only); the driver wires it to `ctx.setOutboundResponseTrailers`. */
   onTrailers?: (trailers: Record<string, string>) => void
 }
@@ -240,7 +219,6 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     clientAbortSignal,
     reaperSignal,
     dispatchSignal,
-    rewriteShutdownAbort,
   } = params
 
   // Fold the stable shutdown signal into the fetch signal for BOTH streaming and non-streaming
@@ -253,7 +231,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   // shutdown is idempotent). A shutdown-abort rewritten to a retryable 529 (below) is prevented
   // from spawning a new attempt by the driver's attempt-boundary cancel gate (RC1+RC3 atomic).
   // `clientAbortSignal` and `reaperSignal` (ctx.lifecycleSignal) are always folded too.
-  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), getShutdownSignal(), clientAbortSignal, reaperSignal, dispatchSignal)
+  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), clientAbortSignal, reaperSignal, dispatchSignal)
 
   let response: Response
   try {
@@ -268,38 +246,6 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
       ...(params.onTrailers && { onTrailers: params.onTrailers }),
     })
   } catch (error) {
-    // rewriteShutdownAbort (Anthropic v4 transport opt-in): an abort CAUSED BY OUR
-    // SHUTDOWN becomes a retryable 529 (overloaded) — parity with the legacy Anthropic
-    // client (client.ts:132-145) — so the client backs off and retries against the
-    // restarted instance. Every other caller, and every other abort cause, re-throws the
-    // ORIGINAL error object unchanged (preserving stack/identity/reason for the boundary
-    // classification downstream).
-    //
-    // The gate is CAUSAL, not temporal: `isShutdownCausedAbort` matches the Phase 3 abort
-    // reason object itself and `pool-closed` marks our own pool teardown. A plain
-    // "are we shutting down?" flag would be wrong — a request cancelled during the
-    // drain by the stale reaper or the hard deadline is not a shutdown, and neither is
-    // a client that hung up in that window (hence the explicit client-signal guard,
-    // which the old `getShutdownSignal().aborted` form was missing).
-    //
-    // The fetch signal's own reason is the second probe: a transport that synthesizes a
-    // fresh AbortError instead of surfacing `signal.reason` would otherwise lose the
-    // provenance. `fetchSignal.reason` is the FIRST aborted source's reason (AbortSignal.any
-    // semantics), so this cannot mistake a reaper/deadline cancel for a shutdown.
-    if (
-      rewriteShutdownAbort
-      && error instanceof Error
-      && isAbortError(error)
-      && !clientAbortSignal?.aborted
-      && (isShutdownCausedAbort(error) || (fetchSignal?.aborted === true && isShutdownCausedAbort(fetchSignal.reason)))
-    ) {
-      throw new HTTPError(
-        SHUTDOWN_ABORT_MESSAGE,
-        529,
-        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
-        modelId,
-      )
-    }
     throw error
   }
 

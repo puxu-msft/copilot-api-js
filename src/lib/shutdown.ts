@@ -1,26 +1,15 @@
 /**
  * Centralized graceful shutdown management.
  *
- * One termination signal starts the complete four-step shutdown sequence:
- *   1. Stop accepting new work
- *   2. Wait for in-flight work to complete naturally
- *   3. Abort remaining work after the graceful deadline
- *   4. Force-close connections after the abort deadline
- * Persistence finalization follows those four request-lifecycle steps. A second
- * termination signal is a process-wide escape hatch and exits immediately; it
- * never advances the sequence one step at a time.
- *
- * Phase 2/3 timeouts are configurable via state.shutdownGracefulWait and
- * state.shutdownAbortWait (seconds), set from config.yaml `shutdown` section.
- *
- * Handlers integrate via getShutdownSignal() to detect Phase 3 abort.
+ * One termination signal stops ingress, losslessly drains every accepted
+ * operation, and then closes runtime resources behind durability barriers. It
+ * never cancels request work. A second termination signal is the process-wide
+ * escape hatch and exits immediately.
  */
 
 import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import consola from "consola"
-import { setMaxListeners } from "node:events"
 
-import { getTransportErrorReason } from "~/lib/error/transport-reason"
 import { peekTokenRuntime } from "~/lib/token"
 
 import type { RequestContext } from "./context/request"
@@ -83,35 +72,6 @@ function createCompletionLatch(): { promise: Promise<void>; resolve: () => void 
 
 let shutdownCompletion = createCompletionLatch()
 
-/**
- * Create the process-global shutdown AbortController.
- *
- * Listener bookkeeping: every in-flight stream/fetch registers an `abort`
- * listener on this signal so a Phase 3 abort can wake it. With many concurrent
- * streams that exceeds Node's default 10-listener warning threshold, so we lift
- * the cap. `setMaxListeners` works on EventTargets (incl. AbortSignal) under
- * Node; under Bun it may be a no-op — that's fine, correctness never depends on
- * it (consumers remove their listeners explicitly), it only silences a warning.
- */
-function createShutdownController(): AbortController {
-  const controller = new AbortController()
-  try {
-    setMaxListeners(0, controller.signal)
-  } catch {
-    // Runtime without setMaxListeners support for EventTargets — non-fatal.
-  }
-  return controller
-}
-
-/**
- * Process-global shutdown signal, created EAGERLY (not lazily at Phase 1) and
- * aborted exactly once at Phase 3. Being stable from process start means a
- * request that blocks on `iterator.next()` / `fetch()` BEFORE shutdown begins
- * still has this signal registered in its abort race, so the Phase 3 abort wakes
- * it. (A lazily-created signal would leave such already-blocked waits deaf to a
- * signal that only materialized later.)
- */
-let shutdownAbortController: AbortController = createShutdownController()
 let shutdownPhase: ProcessLifecycleState = "idle"
 let shutdownPromise: Promise<void> | null = null
 let signalHandlers: { sigint: () => void; sigterm: () => void; sigusr2: () => void } | null = null
@@ -217,46 +177,6 @@ export function getIsShuttingDown(): boolean {
 /** Get the current shutdown phase */
 export function getShutdownPhase(): typeof shutdownPhase {
   return shutdownPhase
-}
-
-/**
- * Get the process-global shutdown abort signal.
- *
- * Stable from process start (never undefined). It is NOT aborted during normal
- * operation or Phase 1–2; it fires at Phase 3 to tell in-flight handlers to wrap
- * up. To test "are we shutting down?", use {@link getIsShuttingDown} (set at
- * Phase 1) — NOT this signal's existence.
- */
-export function getShutdownSignal(): AbortSignal {
-  return shutdownAbortController.signal
-}
-
-/** Message carried by the Phase 3 abort reason; also the client-facing 529 text. */
-export const SHUTDOWN_ABORT_MESSAGE = "Server is shutting down"
-
-/**
- * Was `error` produced by THIS process's shutdown?
- *
- * Answers the causal question ("did shutdown cancel this?") that
- * {@link getIsShuttingDown} cannot: that flag only says the process is somewhere
- * in its shutdown window, so a request cancelled during the drain by the stale
- * reaper or the hard request deadline would answer "yes" to it and get
- * misreported as a shutdown. Two forms of causal evidence are accepted:
- *  - identity against the live Phase 3 abort reason (the object handed to
- *    `shutdownAbortController.abort()`), and
- *  - the `pool-closed` transport tag (Step 4 / finalize tore the h2 pool down
- *    under a request that was still acquiring its session).
- * The `cause` walk follows the same wrap-tolerant convention as
- * `getTransportErrorReason`.
- */
-export function isShutdownCausedAbort(error: unknown): boolean {
-  if (getTransportErrorReason(error) === "pool-closed") return true
-  const reason = shutdownAbortController.signal.reason as unknown
-  if (reason === undefined || reason === null) return false
-  for (let cursor: unknown = error; cursor instanceof Error; cursor = cursor.cause) {
-    if (cursor === reason) return true
-  }
-  return false
 }
 
 /**
@@ -423,10 +343,6 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // ── Step 1: Stop accepting new requests ───────────────────────────────
   _isShuttingDown = true
-  // NOTE: do NOT recreate shutdownAbortController here. It is created eagerly at
-  // module load and reused for the whole process lifetime, so requests that
-  // began (and possibly blocked on a stalled upstream) BEFORE this point already
-  // hold its signal in their abort race and will observe the Phase 3 abort.
   // Fire-and-forget: Steps 1–3 do not immediately force-close observer sockets.
   // The force-close boundary and final completion notification are awaited.
   setPhaseFireAndForget("stopping")
@@ -695,10 +611,6 @@ export function setupShutdownHandlers(opts?: HandleShutdownSignalOptions): void 
 export function _resetShutdownState(): void {
   _isShuttingDown = false
   shutdownCompletion = createCompletionLatch()
-  // Fresh, un-aborted controller so the next test starts clean. Tests MUST
-  // ensure their in-flight streams have ended before resetting, otherwise a
-  // stream holding the previous signal reference would never see an abort.
-  shutdownAbortController = createShutdownController()
   shutdownPhase = "idle"
   shutdownPromise = null
   serverInstance = null

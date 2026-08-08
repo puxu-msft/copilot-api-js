@@ -443,12 +443,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const betaProbe = createBetaProbe(clientAnthropicBeta)
   const codec = createAnthropicCodec({ betaProbe, preprocessInfo })
-  // rewriteShutdownAbort (C1 / H1): a shutdown-caused non-streaming fetch abort is
-  // rewritten to a retryable 529 inside the send core, in the driver loop's place.
   const transport = createUpstreamHttpTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
-    rewriteShutdownAbort: true,
   })
 
   const driver = createPipelineDriver({

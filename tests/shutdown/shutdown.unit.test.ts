@@ -2,10 +2,10 @@
  * Component tests for graceful shutdown.
  *
  * Covers:
- * - State management (getIsShuttingDown, getShutdownSignal, waitForShutdown)
+ * - State management (getIsShuttingDown, waitForShutdown)
  * - formatActiveRequestsSummary
  * - drainActiveRequests
- * - 4-step orchestration (stop ingress → drain → abort → force close)
+ * - lossless orchestration (stop ingress → drain → finalize)
  * - two-signal contract (first starts graceful shutdown, second exits immediately)
  * - Middleware integration (503 rejection during shutdown)
  * - Error resilience (server.close failures)
@@ -37,7 +37,6 @@ import {
   formatActiveRequestsSummary,
   getIsShuttingDown,
   getShutdownPhase,
-  getShutdownSignal,
   gracefulShutdown,
   handleShutdownSignal,
   setShutdownPublisher,
@@ -96,25 +95,6 @@ describe("getIsShuttingDown", () => {
   test("stays true after shutdown completes (prevents race with late requests)", async () => {
     await gracefulShutdown("SIGINT", createNoopDeps())
     expect(getIsShuttingDown()).toBe(true)
-  })
-})
-
-describe("getShutdownSignal", () => {
-  test("returns a stable, non-aborted AbortSignal before shutdown", () => {
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-    expect(signal.aborted).toBe(false)
-  })
-
-  test("returns AbortSignal after shutdown begins", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-  })
-
-  test("signal is NOT aborted when no active requests (Phase 2/3 skipped)", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    expect(getShutdownSignal().aborted).toBe(false)
   })
 })
 
