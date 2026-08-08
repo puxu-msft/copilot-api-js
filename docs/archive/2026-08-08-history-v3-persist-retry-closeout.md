@@ -11,16 +11,16 @@
 
 ## 验收与评审证据
 
-以下数字均为对应命令在所列 commit／同树合并态的点时输出，不是长期测试总数权威：
+以下每一行都标明它的 tree 身份可否复现。**并非全部可复现**——两行取自未提交的工作树，按 `every-number-carries-scope` 显式标注为不可复现，不以断言语气充当可复跑证据：
 
-| 基线 | 命令／范围 | 结果 |
+| 基线（tree 身份） | 命令／范围 | 结果 |
 |---|---|---|
-| merge tree，提交为 `10387efe` | `bun run typecheck` | exit 0 |
-| merge tree，提交为 `10387efe` | `bun run test:backend` | 6631 pass，0 fail，30 skip；runner 另报 7257 executed |
-| `d59a622c` 前的 review-fix tree | `bun run test:backend` | 6376 pass，0 fail，30 skip；runner 另报 7259 executed |
-| `10387efe` | `bun run test:pty` | 19 pass，0 fail |
-| review-fix tree | `bun test tests/config/history-persist-retry-config.unit.test.ts tests/config/bundled-config.unit.test.ts tests/history/v3/transient-retry.it.test.ts` | 16 pass，0 fail |
-| `d59a622c`，独立 reviewer 复跑四个相关文件 | reviewer 实测 | 29 pass，0 fail |
+| `10387efe`（可复现） | `bun run typecheck` | exit 0 |
+| `10387efe`（可复现） | `bun run test:backend` | 6631 pass，0 fail，30 skip；runner 另报 7257 executed |
+| review-fix 工作树，**未提交、tree 身份不可复现**；其内容随后提交为 `d59a622c`，但两者是否逐字节相同已无法事后证明 | `bun run test:backend` | 6376 pass，0 fail，30 skip；runner 另报 7259 executed。**未交叉验证** |
+| `10387efe`（可复现） | `bun run test:pty` | 19 pass，0 fail |
+| review-fix 工作树，同上，**不可复现** | `bun test tests/config/history-persist-retry-config.unit.test.ts tests/config/bundled-config.unit.test.ts tests/history/v3/transient-retry.it.test.ts` | 16 pass，0 fail。**未交叉验证** |
+| `d59a622c`（可复现） | 独立 reviewer 自选的四文件选择器，**原样命令未记录** | reviewer 实测 29 pass，0 fail。**未交叉验证**，复跑需自行重建选择器 |
 
 独立评审闭环：
 
@@ -29,8 +29,22 @@
 3. `d59a622c` 整改后，原 reviewer 构造代码默认漂移、bundled YAML 漂移及两者同时漂移三类反例，确认互补 oracle 都会变红；复审结论 0 blocker／0 major。
 4. 收尾总结经过两轮事实复审；首轮发现 feature 指针陈旧与 bundled YAML oracle 归属错误两项 major，整改后复审结论 0 blocker／0 major。
 5. 新增的 job tmp 清理门经独立 `verifier` 做 GREEN 验证，报 2 项 major。Major-2（缺逐项前置）成立并已整改；Major-1（称 manifest 与 tmp 文件错位）经逐项复核为 false-red，不采纳。全部 findings 的证据与处置见 [docs/tmp/2026-08-08-job-tmp-closeout-green-review.md](../tmp/2026-08-08-job-tmp-closeout-green-review.md)。
+6. Major-1 的分歧交未卷入的第三方仲裁，裁定 8 项绑定全部逐字相等、甲方主张不成立，见 [docs/tmp/2026-08-08-manifest-binding-arbitration.md](../tmp/2026-08-08-manifest-binding-arbitration.md)。
+7. 指令文本（项目 `session-closeout` §3b、`CLAUDE.md` ③b、全局 `closing-a-development-session`）与本文经异模型 reviewer 独立评审，报 0 blocker／6 major，**6 项全部采纳并整改**：清理门下沉到清单自身的独立评审之前、全局 skill 的无条件全量复验措辞与项目裁决冲突、三处可被合理化绕过的触发措辞、本文 B 组的假全称断言、验收表口径不足、`长期价值` 与 `intended value` 字段语义分岔。报告见 [docs/tmp/2026-08-08-closeout-instruction-review.md](../tmp/2026-08-08-closeout-instruction-review.md)。
 
-用户于 2026-08-08 裁决：同一交付合并后不因“刚合并”主动重跑全量测试，沿用合并前／合并态证据；后续改动仍执行自己的交付前门禁。因此 `master=d59a622c` 后未再运行一轮全量测试。
+用户于 2026-08-08 裁决：同一交付合并后不因“刚合并”主动重跑全量测试，沿用合并前／合并态证据；后续改动仍执行自己的交付前门禁。因此该交付合并进主线（当时 master tip 为 `d59a622c`）之后未再运行一轮全量测试。此处只描述当时发生了什么，不作为 master 当前位置的断言。
+
+## 仓库与分支状态
+
+- feature 分支 `worktree-history-persist-retry-defaults` 的 worktree 位于 `/home/xp/src/copilot-api-js/.claude/worktrees/history-persist-retry-defaults`，**保留未删除**——用户没有要求删除。
+- **未推送任何远端**：本轮全部提交都是本地提交，发布与否是用户的决定。
+- 分支与 master 的关系随 peer 工作前进而变化，不在本文冻结具体差距；以 `git log --oneline master..worktree-history-persist-retry-defaults` 的即时输出为准。草稿阶段曾记「`master=d59a622c`、领先 2 个提交、一次 `git merge --ff-only` 即可纳入主线」，该判断**已被 master 的后续前进推翻**（peer 的 nghttp2 header deadline 线推进后不再是 ff-only 情形），作为陈旧结论明确作废，不再作为下一步依据。
+
+## 可复用资产处置
+
+- **已实现**：`CLAUDE.md` 中的 subagent 长期授权与并发上限；同一交付合并后不主动重跑全量测试的项目规则；`session-closeout` §3b 与全局 `closing-a-development-session` 的 job tmp 逐文件对账门。
+- **无需新增 agent soul**：本轮没有出现职责边界稳定的新专家角色。
+- **无需新增 skill**：现有 `persistence-async-invariants`、`process-lifecycle-shutdown`、`debugging-test-pollution`、`resolving-merge-conflicts` 已覆盖本轮用到的可复用流程；本轮新增的教训落在既有 skill 的加固里，而不是又造一个同义 skill。
 
 ## 已知边界
 
@@ -67,9 +81,9 @@
 
 - **绝对路径**：`/home/xp/.claude/jobs/dddf6825/tmp/final-closeout-draft.md`
 - **类型**：收尾总结草稿。
-- **长期价值**：其结论有长期价值，草稿载体本身没有——本文已吸收并修正其结论，两轮事实评审发现的 feature 指针陈旧与 bundled YAML oracle 归属错误两项 major 已在本文改正。
-- **承接证据**：本文「交付结果」「验收与评审证据」两节；草稿中被推翻的两处不再出现于任何活文档。
-- **清理前置**：本文已进入 Git，且草稿中**没有任何结论**只存在于草稿而未出现在本文或其它已提交载体中（逐节比对，2026-08-08 完成）。
+- **长期价值**：其结论有长期价值，草稿载体本身没有。本文已逐节承接：交付与验证证据见上文两节；仓库状态（worktree 保留、未推送）与可复用资产处置各自成节；「已知边界」三条原样承接。草稿两轮事实评审发现的 feature 指针陈旧与 bundled YAML oracle 归属错误已在本文改正。
+- **承接证据**：本文「交付结果」「验收与评审证据」「仓库与分支状态」「可复用资产处置」「已知边界」五节。草稿中已被推翻的结论（`master=d59a622c` 与「一次 ff-only 即可纳入主线」）在「仓库与分支状态」节被显式标为作废，属 superseded 而非遗漏。
+- **清理前置**：本文已进入 Git，且草稿中**没有未处置的 durable conclusion**——即逐节比对后，每条结论要么在本文（或其它已提交载体）中有承接，要么被显式判为 transient／superseded 并写明依据。注意这里不是「没有任何结论只存在于草稿」：那个更强的全称断言曾被写进本节，并被独立评审用「仓库状态」与「可复用资产」两节反证推翻，故改为可逐项核对的形式。
 - **最终动作**：前置通过后删除该绝对路径。
 
 ### C 组 · merge 前冻结快照（3 项）
@@ -88,10 +102,11 @@
 
 ## 收尾流程缺陷与修复方向
 
-旧流程只要求抽象地“inventory temporary state”，项目 `session-closeout` 又只具体列出 plan、实验、memory 与交接。真实失败是：`final-closeout-draft.md`、3.4MiB staged baseline、status 快照和 7 个 commit-message 文件全部留在 job tmp，而收尾仍能走到“可交付”。修复不应只提醒“记得看 tmp”，而应建立最终报告前的结构门：
+旧流程只要求抽象地“inventory temporary state”，项目 `session-closeout` 又只具体列出 plan、实验、memory 与交接。真实失败是：`final-closeout-draft.md`、3.4MiB staged baseline、status 快照和 7 个 commit-message 文件全部留在 job tmp，而收尾仍能走到“可交付”。修复不应只提醒“记得看 tmp”，而应建立一道结构门，且它的触发点必须覆盖任一收尾触发之后、任何完成／状态／交接报告发出之前、以及会话或阶段结束之前——写成“最终报告前”会被“这只是阶段汇报”一句话绕开：
 
-1. 枚举 `$CLAUDE_JOB_DIR/tmp` 的每个普通文件和符号链接，冻结逐文件 manifest。
-2. 每行必须有类型、长期价值判断、项目接收载体或不可变承接证据、最终动作。
+1. 枚举 `$CLAUDE_JOB_DIR/tmp` 的每个普通文件和符号链接（若另有 harness 提供的 job/session root，取并集），冻结逐文件 manifest。
+2. 每行必须有绝对路径、类型、长期价值判断（该内容是否必须活过清理，而非它当初用来做什么）、项目接收载体或不可变承接证据、最终动作、逐项清理前置。
 3. 项目接收载体先提交并验证；commit-message／patch 等若不入库，必须指向能替代它的 Git object 或已提交证据。
-4. 清理只能使用 manifest 中的精确路径；清理后重新枚举，新增项必须回到第 2 步。
-5. 最终报告必须声明 tmp 清单数量、已持久化内容、已清理内容与有理由保留内容。
+4. **manifest 本身先过独立评审达到 0 blocker／0 major，才允许执行删除**——删掉唯一一份证据不可逆，其授权不能挂在之后的终稿评审上。
+5. 清理只能使用 manifest 中的精确路径；清理后重新枚举，新增项必须回到第 2 步。
+6. 最终报告必须声明 tmp 清单数量、已持久化内容、已清理内容与有理由保留内容。
