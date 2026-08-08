@@ -10,6 +10,7 @@ import {
   //
   consumeTerminalModelOperation,
   createLightweightModelOperation,
+  listInFlightLightweightModelOperations,
   listTerminalModelOperations,
   MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY,
   resetModelOperationTerminalRegistryForTests,
@@ -35,6 +36,10 @@ describe("lightweight ModelOperation lifecycle", () => {
       requestedModel: "alias",
       metadata: { caller: "unit" },
     })
+    expect(listInFlightLightweightModelOperations()).toEqual([
+      expect.objectContaining({ operationId: operation.operationId, kind: "count_tokens", method: "POST", path: "/v1beta/models/alias:countTokens" }),
+    ])
+
     operation.recordRouting({ resolvedModel: "resolved-model", source: "local" })
     const attempt = operation.beginAttempt({
       source: "local",
@@ -55,6 +60,7 @@ describe("lightweight ModelOperation lifecycle", () => {
       metadata: { countTokens: { rawCount: 3, calibratedCount: 3, source: "local" } },
     })
 
+    expect(listInFlightLightweightModelOperations()).toHaveLength(0)
     expect(listTerminalModelOperations()).toEqual([terminal])
     expect(terminal.identity.kind).toBe("count_tokens")
     expect(terminal.ingress).toMatchObject({ method: "POST", path: "/v1beta/models/alias:countTokens", format: "gemini" })

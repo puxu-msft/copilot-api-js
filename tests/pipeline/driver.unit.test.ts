@@ -6,6 +6,7 @@
  * and the non-streaming variant.
  */
 
+import { HTTPError as FoundationHTTPError } from "@hsupu/ghc-proxy-foundation/error/http-error"
 import {
   //
   afterEach,
@@ -42,7 +43,11 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  classifyError,
+  HTTPError,
+} from "~/lib/error"
 import {
   //
   getRetryGiveUpCounts,
@@ -466,41 +471,30 @@ describe("driver.runExchange — error-driven retry", () => {
     ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
     ["plain-text body", "Timed out reading request body."],
   ])("does not retry %s through the production Responses strategy stack", async (_label, responseText) => {
-    const clock = new FakeClock()
-    clock.install()
-    try {
-      const { ctx, calls } = makeCtx()
-      const payload = { model: "test-model", input: "hello" } as ResponsesPayload
-      const env = makeEnv(ctx, payload)
-      const { codec } = makeCodec({ env })
-      let attempts = 0
-      const error = new HTTPError("Failed to create responses", 408, responseText)
-      const transport = makeTransport(async () => {
-        attempts++
-        throw error
-      })
-      const driver = createPipelineDriver({
-        ...BASE,
-        codec,
-        decideRoute: (e) => codec.decideRoute(e),
-        transport,
-        strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
-      })
+    const { ctx, calls } = makeCtx()
+    const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+    const env = makeEnv(ctx, payload)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const error = new HTTPError("Failed to create responses", 408, responseText)
+    expect(HTTPError).toBe(FoundationHTTPError)
+    expect(error).toBeInstanceOf(FoundationHTTPError)
+    expect(classifyError(error).type).toBe("bad_request")
+    const transport = makeTransport(async () => {
+      attempts++
+      throw error
+    })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport,
+      strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
+    })
 
-      let settled = false
-      const resultPromise = driver.runRequest({ body: {}, headers: new Headers() }).finally(() => {
-        settled = true
-      })
-      resultPromise.catch(() => {})
-      for (let i = 0; i < 100 && !settled && clock.liveTimerCount === 0; i++) await Promise.resolve()
-
-      expect(attempts).toBe(1)
-      expect(clock.liveTimerDelaysMs).toEqual([])
-      expect(calls.recordAttemptFailure).toEqual([])
-      await expect(resultPromise).rejects.toBe(error)
-    } finally {
-      clock.restore()
-    }
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toBe(error)
+    expect(attempts).toBe(1)
+    expect(calls.recordAttemptFailure).toEqual([])
   })
 
   test("retries once via a strategy, then succeeds", async () => {

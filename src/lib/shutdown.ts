@@ -12,6 +12,7 @@ import consola from "consola"
 
 import { peekTokenRuntime } from "~/lib/token"
 
+import type { LightweightInFlightOperation } from "./context/lightweight-model-operation"
 import type { RequestContext } from "./context/request"
 import type {
   //
@@ -21,6 +22,7 @@ import type {
 import type { ServerInstance } from "./serve"
 
 import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
+import { listInFlightLightweightModelOperations } from "./context/lightweight-model-operation"
 import {
   //
   getRequestContextManager,
@@ -195,9 +197,9 @@ export function setServerInstance(server: ServerInstance): void {
 /** Dependencies that can be injected for testing */
 export interface ShutdownDeps {
   /**
-   * Source of active RequestContexts for drain progress / count.
-   * Production passes the RequestContextManager (via getRequestContextManager()).
-   * Tests pass a controllable fake.
+   * Source of accepted generation and lightweight operations for drain progress.
+   * Production combines the RequestContextManager with the lightweight in-flight registry.
+   * Tests may pass a controllable fake.
    */
   tracker?: ShutdownDrainSource
   server?: {
@@ -226,29 +228,29 @@ export interface ShutdownDeps {
 // Drain logic
 // ============================================================================
 
-/** Format a summary of active requests for logging */
-export function formatActiveRequestsSummary(requests: Array<RequestContext>): string {
+export type ShutdownActiveOperation = RequestContext | LightweightInFlightOperation
+
+/** Format a summary of accepted operations for logging. */
+export function formatActiveRequestsSummary(requests: Array<ShutdownActiveOperation>): string {
   const now = Date.now()
-  const lines = requests.map((req) => {
-    const age = Math.round((now - req.startTime) / 1000)
-    const model = req.resolvedModel ?? req.originalRequest?.model ?? "unknown"
-    return `  ${req.method} ${req.path} ${model} (${req.state}, ${age}s)`
+  const lines = requests.map((request) => {
+    const age = Math.round((now - request.startTime) / 1000)
+    if ("operationId" in request) {
+      return `  ${request.method} ${request.path} ${request.requestedModel ?? "unknown"} (${request.kind}, ${age}s)`
+    }
+    const model = request.resolvedModel ?? request.originalRequest?.model ?? "unknown"
+    return `  ${request.method} ${request.path} ${model} (${request.state}, ${age}s)`
   })
-  return `Waiting for ${requests.length} active request(s):\n${lines.join("\n")}`
+  return `Waiting for ${requests.length} accepted operation(s):\n${lines.join("\n")}`
 }
 
 /**
- * Wait for all active requests to complete, with periodic progress logging.
- * Returns "drained" when all requests finish, "timeout" if deadline is reached.
+ * Wait for all accepted operations to complete, with periodic progress logging.
+ * Shutdown owns no drain deadline; only request-level mechanisms may terminate work.
  */
-/**
- * Drain interface — replaces the legacy `{ getActiveRequests: () =>
- * TuiLogEntry[] }` shape. Tracks active RequestContexts via the
- * RequestContextManager. Production passes the manager directly; tests
- * pass a controllable fake.
- */
+/** Drain source shared by the production registry union and controllable test fakes. */
 export interface ShutdownDrainSource {
-  getActive: () => Array<RequestContext>
+  getActive: () => Array<ShutdownActiveOperation>
 }
 
 export async function drainActiveRequests(tracker: ShutdownDrainSource, opts?: { pollIntervalMs?: number; progressIntervalMs?: number }): Promise<void> {
@@ -271,11 +273,11 @@ export async function drainActiveRequests(tracker: ShutdownDrainSource, opts?: {
 }
 
 // ============================================================================
-// Graceful shutdown (4 phases)
+// Graceful shutdown
 // ============================================================================
 
 /**
- * Perform graceful shutdown in 4 phases.
+ * Stop ingress, drain accepted operations, and finalize runtime resources.
  *
  * @param signal - The signal that triggered shutdown (e.g. "SIGINT")
  * @param deps - Optional dependency injection for testing
@@ -289,7 +291,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // A settled request remains here through orphan settle-before work (fetch/backoff/response pump),
     // delivery notification, immutable canonical seal, and terminal publish. Phase 2/3 remain bounded;
     // the explicit finalization barrier below surfaces seal rejection before History closes.
-    getActive: () => getRequestContextManager().getTrackedOperations(),
+    getActive: () => [...getRequestContextManager().getTrackedOperations(), ...listInFlightLightweightModelOperations()],
   }
   const server = deps?.server ?? serverInstance
   const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
@@ -403,7 +405,7 @@ interface FinalizeDeps {
   publishStopped: () => Promise<void>
 }
 
-/** Final cleanup after drain/force-close */
+/** Final cleanup after every accepted operation has drained. */
 async function finalize(deps: FinalizeDeps): Promise<void> {
   setPhaseFireAndForget("finalizing")
   writeEmergencyNoThrow("[shutdown] Requests settled; flushing History and Telemetry. Press Ctrl+C again to exit immediately")
