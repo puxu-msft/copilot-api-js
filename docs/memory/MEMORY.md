@@ -87,6 +87,7 @@
 - [穷尽 Record 全填≠活路径在读它](methodology-exhaustive-record-proves-table-not-that-live-path-reads-it.md) — 上一条的界限：formatError 无生产调用者时四张表全绿而 wire 照旧；消灭双份+从真实入口读字节+mutation 打在共享表上
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染
+- [随机 false-red 常因判据挂在进程全局量上](methodology-false-red-from-process-global-quantities-not-the-mechanism.md) — 「修完一条换一条」即信号；全局 timer 集合当 retry oracle、wall-clock 预算当通过条件；换直接观测目标机制的 oracle 或按机制设文件级预算，别逐条打地鼠
 - [并发 agent 不得共享 worktree 做 mutation](methodology-concurrent-agents-must-not-share-worktree-for-mutation.md) — 主会话调度责任
 - [transport-config 新字段：纯路由标志绝不进 change-detection](methodology-new-transport-config-field-routing-vs-connection-rebuild.md) — 任一追踪字段变化 fire 全体 listener(含 h2 session retire)
 - [append 日志 tail 游标两静默丢失陷阱](methodology-append-log-tail-cursor-silent-loss-traps.md) — 同毫秒 tie-break 永久丢行+per-row hydrate 抛错卡死
