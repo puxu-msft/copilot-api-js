@@ -3,7 +3,7 @@
 > 评审对象：[`2026-08-08-anthropic-responses-semantic-bridge.md`](2026-08-08-anthropic-responses-semantic-bridge.md)、[`2026-08-08 protocol-neutral reasoning exchange ADR`](../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)
 > 第1轮基线：`78b5a97d`
 > 第1轮后先行修订：`fb20919a`、`b6cbced2`
-> 状态：第2轮复评已处置；协议新增1项major、架构新增／未闭合3项major均已整改，待原 reviewers 复评
+> 状态：第3轮复评已处置；协议视角可定稿，架构／History共4项major已整改，待第4轮原reviewers复评
 
 本文件转录并处置第1轮三名独立 reviewer 的返回结果。首轮报告没有写入仓库，以下按原评审分组保留 finding，而不是把重叠项去重；这样每名 reviewer 的复评范围都可逐条追溯。技术设计裁决均为 C 级可逆产物决策。实施授权冲突涉及用户已裁决事项，按 A 级“适用性明确且本次裁定是遵从既有决定”分支直接同步，不重新询问。
 
@@ -84,9 +84,31 @@ A1、A2、A4、A5、A7、A8关闭，blocker为0。A3、A6的首轮修法不足�
 |---|---|---|---|
 | S1 | P7若写成“complete item的全部part都complete”，会错误排斥带具名degradation的discarded child。 | 父终结的硬门改为所有child已terminal；complete父允许具名discarded child，但禁止partial child。 | RFC §4 |
 | S2 | `candidates`可裁剪，而route-dependent policy原只在该可选数组中；裁剪后实际authority epochs使用的policy丢失。 | 每个不可省略的`authorityLineage` entry携完整`PairTranslationPolicy`；可选candidate投影只补非authority诊断。 | RFC §10.1 |
-| S3 | preflight fail-closed与合法contentless success没有普通内容帧，若authority只由首帧建立，真实拒绝／终态会永远停在proposed。 | driver接受typed rejection或contentless terminal时建立epoch 0、晋级semantic observation并原子终结authority，再发送终态wire。 | RFC §6、§10.1、§12 |
+| S3 | preflight fail-closed与合法contentless success没有普通内容帧，若authority只由首帧建立，真实拒绝／终态会永远停在proposed。 | 第2轮修法先写成“终结authority后发送wire”，随后被第3轮A3-R3证明顺序错误并取代；最终契约是先建立active epoch、晋级semantic observation，由active authority发送／确认终态wire或记录写失败，再转terminal。 | RFC §6、§10.1、§12 |
 | S4 | History详情与WebSocket包含in-flight entry，但旧shape强制顶层terminal；同时result虽有final类型，ledger无output delta／done通道。 | History改为`in-flight|terminal`判别联合，区分空lineage、active leaf与terminal leaf；result补`ResultMetadata`、output delta和authoritative done。 | RFC §4、§10.1 |
 | S5 | terminal若仍是裸字符串，P7要求的partial provenance／discard reason和response合法组合不可由类型执行；observation晋级若追加副本会重复计数；authority transfer若只闭合内存状态会让后代wire越过祖先closing events。 | `ItemTerminal`与`ResponseTerminal`改为互斥判别联合；每个observation ID只保留一个当前stage；旧authority须先发送并ACK全部closing effects，再原子移交，后代首帧在移交后发送。 | RFC §4、§6、§10 |
+| S6 | continuation已进入authority与History类型，但boundary标题／mapper职责／candidate ledger枚举仍只写fallback，实施者可能靠上下文猜continuation或复用旧segment；另有跨commit反例：post-commit fallback若接受`partialOutputKept:false`，会谎称撤回已发字节。 | 统一为fallback／continuation显式`SegmentBoundaryUpdate`、判别envelope／carrier boundary和独立candidate ledger；两类ID不共命名空间。pre-commit fallback可false并discard，post-commit只能true并transfer，false fail-closed；continuation恒true。 | RFC §3.3–§3.4、§4、§6.1 |
+
+## 第3轮复评
+
+复评基线：`0615aad4`。
+
+### 协议状态机与wire语义
+
+P7、`ItemTerminal`／`ResponseTerminal`合法组合、call／result authoritative done、reasoning／text child lifecycle、preflight reject／contentless terminal全部关闭。未发现新增blocker／major，reviewer明确给出“协议视角可定稿”。
+
+### 架构与History
+
+架构reviewer关闭A6-R2、A9、C9/C10及post-commit transfer主体；History reviewer关闭authority policy、observation stage/effect、opaque与公共表面。剩余4项major全部采纳：
+
+| ID | 来源 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| A3-R3 | 架构 | preflight reject先把authority转terminal再发送错误wire，违反“只有active可写sink”。 | 采纳（C）。driver接受typed rejection时建立active epoch并冻结failed terminal；错误wire仍由active authority发送／ACK，随后才转terminal。发送失败先记录delivery failure再转terminal，不允许无authority writer。 | RFC §6 |
+| A10 | 架构 | 必填authority lineage缺transferred祖先的segment terminal、partial delivery、closing ACK，裁剪candidate diagnostics后无法证明部分写出。 | 采纳（C）。transferred entry必带fallback／continuation incomplete terminal、`partialDelivery:true`和closing ACK；terminal leaf带最终terminal与terminal wire结果；active leaf带not-started／writing。 | RFC §10.1 |
+| D5 | History | terminal variant类型仍允许空lineage，terminal leaf不携`ResponseTerminal`，不可结构化验证terminal存在与等值。 | 采纳（C）。in-flight允许空或`transferred*+active`，terminal强制非空`transferred*+terminal` tuple；最终`ResponseTerminal`只由terminal leaf拥有，消灭顶层双owner。 | RFC §10.1 |
+| D6 | History | 可选candidate明细缺少captured／not-captured／pruned判别，字段缺失语义不明确。 | 采纳（C）。`candidateDiagnostics`改为不可省略判别联合，并冻结total／retained／array length不变量；空captured数组表示确无明细。 | RFC §10.1 |
+
+架构与History视角结论：A3-R3、A10、D5、D6复评关闭后可定稿。
 
 ## 复评门
 

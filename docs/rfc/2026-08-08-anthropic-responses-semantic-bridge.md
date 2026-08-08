@@ -71,12 +71,12 @@ raw protocol input
 
 **Driver／orchestrator** 负责：
 
-- candidate／dispatch／segment lineage、最终 route、fork、retry、hedge、fallback、budget、cancel、flush 和 sink；
+- candidate／dispatch／segment lineage、最终route、fork、retry、hedge、fallback、continuation、budget、cancel、flush和sink；
 - 在首次不可逆客户端emission处建立初始delivery authority，并在post-commit恢复时原子移交唯一写权；
 - 按顺序调用 mapper、推进 candidate-local ledger、调用对应 emitter；
 - 区分candidate-local proposed effect、authority-committed semantic effect与sink-emitted wire effect。
 
-Driver 不得按 block/item type 重判领域语义；任何后代 candidate／retry／fallback 都不得重读热配置改变 ingress snapshot。
+Driver不得按block/item type重判领域语义；任何后代candidate／retry／fallback／continuation都不得重读热配置改变ingress snapshot。
 
 **Emitter** 只负责 wire：
 
@@ -111,10 +111,10 @@ type ReasoningExchangeItem = Readonly<{
   opaque?:
     | { kind: "claude-signature"; carrierVersion: 2; bytes: string }
     | { kind: "responses-encrypted"; carrierVersion: 2; bytes: string }
-  boundary: {
-    phase: "normal" | "pre-fallback" | "post-fallback"
-    fallbackId?: string
-  }
+  boundary:
+    | { kind: "normal" }
+    | { kind: "fallback"; phase: "pre" | "post"; fallbackId: string }
+    | { kind: "continuation"; phase: "pre" | "post"; continuationId: string }
   correlationId?: string
 }>
 ```
@@ -125,29 +125,37 @@ type ReasoningExchangeItem = Readonly<{
 2. opaque state 只在 source identity 的protocol／provider／resolved model与目标全部匹配时回送。
 3. provenance 不匹配时只剥 opaque，不丢 visible。
 4. redacted 不伪造明文。
-5. fallback 边界前后的 item 不合并、不串槽。
+5. fallback／continuation边界前后的item不合并、不串槽。
 6. 无法表达的内容产生 typed degradation；不得静默删除。
 7. 同模型 Anthropic tool-use 回合仍完整、原序回送原生 thinking／redacted_thinking，不经 envelope 重建。
 
-### 3.4 Fallback boundary 状态转移
+### 3.4 Fallback／continuation boundary 状态转移
 
-Semantic mapper 接收具名 fallback boundary update；不得靠模型名变化或特殊 text 猜边界：
+Semantic mapper接收具名segment boundary update；不得靠模型名变化、特殊text或已发内容猜fallback／continuation边界：
 
 ```ts
-type FallbackBoundaryUpdate = Readonly<{
-  type: "fallback-boundary"
-  fallbackId: string
-  from: ModelIdentity
-  to: ModelIdentity
-  partialOutputKept: boolean
-}>
+type SegmentBoundaryUpdate =
+  | Readonly<{
+      type: "fallback-boundary"
+      fallbackId: string
+      from: ModelIdentity
+      to: ModelIdentity
+      partialOutputKept: boolean
+    }>
+  | Readonly<{
+      type: "continuation-boundary"
+      continuationId: string
+      source: ModelIdentity
+      partialOutputKept: true
+    }>
 ```
 
-- boundary 到达前已 declare 的 item 标为 `pre-fallback`；之后新 item 标为 `post-fallback`。已有 item 的 source/provenance 永不改写。
-- 当前仍 streaming 的 partial item在 boundary 时终结为 partial snapshot；不得与 fallback 模型后续 item 合并。visible partial按客户端协议既有fallback契约保留或抑制，具体 disposition必须记录；opaque state仍归原source model。
-- boundary 更新冻结新的 target route/policy；后续 item使用新 candidate/ledger segment。旧 segment不被新 emitter重新解释。
-- 同一 fallbackId只能声明一次；嵌套/多跳 fallback按到达顺序形成segments，不使用单个全局“当前fallback”布尔值。
-- 回送历史时，每个item独立执行`carrierAction(sourceIdentity,targetIdentity,carrierKind)`；fallback marker本身是audit boundary，不替代per-item provenance。
+- boundary到达前已declare的item标为对应ID的`pre`；之后新item标为同ID的`post`。已有item的source/provenance永不改写。fallback与continuation是不同kind，不共用ID命名空间。
+- pre-commit fallback可以声明`partialOutputKept:false`：旧candidate尚无外部写入，driver将其discard并从immutable baseline启动后代，不建立authority transfer。post-commit fallback已有不可撤回客户端字节，只允许`partialOutputKept:true`并走authority transfer；收到false须fail-closed，不能声称撤回已写内容。continuation恒为true。
+- 当前仍streaming的item在post-commit boundary时终结为带同一fallbackId／continuationId的partial snapshot；不得与后续segment合并。visible partial按客户端协议既有恢复契约保留或抑制，具体disposition必须记录；opaque state仍归原source identity。
+- fallback boundary冻结新的target route/policy；continuation boundary从同一ingress snapshot按其实际route解析后代policy，即使source identity相同也创建新candidate／ledger segment。旧segment不被新emitter重新解释。
+- 同一kind／ID只能声明一次；嵌套／多跳边界按到达顺序形成segments，不使用单个全局“当前fallback／continuation”布尔值，也不靠模型名变化猜边界。
+- 回送历史时，每个item独立执行`carrierAction(sourceIdentity,targetIdentity,carrierKind)`；segment boundary只是audit边界，不替代per-item provenance。
 - stream/non-stream都从相同segment snapshot渲染；不得仅在stream路径保留boundary。
 
 ## 4．核心类型契约
@@ -175,8 +183,15 @@ type ItemTerminal =
     }>
   | Readonly<{
       kind: "partial"
+      provenance: "continuation"
+      continuationId: string
+      reason?: DegradationReason
+    }>
+  | Readonly<{
+      kind: "partial"
       provenance: "eof" | "abort" | "wire-error"
       fallbackId?: never
+      continuationId?: never
       reason?: DegradationReason
     }>
   | Readonly<{ kind: "discarded"; reason: DegradationReason }>
@@ -278,6 +293,20 @@ type ResponseTerminal =
       provenance: "wire-terminal" | "eof"
     }>
   | Readonly<{
+      kind: "incomplete"
+      reason: string
+      usage?: unknown
+      provenance: "fallback"
+      fallbackId: string
+    }>
+  | Readonly<{
+      kind: "incomplete"
+      reason: string
+      usage?: unknown
+      provenance: "continuation"
+      continuationId: string
+    }>
+  | Readonly<{
       kind: "failed"
       error: unknown
       usage?: unknown
@@ -333,8 +362,8 @@ Ledger invariants：
 - part delta 可多次；part `.done` text 是权威值。reasoning summary/content 与 text 各自具有 declare→delta→done lifecycle，Responses emitter不得凭 item 完成猜 nested part 已完成。
 - reasoning visible 的唯一owner是各part的authoritative text加`reasoningVisibleKind`；`ReasoningExchangeItem.visible`只在item终结时由这些字段派生，ledger不并存第二份可独立写入的summary。
 - `.done.arguments` 是无delta或冲突时的权威值；delta/done不一致产生observation，最终snapshot采用authoritative value。
-- `complete`／`partial`／`discarded`是所有item和part的terminal语义。terminal后拒绝更新；partial item可进入snapshot但不得与后续fallback segment合并；discarded只进入observation。partial provenance为`fallback`时必须带`fallbackId`，其它provenance不得带；discarded必须带reason。
-- `finish-item`不得隐式终结child part。任何item terminal前，所有已declare part都必须已terminal。item标`complete`时，非discarded part必须全部complete，discarded part必须已有具名degradation；不得含partial part。item标`partial`前，所有开放part必须先以具名EOF／abort／fallback／wire-error provenance终结为`partial`，既有complete／discarded part保持原终态；item标`discarded`前，所有开放part必须先以同一或派生reason终结为`discarded`。任一前置不满足，reducer拒绝transition，不由emitter补完或跳过child。
+- `complete`／`partial`／`discarded`是所有item和part的terminal语义。terminal后拒绝更新；partial item可进入snapshot但不得与后续fallback／continuation segment合并；discarded只进入observation。partial provenance为`fallback`时必须带`fallbackId`，为`continuation`时必须带`continuationId`，其它provenance不得带二者；discarded必须带reason。
+- `finish-item`不得隐式终结child part。任何item terminal前，所有已declare part都必须已terminal。item标`complete`时，非discarded part必须全部complete，discarded part必须已有具名degradation；不得含partial part。item标`partial`前，所有开放part必须先以具名EOF／abort／fallback／continuation／wire-error provenance终结为`partial`，既有complete／discarded part保持原终态；item标`discarded`前，所有开放part必须先以同一或派生reason终结为`discarded`。任一前置不满足，reducer拒绝transition，不由emitter补完或跳过child。
 - complete item还必须满足kind-specific权威值门：reasoning／text的所有目标投影part已terminal且可派生final visible；function／server-tool call已有`CallMetadata`与`authoritativeArguments`；function／server-tool result已有`ResultMetadata`与`authoritativeOutput`；drop永远只能discarded。缺任一权威值时不得用delta拼接值冒充done。
 - 每个response恰有一个response-level terminal。`completed`前不得存在开放item／part，且所有非discard item必须complete；`incomplete`／`failed`／`cancelled`前必须先按实际provenance逐个把开放part与item终结为partial或discarded。`incomplete`／`failed`／`cancelled`不得由emitter改写为`completed`；缺wire terminal时只能由EOF／abort／driver cancel provenance合成对应非成功终态。
 - `fork()`可结构共享immutable history，但后续状态隔离。ledger只存活于candidate／dispatch／segment；不得跨retry或hedge candidate共享可变实例。
@@ -387,7 +416,12 @@ type PairTranslationPolicy = Readonly<{
 type DeliveryAuthorityState =
   | { kind: "uncommitted" }
   | { kind: "active"; epoch: number }
-  | { kind: "transferred"; epoch: number; toCandidateId: string }
+  | {
+      kind: "transferred"
+      epoch: number
+      cause: "fallback" | "continuation"
+      toCandidateId: string
+    }
   | { kind: "terminal"; epoch: number }
   | { kind: "discarded" }
 
@@ -397,7 +431,7 @@ type CandidateTranslationLineage = Readonly<{
   segmentId: SegmentId
   parentCandidateId?: string
   parentSegmentId?: SegmentId
-  cause: "primary" | "retry" | "hedge" | "fallback"
+  cause: "primary" | "retry" | "hedge" | "fallback" | "continuation"
   configSnapshotId: string
   policy: PairTranslationPolicy
   deliveryAuthority: DeliveryAuthorityState
@@ -406,9 +440,9 @@ type CandidateTranslationLineage = Readonly<{
 
 Lineage与delivery authority不变量：
 
-- retry、hedge和fallback都创建candidate-local ledger；不得共享可变item state。若要复用已冻结的请求语义，只能从immutable ingress baseline或已提交segment snapshot fork。
-- 通常首次不可逆客户端emission是初始authority commit point。两类无普通内容帧的终态也必须选择唯一authority：preflight fail-closed由driver在接受该candidate的typed rejection时建立`active(epoch=0)`、晋级其semantic observations，再原子终结为`terminal`并发送错误响应；合法contentless success在发送terminal前同样建立authority。commit前可重试失败仍从immutable baseline fork，旧candidate标`discarded`，其proposed observations只作candidate诊断，不进入请求级actual effect。
-- request在任一时刻至多一个candidate持`active` delivery authority。未持authority的candidate不得写任何客户端sink；`active` candidate终结整体response时原子转为`terminal`。
+- retry、hedge、fallback和continuation都创建candidate-local ledger；不得共享可变item state。若要复用已冻结的请求语义，只能从immutable ingress baseline或已提交segment snapshot fork。
+- 通常首次不可逆客户端emission是初始authority commit point。两类无普通内容帧的终态也必须选择唯一authority：preflight fail-closed由driver在接受该candidate的typed rejection时建立`active(epoch=0)`、晋级其semantic observations并冻结`failed/preflight-reject` response terminal；错误wire仍由该active authority发送并等待sink结果，随后才原子转为`terminal`。发送／ACK失败时同一authority记录wire delivery failure后再转terminal，不允许无authority writer代发。合法contentless success同样先建立active authority，发送并确认terminal wire后才转terminal。commit前可重试失败仍从immutable baseline fork，旧candidate标`discarded`，其proposed observations只作candidate诊断，不进入请求级actual effect。
+- request在任一时刻至多一个candidate持`active` delivery authority。未持authority的candidate不得写任何客户端sink；`active` candidate只有在其terminal wire发送完成或明确记录wire delivery failure后，才能原子转为`terminal`。
 - commit后恢复不是第二个winner，而是同一committed lineage中的authority transfer。旧authority须先把祖先开放part／item按真实provenance终结为partial，并按目标协议顺序发送且确认所有必需的closing wire effects；同时准备好后代首个可发送effect。只有祖先wire lifecycle已闭合后，driver才在同一临界动作把祖先`active(epoch=N)`改为`transferred(epoch=N,toCandidateId)`、后代`uncommitted`改为`active(epoch=N+1)`；准备、closing sink ACK或临界校验失败时不发布transfer、authority仍归祖先，发布成功后authority只归后代，任何瞬间都不可双writer。后代首个effect只能在transfer成功后发送。
 - post-commit continuation／fallback必须保留已发partial item与`wirePartialDelivery`事实；后代创建新segment和item key，不得续写祖先item。最终客户端terminal只由authority chain的`terminal` leaf投影；`transferred`祖先保留自己的partial terminal，不能覆盖leaf结论。
 - hedge losers无论是否完整解析都标`discarded`，不得写客户端、请求级WARN、History actual observations或业务指标。初始authority选择和所有pre-commit loser discard在同一driver临界动作内发布。
@@ -448,11 +482,9 @@ type CarrierV2Envelope = Readonly<{
     itemId?: string
   }
   opaque: string
-  boundary?: {
-    phase: "normal" | "pre-fallback" | "post-fallback"
-    fallbackId?: string
-    partial: boolean
-  }
+  boundary?:
+    | { kind: "fallback"; phase: "pre" | "post"; fallbackId: string; partial: boolean }
+    | { kind: "continuation"; phase: "pre" | "post"; continuationId: string; partial: boolean }
 }>
 ```
 
@@ -583,15 +615,99 @@ type TranslationObservation = Readonly<{
 本RFC的History单一权威投影为`HistoryEntry.pipelineInfo.translation.semanticBridgeV2`；两个方向共用versioned envelope，不再各维护一套能力字段：
 
 ```ts
-type AuthorityLineageEntry = Readonly<{
+type AuthorityIdentity = Readonly<{
   epoch: number
   candidateId: string
   dispatchId: string
   segmentId: SegmentId
   predecessorCandidateId?: string
   policy: PairTranslationPolicy
-  outcome: "active" | "transferred" | "terminal"
 }>
+
+type SegmentDeliverySummary =
+  | Readonly<{ state: "not-started" }>
+  | Readonly<{ state: "writing"; committed: true }>
+  | Readonly<{
+      state: "closed"
+      committed: true
+      terminalWire: "acknowledged"
+    }>
+  | Readonly<{
+      state: "closed"
+      committed: false
+      terminalWire: "failed"
+      failureReason: string
+    }>
+  | Readonly<{
+      state: "closed"
+      committed: true
+      terminalWire: "failed"
+      failureReason: string
+    }>
+
+type TransferredAuthorityEntry = AuthorityIdentity &
+  (
+    | Readonly<{
+        outcome: "transferred"
+        cause: "fallback"
+        toCandidateId: string
+        segmentTerminal: Extract<ResponseTerminal, { kind: "incomplete"; provenance: "fallback" }>
+        delivery: Readonly<{
+          state: "closed"
+          committed: true
+          partialDelivery: true
+          closingEffects: "acknowledged"
+        }>
+      }>
+    | Readonly<{
+        outcome: "transferred"
+        cause: "continuation"
+        toCandidateId: string
+        segmentTerminal: Extract<ResponseTerminal, { kind: "incomplete"; provenance: "continuation" }>
+        delivery: Readonly<{
+          state: "closed"
+          committed: true
+          partialDelivery: true
+          closingEffects: "acknowledged"
+        }>
+      }>
+  )
+
+type ActiveAuthorityEntry = AuthorityIdentity & Readonly<{
+  outcome: "active"
+  delivery: Exclude<SegmentDeliverySummary, { state: "closed" }>
+}>
+
+type TerminalAuthorityEntry = AuthorityIdentity & Readonly<{
+  outcome: "terminal"
+  terminal: ResponseTerminal
+  delivery: Extract<SegmentDeliverySummary, { state: "closed" }>
+}>
+
+type CandidateHistoryDiagnostic = Readonly<{
+  candidateId: string
+  dispatchId: string
+  segmentId: SegmentId
+  cause: CandidateTranslationLineage["cause"]
+  policy: PairTranslationPolicy
+  deliveryAuthority: DeliveryAuthorityState
+  terminal?: ResponseTerminal
+  proposed: readonly TranslationObservation[]
+}>
+
+type CandidateDiagnosticsProjection =
+  | Readonly<{ state: "not-captured" }>
+  | Readonly<{
+      state: "captured"
+      total: number
+      candidates: readonly CandidateHistoryDiagnostic[]
+    }>
+  | Readonly<{
+      state: "pruned"
+      total: number
+      retained: number
+      candidates: readonly CandidateHistoryDiagnostic[]
+    }>
 
 type SemanticBridgeHistoryV2Base = Readonly<{
   version: 2
@@ -599,16 +715,7 @@ type SemanticBridgeHistoryV2Base = Readonly<{
     snapshotId: string
   }
   actual: readonly TranslationObservation[]
-  candidates?: readonly {
-    candidateId: string
-    dispatchId: string
-    segmentId: SegmentId
-    cause: CandidateTranslationLineage["cause"]
-    policy: PairTranslationPolicy
-    deliveryAuthority: DeliveryAuthorityState
-    terminal?: ResponseTerminal
-    proposed: readonly TranslationObservation[]
-  }[]
+  candidateDiagnostics: CandidateDiagnosticsProjection
   opaque: readonly {
     itemKey: ItemKey
     kind: "claude-signature" | "responses-encrypted"
@@ -625,22 +732,24 @@ type SemanticBridgeHistoryV2 = SemanticBridgeHistoryV2Base &
   (
     | Readonly<{
         lifecycle: "in-flight"
-        terminal?: never
-        authorityLineage: readonly AuthorityLineageEntry[]
+        authorityLineage:
+          | readonly []
+          | readonly [...TransferredAuthorityEntry[], ActiveAuthorityEntry]
       }>
     | Readonly<{
         lifecycle: "terminal"
-        terminal: ResponseTerminal
-        authorityLineage: readonly AuthorityLineageEntry[]
+        authorityLineage: readonly [...TransferredAuthorityEntry[], TerminalAuthorityEntry]
       }>
   )
 ```
 
 公开契约：
 
-- `actual`只含authority lineage的`authority-committed`或`sink-emitted` observation；discarded／shadow只可位于`candidates[].proposed`。preflight fail-closed与contentless success也须建立并终结唯一authority，因此真实拒绝／终态不会因缺普通内容帧而停在proposed。若字段被存储裁剪，缺失表示“未捕获／旧记录”，绝不表示“没有退化”；存在空数组才表示“该v2 producer已捕获且无记录”。
-- `authorityLineage`为空表示in-flight请求尚未建立delivery authority；一旦非空，epoch从0严格递增。`lifecycle:"in-flight"`时最后一项必须是唯一`active`，此前项全为`transferred`；`lifecycle:"terminal"`时最后一项必须是唯一`terminal`，此前项全为`transferred`。每个`transferred`项的下一项必须以其candidate为predecessor。顶层`terminal`必须等于terminal leaf的response terminal。该链是唯一客户端writer事实，不再用多个candidate上的`winner:boolean`推断。
-- `config.snapshotId`是ingress配置快照identity；route-dependent `PairTranslationPolicy`逐candidate解析，因为fallback可改变target identity。不可省略的`authorityLineage[].policy`保留每个实际writer epoch使用的完整policy；可选`candidates[].policy`补充discarded／从未获权candidate的诊断。`candidates`可由History配置裁剪，但`lifecycle`、`config`、`authorityLineage`和`actual`在v2记录中不可省略，terminal variant还必须有`terminal`。旧History记录没有`semanticBridgeV2`时按unknown capability处理，不回填虚构默认。
+- `actual`只含authority lineage的`authority-committed`或`sink-emitted` observation；discarded／shadow只可位于`candidateDiagnostics.state:"captured"|"pruned"`的`candidates[].proposed`。preflight fail-closed与contentless success也须建立并终结唯一authority，因此真实拒绝／终态不会因缺普通内容帧而停在proposed。`actual`存在空数组表示该v2 producer已捕获且没有actual observation；整个`semanticBridgeV2`缺失才表示旧记录／未捕获，不得外推为“没有退化”。
+- `authorityLineage`为空只允许表示in-flight请求尚未建立delivery authority；terminal variant由非空tuple在类型上保证terminal leaf存在。epoch从0严格递增：in-flight非空时最后一项是唯一active，此前全为transferred；terminal时最后一项是唯一terminal，此前全为transferred。每个transferred entry的下一项必须以其candidate为predecessor，且`toCandidateId`等于下一项candidate；`cause`与其`segmentTerminal.provenance`同为fallback或continuation。整体response terminal的唯一owner是terminal leaf的`terminal`字段，不再另存顶层副本。
+- 每个transferred ancestor在不可裁剪lineage中保存segment incomplete terminal、`partialDelivery:true`与`closingEffects:"acknowledged"`；因此即使candidate diagnostics被裁剪，History仍能区分“祖先部分写出后转移”与“从未获权”。terminal leaf保存最终`ResponseTerminal`和terminal wire acknowledged／failed摘要；failed分支的`committed:false|true`区分失败前未写任何外部字节与已发生partial delivery。active leaf保存not-started／writing状态。`wirePartialDelivery`只在lineage含transferred ancestor，或terminal leaf为`terminalWire:"failed",committed:true`时投影；完整成功的`terminalWire:"acknowledged",committed:true`不构成partial delivery。
+- `config.snapshotId`是ingress配置快照identity；route-dependent`PairTranslationPolicy`逐candidate解析，因为fallback可改变target identity。不可省略的`authorityLineage[].policy`保留每个实际writer epoch使用的完整policy。
+- `candidateDiagnostics`不可省略：`not-captured`表示producer未收集明细；`captured`要求`total === candidates.length`；`pruned`要求`total > retained`且`retained === candidates.length`。空`captured`数组精确表示已收集且确无candidate明细。旧History记录没有`semanticBridgeV2`时按unknown capability处理，不回填虚构默认。`lifecycle`、`config`、`authorityLineage`、`actual`与`candidateDiagnostics`在v2记录中均不可省略。
 - opaque hash固定为`SHA-256("semantic-bridge-opaque-v2\0" || kind || "\0" || rawOpaqueUtf8Bytes)`的lowercase hex；hash用于同请求内关联与诊断，不承诺跨版本内容寻址。History不存raw opaque正文。
 - `GET /history/api/entries/:id`返回该投影；History WebSocket的完整entry事件沿同一`HistoryEntry` shape返回。列表／summary端点不复制大数组，只可暴露`semanticBridgeVersion`、actual disposition计数与是否有degradation。
 - C3在任何production cutover前同步`src/lib/history/types.ts`、`src/lib/context/types.ts`、V3持久化／投影、History REST／WebSocket测试、`docs/history.md`和`docs/API.md`。不得把公开契约同步拖到C11。
@@ -703,7 +812,7 @@ Live GHC只采fixture、校准机制解释，不作merge correctness gate。
 
 ### C2：配置快照与candidate lineage
 
-在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、初始authority commit、pre-commit retry、post-commit authority transfer、hedge loser discard和fallback partial segment测试；用确定性探针停在transfer临界动作前后，断言任一时刻恰有一个active writer。仍不改变production translator。
+在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、初始authority commit、pre-commit retry／fallback discard、post-commit fallback／continuation authority transfer、hedge loser discard和partial segment测试；用确定性探针停在transfer临界动作前后，断言任一时刻恰有一个active writer。仍不改变production translator。
 
 ### C3：typed observation与History公共契约
 
