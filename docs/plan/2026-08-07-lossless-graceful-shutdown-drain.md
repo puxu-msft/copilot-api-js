@@ -1,6 +1,8 @@
 # 首信号无损排空实施计划
 
-> **执行者要求：** 按任务顺序执行；每个任务使用 TDD，先红后绿；每个任务独立提交。实现时使用 `superpowers:test-driven-development`，收尾前使用 `superpowers:verification-before-completion`。
+> **状态：已执行完毕（2026-08-08）。** 四个任务与评审整改全部落地，三路独立评审 0 blocker／0 major。终态记录见本文末「实施结果」与 [docs/tmp/2026-08-08-lossless-shutdown-review.md](../tmp/2026-08-08-lossless-shutdown-review.md)。下方任务描述保留原始执行指令形态，仅作历史留档，**不要再按它派活**。
+>
+> **执行者要求（历史）：** 按任务顺序执行；每个任务使用 TDD，先红后绿；每个任务独立提交。实现时使用 `superpowers:test-driven-development`，收尾前使用 `superpowers:verification-before-completion`。
 
 **目标：** 首个终止信号只封闭 ingress 并等待所有已接纳 operation 自行终态，不再由 shutdown deadline 或资源拆除制造请求失败；第二信号继续立即强退。
 
@@ -345,6 +347,6 @@ git log --oneline --decorate -5
 - Task 1：提交 `04e6ecb1`，首信号改为无 deadline operation drain；token／WS／h2 延后关闭。
 - Task 2：提交 `d254d8ae`，删除 process-global shutdown cancellation、stream shutdown kind 和 529 改写。
 - Task 3：提交 `c6a5f72c`，删除两个 shutdown deadline 配置、state 字段与阶段类型。
-- Task 4：live docs、instruction skill 与 supervisor 样例已同步；最终提交见分支 HEAD。
-- Review 整改：补齐 count_tokens／embeddings lightweight in-flight registry、真实 `/v1/messages` 长流／token refresh／pre-content recovery shutdown 交叉测试、systemd／PM2 handoff、旧 Vue 配置表面与 entry-evidence discovery baseline；最终提交见分支 HEAD。
-- 最终验证（整改 worktree，2026-08-08）：`bun run test:backend` 为 16 shards、7228 tests、7228 pass、0 fail（7231 executed、30 skipped）；`bun run test:fast` 为 16 shards、3969 tests、3969 pass、0 fail（5184 executed、1 skipped）；root typecheck、改动 backend TypeScript 定向 ESLint、架构／discovery guards、PTY 19/19、旧 Vue Bun 249/249、Vitest 78/78、vue-tsc 与 Vite build 均通过。`bun run lint:all` 在当前 `master@44457047` 仍因另一个尚未合并的 entry-evidence／header-deadline 并发分支对应的仓库级 lint 变更缺失而失败（120 文件、637 errors、5 warnings）；该分支同时含功能改动，未夹带进本 shutdown 整改。完整评审记录见 `docs/tmp/2026-08-08-lossless-shutdown-review.md`。
+- Task 4：live docs、instruction skill 与 supervisor 样例已同步，提交 `4c555ef9` 及其之前的 Task 4 提交序列。
+- Review 整改：`77d6d479` 补齐 count_tokens／embeddings lightweight in-flight registry、真实 `/v1/messages` 长流／token refresh／pre-content recovery shutdown 交叉测试、systemd／PM2 handoff、旧 Vue 配置表面与 entry-evidence discovery baseline；`f1cb3cc5` 落评审处置记录；`954a1bff` 修复合并态发现的 lightweight pre-terminal capture 未释放 History reservation；`a6be256a` 给 entry evidence validator 设文件级超时预算。
+- 最终验证（整改 worktree `6adf2e56`，已合入 `master@d47492a6`，2026-08-08）：`bun run test:backend` 为 16 shards、6384 tests、6384 pass、0 fail（7287 executed、30 skipped）；本任务自有测试 12 文件 98 pass、0 fail；root `bun run typecheck`、`bun run lint:all`、架构／discovery guards 34/34 均通过。合入 master 前在 `master@d59a622c` 基线上另有 backend 6641 pass、fast 3180 pass、PTY 19/19、旧 Vue Bun 249/249、Vitest 78/78、vue-tsc 与 Vite build 全通过的快照；用例总数变化来自 peer 的 header-deadline 批次，非本任务删减。先前记录的 `lint:all` 红来自尚未合并的并发分支 `worktree-nghttp2-header-deadline`，该分支已自行合入 master（`0732fc76`／`a0ad0f1a`／`bae83f01`）后此项转绿。完整评审记录见 [docs/tmp/2026-08-08-lossless-shutdown-review.md](../tmp/2026-08-08-lossless-shutdown-review.md)，逐条处置与正控 patch 见 [docs/tmp/2026-08-08-lossless-shutdown-review-dispositions.md](../tmp/2026-08-08-lossless-shutdown-review-dispositions.md)。
