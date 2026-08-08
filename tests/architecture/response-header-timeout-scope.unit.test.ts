@@ -21,6 +21,16 @@ describe("response-header timeout ownership", () => {
     expect(read("src/lib/openai/embeddings.ts")).toContain("responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(payload.model)")
   })
 
+  test("the transport watchdog does not import the higher-level fetch utilities module", () => {
+    expect(read("src/lib/transport/upstream-fetch.ts")).not.toContain("~/lib/fetch-utils")
+    expect(read("src/lib/transport/upstream-fetch.ts")).toContain('from "./response-header-deadline"')
+  })
+
+  test("the timeout resolver does not create a models-to-anthropic back edge", () => {
+    expect(read("src/lib/models/timeout-resolver.ts")).not.toContain("~/lib/anthropic/")
+    expect(read("src/lib/models/timeout-resolver.ts")).toContain('from "./model-pattern"')
+  })
+
   test("the persistent timeout signal is named and owned as a WebSocket first-event clock", () => {
     expect(read("src/lib/openai/upstream-ws-attempt.ts")).toContain("createUpstreamFirstEventTimeoutSignal(wire.model)")
 

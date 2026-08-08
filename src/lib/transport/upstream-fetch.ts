@@ -32,7 +32,6 @@
 // package.json + the C1 regression test (upstream-fetch.unit.test.ts) guard it.
 import { fetch as undiciFetch } from "undici/index.js"
 
-import { createResponseHeaderDeadline } from "~/lib/fetch-utils"
 import {
   //
   getUpstreamDispatcher,
@@ -41,6 +40,7 @@ import {
 import { combineAbortSignals } from "~/lib/stream"
 
 import { http2Fetch } from "./http2-client"
+import { createResponseHeaderDeadline } from "./response-header-deadline"
 
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
 export interface UpstreamFetchInit {
