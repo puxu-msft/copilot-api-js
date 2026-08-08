@@ -1,6 +1,6 @@
 # 首信号无损排空评审处置
 
-> 状态：整改中。首轮评审范围为 `14974488..4c555ef9`；当前整改基线为本地 `master@444570479f9968c43f02b5ffe52d6cf441ff6d79`。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
+> 状态：三路复评均已 PASS，可合并。首轮评审范围为 `14974488..4c555ef9`；整改已合入 `master@d59a622ce1afc21587fb692457574ba84d9cabaa`，合并态 admission capture finding 在 `954a1bff` 修复。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
 
 ## 首轮发现
 
@@ -45,3 +45,19 @@
 2. **判据判别力：** 当前 generation 与 lightweight omission mutation 分别证明两类 registry 缺失会红；真实长流、token refresh、recovery 与 bypass HTTP 测试覆盖客户端／History／资源顺序。未做 process-global abort、529 与 upstream WS early-teardown exact mutation，因此 skill 明确不声称这些已被同一门完整覆盖。
 3. **成熟第三方方案：** 进程内 accepted-operation ownership 没有可直接替代项目 registry 的成熟库；systemd 与 PM2 已分别复用其原生 lifecycle/restart 能力，不自研 supervisor。引入通用 graceful-shutdown 库反而无法表达 canonical terminal／History durability 边界。
 4. **未采纳方案：** 不把并发 `worktree-nghttp2-header-deadline` 的 140 文件 lint／header-deadline 提交链 cherry-pick 进本任务；它包含独立功能并正在另一 worktree 完成。当前 master 的 `lint:all` 红如实保留，所有本轮改动 TypeScript 走定向 ESLint，全 backend／fast／typecheck／架构／PTY／旧 Vue 门均独立通过。
+
+## 复评状态
+
+- 测试／文档 reviewer：固定 `901ef7d6` 逐条复核 F1～F6，判定全部 FIXED，0 blocker／0 major，PASS。
+- 未卷入 instruction reviewer：固定 `901ef7d6` 逐条核验 C1～C7，判定 skill、证据边界、driver guard 与 F8 裁定一致，0 blocker／0 major，PASS。
+- 代码 reviewer：固定 `901ef7d6` 复核原两条 MAJOR，确认 registry union、真实 HTTP／h2／token refresh／recovery 与 admission shutdown 顺序已修；另发现 lightweight terminal 在 `responseEnvelope` 等 pre-terminal capture 抛错时未释放 History reservation，形成 1 条新 MAJOR。
+- 新 MAJOR 修复：`954a1bff` 把 `failBeforeTerminal()` 的 catch 扩到从 response capture 到 terminal publication 的整个区间；新增真实 reservation + `Response.clone().text()` 故障注入，红样本为 `reserved=1/preTerminalFailures=0`，修后为 `reserved=0/preTerminalFailures=1` 且 `waitForQuiescence()` 完成。
+- 代码 reviewer 最终复评：固定 `954a1bff` 判定该 catch 已覆盖 `responseEnvelope`／`registerPayload`／`recordEgress`／`commitTerminal`／`publishTerminal` 全区间、`finally` 始终注销 in-flight，测试真实注入且断言完整；0 blocker／0 major，PASS，可合并。
+
+## 既有测试 guard 第二处处置：entry evidence validator 的默认 5 秒超时
+
+- **守护的不变量：** validator 的 provenance／dependency-integrity fail-closed——任一 runtime 依赖被改被删、SAX 包图或 manifest 不符时必须 rc=7 且不发布 receipt。
+- **依据：** 该文件 43 个用例几乎每条都 fork 真实 validator 跑真实 git fixture，单文件独跑约 45 秒；Bun 默认 5 秒是 wall-clock 预算，不属于该文件任何判据。
+- **现象：** 16-shard 下每轮会有 1～2 条随机越过 5 秒被判超时（实测 7.3／9.5／7.4 秒），而单文件 43/43 全绿——典型 false-red，且逐条加 timeout 是打地鼠。
+- **处置（C）：** 用 `setDefaultTimeout(30_000)` 给该文件设机制对齐的预算，断言一行未改。修后 backend 16 shards、6641 tests 全绿。
+

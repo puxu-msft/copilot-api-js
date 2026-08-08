@@ -35,16 +35,23 @@
 
 ## 最终验证快照
 
-验证树：`worktree-fix-shutdown-review-findings`，基线 `444570479f9968c43f02b5ffe52d6cf441ff6d79`，执行日期 2026-08-08。
+验证树：`worktree-fix-shutdown-review-findings`，已合入 `master@d59a622c`，执行日期 2026-08-08。
 
-- `bun run test:backend`：16 shards，7228 tests，7228 pass，0 fail；7231 executed，30 skipped。
-- `bun run test:fast`：16 shards，3969 tests，3969 pass，0 fail；5184 executed，1 skipped。
+- `bun run test:backend`：16 shards，6641 tests，6641 pass，0 fail；7267 executed，30 skipped。
+- `bun run test:fast`：16 shards，3180 tests，3180 pass，0 fail；5211 executed，1 skipped。
 - `bun run typecheck`：通过。
-- 改动 backend TypeScript 定向 ESLint：通过。
-- 架构与 discovery guards：通过。
+- 改动 backend TypeScript 定向 ESLint：通过（`validate-entry-evidence.unit.test.ts` 剩余告警为 master 既有 lint 债，新增行零错误）。
+- 架构与 discovery guards：34/34 通过。
 - `bun run test:pty`：19 pass，0 fail。
 - 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过。
 - `git diff --check`：通过。
+
+## 三路复评结论
+
+- 测试／文档 reviewer（原 reviewer 续跑）：F1–F6 全部 FIXED，0 blocker／0 major，PASS。
+- 未卷入第三方 instruction reviewer：C1–C7 全部确认，0 blocker／0 major，PASS。
+- 代码 reviewer（原 reviewer 续跑）：原两条 MAJOR 已修；新报 1 条合并态 MAJOR（lightweight pre-terminal capture 未释放 History reservation），经 `954a1bff` 修复后复评 0 blocker／0 major，PASS。
+
 
 ## 全仓 lint 状态
 
