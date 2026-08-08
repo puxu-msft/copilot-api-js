@@ -76,6 +76,28 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - Lint整合后门禁：`bun run lint:all` 与 `bun run typecheck` 均零error；受影响模块定向回归（`tests/openai`、`tests/responses`、`tests/architecture`、recovery、hooks、buffered-merge-wiring、diagnostics）共119个文件 `1205 pass / 0 fail`（`Ran 1206 tests`，含1 skip），exit 0。style patch自动引入的一处typecheck回归（`buffered-merge-wiring` 的 `.at(-1)` 在TS下为 possibly undefined）已按显式断言修复，未用非空断言掩盖。
 - Backend门分型补充：官方16-shard两轮失败集合变化；699-worker isolated门产生27 fail（几乎全5秒timeout）＋2 SIGILL。用同一runtime discovery与LPT算法降为4 shards后，699个测试文件、`7198 pass / 30 skip / 1 todo / 0 fail`，四shard均exit 0。官方门仍必须如实记为未绿；低并发结果证明当前逻辑集合可全量通过，不证明官方runner在本机资源条件下可靠。
 
+## 独立评审整改（2026-08-08，两视角并行）
+
+评审报告：`docs/tmp/2026-08-08-task9-review-spec.md`（spec合规／生产图，2 BLOCKER）、`docs/tmp/2026-08-08-task9-review-acceptance.md`（验收判据双向鉴别力，1 BLOCKER + 3 MAJOR）。两视角**独立撞到同一个首要缺陷**（spec-F1 ≡ acceptance-#7），这提高了该结论的稳健度，不是重复劳动。
+
+### 已闭合
+
+- **F1／#7（BLOCKER，数据完整性）** commit `af5e4553`＋`4bb77151`。`summaryFromRow` 先做完整strict hydrate，却在 `summary_json` 非空时把校验结果丢弃、原样返回缓存派生值——「锁内复核的结果被丢弃」的教科书形态。marker撤销后（migration 002、或任一受保护canonical UPDATE），`visitV3Summaries` 的三个生产消费者（`queries.ts:274` list、`sessions.ts:32`、`stats.ts:152`，均由 `!ready` 门控）会把**被篡改的summary原文**交给客户端；评审探针实测返回 `endpoint:"ATTACKER-CONTROLLED"` 而 `tests/history/` 全绿。修法=一律从已验证canonical record重投影，与 `getSummary` 单行fallback的既有行为对齐，消除消费者间不一致；顺带停止SELECT该路径不再读取的 `summary_json` 列。**判据缺口同步关闭**：新增 `summary-integrity-dml.it.test.ts` 的「marker缺席fallback发布canonical重投影而非被篡改缓存」负控，从真实读路径取值。**鉴别力已实证**：把实现改回缓存快捷返回，恰好该条变红（`36 pass / 1 fail`），恢复后 `37 pass / 0 fail`。
+- **F2（BLOCKER，身份错绑）** commit `af5e4553`。manifest路径已有 `assertManifestOperationIdentity`，但journal的两个消费者（`recoverV3Journal`、`journalEvidenceRefGroups`）解码payload后从未断言自述operationId等于SQL row owner；refs／revision／digest全部对账通过仍可发布错绑operation。修法=抽出共享 `assertRecordOperationIdentity`，并把 `expectedOperationId` 做成 `decodeJournalPayload` 的**必填参数**（用类型系统逼出全部调用点，而非各处补一句），另在prepare后加邻接防线 `prepared.id === row.operation_id`。新增recovery与GC两条负控。**鉴别力已实证**：只去掉decode侧断言时recovery那条仍绿（邻接防线接住、错误信息相同，属纵深防御非假绿），两道一起移除则 `2 fail`；恢复后 `36 pass / 0 fail`。
+- **#5（MAJOR，性能不变量）** commit `4bb77151`。`commitPreparedOperation` 每次提交调 `getSummaryProjectionReadiness(db).ready`，而该函数带无索引的全表聚合、两个计数算完即弃；改用O(1)主键查找的 `isSummaryProjectionReady`。评审归因诚实：这条O(N)读**非本轮引入**（`ab594029` 已同款），本轮的过错是「同一commit里既删掉唯一可能发现它的判据、又用被测对象不同的判据冒充替代」。
+
+### 门禁口径更正（推翻我先前三处断言）
+
+- **「官方 `bun run test:backend` 未绿」已过期**：修复后实跑 `16 shards · 2806 tests · 2806 pass · 0 fail · 32.20s`，**exit 0**。
+- **`7198 pass` 这个数是错的，不可复现**：真实规模约2806。评审给出的根因（`parallel-test.ts` 的 `stripAnsi` 漏删ESC字节）**经探针实测证伪**——源码中该正则含真实ESC字节（`sed`／编辑器渲染时不可见，评审与我先后踩了同一个渲染陷阱），探针输出 `plain: " 13 pass"` 且匹配成功。**tally不可复现是事实，根因仍未定**：连续两次官方门给出 `2806` 与 `4200`。已修一处独立成立的真实隐患（commit `fa28deb3`：`await p.exited` 排在读管道之前，输出超过管道缓冲的shard会阻塞在write而无人排空），但它**没有**解决计数差异——不得把这次修复写成tally已修好。
+- **「persistence freeze flaky 已闭合」被证伪**：第二次官方门 exit 1，失败点为 `states-flush-freeze.it.test.ts:74`，正是drain seam**没有触及**的那条断言。分型实测：单跑该文件 `6 pass / 0 fail`；跑它所在的49文件bucket `580 pass / 2 skip / 0 fail`；**仅在16-shard并发下偶发**。属并发负载下的既有测试隔离缺陷，非Task 9引入，**未闭合**。
+
+### 未闭合（须在Task 9收口前处置）
+
+- **#2（MAJOR）** Transaction B的commit-time strict gate（`store.ts:919`）整行删除后 `tests/history/` 仍全绿——零鉴别力。需补的负控必须**改变真实数据**（如让 `insertOperationEvidenceRefs` 少写一条ref或写错 `byte_length`），而非沿用抛异常的注入器，否则测不到gate本身。
+- **#5的判据侧**：实现已修，但「写路径不随历史长度退化」目前仍无人守。评审建议改为确定性工作量计数（SQL语句／扫描行数比值）而非wall-clock ratio——不受CPU争用影响、无false-red，且N=256即可抓到整表扫描。
+- **官方门稳定性与tally可复现性**（见上，根因未定）。
+
 ## 结构怪味审计
 
 - `src/lib/history/queries.ts`：旧实现把 cursor、page、membership overlap 分散到多个 marker check，属于同一 API 拼接多个 SQLite epoch 的职责泄漏。本轮修为高层 API 每次只建立一个 ready snapshot；fallback 只读 canonical，不再借未 ready 的 summary 表算 overlap。
