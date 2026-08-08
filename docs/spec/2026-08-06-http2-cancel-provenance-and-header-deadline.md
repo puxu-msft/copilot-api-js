@@ -7,7 +7,7 @@
 
 ## 实施状态
 
-截至 commit `03a84bcbc535033d3b25a203610741b6a03345e4`（2026-08-08），**阶段 1 的实施与验收已闭合，当前为 ready to deliver，尚待并入本地 `master` 后转为 done；阶段 2、3 尚未开始，父任务仍为部分完成**。
+截至 commit `bea1dfa3d61896bf2089958676bd1236269877d9`（2026-08-08），**阶段 1 已完成并合入本地 `master`；阶段 2、3 尚未开始，父任务仍为部分完成**。
 
 阶段 1 的实现提交为：
 
@@ -17,13 +17,14 @@
 - `7cf1e896`：为 HTTP/2 post-response abort listener 建立具名幂等 cleanup，并覆盖 natural end、abort、physical close、`onStreamClosed` 与 reservation 回零。
 - `bae83f01`：应用仓库 lint 修复；`0732fc76` 将 lossless shutdown 主线语义合入阶段分支；`a0ad0f1a`、`da584116` 随后闭合 lint gate、校准 discovery baseline 与 H2 时序测试。
 - `03a84bcb`：闭合独立评审发现，whole/streaming Responses usage 复用单一 mapper，并以真实 shared-send 运行时 oracle 替代实现字符串正向断言。
+- `b0d9dbf0`、`bea1dfa3`：把交付窗口内前进的主线（`d59a622c`、`82c0664e`）并入阶段分支。`b0d9dbf0` 逐 hunk 解决三处冲突——`count-tokens` 同时保留 History admission 外壳与 scalar `responseHeaderTimeoutMs`、refusal projection 同时保留 `historyTestReservation` 与逐字常量、discovery baseline 取两侧并集；`bea1dfa3` 只并入三份与本阶段零交集的 semantic-bridge 文档。
 
 在该 commit 上的验收证据：
 
 - `bun run typecheck`：通过。
-- `bun run lint:all`：连续两次通过；不属于 root tsconfig 的三个独立脚本/fixture 使用 typescript-eslint 官方 `disableTypeChecked`，仍保留普通语法与格式 lint。
-- `bun run test:backend`：`7244 executed / 30 skipped / 0 fail`；`tests/infra/entry-test-discovery-baseline.json` 同步冻结 `minimum_executed=7244`、30 条 allowed skips，16 个 shard JUnit 独立重算同为 `7244/30`。
-- 定向 deadline、H2、cancel、WS、shutdown 与 translator 验收：独立 verifier 最终复验 PASS；独立 reviewer 最终复评为 0 blocker、0 major、0 minor。
+- `bun run lint:all`：通过；不属于 root tsconfig 的三个独立脚本/fixture 使用 typescript-eslint 官方 `disableTypeChecked`，仍保留普通语法与格式 lint。
+- `bun run test:backend`：`7279 executed / 30 skipped / 0 fail`；`tests/infra/entry-test-discovery-baseline.json` 冻结 `minimum_executed=7279`、712 个文件、30 条 allowed skips，16 个 shard JUnit 叶节点独立重算为 `7309 testcase − 30 skipped = 7279 executed`、0 failure/error。合并前分支单独口径为 `7244`，该数字已被合并态取代。
+- 定向 deadline、H2、cancel、WS、shutdown、count-tokens/History admission 与 translator 验收：独立 verifier 与独立 code reviewer 均对最终 tip 复评 PASS（0 blocker、0 major、0 minor）。
 - exact-patch mutation 双控：删除 deadline signal 接线、删除 resolve/reject disarm、只保留 deadline signal、跳过 timer clear、删除幂等门、删除 H2 natural-end/close detach、删除 shared-send 的真实 duration property，分别使其目标判据精确变红；每次均在 `git apply --reverse --check` 后反向恢复，恢复态全绿。
 
 阶段 1 保持 2026-08-08 主线确立的 lossless shutdown 契约：第一次进程信号不向已接收请求注入 shutdown abort；header deadline 只与 client/reaper/dispatch 等 request-owned lifecycle signal 分离，不复活已删除的 shutdown→request cancel/529 rewrite。
