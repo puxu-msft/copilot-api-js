@@ -150,19 +150,25 @@ describe("http2-client", () => {
   })
 
   test("upstreamFetch disarms the header deadline before a delayed HTTP2 body", async () => {
+    let releaseBody!: () => void
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve
+    })
     handler = (stream) => {
       stream.respond({ ":status": 200 })
-      setTimeout(() => stream.end("late"), 50)
+      void bodyGate.then(() => stream.end("late"))
     }
     let streamClosed = 0
 
     const response = await upstreamFetch("https://fixture.invalid/late", {
-      responseHeaderTimeoutMs: 10,
+      responseHeaderTimeoutMs: 1000,
       onStreamClosed: () => {
         streamClosed += 1
       },
     })
 
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    releaseBody()
     expect(await response.text()).toBe("late")
     await waitUntil(() => streamClosed === 1)
     expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
