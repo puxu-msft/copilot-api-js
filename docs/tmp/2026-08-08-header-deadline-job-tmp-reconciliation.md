@@ -64,16 +64,18 @@
 
 > **判据（两个方向）**：`git commit -F <file>` 每次产生一份消息文件、用后即删。合规要求 ① **每一份消息文件的内容都落成了一个 commit**（无信息丢失）；② **没有哪个本轮 commit 的消息来自一份未被登记的文件**。
 >
-> **两个方向的可核验性不对称，这一点必须写明、不能糊过去**：
+> **两个方向都不是「仅凭仓库可核」，这一点必须写明、不能糊过去**：
 >
-> - **方向 ①（内容是否保住）可由仓库独立核验**：`git log --oneline <base>..<audited-tip>` 逐条读 subject 即可，删掉的文件不影响这一步——要证的就是「内容已在 commit 里」。
-> - **方向 ②（总体是否穷尽）仓库证不了**。`git log` 既枚举不出已删除的文件，也分不出某个 commit 是 `-F` 还是 `-m` 提交的。**唯一的外部 oracle 是本会话 transcript 里实际出现的 `git commit -F <path>` 调用**——它不在本仓库内，因此本行的「穷尽性」是 **transcript-可核验、仓库-不可核验**。按 `downgrade-self-adjudicated-gates`：这里不再靠堆条件去硬撑一个自评闸门，而是点名 oracle 与边界，交独立评审按 transcript 裁决。
+> - **方向 ①（内容是否保住）需要 transcript + Git object 联合**。仓库只能证明「存在一个 commit 带着这段消息」；**它证不了那段消息曾存在于某个已删文件里，也证不了该 commit 是 `-F` 而非 `-m` 产生的**。要把「文件内容 → commit 消息」这条链闭合，必须配上 transcript 里那次写文件（heredoc）与随后的 `git commit -F <path>` 调用。可执行复核命令：`git log --oneline 2a4898e8..83696acf`，再与 transcript 的调用逐条对齐。
+> - **方向 ②（总体是否穷尽）仓库同样证不了**。`git log` 枚举不出已删除的文件。唯一外部 oracle 仍是 transcript 里实际出现的 `git commit -F <path>` 调用。
 >
-> **审计边界**：本行的枚举**冻结到 tip `83696acf`**。该 tip 之后的提交（含修复本行的那一次）**不回填本行**——它们按同一判据核，去 transcript 取 oracle。把枚举写成"截至某 tip"是这条自指链唯一能收敛的形式；不写边界就会一直追着自己的尾巴。
+> 按 `downgrade-self-adjudicated-gates`：这里不靠堆条件去硬撑一个自评闸门，而是点名 oracle（transcript）＋可执行命令（上面那条 `git log`）＋边界，交独立评审裁决。**独立评审已读取完整 transcript 并逐条核过**：截至 `83696acf` 枚举出九份输入（`commit-msg-v19.txt`、`m1.txt`～`m7.txt`、`mg.txt`），与本表一致。
+>
+> **审计边界与承接**：本行枚举**冻结在闭区间 `2a4898e8..83696acf`**（字面 base 与 tip 均已写死，可直接复跑上面那条命令）。该 tip 之后的提交**不回填本行**——回填只会制造下一轮自指；它们由**本节的后续复评产物**承接，即 `docs/tmp/2026-08-08-header-deadline-temp-manifest-batch2-review.md` 的各轮复评节（其中已记录 `m8.txt` → `4a37b914`）。分段冻结 + 由必经评审产物接住下一区间，是这条自指链的收敛方式。
 
 | 临时对象 | 用途 | 处置 | 替代证据（可事后独立核验） |
 |---|---|---|---|
-| 提交信息输入（`commit-msg-v19.txt`、`m1.txt`～`m7.txt`、`mg.txt`；**截至 tip `83696acf` 的枚举，不冻结数量**） | `git commit -F` 的消息文件 | 用后即删 | 方向①（仓库可核）：对应 commit 均存在且携带该消息——`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`／`28e8025a`／`62ef4e61`／`83696acf`（`m7.txt` → `83696acf`）。方向②（仓库不可核）：总体以 transcript 里的 `git commit -F` 调用为准，见上方判据 |
+| 提交信息输入（`commit-msg-v19.txt`、`m1.txt`～`m7.txt`、`mg.txt`；**闭区间 `2a4898e8..83696acf` 的枚举，不冻结数量**） | `git commit -F` 的消息文件 | 用后即删 | **transcript ＋ Git object 联合**：对应 commit 均存在且携带该消息——`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`／`28e8025a`／`62ef4e61`／`83696acf`（`m7.txt` → `83696acf`）；「文件 → 消息」这一跳由 transcript 的 heredoc 与 `commit -F` 调用闭合，已由独立评审读 transcript 逐条核过 |
 | `add-skip-identity.mjs`、`skip-diff.mjs`、`verify-multiset.mjs`、`diff35.mjs`、`final-check.mjs`（5 份一次性校验脚本） | 比对 runtime skip 集合与 baseline `allowed_skipped`、插入缺失 identity | 用后即删 | **结论已落盘**：插入结果是 commit `7af27044` 的 +9 行 diff；多集合精确相等的判定另有**项目自带的常驻 oracle** `scripts/validate-entry-evidence.ts`（对 `allowed_skipped` 做精确 multiset 比较），脚本本身无长期价值、可随时重写 |
 | `/tmp/tmp-rescan-14d4ecd1.txt` | 首轮清理的 42 项枚举清单，是删除动作的**逐行输入** | **待删（本节评审通过后）** | 本文档「可清理」表已**逐项列出全部 30 项**、保留表列出 12 项，合计 42；事实视角评审在原件尚存时独立复算过覆盖面 42/42（`2026-08-08-job-tmp-review-facts.md:7-18`） |
 | `/tmp/mine-14d4.txt`、`/tmp/theirs-14d4.txt` | 某次合并的两侧改动文件名清单，用于算碰撞集 | **待删（本节评审通过后）** | 可由 `git diff --name-only <merge-base> <ref>` 精确重建；相关 merge commit 均在历史中 |

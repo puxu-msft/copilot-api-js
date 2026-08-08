@@ -31,6 +31,6 @@
 
 **测试门禁现状（核验于 2026-08-08）**：`typecheck` / `lint:all` / `test:backend` 均可正常跑。`test:backend` 的 `7279 executed / 30 skipped / 0 fail` **实测锚点是阶段 1 代码终点 `bea1dfa3`**（不是当时的 `master` `d1011fe7`——后者只是把 `bea1dfa3` 作祖先、另含无关 History worker 提交）。`test:backend` 是交付前必跑档位。依赖 native history-search 产物的测试**没有产物就显式 skip、不算红**。**复验触发器**：出现真实失败、矛盾证据、transport／test 基础设施路径变化、异常 merge 结果，或用户要求时才重验；仅仅 `master` 前进不触发。
 
-⚠️ **你现在跑会得到不同的数字，别当回归**：收尾时（`master` = `5720855929`）实测为 `7297 executed / 35 skipped / 0 fail`——executed 涨来自主线新增测试，skipped 30→35 来自 peer 给 history-search 加的 `describe.skipIf(!NATIVE)` 测试。另有一条**不归你修**的既有缺口：`tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped` 是 31 条而实测 35 条，只影响 `scripts/capture-entry-evidence.ts` 的 exact multiset 门（`test:backend` 不读它）。完整说明见 [HANDOVER.md](HANDOVER.md) 状态行的「收尾时刷新」段。
+⚠️ **你现在跑会得到不同的数字，别当回归**：收尾时（`master` = `5720855929`）实测为 `7297 executed / 35 skipped / 0 fail`——executed 涨来自主线新增测试，skipped 30→35 来自 peer 给 history-search 加的 `describe.skipIf(!NATIVE)` 测试。另有一条**不归你修**的既有缺口：`tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped` 是 31 条而实测 35 条。⚠️ 它**不会**让 `test:backend` 变红，但**别据此以为 `test:backend` 不读这个文件**——`tests/infra/entry-evidence-schema.unit.test.ts` 读的就是它，只是只校验 `files` 集合与 canonical 形态，不比对 `allowed_skipped` 与运行时 skip；exact multiset 比对在 `scripts/capture-entry-evidence.ts` / `validate-entry-evidence.ts`。完整说明见 [HANDOVER.md](HANDOVER.md) 状态行的「收尾时刷新」段。
 
 **每个阶段做完就合并 `master`**（定向测试 + typecheck + 架构守卫 + `test:backend` + 独立 subagent review 全绿后），不要把阶段 2 和 3 攒成一次大合并。
