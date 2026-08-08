@@ -392,35 +392,41 @@ function isRecoveryAnchorTerminus(frame: ClientFrame): boolean {
   }
 }
 
-interface StagedDirectRecoveryFrames {
+export interface StagedDirectRecoveryFrames {
   readonly state: AnchorState
-  readonly frames: ReadonlyArray<ClientFrame>
-  readonly closesAnchor: boolean
+  readonly entries: ReadonlyArray<StagedRecoveryWrite>
 }
 
-function stageDirectRecoveryFrames(
+export type StagedRecoveryWrite = Readonly<{ readonly kind: "anchor" | "real"; readonly frame: ClientFrame }>
+
+export function recoveryBatchSpecs(
+  entries: ReadonlyArray<StagedRecoveryWrite>,
+  envelope: Pick<import("~/lib/pipeline/types").WireEnvelopeFactory, "anchor" | "real">,
+): ReadonlyArray<import("~/lib/pipeline/types").WireWriteSpec> {
+  return entries.map((entry) => (entry.kind === "anchor" ? envelope.anchor(entry.frame) : envelope.real(entry.frame)))
+}
+
+export function stageDirectRecoveryFrames(
   frames: ReadonlyArray<ClientFrame>,
   anchorState: AnchorState,
   anchorHooks: AnchorHooks | undefined,
   openAnchorIndex: number | undefined,
 ): StagedDirectRecoveryFrames {
   const state: AnchorState = { ...anchorState }
-  const staged: Array<ClientFrame> = []
-  let closesAnchor = false
+  const entries: Array<StagedRecoveryWrite> = []
   let needsAnchorClose = openAnchorIndex !== undefined && !anchorState.anchorClosed
   for (const frame of frames) {
     const reconciled = reconcileLiveFrame(frame, state, anchorHooks)
     if (needsAnchorClose && reconciled.some((entry) => isRecoveryAnchorTerminus(entry))) {
       if (!anchorHooks || openAnchorIndex === undefined) throw new Error("[Anthropic:v4] open anchor lacks reconciliation hooks")
-      staged.push(anchorHooks.stopFrame(openAnchorIndex))
+      entries.push({ kind: "anchor", frame: anchorHooks.stopFrame(openAnchorIndex) })
       state.anchorClosed = true
       needsAnchorClose = false
-      closesAnchor = true
     }
-    staged.push(...reconciled)
+    entries.push(...reconciled.map((entry) => ({ kind: "real" as const, frame: entry })))
   }
   if (needsAnchorClose) throw new Error("[Anthropic:v4] recovery batch ended without closing the open anchor")
-  return { state, frames: staged, closesAnchor }
+  return { state, entries }
 }
 
 type DirectRecoveryPublication =
@@ -453,7 +459,7 @@ async function evaluateAndPublishDirectAnthropicRecovery(
       { candidateId: evaluation.candidate, dispatchId: evaluation.dispatch },
       ({ envelope, openAnchorIndex }) => {
         staged = stageDirectRecoveryFrames(evaluation.frames, anchorState, anchorHooks, openAnchorIndex)
-        return staged.frames.map((frame, index) => (staged?.closesAnchor && index === 0 ? envelope.anchor(frame) : envelope.real(frame)))
+        return recoveryBatchSpecs(staged.entries, envelope)
       },
     )
   } catch (error) {
