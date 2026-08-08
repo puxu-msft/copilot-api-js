@@ -367,27 +367,25 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
             recorder.settleCandidate(primaryCandidate, { verdict: committedAttempt === undefined ? "failed" : "winner", reason: `terminal:${outcome}` })
           }
         }
-        try {
-          terminalRecord = recorder.commitTerminal({
-            outcome,
-            ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
-            committedDispatch: committedAttempt,
-            ...(error === undefined ? {} : { error: serializeError(error) }),
-            usage: terminalInput.usage,
-            attribution: terminalInput.attribution,
-            metadata: {
-              ...(terminalInput.metadata as Record<string, unknown> | undefined),
-              ...(isHistoryPersistenceReservation(input.historyReservation) && { historyAdmissionWaitMs: input.historyReservation.historyAdmissionWaitMs }),
-            },
-          })
-          publishTerminal(terminalRecord, rawAttachmentOwner, isHistoryPersistenceReservation(input.historyReservation))
-          return terminalRecord
-        } catch (finalizeError) {
-          if (isHistoryPersistenceReservation(input.historyReservation)) {
-            getHistoryAdmissionController().failBeforeTerminal(operationId, finalizeError)
-          }
-          throw finalizeError
+        terminalRecord = recorder.commitTerminal({
+          outcome,
+          ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
+          committedDispatch: committedAttempt,
+          ...(error === undefined ? {} : { error: serializeError(error) }),
+          usage: terminalInput.usage,
+          attribution: terminalInput.attribution,
+          metadata: {
+            ...(terminalInput.metadata as Record<string, unknown> | undefined),
+            ...(isHistoryPersistenceReservation(input.historyReservation) && { historyAdmissionWaitMs: input.historyReservation.historyAdmissionWaitMs }),
+          },
+        })
+        publishTerminal(terminalRecord, rawAttachmentOwner, isHistoryPersistenceReservation(input.historyReservation))
+        return terminalRecord
+      } catch (finalizeError) {
+        if (isHistoryPersistenceReservation(input.historyReservation)) {
+          getHistoryAdmissionController().failBeforeTerminal(operationId, finalizeError)
         }
+        throw finalizeError
       } finally {
         inFlightRegistry.delete(operationId)
       }

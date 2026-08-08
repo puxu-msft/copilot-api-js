@@ -1,5 +1,6 @@
 import {
   //
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -15,6 +16,8 @@ import {
   MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY,
   resetModelOperationTerminalRegistryForTests,
 } from "~/lib/context/lightweight-model-operation"
+import { HistoryAdmissionControllerImpl } from "~/lib/history/worker/admission"
+import { setHistoryAdmissionControllerForTests } from "~/lib/history/worker/registry"
 
 function payloadValue(record: ReturnType<typeof listTerminalModelOperations>[number], handle: string | undefined): unknown {
   return record.arena.payloads.find((node) => node.handle === handle)?.value
@@ -22,6 +25,7 @@ function payloadValue(record: ReturnType<typeof listTerminalModelOperations>[num
 
 describe("lightweight ModelOperation lifecycle", () => {
   beforeEach(() => resetModelOperationTerminalRegistryForTests())
+  afterEach(() => setHistoryAdmissionControllerForTests(undefined))
 
   test("captures ingress, local attempt, actual client response, and releases consumed terminals", async () => {
     const semanticRequest = { model: "alias", contents: [{ text: "full semantic input" }] }
@@ -77,6 +81,39 @@ describe("lightweight ModelOperation lifecycle", () => {
 
     expect(consumeTerminalModelOperation(terminal.identity.operationId)).toBe(terminal)
     expect(listTerminalModelOperations()).toHaveLength(0)
+  })
+
+  test("releases History admission when response capture fails before terminal publication", async () => {
+    const controller = new HistoryAdmissionControllerImpl({
+      capacity: 1,
+      sink: { enqueue: () => 1 },
+    })
+    setHistoryAdmissionControllerForTests(controller)
+    const reservation = await controller.acquire({ signal: new AbortController().signal })
+    const operation = createLightweightModelOperation({
+      kind: "embeddings",
+      request: new Request("http://proxy.test/v1/embeddings", { method: "POST" }),
+      semanticRequest: { model: "embed", input: "capture failure" },
+      requestedModel: "embed",
+      historyReservation: reservation,
+    })
+    operation.recordRouting({ resolvedModel: "embed", source: "upstream", upstreamEndpoint: "/embeddings" })
+    const attempt = operation.beginAttempt({ source: "upstream", effectiveRequest: {}, wireRequest: {} })
+    attempt.commit({ result: { data: [] } })
+    const captureError = new Error("response body capture failed")
+    const response = new Response("{}")
+    Object.defineProperty(response, "clone", {
+      value: () =>
+        ({
+          headers: new Headers({ "content-type": "application/json" }),
+          text: () => Promise.reject(captureError),
+        }) as Response,
+    })
+
+    await expect(operation.complete(response)).rejects.toBe(captureError)
+    expect(listInFlightLightweightModelOperations()).toHaveLength(0)
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, preTerminalFailuresTotal: 1, lastPreTerminalError: captureError.message })
+    await controller.waitForQuiescence()
   })
 
   test("keeps the terminal registry bounded by evicting the oldest record", async () => {
