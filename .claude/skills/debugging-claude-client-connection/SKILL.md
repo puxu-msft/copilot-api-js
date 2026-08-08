@@ -1,6 +1,6 @@
 ---
 name: debugging-claude-client-connection
-description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时三层（响应头到达前只有 undici 默认 headersTimeout ~300s、可被客户端 API_FORCE_IDLE_TIMEOUT=0 关掉；头到达后 60s byte-idle 任意字节/ping 重置 + 300s event-idle 任何非-ping 事件都重置，长 pre-content thinking 静默撞它断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 的中止方（2026-07-28 起 abort 自带 provenance：先读 `err.name==="TimeoutError"`/`pool-closed` tag/`isShutdownCausedAbort`/`getCancellationCause`，History `state`(failed≠aborted)/上游 0 帧 status null/durationMs 只作 fallback，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
+description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时三层（响应头到达前只有 undici 默认 headersTimeout ~300s、可被客户端 API_FORCE_IDLE_TIMEOUT=0 关掉；头到达后 60s byte-idle 任意字节/ping 重置 + 300s event-idle 任何非-ping 事件都重置，长 pre-content thinking 静默撞它断连）、keepalive 默认发裸 ping、只在 escalate 阈值到点才升级为匹配当前 open block 的空 content-delta、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 的中止方（2026-07-28 起 abort 自带 provenance：先读 `err.name==="TimeoutError"`/`pool-closed` tag/`isShutdownCausedAbort`/`getCancellationCause`，History `state`(failed≠aborted)/上游 0 帧 status null/durationMs 只作 fallback，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
 ---
 
 # Claude Code 客户端连接与流式行为
@@ -68,20 +68,34 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 |---|---|---|---|
 | `state`（**首要判据**） | `aborted` | `failed` | `failed` |
 | `attempts[].upstreamResponse.status` + `.sseEvents` | 可能已有帧 | 视时机 | **`null` + `[]`（0 帧）= 上游从未回响应头** |
-| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（**shipped 1200s**；代码 fallback 600s） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（**shipped 均 600s**；代码 fallback 均 300s） |
-
-> **⚠ 2026-07-28 订正——归因前先看清用的是哪套数**：本表原写「默认 600s / 默认 300s」，那是 `src/lib/state-defaults.ts` 的**代码 fallback**。真实运行读的是 shipped `config.yaml`：`response_header: 600` / `stream_idle: 600` / `stale_request_max_age: 1200` / `request_deadline: 1200`。拿 300/600 去套一条 600s 的 incident 会把 header-timeout 误判成 reaper。**判之前先读该实例生效的 config**，别凭本表的数字。
+| entry-relative `durationMs` | 任意（客户端何时走） | ≈ 该实例**生效的** `staleRequestMaxAge` | ≈ 该实例**生效的** `responseHeaderTimeout`/`streamIdleTimeout` |
 | 下游终端 error 帧文案 | 无（客户端已走，零字节） | `Request cancelled by the stale-request reaper` | `Upstream timed out before sending response headers` |
 
-- `state:"failed"`（非 `aborted`）**当场排除 client-abort**：客户端断开走 `StreamClientAbortError` → driver `settled-abort` → state `aborted`；reaper/timeout 走 `ctx.fail` → `failed`。机制佐证 [forward.ts:521-530](../../../src/lib/error/forward.ts)——client-abort 会 abort `c.req.raw.signal`，header-timeout 只 abort **fetch 信号**、留 `raw.signal` 未 abort。
-- header-timeout 由 [fetch-utils.ts](../../../src/lib/fetch-utils.ts) 的 `AbortSignal.timeout(responseHeaderTimeout*1000)` 折进上游 fetch 信号触发（GHC 走 h2、不吃 undici Agent 的 `headersTimeout`，靠这个信号兜底）。**上游 0 帧 + status null + 时长≈300s = 上游纯沉默、我方 header-wait 守卫开火**（既非客户端主动断、也非 GHC 主动报错/关流）。
-- 巨型对话（`messageCount` 数百、`requestBytes` MB 级）+ 全程 `clientResponse.sseEvents` 皆 `synthetic:"keepalive"/"synthetic-message-start"/"anchor"`（真实内容 0 帧）= delayed-commit pre-response 路径：窗口期上游沉默 → commit 200 + 合成空 delta 保活撑住 CC 的 300s 层，最终自身 header-wait 到点。注：此路径下终端 error 帧在 `ctx.fail`(snapshot forwarded) **之后**写，**不进 history 快照**——reaper/timeout 二选一别指望 history 里的文案，靠 `durationMs`（300 vs 600）或实时 wire 抓。
+> **⚠ `durationMs` 那一行没有可写死的数字——归因前先取该实例生效的配置。** 本 skill **不记**当前 bundled 默认值：这些键既有 bundled 标量、又有 `response_header_overrides`/`stream_idle_overrides` 两张 per-model 表，还随配置世代变；写进 skill 的任何具体秒数都会在下一次配置改动后变成陷阱。**判之前逐个取**：① 标量与 per-model override 的**生效值**（per-model 命中优先于标量，`0` = 该终止器禁用，此时这一行整个不适用）；② 该进程**实际持有**的值（配置热重载与进程启动世代可能不一致，声明值不等于运行态）；③ 事故发生时的配置世代（读旧记录时尤其重要）。
+>
+> **这三项各有各的取法，不许凭记忆填**：
+>
+> | 要取什么 | 从哪取 | 注意 |
+> |---|---|---|
+> | 进程此刻持有的生效值 | `GET /api/config`（`buildEffectiveConfig()`，挂载见 `src/routes/index.ts:78`，实现 `src/routes/config/route.ts`） | **不是读 `config.yaml`**，那只是声明值。实例已不在 → 只能走下面两行 |
+> | 事故当时的 `stream_idle` | 该 entry 的 `pipelineInfo.streamIdleTimeoutMs`（`src/lib/history/types.ts:231`） | **只有这一个阈值真的落盘**。同一结构里的 `responseHeaderTimeoutMs`（`:233`）**当前没有生产写点**——六处 `setStreamTimeouts(...)` 生产调用全都只传 `streamIdleTimeoutMs`，只有单测写过它。所以 **header-timeout 事故没有结构化阈值字段可取** |
+> | 事故当时的 `stale_request_max_age` / `request_deadline` | **没有结构化字段，但秒数嵌在终端 error 文案里**：`Request exceeded maximum age of <N>s (stale context reaper)` / `Request exceeded hard deadline of <N>s (request_deadline)`（产生点 `src/lib/context/manager.ts:329,440`），经 `ctx.fail` 保留、投影到 `_index.derived.failureReason`（`src/lib/history/v3/projection.ts:437`） | 只对这两条**具名 producer** 有效。文案没命中这两个模式 → 当作取不到 |
+> | 上面都没有 | —— | **写「阈值归因未决」，停在这里。禁止由 duration 反推配置**——那正是本节要防的循环论证 |
+>
+> **机械判据**：这一行的归因要成立，必须能指出上表哪一格给了值。指不出来就是「未决」，不是「大概是默认值」。**尤其 header-timeout：它恰恰是最没有事故时证据的那一个**，别因为它的名字最像超时就默认套上去。
 
-**时间基陷阱（踩过，务必换算）**：`clientResponse.sseEvents[].offsetMs` 以 **`streamStartMs`=commit 时刻**为原点（≈ `entry.startedAt + streamCommitAfterSec`，默认 **+180s**（2026-07-28 起；此前为 +20s，读旧样本按 +20s 换算）），而 `durationMs`/`attempts[].durationMs` 以 **entry 起始**为原点。拿 commit-relative 的心跳 offset 直接减 entry-relative 的 duration，会**凭空多出约一个 `streamCommitAfterSec`（~20s）的"心跳空档"假象**。推理心跳节律（默认 `streamKeepalivePingSec=20`）前先统一到同一原点：末次心跳绝对时刻 = `entry.startedAt + streamCommitAfterSec + offsetMs`，与 abort 时刻同基再比。
+> **历史读数只在其自身世代内成立**：曾观测的 `300s`（代码 fallback 世代）、`600s`/`1200s`（2026-08-08 之前的 bundled 世代）都**不得**用来套当前 incident；2026-08-08 起 bundled 把这四个 wall-clock terminator 改为默认禁用、per-model 表清空，正值只在运维显式覆盖时出现并触发 bounded-wait 告警。看到 duration 与你以为的阈值对不上，先怀疑自己拿错了世代，再往别处查。
+
+- `state:"failed"`（非 `aborted`）**当场排除 client-abort**：客户端断开走 `StreamClientAbortError` → driver `settled-abort` → state `aborted`；reaper/timeout 走 `ctx.fail` → `failed`。机制佐证 [forward.ts:557-571](../../../src/lib/error/forward.ts)（有序 precedence 的前两臂）——client-abort 会 abort `c.req.raw.signal`（→ 499），header-timeout 只 abort **fetch 信号**、留 `raw.signal` 未 abort，且必须自带 `name === "TimeoutError"` 才判 504。
+- header-timeout 由 [fetch-utils.ts](../../../src/lib/fetch-utils.ts) 的 `AbortSignal.timeout(responseHeaderTimeout*1000)` 折进上游 fetch 信号触发（GHC 走 h2、不吃 undici Agent 的 `headersTimeout`，靠这个信号兜底）。**上游 0 帧 + status null + 时长≈该实例生效的 `responseHeaderTimeout` = 上游纯沉默、我方 header-wait 守卫开火**（既非客户端主动断、也非 GHC 主动报错/关流）。**该值为 `0` 时这条守卫根本不武装**，同样形态就得往别的中止方查。
+- 巨型对话（`messageCount` 数百、`requestBytes` MB 级）+ 全程 `clientResponse.sseEvents` 皆 `synthetic:"keepalive"/"synthetic-message-start"/"anchor"`（真实内容 0 帧）= delayed-commit pre-response 路径：窗口期上游沉默 → commit 200 + 合成空 delta 保活撑住 CC 的 300s 层，最终自身 header-wait 到点（前提是该守卫已武装）。
+  **注：终端 error 帧现在进 history 快照，可以据文案判别。** 早期实现里它写在 `ctx.fail` 之后、只留在 durable V3 轨；现行 `writeTerminalThenSettle` 已改成 `closeAnchor → writeSynthetic → setForwardedResponse → settle`（`src/routes/messages/handler-v4.ts:1003-1023`，`finally` 保证写 reject 也不跳过 settle）。owner-failure 路径**只保证后半段同序**——`settleMessagesOwnerFailure` 先 `recordForwarded()` 再 `ctx.abort`/`ctx.fail`（`src/routes/messages/owner-failure-settlement.ts:13-16`），终端帧本身由上游的 owner decision 决定写不写。**读 2026-07-28 之前的旧记录仍可能缺这帧**——那是旧路径的产物，不是当前缺陷。
+
+**时间基陷阱（踩过，务必换算）**：`clientResponse.sseEvents[].offsetMs` 以 **`streamStartMs`=commit 时刻**为原点（≈ `entry.startedAt + streamCommitAfterSec`；bundled 默认自 2026-07-28 起为 180，此前为 20——**读旧样本按其世代的值换算，别套当前值**），而 `durationMs`/`attempts[].durationMs` 以 **entry 起始**为原点。拿 commit-relative 的心跳 offset 直接减 entry-relative 的 duration，会**凭空多出整整一个 `streamCommitAfterSec` 的"心跳空档"假象**（该实例配多少就差多少）。推理心跳节律（`streamKeepalivePingSec`，同样按生效值取）前先统一到同一原点：末次心跳绝对时刻 = `entry.startedAt + streamCommitAfterSec + offsetMs`，与 abort 时刻同基再比。**注意 `streamCommitAfterSec` 与 `streamKeepalivePingSec` 都不在 `pipelineInfo` 里**（那儿唯一真被写入的只有 `streamIdleTimeoutMs`），所以读旧记录时这个换算**没有事故时快照可依**：只能取当前 `GET /api/config` 值并显式声明「按当前值换算、可能跨世代」，或者判定该换算未决。别默默用当前值当成当时值。
 
 ## keepalive 修复 + 合成帧必须可辨识
 
-**修复（本项目落地，2026-07-28 校正到当前实现）**：`stream_keepalive_mode` 的当前默认是 **`ping`**（可选值 `ping` / `enveloped_ping` / `empty_text`；原文写的 `content_delta` **已不是合法值**，「默认发空 content delta」也已被 ADR 2026-07-22 D2 反转——常态 wire 不该长期挂一个合成 text 块）。改为**按需升级**：`stream_keepalive_escalate_sec`（默认 **200s**）到点才发匹配当前 open block 的空 content delta（thinking→thinking_delta / text→text_delta / tool_use→input_json_delta），pre-content 无开块时惰性开锚点；日常仍是纯 ping、零污染。实现 `src/lib/anthropic/keepalive-frame.ts`（sink + web_search legacy heartbeat 共用）。覆盖矩阵+四臂对照 `exp/cc-idle-280s/REPORT.md`。
+**修复（本项目落地，2026-07-28 校正到当前实现）**：`stream_keepalive_mode` 的当前默认是 **`ping`**（可选值 `ping` / `enveloped_ping` / `empty_text`；原文写的 `content_delta` **已不是合法值**，「默认发空 content delta」也已被 ADR 2026-07-22 D2 反转——常态 wire 不该长期挂一个合成 text 块）。改为**按需升级**：`stream_keepalive_escalate_sec` 到点才发匹配当前 open block 的空 content delta（thinking→thinking_delta / text→text_delta / tool_use→input_json_delta），pre-content 无开块时惰性开锚点；日常仍是纯 ping、零污染。**这个阈值同样按生效值取，别记数字**——`0` = 不升级（升级机制整个不武装），而 `packages/foundation/src/state-defaults.ts` 里的 `streamKeepaliveEscalateSec` 只是**优先级更低的代码 fallback**，bundled `config.yaml` 一旦给出该键就轮不到它；看到「一直只有 ping、从没升级过」先查生效值是不是 `0`，别当缺陷。实现 `src/lib/anthropic/keepalive-frame.ts`（sink + web_search legacy heartbeat 共用）。覆盖矩阵+四臂对照 `exp/cc-idle-280s/REPORT.md`。
 
 **合成帧必须打可辨识标记（关键，别漏）**：所有 keepalive（含 ping）在 forwarded 轨打 `SseEventRecord.synthetic:"keepalive"` 标记，否则空 delta **伪装成真实内容**、把上游沉默掩盖成正常 streaming。**上游轨 `sseEvents` 绝不含 keepalive、始终忠实**；合成物只进 forwarded 轨且打标记；下游据标记区分显示。见 [[feedback-synthetic-data-must-be-distinguishable-from-real]]（richest-data-flow 对称面）。
 

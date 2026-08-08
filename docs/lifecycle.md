@@ -29,7 +29,7 @@
 
 ### Lossless drain
 
-`RequestContextManager.getTrackedOperations()` 是“已接纳”的机械边界。context 从创建起进入 registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开。
+`RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成“已接纳”的机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开；count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 完成后注销。
 
 shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
 
@@ -107,8 +107,8 @@ CUR=$(systemctl is-active copilot-api@a >/dev/null && echo a || echo b)   # 现�
 NEXT=$([ "$CUR" = a ] && echo b || echo a)
 systemctl start copilot-api@$NEXT                 # 阻塞到 READY=1（新槽 reusePort 绑 :4141）
 systemctl kill -s SIGUSR2 copilot-api@$CUR        # 脚本发交接信号 → 旧槽停 accept + drain
-systemctl stop  copilot-api@$CUR                  # 旧槽 drain 完退出后，stop 仅收敛记账（幂等）
-systemctl disable copilot-api@$CUR                # 翻转开机默认槽
+# 轮询 is-active，等待旧槽自行 exit 0；禁止再发 stop/SIGTERM，否则会成为强退信号
+systemctl disable copilot-api@$CUR                # 仅在旧槽正常退出后翻转开机默认槽
 systemctl enable  copilot-api@$NEXT
 ```
 
@@ -117,7 +117,7 @@ systemctl enable  copilot-api@$NEXT
 - **默认槽 = 配置态**：`/etc/systemd/system/<target>.wants/copilot-api@<slot>.service` enablement 符号链接，由 `systemctl enable/disable` 翻转，落在 **systemd 配置目录**而非 app 目录。
 
 三个收益：
-- **信号由脚本发（B1）**：systemd 下 app **只需 SIGUSR2 handler**，新槽起来时完全不碰旧槽（不读 pidfile、不自发信号），编排权归脚本——systemd 路径**无需 pidfile**。
+- **信号由脚本发（B1）**：systemd 下 app **只需 SIGUSR2 handler**，新槽起来时完全不碰旧槽（不读 pidfile、不自发信号），编排权归脚本——systemd 路径**无需 pidfile**。脚本发 SIGUSR2 后只轮询旧槽自行退出，禁止再发 `systemctl stop`／SIGTERM。
 - **新槽起不来 = 零影响**：新代码有 bug 则 `systemctl start` 失败、脚本止步，旧槽从没收到 SIGUSR2、持续正常服务（相对「原地 restart」的硬优势——原地一旦新码崩就有停机窗口）。
 - **崩溃重启干净**：`Restart=on-failure` 拉起同色槽，此刻无另一活实例、reusePort 绑 :4141 无冲突；无 live 前任则跳过交接。per-instance MainPID / 日志 / Restart 策略全是 systemd 原生跟踪。
 
