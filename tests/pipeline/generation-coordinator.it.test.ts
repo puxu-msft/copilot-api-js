@@ -597,10 +597,12 @@ describe("P6-T2 generation coordinator", () => {
     const opens: Array<string> = []
     const processors: Array<symbol> = []
     const deliveryIdentity = Symbol("delivery")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
     const coordinator = createGenerationCoordinator({
       env: envelope("primary"),
       deliveryIdentity,
       createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
     })
     const primary = await coordinator.runPrimary()
 
@@ -615,6 +617,67 @@ describe("P6-T2 generation coordinator", () => {
     expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("continued")
     expect(processors).toHaveLength(2)
     expect(processors[0]).not.toBe(processors[1])
+    expect(opens).toEqual(["primary", "continuation"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 1, activeDispatches: 0 })
+    coordinator.completeCandidate(continuation.candidate, "failed", "cleanup-continuation")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("continuation dispatch settlement failure fails parent without opening child", async () => {
+    const dispatchError = new Error("continuation dispatch failed")
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+    const failedParent = {
+      ...primary,
+      async settleDispatch() {
+        throw dispatchError
+      },
+    }
+
+    await expect(coordinator.runContinuation(failedParent, "dispatch-failed", envelope("continuation"))).rejects.toBe(dispatchError)
+    expect(opens).toEqual(["primary"])
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("continuation aggregates dispatch and candidate recording failures before a retry", async () => {
+    const dispatchError = new Error("continuation dispatch failed")
+    const recordingError = new Error("continuation recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+    const failedParent = {
+      ...primary,
+      async settleDispatch() {
+        throw dispatchError
+      },
+    }
+
+    const error = await coordinator.runContinuation(failedParent, "dispatch-failed", envelope("continuation")).then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    )
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([dispatchError, recordingError])
+    expect(opens).toEqual(["primary"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
   })
 
   test("chained buffered recovery advances the parent while preserving one delivery identity", async () => {
