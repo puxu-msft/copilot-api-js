@@ -122,9 +122,16 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
 
   let lastUpstreamTrack: OperationTrackInput | undefined
   let committedDispatch: ReturnType<typeof recorder.beginDispatch> | undefined
-  const projectedAttempts = entry.attempts ?? []
-  const candidate = projectedAttempts.length === 0 ? undefined : recorder.beginCandidate({ role: "primary", metadata: { recovery: true } })
-  for (const [index, projected] of projectedAttempts.entries()) {
+  // Created lazily at the first dispatch, exactly where the adapter this replaced
+  // created its implicit candidate — inside beginAttempt, i.e. AFTER that attempt's
+  // payloads are registered. Creating it eagerly before the loop shifts every
+  // following event's sequence, which changes the timeline and the manifest digest
+  // of a recovered record. Its metadata and settle reason are the adapter's own
+  // strings for the same reason: they are part of the hashed record, so changing
+  // them would make re-running recovery produce a different digest for input that
+  // has not changed.
+  let candidate: ReturnType<typeof recorder.beginCandidate> | undefined
+  for (const [index, projected] of (entry.attempts ?? []).entries()) {
     const effectiveBody = projected.effectiveSource?.body
     const wireBody = projected.upstreamRequest?.body
     const effectivePayload =
@@ -141,7 +148,7 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
           mediaType: "application/json",
         })
       )
-    if (candidate === undefined) throw new Error("[history/v3] missing recovery candidate")
+    candidate ??= recorder.beginCandidate({ role: "primary", metadata: { compatibility: "attempt-adapter" } })
     const handle = recorder.beginDispatch({
       candidate,
       strategy: projected.strategy,
@@ -221,7 +228,7 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
   if (candidate !== undefined) {
     recorder.settleCandidate(candidate, {
       verdict: committedDispatch === undefined ? "failed" : "winner",
-      reason: "recovered from projected History V3 entry",
+      reason: "attempt adapter terminal",
     })
   }
 

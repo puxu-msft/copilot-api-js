@@ -28,6 +28,7 @@ import {
   getV3StoreStatus,
   prepareModelOperation,
   resetV3WriterForTests,
+  V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
 
 import {
@@ -181,17 +182,21 @@ describe("History V3 store performance", () => {
       }
     }
 
-    // `exec` bypasses the prepare probe entirely, so it gets its own assertion:
-    // today it carries only schema DDL, and a DML statement arriving through it
-    // would be invisible to the plan check above. Anchored to the start of the
-    // whole script, NOT per line (`m`) — trigger bodies inside a DDL script
-    // legitimately contain INSERT/UPDATE, and matching those reports the schema
-    // itself as an offender.
-    const execDml = execed.filter((sql) => /^\s*(?:SELECT|UPDATE|DELETE|INSERT)/i.test(sql))
+    // `exec` bypasses the prepare probe entirely, so it gets its own assertion.
+    // Frozen shape rather than a DML regex: a script is multi-statement, and
+    // "does the first statement look like DDL" misses `PRAGMA …; UPDATE …`,
+    // while scanning every line misreports the INSERT/UPDATE inside a trigger
+    // body. Naming the shapes exec is allowed to carry fails closed instead —
+    // anything new arriving through this path has to be looked at.
+    const unexpectedExec = execed.filter((sql) => {
+      const text = sql.trim()
+      if (text === V3_SCHEMA_SQL.trim()) return false
+      return !/^DROP TABLE IF EXISTS \w+;?$/i.test(text)
+    })
 
     expect(executed.length).toBeGreaterThan(0)
     expect(offenders).toEqual([])
-    expect(execDml).toEqual([])
+    expect(unexpectedExec).toEqual([])
   })
 
   test("reports prepare and commit timing before and after prior session history", () => {
