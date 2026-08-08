@@ -269,7 +269,10 @@ describe("P6-T1 candidate dispatch runtime", () => {
       (error: unknown) => ({ state: "rejected" as const, error }),
     )
 
-    expect(outcome).toEqual({ state: "rejected", error: undefined })
+    expect(outcome.state).toBe("rejected")
+    expect(outcome.error).toBeInstanceOf(AggregateError)
+    expect((outcome.error as AggregateError).errors).toHaveLength(1)
+    expect(((outcome.error as AggregateError).errors[0] as Error).message).toBe("undefined")
     expect(recording.dispatches.get(ready.dispatch)?.verdict).toBe("failed")
     await expect(ready.settleDispatch({ verdict: "failed", reason: "after-undefined-cleanup" })).resolves.toBeUndefined()
   })
