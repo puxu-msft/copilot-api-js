@@ -22,6 +22,7 @@ import {
   ensureV3Schema,
   garbageCollectTransportEvidence,
   getV3Operation,
+  hydrateManifest,
   hydrateTransportEvidence,
   prepareModelOperationWithTransportEvidence,
   recoverV3Journal,
@@ -441,6 +442,57 @@ describe("History V3 transport evidence substrate", () => {
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(3)
   })
 
+  test("a v3 manifest is still reconciled when the normalized ref table is missing", async () => {
+    const db = getDatabase()
+    ensureV3Schema(db)
+    await applyForwardMigrations(db)
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("v3-missing-ref-table"), [captured(new Uint8Array([130]), 0, 1)])
+    commitPreparedOperation(db, prepared)
+    const row = db.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(prepared.id) as { manifest_gz: Uint8Array }
+    expect(hydrateManifest(db, row.manifest_gz, prepared.id).identity.operationId).toBe(prepared.id)
+
+    // The legacy allowance is "pre-schema-6 has nothing to reconcile against".
+    // A v3 envelope carries a non-empty ref set, so if the table it must be
+    // reconciled against is gone, that is a missing counterpart — not an
+    // exemption. Skipping here would fail OPEN on exactly the input the check
+    // exists for.
+    db.exec("DROP TABLE v3_operation_evidence_refs")
+
+    expect(() => hydrateManifest(db, row.manifest_gz, prepared.id)).toThrow()
+  })
+
+  test("the commit-time strict gate aborts transaction B when persisted refs stop matching the manifest", async () => {
+    const db = getDatabase()
+    ensureV3Schema(db)
+    await applyForwardMigrations(db)
+    db.prepare("INSERT OR REPLACE INTO history_meta(key,value) VALUES('summary_projection_ready','1')").run()
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("b-strict-gate"), [
+      captured(new Uint8Array([120]), 0, 1),
+      captured(new Uint8Array([121]), 0, 2),
+    ])
+    // Corrupt REAL data inside transaction B rather than throwing at a stage
+    // marker. A thrown injector proves only "we roll back at this point" — it
+    // stays green even if the strict re-hydrate is deleted outright, because the
+    // two are independent. Deleting a ref the manifest still claims is the only
+    // shape that fails iff the gate actually runs.
+    setV3TransactionBFailureInjectorForTests((stage) => {
+      if (stage === "refs") db.prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(prepared.id)
+    })
+
+    expect(() => commitPreparedOperation(db, prepared)).toThrow(/operation evidence refs mismatch/i)
+    setV3TransactionBFailureInjectorForTests(null)
+
+    // Fail-closed: nothing canonical or derived is published, and the global
+    // marker keeps the value it had before the attempt.
+    expect(db.prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_operation_summaries WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_operation_evidence_refs WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT value FROM history_meta WHERE key='summary_projection_ready'").get()).toEqual({ value: "1" })
+    expect(db.prepare("SELECT format_version FROM v3_journal WHERE operation_id=? AND revision=?").get(prepared.id, prepared.revision)).toEqual({
+      format_version: 2,
+    })
+  })
+
   test("rejects journal recovery when the payload's embedded identity belongs to another journal row", () => {
     const shared = captured(new Uint8Array([90]), 0, 1)
     const first = prepareModelOperationWithTransportEvidence(terminalRecord("journal-identity-first"), [shared])
@@ -466,7 +518,11 @@ describe("History V3 transport evidence substrate", () => {
     expect(recoverV3Journal()).toBe(1)
     expect(getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(first.id)).toBeNull()
     expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(first.id) as { error: string }).error).toMatch(
-      /journal operation identity mismatch/i,
+      // Pinned to the decode-time assertion's own wording. The adjacent
+      // `prepared.id` check raises the same sentence without the expected/got
+      // detail, so a looser pattern would pass on either and this case would
+      // stop being a positive control for the decode-side binding.
+      /journal operation identity mismatch: expected .*, got /,
     )
   })
 

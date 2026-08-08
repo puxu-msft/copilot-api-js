@@ -98,11 +98,13 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     expect(tableExists("history_meta")).toBe(true)
     expect(tableExists("v3_operation_summaries")).toBe(true)
     expect(Boolean(getDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
-      "001-operation-summary-projection",
-      "001-transport-evidence-schema",
-      "002-summary-integrity-invalidation",
-    ])
+    // Set, not array: the ledger records WHICH migrations ran, and pending is
+    // decided by set membership (storage.ts logMigration). Asserting the array
+    // verbatim made these cases accidental copies of the apply-order snapshot,
+    // so changing the shipped order broke cases making no claim about it.
+    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+      new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation"]),
+    )
   })
 
   test("initHistory starts the strict V3 summary backfill and publishes readiness on a healthy empty store", async () => {
@@ -143,11 +145,9 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
       projection_status: "pending",
       projection_error: null,
     })
-    expect(JSON.parse(getMeta(db, MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
-      "001-operation-summary-projection",
-      "001-transport-evidence-schema",
-      "002-summary-integrity-invalidation",
-    ])
+    expect(new Set(JSON.parse(getMeta(db, MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+      new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation"]),
+    )
 
     await shutdownHistory()
     await initHistory(true)
@@ -177,12 +177,13 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     await applyForwardMigrations(getDatabase(), migrations)
     expect(upCallCount).toBe(1)
     expect(tableExists("wiring_probe")).toBe(true)
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
-      "001-operation-summary-projection",
-      "001-transport-evidence-schema",
-      "002-summary-integrity-invalidation",
-      "001-wiring-probe",
-    ])
+    // Set, not array: the ledger records WHICH migrations ran, and pending is
+    // decided by set membership (storage.ts logMigration). Asserting the array
+    // verbatim made these cases accidental copies of the apply-order snapshot,
+    // so changing the shipped order broke cases making no claim about it.
+    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+      new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation", "001-wiring-probe"]),
+    )
 
     // Idempotent rerun: Umzug's ledger (in the SAME history_meta table
     // initHistory's open path built) must skip an already-applied migration.
@@ -253,11 +254,10 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     ]
     await expect(applyForwardMigrations(getDatabase(), failing)).rejects.toThrow("boom")
     // Failed migration must stay unlogged (pending) so it retries next start.
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
-      "001-operation-summary-projection",
-      "001-transport-evidence-schema",
-      "002-summary-integrity-invalidation",
-    ])
+    // Set semantics: the claim is "boom is absent", not a particular order.
+    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+      new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation"]),
+    )
   })
 
   test("shutdownHistory + reopen: the ledgered migration is not re-applied across a real restart", async () => {

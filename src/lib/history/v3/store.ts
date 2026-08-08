@@ -1549,6 +1549,19 @@ function persistedEvidenceRef(row: PersistedEvidenceRefRow, scope: "journal" | "
   }
 }
 
+/**
+ * Whether this database carries the normalized evidence-ref table at all.
+ *
+ * Schema 5 and earlier predate it. Such a database can only hold v1/v2 manifests,
+ * whose envelope ref set is empty by construction, so the empty↔empty contract
+ * holds trivially and there is nothing to reconcile against. Querying the table
+ * unconditionally would instead make every legacy database unreadable — the
+ * false-red half of the criterion.
+ */
+function hasOperationEvidenceRefsTable(db: Database): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_operation_evidence_refs'").get() !== null
+}
+
 function operationRefs(db: Database, operationId: string): Array<TransportEvidenceRef> {
   return (
     db
@@ -1679,7 +1692,19 @@ export function hydrateManifest(db: Database, manifestBlob: Uint8Array, expected
   const manifest = decodeManifestEnvelope(manifestBlob)
   assertManifestOperationIdentity(manifest, expectedOperationId)
   validateStoredOperationDigest(db, manifestBlob, manifest, expectedOperationId)
-  if (manifest.formatVersion === 3) validatePersistedOperationEvidenceRefs(db, manifest, expectedOperationId)
+  // Every format version, not just v3. The decoder normalizes v1/v2 envelopes to
+  // an empty ref set, so the contract is empty↔empty and this call needs no
+  // version branch. Gating it on v3 left full hydrate — detail, list, summary
+  // fallback, strict repair, backfill, search — blind to stray normalized rows
+  // that the adjacent evidence-hydrate and GC paths already reject, so the same
+  // operation could be published as ready by one consumer and refused by another.
+  //
+  // The table probe covers pre-schema-6 databases, which have nothing to
+  // reconcile against (see hasOperationEvidenceRefsTable). It must never gate a
+  // v3 manifest: a v3 envelope can carry a non-empty ref set, so skipping it
+  // because the table is missing would fail OPEN on exactly the input the check
+  // exists for. Version first, table probe only as the legacy allowance.
+  if (manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db)) validatePersistedOperationEvidenceRefs(db, manifest, expectedOperationId)
   const hashes = [...new Set(Object.values(manifest.objectHashes))]
   const values = new Map<string, unknown>()
   const loadObjects = (requested: ReadonlyArray<string>): void => {
@@ -1859,6 +1884,12 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
       // Adjacent defence to the decode-time identity binding: the committed row is
       // keyed by the prepared operation's own id, so a prepare path that ever
       // rewrote identity would publish under a key the journal row does not own.
+      // Deliberately without a positive control: with the decode-time assertion in
+      // place, no input can reach here with a mismatched id, so the only way to
+      // turn this line red would be to mutate the prepare path itself. Kept as
+      // defence in depth, not as a criterion — do not read its permanent green as
+      // evidence that identity binding works (the decode assertion's control is
+      // the GC case, which has no second line of defence).
       if (prepared.id !== row.operation_id) throw new Error("journal operation identity mismatch")
       if (prepared.revision !== row.revision) throw new Error("journal revision mismatch")
       if (row.format_version === 1) {

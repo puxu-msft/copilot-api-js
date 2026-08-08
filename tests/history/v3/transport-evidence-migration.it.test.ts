@@ -42,12 +42,17 @@ afterEach(() => {
 })
 
 describe("History V3 transport evidence schema migration", () => {
-  test("registers the transport-evidence migration after the existing summary migration", () => {
-    expect(MIGRATIONS.map(({ name }) => name)).toEqual([
-      "001-operation-summary-projection",
-      "001-transport-evidence-schema",
-      "002-summary-integrity-invalidation",
-    ])
+  test("registers the transport-evidence migration before the summary migration that triggers off its table", () => {
+    const names = MIGRATIONS.map(({ name }) => name)
+    // The invariant is the DDL dependency direction, not the literal array. The
+    // previous full-equality snapshot froze the OPPOSITE order — the one under
+    // which a real schema-5 database cannot be upgraded, because the summary
+    // migration installs triggers on v3_transport_evidence before the migration
+    // that creates it. A snapshot cannot tell a deliberate order from a broken
+    // one; a relative assertion can.
+    expect(names.indexOf("001-transport-evidence-schema")).toBeLessThan(names.indexOf("001-operation-summary-projection"))
+    expect(names).toContain("002-summary-integrity-invalidation")
+    expect(new Set(names).size).toBe(names.length)
   })
 
   test("upgrades a real schema-5 journal row to schema 6 without rewriting its payload", async () => {

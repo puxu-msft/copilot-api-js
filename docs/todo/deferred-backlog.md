@@ -1196,3 +1196,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
 - **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
 - **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。
+
+## marker 缺席时 History 列表 fallback 走遍全表（2026-08-08，Task 9 验收判据复评的邻域实测）
+
+- **根因 / 现状**：`src/lib/history/queries.ts:267-291` 的 fallback 列表路径，其 `visitV3Summaries` visitor **从不返回 `false`**、也不带 limit，因此 marker 缺席时一次请求会遍历并 hydrate 全部 canonical operation。复杂度类没有变化（该路径此前同样逐行 hydrate），变大的是常数——Task 9 让 fallback 一律从 canonical record 重投影（不再采信缓存 `summary_json`），这是修复 BLOCKER 所必需的，但每行多了一次投影开销。
+- **当前行为**：评审实测 N=2000：**3167ms → 5452ms**。**注意触发条件不是罕见情形**——marker 缺席正是「升级后首次启动、strict scrub 尚未跑完」的常态窗口，也是任一受保护 canonical UPDATE 之后的状态。
+- **理想架构 / 若做需改什么**：与本轮未闭合的 #5（写路径退化无人守）**同一套收口**——把判据从 wall-clock 换成**确定性工作量计数**（本次请求执行的 SQL 语句数 / 扫描行数），断言「第 1 次与第 N 次之比 < 常数」；这类判据不受 CPU 争用影响、无 false-red，且能同时守住读侧这条全表遍历与写侧的每次提交扫描。读侧本身的修法是让 visitor 在攒够 capacity 后返回 `false` 提前终止（游标语义需与 `compareSummaryNewestFirst` 的排序一致，不能简单截断）。
+- **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
+- **发现方**：Task 9 独立验收评审（`docs/tmp/2026-08-08-task9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。

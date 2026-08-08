@@ -63,11 +63,19 @@ export function sqlMigration(name: string, body: (db: SqliteDatabase) => void): 
 /**
  * Shipped forward migrations, in apply order. Keep schema-only changes atomic
  * through `sqlMigration`; long data backfills run separately and re-entrantly.
+ *
+ * ORDER IS LOAD-BEARING, and only in one place: `001-transport-evidence-schema`
+ * creates `v3_transport_evidence`, and `001-operation-summary-projection`
+ * installs triggers whose target is that table. On a fresh database the order is
+ * invisible — `ensureV3Schema` has already built the whole schema-6 floor — which
+ * is why the inverted order survived: every test that drove the shipped array ran
+ * against such a database. On a real schema-5 database `ensureV3Schema` returns
+ * early by design (it never owns a version transition), so the summary migration
+ * ran first against a table that did not exist yet, threw, and left the ledger
+ * empty; `applyForwardMigrations` rethrows, so the process refused to start and
+ * did so again on every restart.
  */
 export const MIGRATIONS: Array<HistoryMigration> = [
-  sqlMigration("001-operation-summary-projection", (db) => {
-    db.exec(SUMMARY_PROJECTION_MIGRATION_SQL)
-  }),
   sqlMigration("001-transport-evidence-schema", (db) => {
     const version = db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get() as { value: string } | undefined
     if (version?.value === "6") return
@@ -103,6 +111,9 @@ export const MIGRATIONS: Array<HistoryMigration> = [
     );
     CREATE INDEX IF NOT EXISTS idx_v3_journal_evidence_refs_digest ON v3_journal_evidence_refs(digest);`)
     db.prepare("UPDATE v3_meta SET value='6' WHERE key='schema_version'").run()
+  }),
+  sqlMigration("001-operation-summary-projection", (db) => {
+    db.exec(SUMMARY_PROJECTION_MIGRATION_SQL)
   }),
   sqlMigration("002-summary-integrity-invalidation", (db) => {
     db.prepare("DELETE FROM history_meta WHERE key=?").run(SUMMARY_PROJECTION_READY_KEY)
