@@ -191,12 +191,6 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
     })
     if (verdict === "committed") committedDispatch = handle
   }
-  if (candidate !== undefined) {
-    recorder.settleCandidate(candidate, {
-      verdict: committedDispatch === undefined ? "failed" : "winner",
-      reason: "recovered from projected History V3 entry",
-    })
-  }
 
   const clientBodyResponse = entry.clientResponse?.body
   const clientPayload =
@@ -220,11 +214,26 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
     extensions: { "history-v3.recovery": { projected: true } },
   })
 
+  // After recordEgress, matching the adapter this replaced: it settled its
+  // implicit candidate inside commitTerminal, i.e. after egress. Settling
+  // earlier would shift every following event's sequence and change the
+  // manifest digest of a recovered record — a silent non-equivalence.
+  if (candidate !== undefined) {
+    recorder.settleCandidate(candidate, {
+      verdict: committedDispatch === undefined ? "failed" : "winner",
+      reason: "recovered from projected History V3 entry",
+    })
+  }
+
   const failureReason = entry._index?.derived?.failureReason
   return recorder.commitTerminal({
     outcome: terminalOutcome(entry.state),
-    ...(candidate === undefined ? {} : { winnerCandidate: candidate }),
-    ...(committedDispatch === undefined ? {} : { committedDispatch }),
+    // winnerCandidate and committedDispatch travel together. A recovered entry
+    // that never committed a dispatch has a candidate settled `failed`, and
+    // naming it the winner would make the terminal contradict its own candidate.
+    // The adapter this replaced passed only committedAttempt and let
+    // commitTerminal decline to infer a winner when none was committed.
+    ...(committedDispatch === undefined || candidate === undefined ? {} : { winnerCandidate: candidate, committedDispatch }),
     ...(failureReason === undefined ? {} : { error: { message: failureReason } }),
     extensions: { "history-v3.recovery": { projected: true, originalState: entry.state } },
   })

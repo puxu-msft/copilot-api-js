@@ -133,27 +133,39 @@ describe("History V3 store performance", () => {
     // offending statement can never execute, and the guard passes vacuously.
     ensureV3Schema(db)
     await applyForwardMigrations(db)
-    // Two prior commits, not a flood: a query PLAN is chosen from the schema, not
-    // from row counts (no ANALYZE stats here), so the check is independent of N.
-    // Keeping this cheap matters — this file's other cases already sit near the
-    // default timeout, and an expensive setup here turns them red for no reason.
+    // Two prior commits, not a flood. NOT because the database has no ANALYZE
+    // stats — `openDatabase` runs seedAnalyzeIfNeeded unconditionally, so
+    // `sqlite_stat1` does exist here. The basis is measured instead: offenders
+    // came out 0 at N=2, at N=200, and at N=200 after a manual ANALYZE that put
+    // real selectivity into stat1, and the guard reddens at N=2 under the
+    // mutation. Keeping setup cheap matters — this file's other cases already
+    // sit near the default timeout.
     for (const record of countTokensFloodFixtures(2)) commitPreparedOperation(db, prepareModelOperation(record))
 
     const executed: Array<string> = []
+    const execed: Array<string> = []
     const realPrepare = db.prepare.bind(db)
+    const realExec = db.exec.bind(db)
     ;(db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
       executed.push(sql)
       return realPrepare(sql)
+    }
+    ;(db as unknown as { exec: (sql: string) => unknown }).exec = (sql: string) => {
+      execed.push(sql)
+      return realExec(sql)
     }
     try {
       commitPreparedOperation(db, prepareModelOperation(highBranchFixture("plan-probe", 2, 128)))
     } finally {
       ;(db as unknown as { prepare: (sql: string) => unknown }).prepare = realPrepare
+      ;(db as unknown as { exec: (sql: string) => unknown }).exec = realExec
     }
 
-    // Tables whose row count tracks history length. A SCAN of any of them inside
-    // a single commit is O(history) work on the write path.
-    const historyLengthTables = ["v3_operations", "v3_operation_summaries", "v3_objects", "v3_tracks", "v3_timeline_chunks"]
+    // Whitelist, not blacklist. A list of "tables that grow" silently stops
+    // covering every table added after it was written; a list of tables that are
+    // BOUNDED by construction fails closed instead — a new growing table is not
+    // on it, so scanning it is reported.
+    const boundedTables = new Set(["v3_meta", "history_meta", "history_store_identity", "sqlite_schema", "sqlite_master", "sqlite_stat1"])
     const offenders: Array<string> = []
     for (const sql of executed) {
       if (!/^\s*(?:SELECT|UPDATE|DELETE|INSERT)/i.test(sql)) continue
@@ -161,15 +173,25 @@ describe("History V3 store performance", () => {
       try {
         plan = realPrepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>
       } catch {
-        continue // not planable standalone (e.g. needs bound params in a CTE); covered by the others
+        continue // not planable standalone; measured to be 0 of 29 statements today
       }
       for (const { detail } of plan) {
-        for (const table of historyLengthTables) if (detail.includes(`SCAN ${table}`)) offenders.push(`${detail} :: ${sql}`)
+        const scanned = /\bSCAN (\w+)/.exec(detail)?.[1]
+        if (scanned !== undefined && !boundedTables.has(scanned)) offenders.push(`${detail} :: ${sql}`)
       }
     }
 
+    // `exec` bypasses the prepare probe entirely, so it gets its own assertion:
+    // today it carries only schema DDL, and a DML statement arriving through it
+    // would be invisible to the plan check above. Anchored to the start of the
+    // whole script, NOT per line (`m`) — trigger bodies inside a DDL script
+    // legitimately contain INSERT/UPDATE, and matching those reports the schema
+    // itself as an offender.
+    const execDml = execed.filter((sql) => /^\s*(?:SELECT|UPDATE|DELETE|INSERT)/i.test(sql))
+
     expect(executed.length).toBeGreaterThan(0)
     expect(offenders).toEqual([])
+    expect(execDml).toEqual([])
   })
 
   test("reports prepare and commit timing before and after prior session history", () => {
