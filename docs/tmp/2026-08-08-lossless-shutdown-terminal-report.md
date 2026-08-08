@@ -2,7 +2,9 @@
 
 > 冻结时间 2026-08-08。分支 `worktree-fix-shutdown-review-findings`，worktree 位于 `.claude/worktrees/fix-shutdown-review-findings`。
 >
-> **一句话状态：整改全部完成、全门绿、四路独立评审 0 blocker／0 major，但尚未合回 master——合并是本报告后唯一剩下的动作，需要用户决定。**
+> **一句话状态：整改全部完成、全门绿；五轮独立评审的发现均已处置，其中收尾三轮的处置尚待未卷入方复评闭合。尚未合回 master——合并是本报告后唯一剩下的动作，需要用户决定。**
+>
+> **不要把本报告读成「0 blocker / 0 major」。** 实施本身的三轮评审已闭合于 0/0；但收尾阶段的文档评审报了 1 blocker / 2 major、终审又报了 1 blocker / 2 major，这些处置由我自己做出，**截至本节冻结时尚未经未卷入方复评**。复评状态见第 4 节末。
 
 ## 1. 交付内容
 
@@ -37,11 +39,11 @@
 
 | 项 | 结果 | 命令 | 新跑／复用 |
 |---|---|---|---|
-| 后端全档 | 16 shards，`executed=7287`、`skipped=30`、`fail=0`、退出码 0 | `bun run test:backend` | 新跑 |
+| 后端全档 | 16 shards，`executed=7295`、`skipped=31`、`fail=0`、退出码 0 | `bun run test:backend` | 新跑（合入 `master@475bed45` 之后） |
 | 本任务自有测试（12 个 backend 档文件） | `Ran 100 tests across 12 files`、退出码 0，连跑两次一致 | 见 plan「实施结果」的显式文件清单 | 新跑两次 |
 | 类型 | 通过 | `bun run typecheck` | 新跑 |
 | 全仓 lint | 通过（仅剩与代码无关的 `baseline-browser-mapping` 数据过期提示） | `bun run lint:all` | 新跑 |
-| 架构与 discovery guards | 34/34 | 随 backend 档 | 新跑 |
+| 架构与 discovery guards | 17 文件、178 pass、0 fail、退出码 0 | `bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts` | 新跑 |
 | PTY | 19 pass，0 fail | `bun run test:pty` | 复用（合入 `master@d47492a6` 前执行，此后无 pty 路径改动） |
 | 旧 Vue | Bun 249、Vitest 78、vue-tsc、Vite build 均通过 | `bun run test:ui` 等 | 复用（同上，此后无前端路径改动） |
 
@@ -60,27 +62,37 @@
 | 首轮 | 未卷入第三方 instruction reviewer | 0 blocker / 0 major |
 | 收尾 | 指令类文本 reviewer（异模型） | 0 blocker / 3 major → 处置后由**未卷入的第三方**逐条复评，M1／M2／M3 全 FIXED，0 blocker / 0 major |
 | 收尾 | 文档与证据 reviewer | **1 blocker / 2 major**，见下 |
+| 终审 | 未卷入的终态报告 reviewer（异模型） | **1 blocker / 2 major**，见下 |
 
 收尾文档评审的 blocker 值得单独点名，因为它抓的是我自己写的错：三份文档把「把 master 合进本分支」写成了「整改已合入 master」，**方向反了**。我独立复核确认它对（`git branch -a --contains 954a1bff` 只输出本分支；`git show master:src/lib/shutdown.ts` 第 304 行至今仍是单 registry）。若不改，接手者会读到「已合入、可合并」而不再合并，而 master 上此刻仍带着评审判为 MAJOR 的 F7 与 History reservation 泄漏。
 
 两条 major 同样成立并已处置：backend 计数字段不可复现（改锚稳定字段）、自有测试「12 文件 98 pass」取自未写明的文件集（重定义为显式 12 文件清单，实测 100 tests）。
 
-评审报告落盘在 `docs/tmp/2026-08-08-lossless-shutdown-closeout-instruction-review.md` 与 `docs/tmp/2026-08-08-lossless-shutdown-closeout-docs-review.md`（后者的 reviewer 运行环境禁用 `Write`，报告由主会话逐字转录，已在文件开头标明）。
+评审报告落盘在 `docs/tmp/2026-08-08-lossless-shutdown-closeout-instruction-review.md`、`docs/tmp/2026-08-08-lossless-shutdown-closeout-docs-review.md`（该 reviewer 运行环境禁用 `Write`，报告由主会话逐字转录，已在文件开头标明）与 `docs/tmp/2026-08-08-closeout-final-review.md`。
 
-> **文件名撞车的处置：** 这两份报告原名 `2026-08-08-closeout-{instruction,docs}-review.md`，与另一并发会话在 master 上创建的同名文件冲突（`git merge-tree` 报 add/add）。已加任务前缀重命名避开；对方文件内容与本任务无关，未做任何改动。
+> **文件名撞车的处置：** 前两份报告原名 `2026-08-08-closeout-{instruction,docs}-review.md`，与另一并发会话在 master 上创建的同名文件冲突（`git merge-tree` 报 add/add）。已加任务前缀重命名避开；对方文件内容与本任务无关，未做任何改动。
+
+### 终审发现与处置
+
+终审在我提交终态报告之后、其自身运行期间，master 又前进了，因而抓到三条：
+
+1. **blocker：报告钉死的 master tip 已过期，且对当时的 master 存在真实合并冲突。** 成立，且比它看到的更值得记：这个仓库里 master 由多个并发会话推进，本会话观察窗口内它走过 `d47492a6 → d1011fe7 → b936a8e9 → 475bed45`。处置分两步——① 把「钉死 tip + 断言无冲突」改为「合并前就地跑命令复核」，写死快照值在这里必然过时；② 把当前 master 实际合入本分支并解掉两处冲突：`docs/tmp/2026-08-08-closeout-instruction-review.md` 的文件名撞车（重命名避开，`1ec645f9`）与 `docs/todo/deferred-backlog.md` 的追加点冲突（两边条目并列保留，`616baffc`）。合入后 typecheck 通过、backend `executed=7295`／`fail=0`。
+2. **major：「四路独立评审 0 blocker / 0 major」把结论说得比实际好。** 成立。已改写本报告开头与本节：实施三轮闭合于 0/0，收尾两轮各报 1 blocker / 2 major，且处置由我自评。
+3. **major：「架构与 discovery guards 34/34」不可复现。** 成立。实测为 17 文件、178 pass、0 fail，命令已写出；`34/34` 无可复现 selector，已从本报告、`-review.md` 与 plan 三处一并更正。
+
+**复评状态：** 上述三条的处置已交未卷入方复评——结论见第 4 节表格末行更新与 `docs/tmp/2026-08-08-closeout-final-review.md` 的追加段。**在该复评给出结论之前，本报告不得被引用为「已闭合」。**
 
 ## 5. 分支与 worktree 状态
 
 - 分支 `worktree-fix-shutdown-review-findings`，worktree 干净（`git status --short` 无输出），HEAD 全部已提交。
 - **未推送**，也不会推送——发布是用户的决定。
-- 已把 `master@d47492a6` 合入本分支（`85642352`）。**master 在本会话期间由多个并发会话持续前进**（观察窗口内从 `d47492a6` → `d1011fe7` → `b936a8e9`），因此这里不钉死某个 tip——合并前请就地复核，不要引用本报告的快照值：
+- 已把 `master@475bed45` 合入本分支（`616baffc`，解掉两处冲突：评审报告文件名撞车、`deferred-backlog.md` 追加点）。**master 在本会话期间由多个并发会话持续前进**（观察窗口内 `d47492a6 → d1011fe7 → b936a8e9 → 475bed45`），因此这里不钉死某个 tip——合并前请就地复核，不要引用本报告的快照值：
 
   ```
   git -C /home/xp/src/copilot-api-js merge-tree --write-tree master worktree-fix-shutdown-review-findings >/dev/null && echo "no conflict"
-  git -C /home/xp/src/copilot-api-js diff --name-only master...worktree-fix-shutdown-review-findings
   ```
 
-  截至冻结时刻，对 `master@d1011fe7` 与 `master@b936a8e9` 两次实测 `merge-tree` 均退出 0、无冲突；本分支改动集中在 `src/lib/shutdown.ts`、`src/lib/context/lightweight-model-operation.ts`、`tests/`、`docs/`、`contrib/`、`ui/`，与近期 peer 批次（history worker、header deadline）无同文件冲突。
+  **已知的两个复发冲突点**：`docs/todo/deferred-backlog.md`（各会话都在文末追加条目，解法恒为「两边并列保留」）与 `docs/tmp/` 下按日期命名的评审报告（易撞名，解法为加任务前缀）。两者都不涉及代码语义。
 - **worktree 保留，不删除**——它是整改提交的唯一持有者。
 - 主检出树（`/home/xp/src/copilot-api-js`）本会话全程未触碰；其它会话的未提交工作未受影响。
 
@@ -119,3 +131,5 @@ git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-fi
 - **未删除任何临时文件。** 见临时清单。
 - **未 cherry-pick peer 分支 `worktree-nghttp2-header-deadline`。** 该判断经复测成立——它自己合进 master 后 `lint:all` 即转绿。
 - **首信号后新建 upstream WS 仍无 shutdown 交叉测试直接覆盖。** 这一点在 skill 里显式标为证据边界，未扩大声称；已建 context 的 token refresh、新建 h2 与 pre-content recovery 三条均有直接证据。
+- **一处曾写出的不可复现数字已更正，记在这里以免被当成从未发生：** 本报告初版写「架构与 discovery guards 34/34」，该数字无可复现 selector，由终审抓出；实测为 17 文件 178 pass。同类风险已在验证表里用「命令」列固定住——每一行都要能被单独复跑。
+- **收尾三轮评审的处置由我自评，尚待未卷入方复评。** 见第 4 节末的复评状态。

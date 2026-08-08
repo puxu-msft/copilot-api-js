@@ -42,7 +42,7 @@
 - 本任务自有测试集（12 个 backend 档文件，清单见 [plan 的实施结果节](../plan/2026-08-07-lossless-graceful-shutdown-drain.md)）：连跑两次均为 `Ran 100 tests across 12 files`、退出码 0。
 - `bun run typecheck`：通过。
 - `bun run lint:all`：**通过**（见下节，先前的红已随 peer lint 批次合入 master 而消解）。
-- 架构与 discovery guards：34/34 通过。
+- 架构与 discovery guards：17 文件、178 pass、0 fail、退出码 0（`bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts`）。先前此处写的「34/34」无可复现 selector，已按实测更正。
 - `bun run test:pty`：19 pass，0 fail（`shutdown-signals.pty.test.ts` 属 pty 档，不计入上面的自有测试集）。
 - 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过（在把 `master@d47492a6` 合入本分支之前执行，此后无前端路径改动）。
 - `git diff --check`：通过。
