@@ -1,6 +1,6 @@
 # 首信号无损排空评审处置
 
-> 状态：三路复评均已 PASS。**整改尚未合回 master，仍待合并**——本分支 `worktree-fix-shutdown-review-findings` 已把 `master@d47492a6` 合入自身（`85642352`），但反方向没做；判定命令 `git branch -a --contains 954a1bff` 只输出本分支即为未合并，`git show master:src/lib/shutdown.ts | grep -n getActive` 仍为单 registry 亦可佐证。首轮评审范围为 `14974488..4c555ef9`（该段已随 peer 的 `0732fc76` 进入 master）；合并态 admission capture finding 在 `954a1bff` 修复。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
+> 状态：三路复评均已 PASS。**整改已由 `ad8128ad`（`Merge branch 'worktree-fix-shutdown-review-findings'`）合入 master**——判定命令 `git branch -a --contains 954a1bff` 应同时列出 `master`。首轮评审范围为 `14974488..4c555ef9`（该段更早随 peer 的 `0732fc76` 进入 master）；合并态 admission capture finding 在 `954a1bff` 修复。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
 
 ## 首轮发现
 
