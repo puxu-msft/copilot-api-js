@@ -61,9 +61,6 @@ const configYaml =
     "hooks:",
     `  upstream_module: "${HOOK}"`,
     "  enabled: true",
-    "shutdown:",
-    "  graceful_wait: 30", // plenty above the hook's 1.5s slow-request sleep
-    "  abort_wait: 10",
   ].join("\n") + "\n"
 
 /** A minimal Anthropic Messages request. `stream: true` so the driver reads the mock

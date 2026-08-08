@@ -60,7 +60,7 @@ export const DRAIN_PROGRESS_INTERVAL_MS = 5_000
 let serverInstance: ServerInstance | null = null
 let _isShuttingDown = false
 
-export type ProcessLifecycleState = "idle" | "stopping" | "draining" | "aborting" | "forcing" | "finalizing" | "notifying" | "stopped" | "failed"
+export type ProcessLifecycleState = "idle" | "stopping" | "draining" | "finalizing" | "notifying" | "stopped" | "failed"
 
 function createCompletionLatch(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -101,10 +101,6 @@ function toBusPhase(p: typeof shutdownPhase): ShutdownPhase | null {
     case "stopping":
     case "draining": {
       return "draining"
-    }
-    case "aborting":
-    case "forcing": {
-      return "aborting"
     }
     case "notifying":
     case "stopped": {

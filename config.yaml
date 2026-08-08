@@ -206,24 +206,6 @@ disabled_models:
 # Lifecycle (Shutdown + Timeout + Retry) / 生命周期（关闭+超时+重试）
 # ============================================================================
 
-# 优雅退出分为以下阶段：
-#   1. 收到关闭信号，停止接收新请求（立即）。
-#   2. 等待在飞请求自然完成（默认 60s）。
-#   3. 中止在飞请求，等待内部处理收尾（默认 120s）。
-#   4. 强制退出（立即）。
-#
-# Graceful shutdown by following phases:
-#   1. Stop accepting new requests (immediate) on shutdown signal.
-#   2. Wait for in-flight requests to complete naturally (default 60s).
-#   3. Abort in-flight requests; wait for internal handlers to wrap up (default 120s).
-#   4. Force exit (immediate).
-#
-shutdown:
-  # 阶段 2 / Phase 2
-  graceful_wait: 300
-  # 阶段 3 / Phase 3
-  abort_wait: 120
-
 timeouts:
   # 单次尝试上游，从请求发起到开始收到 HTTP 响应头的最大秒数（0 = 不超时）。
   # Each upstream attempt: Max seconds from request start to receiving HTTP response headers (0 = no timeout).

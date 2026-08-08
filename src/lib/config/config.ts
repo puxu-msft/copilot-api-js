@@ -40,7 +40,6 @@ import {
   setNegotiationConfig,
   setResponsesConfig,
   setResponsesWsIngressConfig,
-  setShutdownConfig,
   setReactiveRetryConfig,
   setTelemetryConfig,
   setTimeoutConfig,
@@ -84,7 +83,6 @@ export type {
   RateLimiterConfig,
   ResponsesConfig,
   RewriteRule,
-  ShutdownConfig,
   SystemPromptEntry,
 } from "./schema"
 
@@ -95,7 +93,6 @@ export {
   RateLimiterConfigSchema,
   ResponsesConfigSchema,
   RewriteRuleSchema,
-  ShutdownConfigSchema,
 } from "./schema"
 
 export {
@@ -1022,13 +1019,6 @@ export async function applyConfigToState(): Promise<Config> {
       const hk = config.hooks
       if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
       if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
-    }
-
-    // Shutdown timing (scalar: override only when present)
-    if (config.shutdown) {
-      const s = config.shutdown
-      if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
-      if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
     }
 
     // Timeouts section (scalar: override only when present)

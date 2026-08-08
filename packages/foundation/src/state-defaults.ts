@@ -257,8 +257,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   staleRequestMaxAge: 600,
   requestDeadline: 0,
   modelRefreshInterval: 600,
-  shutdownGracefulWait: 60,
-  shutdownAbortWait: 120,
   historyDbPath: "",
   historyRawCaptureEnabled: false,
   historyRawCaptureDbPath: "",
