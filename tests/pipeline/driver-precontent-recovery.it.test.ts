@@ -219,7 +219,7 @@ describe("driver pre-content recovery", () => {
   })
 
   test("delivery gate prevents callers from selecting ready-state recovery after real content", async () => {
-    const stream = { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+    const stream = { write: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
     const sink = makeDeliverySseSink(stream, {
       isRealContentFrame: (frame) => frame.event === "content_block_delta",
     })

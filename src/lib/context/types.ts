@@ -1,3 +1,5 @@
+import type { Model } from "@hsupu/ghc-proxy-foundation/ghc-model-types"
+
 import type {
   //
   AskNormalizationDiag,
@@ -18,9 +20,8 @@ import type {
   SseEventRecord,
   TruncationInfo,
   WarningMessage,
-} from "~/lib/history/store"
-import type { Model } from "~/lib/models/client"
-import type { FeatureKind } from "~/lib/observability"
+} from "~/lib/history/types"
+import type { FeatureKind } from "~/lib/observability/feature-kind"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 

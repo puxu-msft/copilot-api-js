@@ -69,6 +69,7 @@ import type {
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
+  UpstreamFrame,
   OwnerOperation,
   ResponseOutcome,
   RetryAction,
@@ -624,7 +625,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       createProcessor: ({ candidate, dispatch, env: processorEnv }) => {
         const responseRewrites = migratedCell(processorEnv)?.responseRewrites(processorEnv) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
         const renderer = deps.codec.createCandidateRenderer?.(processorEnv) ?? {
-          renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+          renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
           flushResponse: () => [],
         }
         const createSession = deps.candidateResponseSessionFactory ?? createDefaultCandidateResponseSession
@@ -886,7 +887,7 @@ function runResponse(
   // This compatibility adapter still creates exactly one processor and owns no retry loop.
   const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
   const renderer = deps.codec.createCandidateRenderer?.(env) ?? {
-    renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+    renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
     flushResponse: () => [],
   }
   const session = createDefaultCandidateResponseSession({
@@ -915,6 +916,12 @@ function mergeCandidateResponseOpts<T extends RunResponseOpts>(candidate: Candid
     merged.onFinishResolved = (result) => {
       outer.onFinishResolved?.(result)
       candidate.onFinishResolved?.(result)
+    }
+  }
+  if (outer?.onRenderedFrame) {
+    merged.onRenderedFrame = (frame) => {
+      const transformed = outer.onRenderedFrame?.(frame)
+      return transformed === undefined ? undefined : candidate.onRenderedFrame?.(transformed)
     }
   }
   const bufferedOuter = outer as RunBufferedOpts | undefined
@@ -1171,7 +1178,14 @@ async function runResponseSink(
       }
     : effectiveOpts
   try {
-    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
+    // `effectiveOpts` has already combined outer callbacks with this upstream's candidate once.
+    // Re-entering `runResponse()` with a generation binding would merge it again and invoke
+    // candidate onUpstreamFrame twice, corrupting upstream-only accumulators and History bodies.
+    const responseFrames =
+      unhedgedBinding ?
+        runAssembledCandidateResponse(deps, upstream, env, responseOpts as AssembledCandidateResponseOpts<RunBufferedOpts>, generation)
+      : runResponse(deps, upstream, env, responseOpts, generation)
+    for await (const frame of responseFrames) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue

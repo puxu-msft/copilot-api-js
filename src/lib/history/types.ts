@@ -26,8 +26,8 @@ import type {
   DispatchVerdict,
   OperationSyntheticKind,
 } from "~/lib/context/model-operation-record"
+import type { OwnerOperation } from "~/lib/pipeline/owner-operation"
 import type { AnthropicToResponsesTranslationDegradation } from "~/lib/pipeline/translation-degradation"
-import type { OwnerOperation } from "~/lib/pipeline/types"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 

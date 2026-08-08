@@ -19,6 +19,11 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
+import type {
+  //
+  ParsedSseFrame,
+  ParsedSseIdField,
+} from "~/lib/transport/parsed-sse-frame"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import {
@@ -52,8 +57,8 @@ import { upstreamFetch } from "./upstream-fetch"
  * that pre-consumer window. This wrapper closes the raw body directly until the
  * decoder has started; afterwards it delegates to the decoder's own return path.
  */
-export function ownedResponseEvents(response: Response): AsyncIterable<ServerSentEventMessage> {
-  type EventMessage = ServerSentEventMessage
+export function ownedResponseEvents(response: Response): AsyncIterable<ParsedSseFrame> {
+  type EventMessage = ParsedSseFrame
   const decoded = parseOwnedSse(response)[Symbol.asyncIterator]()
   let started = false
   let closePromise: Promise<IteratorResult<EventMessage>> | undefined
@@ -81,50 +86,81 @@ export function ownedResponseEvents(response: Response): AsyncIterable<ServerSen
   }
 }
 
-/** SSE decoder matching the previous fetch-event-stream field semantics while owning reader cleanup. */
-async function* parseOwnedSse(response: Response): AsyncGenerator<ServerSentEventMessage> {
+/**
+ * WHATWG-compatible SSE decoder that owns reader cleanup.
+ *
+ * The event-stream interpretation algorithm requires pending data without a
+ * terminating blank line to be discarded at EOF, rather than flushed.
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+ */
+async function* parseOwnedSse(response: Response): AsyncGenerator<ParsedSseFrame> {
   if (!response.body) return
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let text = ""
   let naturalEnd = false
-  let event: ServerSentEventMessage | undefined
+  let dataBuffer = ""
+  let sawDataField = false
+  let eventType = ""
+  let retry: number | undefined
+  let lastEventIdBuffer = ""
+  let lastEventIdString = ""
+  let idField: ParsedSseIdField = { kind: "absent" }
 
-  const consumeLine = (line: string): ServerSentEventMessage | undefined => {
+  const resetEventBuffers = () => {
+    dataBuffer = ""
+    sawDataField = false
+    eventType = ""
+    retry = undefined
+    idField = { kind: "absent" }
+  }
+
+  const consumeLine = (line: string): ParsedSseFrame | undefined => {
     if (line.length === 0) {
-      const completed = event
-      event = undefined
+      lastEventIdString = lastEventIdBuffer
+      if (!sawDataField) {
+        resetEventBuffers()
+        return undefined
+      }
+
+      const message: ServerSentEventMessage & { id: string } = {
+        data: dataBuffer.slice(0, -1),
+        id: lastEventIdString,
+      }
+      if (eventType) message.event = eventType
+      if (retry !== undefined) message.retry = retry
+      const completed: ParsedSseFrame = { kind: "parsed-sse", message, idField }
+      resetEventBuffers()
       return completed
     }
+
     const colon = line.indexOf(":")
-    // Match the prior parser: comments (`:...`) and colon-less lines are ignored.
-    if (colon <= 0) return undefined
-    const field = line.slice(0, colon)
-    const value = line.slice(colon + 1).replace(/^\s*/, "")
+    const field = colon === -1 ? line : line.slice(0, colon)
+    let value = colon === -1 ? "" : line.slice(colon + 1)
+    if (value.startsWith(" ")) value = value.slice(1)
     switch (field) {
       case "data": {
-        event ??= {}
-        event.data = event.data ? `${event.data}\n${value}` : value
+        sawDataField = true
+        dataBuffer += `${value}\n`
         break
       }
       case "event": {
-        event ??= {}
-        event.event = value
+        eventType = value
         break
       }
       case "id": {
-        event ??= {}
-        const numeric = Number(value)
-        event.id = String(numeric) === value ? numeric : value
+        if (!value.includes("\0")) {
+          lastEventIdBuffer = value
+          idField = { kind: "present", value }
+        }
         break
       }
       case "retry": {
-        event ??= {}
-        event.retry = Number(value) || undefined
+        if (/^\d+$/.test(value)) retry = Number(value)
         break
       }
       default: {
-        // Unknown SSE fields are ignored, matching the previous parser.
+        // Unknown SSE fields and comments are ignored.
         break
       }
     }

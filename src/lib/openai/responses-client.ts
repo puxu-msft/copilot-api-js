@@ -15,6 +15,10 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { getTokenCredentials } from "~/lib/token"
+import {
+  //
+  semanticSseMessage,
+} from "~/lib/transport/parsed-sse-frame"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 import {
@@ -68,7 +72,7 @@ export const createResponses = async (
     const result = await attemptUpstreamResponsesWs(prepared, opts)
     if (result.kind === "ok") {
       opts?.onTransport?.("upstream-ws")
-      return result.generator
+      return projectPublicSseMessages(result.generator)
     }
     opts?.onTransport?.("upstream-ws-fallback")
     usedFallback = true
@@ -91,7 +95,7 @@ async function createResponsesViaHttp(
   // client-abort signal into the upstream fetch, so it is omitted here to stay
   // byte-equivalent (streaming still omits the shutdown signal — the stream
   // guard in the handler owns shutdown for the streamed body).
-  return (await sendUpstreamHttp({
+  const result = (await sendUpstreamHttp({
     endpointPath: "/responses",
     headers,
     body: wire,
@@ -100,5 +104,14 @@ async function createResponsesViaHttp(
     modelId: wire.model,
     diagnosticsTools: wire.tools,
     headersCapture,
-  })) as ResponsesResponse | AsyncGenerator<ServerSentEventMessage>
+  })) as ResponsesResponse | AsyncIterable<import("~/lib/transport/parsed-sse-frame").SemanticSseFrame>
+  if (wire.stream) return projectPublicSseMessages(result as AsyncIterable<import("~/lib/transport/parsed-sse-frame").SemanticSseFrame>)
+  return result as ResponsesResponse
+}
+
+/** Legacy public client boundary: internal parser provenance never leaks beyond createResponses. */
+async function* projectPublicSseMessages(
+  source: AsyncIterable<import("~/lib/transport/parsed-sse-frame").SemanticSseFrame>,
+): AsyncGenerator<ServerSentEventMessage> {
+  for await (const frame of source) yield semanticSseMessage(frame)
 }

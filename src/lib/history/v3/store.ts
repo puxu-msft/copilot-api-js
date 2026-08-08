@@ -21,6 +21,7 @@ import {
 import { abortableDelay } from "~/lib/util/abortable-delay"
 
 import type { Database } from "../sqlite/connection"
+import type { V3TimingSource } from "./timing-source"
 
 import { getDatabase } from "../sqlite/connection"
 import { recordToEntrySummary } from "./projection"
@@ -31,6 +32,8 @@ import {
   markSummaryProjectionPoisoned,
   tryMarkSummaryProjectionReady,
 } from "./summary-store"
+
+export type { V3TimingSource } from "./timing-source"
 
 const FORMAT_VERSION = 2
 const SCHEMA_VERSION = "5"
@@ -54,8 +57,6 @@ export interface V3StoredOperation {
   endedAt?: number
   timingSource: V3TimingSource
 }
-
-export type V3TimingSource = "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable"
 
 export interface V3StoreStatus {
   pendingOperations: number
