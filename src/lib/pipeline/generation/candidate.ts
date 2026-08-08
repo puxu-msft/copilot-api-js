@@ -87,8 +87,8 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
 
   const settleCandidate = (settlement: { verdict: CandidateVerdict; reason?: string }): void => {
     if (settled) return
-    settled = true
     input.recording.settleCandidate(handle, settlement)
+    settled = true
   }
 
   return {

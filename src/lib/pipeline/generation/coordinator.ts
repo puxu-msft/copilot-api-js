@@ -11,6 +11,7 @@ import type {
   //
   CandidateHandle,
   CandidateRole,
+  CandidateVerdict,
 } from "~/lib/context/model-operation-record"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -140,6 +141,34 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   let active: CandidateRuntime<TProcessor> | undefined
   let cancelledReason: string | undefined
 
+  const distinctErrors = (errors: ReadonlyArray<unknown>): Array<unknown> => {
+    const unique: Array<unknown> = []
+    for (const error of errors) if (!unique.includes(error)) unique.push(error)
+    return unique
+  }
+
+  const settleAndRelease = (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }): Array<unknown> => {
+    const errors: Array<unknown> = []
+    try {
+      runtime.settle(settlement)
+    } catch (error) {
+      errors.push(error)
+    } finally {
+      candidateReservations.get(runtime.handle)?.release()
+      if (active === runtime) active = undefined
+    }
+    return errors
+  }
+
+  const throwCoordinatorFailures = (errors: ReadonlyArray<unknown>, message: string): void => {
+    if (errors.length === 0) return
+    if (errors.length === 1) {
+      const error = errors[0]
+      throw error instanceof Error ? error : new Error(message, { cause: error })
+    }
+    throw new AggregateError(errors, message)
+  }
+
   const start = async (candidateInput: CoordinatorCandidateInput): Promise<CoordinatedCandidate<TProcessor>> => {
     if (cancelledReason !== undefined) throw new Error(cancelledReason)
     const reservation = input.generationBudget?.reserveCandidate(candidateInput.role)
@@ -188,18 +217,15 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
         // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
         // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
         // would first publish cancelled and erase this recovery's terminal provenance.
-        let disposalError: unknown
+        const errors: Array<unknown> = []
         try {
           await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
         } catch (error) {
-          disposalError = error
+          errors.push(error)
         } finally {
-          parentRuntime.settle({ verdict: "failed", reason })
-          candidateReservations.get(parentRuntime.handle)?.release()
-          if (active === parentRuntime) active = undefined
+          errors.push(...settleAndRelease(parentRuntime, { verdict: "failed", reason }))
         }
-        if (disposalError !== undefined)
-          throw disposalError instanceof Error ? disposalError : new Error("Ready parent disposal failed", { cause: disposalError })
+        throwCoordinatorFailures(distinctErrors(errors), "Ready parent disposal failed")
         return await start({
           role: "recovery",
           parentCandidate: parent.candidate,
@@ -218,10 +244,15 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       // The parent PARTIALLY delivered (its committed blocks are on the client wire) → settle it
       // `continued`, NOT `discarded`/`failed`. `retryNextStrategy:"continuation"` marks the diagnostic
       // trail as a continuation hand-off (distinct from a transparent retry — telemetry §5.3 split).
-      await parent.settleDispatch({ verdict: "continued", reason, retryNextStrategy: "continuation" })
-      parentRuntime.settle({ verdict: "continued", reason })
-      candidateReservations.get(parentRuntime.handle)?.release()
-      if (active === parentRuntime) active = undefined
+      const errors: Array<unknown> = []
+      try {
+        await parent.settleDispatch({ verdict: "continued", reason, retryNextStrategy: "continuation" })
+      } catch (error) {
+        errors.push(error)
+      } finally {
+        errors.push(...settleAndRelease(parentRuntime, { verdict: errors.length === 0 ? "continued" : "failed", reason: errors.length === 0 ? reason : "settlement-failed" }))
+      }
+      throwCoordinatorFailures(distinctErrors(errors), "Continuation parent settlement failed")
       return start({ role: "continuation", parentCandidate: parent.candidate, env })
     },
 
@@ -306,36 +337,29 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
 
     async settleConsumedReady(candidate, input, verdict, reason) {
       const runtime = runtimes.get(candidate.candidate)
-      let settlementFailed = false
-      let settlementError: unknown
+      const errors: Array<unknown> = []
       try {
         await candidate.settleDispatch(input)
       } catch (error) {
-        settlementFailed = true
-        settlementError = error
+        errors.push(error)
       } finally {
-        runtime?.settle({ verdict: settlementFailed ? "failed" : verdict, reason: settlementFailed ? "settlement-failed" : reason })
-        if (runtime) candidateReservations.get(runtime.handle)?.release()
-        if (active === runtime) active = undefined
+        if (runtime) errors.push(...settleAndRelease(runtime, { verdict: errors.length === 0 ? verdict : "failed", reason: errors.length === 0 ? reason : "settlement-failed" }))
       }
-      if (settlementFailed) throw settlementError
+      throwCoordinatorFailures(distinctErrors(errors), "Consumed ready settlement failed")
     },
 
     async disposeUnconsumedReady(candidate, input, verdict, reason) {
       const runtime = runtimes.get(candidate.candidate)
       if (!runtime) throw new Error("[generation-coordinator] unconsumed ready candidate is not owned by this coordinator")
-      let disposalError: unknown
+      const errors: Array<unknown> = []
       try {
         await runtime.disposeReadyWithSettlement(input)
       } catch (error) {
-        disposalError = error
+        errors.push(error)
       } finally {
-        runtime.settle({ verdict: disposalError === undefined ? verdict : "failed", reason: disposalError === undefined ? reason : "disposal-failed" })
-        candidateReservations.get(runtime.handle)?.release()
-        if (active === runtime) active = undefined
+        errors.push(...settleAndRelease(runtime, { verdict: errors.length === 0 ? verdict : "failed", reason: errors.length === 0 ? reason : "disposal-failed" }))
       }
-      if (disposalError !== undefined)
-        throw disposalError instanceof Error ? disposalError : new Error("Unconsumed ready disposal failed", { cause: disposalError })
+      throwCoordinatorFailures(distinctErrors(errors), "Unconsumed ready disposal failed")
     },
 
     completeCandidate(candidate, verdict = "winner", reason = "generation-complete") {
