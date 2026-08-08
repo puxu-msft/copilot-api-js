@@ -510,3 +510,101 @@ if (manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db)) validateP
 v3 manifest **永远**对账（缺表就大声失败），v1/v2 只在表存在时对账（legacy 库照常可读）。另建议给它配一条负控：schema-6 库 DROP 掉 ref 表后读 v3 manifest 必须抛，而不是返回。
 
 **另一处轻微代价（非 false-green，仅记录）**：`hasOperationEvidenceRefsTable` 每次 `hydrateManifest` 都要查一次 `sqlite_schema`，而 marker 缺席的 fallback 列表会对全表逐行 hydrate（见 R2-1d，2000 行已 5.4s），等于再加 2000 次查询。可在调用侧提升一次、或与 R2-1d 的 backlog 条目一并处理。
+
+---
+
+## R2-3 —— 整改核验（HEAD `b0992a6c`）
+
+复评基线：`/tmp/t11` = 工作树 tar 副本，`git show b0992a6c:src/lib/history/v3/store.ts` 与副本 `diff -q` 逐字节一致。`tests/history/` 基线 **`554 pass / 23 skip / 0 fail`**（与你报的一致）。所有变异注入后均还原并 `diff -q` 校验，最终基线复跑仍 `554 / 0 fail`。
+
+### 3-1) 四类库全部安全，**含你最担心的那一类**（复评问题 1）
+
+探针 `/tmp/t11/probe-populations.ts` 与 `/tmp/t11/probe-upgraded.ts`，走真实 `openDatabase → ensureV3Schema → applyForwardMigrations`：
+
+| 群体 | 起始态 | 结果 |
+|---|---|---|
+| P1 全新库 | 无文件 | version `6`，ledger 三条齐全，evidence/refs/summaries 表全建，`err=null` |
+| P2 真实 schema-5 + 空 ledger | fixture 原样，无 `history_meta` | **version 5 → 6**，ledger 三条齐全，三张表全建，`err=null`（Round 2 前此处必失败） |
+| P3 schema-5 + ledger 只含 `001-operation-summary-projection`（中间版本用户） | version 5，summaries 表已存在 | version → 6，ledger 变为 `[summary, transport, 002]`，`err=null` |
+| **P6 已升到 6 且 ledger 是旧顺序写下的** `["001-operation-summary-projection","001-transport-evidence-schema","002-…"]` | marker=`1`，1 行 `ready` | **ledger 一字未动、marker 仍 `1`、状态仍 `ready`、version 仍 6** —— **Umzug 没有认为有 pending，零 migration 重跑** |
+| P5 已升到 6 + 新顺序 ledger | 同上 | 同上，零重跑 |
+
+**「零重跑」这个结论本身也做了负控**，否则它只是个空断言：P7 = 同样的 v6 库，但把 `002-summary-integrity-invalidation` 从 ledger 里摘掉 → 002 **确实重跑**（marker `1 → null`，summary 状态 `ready → pending`）。所以 P5/P6 的「什么都没变」是有判别力的观测，不是探针失灵。
+
+**机制**：`storage.ts` 的 `logMigration` 是 `if (!list.includes(name)) push`，`executed()` 返回该集合，pending 由**集合成员关系**决定 —— 换序不改变任何已存在库的成员关系。实测与机制一致。
+
+**一个不构成风险、但值得写进注释的边角**：我另构造了 P4 = schema-5 + ledger 只含 `001-transport-evidence-schema` + 三张 evidence 表不存在 → `001-operation-summary-projection` 仍以同样的 `no such table: main.v3_transport_evidence` 失败。**这不是换序引入的**（旧顺序下同一形态同样失败），而且该形态**在生产不可达**：`sqlMigration` 把 transport 迁移包在事务里，ledger 里有它 ⟺ 它成功过 ⟺ 表存在且 version=6；要造出 P4 必须在 ledger 已记录后人为把 version 改回 5 并 DROP 表（这正是 `transport-evidence-migration.it.test.ts:53/:91` 两个 fixture 做的事）。真正的残余性质是：**`001-transport-evidence-schema` 对「ledger 说做过、但表被人删了」不可重入**。建议在 `MIGRATIONS` 的注释里补一句点明这条前置条件由 ledger 而非表存在性保证，避免后人以为顺序等于充分条件。
+
+### 3-2) 改形后的 guard **仍咬得住**，而且比改形前更强（复评问题 2）
+
+**变异 A —— 把换序改回破坏形态**（`MIGRATIONS.unshift(MIGRATIONS.splice(1, 1)[0])`）：
+
+```
+551 pass / 23 skip / 3 fail
+✗ registers the transport-evidence migration before the summary migration that triggers off its table
+✗ schema5-manifest-v1.db migrated to schema 6 refuses a legacy row carrying a stray normalized evidence ref
+✗ schema5-manifest-v2-shared.db migrated to schema 6 refuses a legacy row carrying a stray normalized evidence ref
+```
+
+三条全红，且**质地和改形前完全不同**：改形前的 5 条红全是「把顺序写死成字面量」的快照；现在是 **1 条表达依赖方向的 guard + 2 条真实升级路径行为判据**。同时四处 ledger 集合断言在换序下**保持绿**——这正是想要的：它们不再对顺序做任何声称，于是不再被无关改动打红。
+
+**变异 B —— ledger 少记一条**（在 `storage.ts` 的 `logMigration` 里对 `001-operation-summary-projection` 直接 `return`，即迁移跑了但没入账）：
+
+```
+551 pass / 23 skip / 3 fail
+✗ initHistory(true) creates history_meta on the opened V3 db (new open-path behavior)
+✗ a non-empty injected MIGRATIONS array runs REAL DDL … idempotently no-ops on rerun
+✗ initHistory rethrows (not swallows) when a migration fails — refuse-to-start contract
+```
+
+四处集合断言中三处变红。**没变红的第四处（`migrations-wiring.it.test.ts:145`）是正确的绿**：那条用例自己先手工把 ledger 写成 `["001-operation-summary-projection","001-transport-evidence-schema"]` 再只跑 002，`001-operation-summary-projection` 来自手工种子而非 `logMigration`，所以变异碰不到它。
+
+**结论：array → Set 的放宽没有丢失任何鉴别力。** `expect(new Set(...)).toEqual(new Set(...))` 双向比较成员，缺项和多项都判得出；而 `logMigration` 本身去重，所以 Set 折叠重复项这件事在此不可能掩盖缺陷。
+
+### 3-3) F3 守卫最终形态：**两个方向都关上了，且各自有正控**（复评问题 3）
+
+| 变异 | 结果 | 说明 |
+|---|---|---|
+| **C（false-green 方向）** 把守卫改回只判表存在：`if (hasOperationEvidenceRefsTable(db))` | `553 pass / 1 fail` → `✗ a v3 manifest is still reconciled when the normalized ref table is missing` | 你新增的那条负控**确实打在守卫上**，不是旁路 |
+| **D（false-red 方向）** 去掉守卫、无条件对账 | `552 pass / 2 fail` → 两条 `schema5-manifest-v*.db remains readable through detail, readonly/search, summary, and direct hydrate` | 说明「legacy 允许」这一支是承重的、且有正控证明存量库仍可读 |
+
+`manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db)` 这个形态是对的：**版本判据在前、表探测只作 legacy 允许**，与 docstring 声称的被测对象（「schema ≤5 没什么可对账」）终于对齐（`align-probe-depth-with-subject`）。
+
+**一处可选加强（不是 finding）**：新负控用的是裸 `expect(...).toThrow()`，不锁消息。DROP 表后实际抛的是 SQLite 的 `no such table: v3_operation_evidence_refs`（来自 `operationRefs` 的 SELECT），属于「大声 fail-closed」，方向正确；但裸 `toThrow()` 分不出「因为目标机制失败」还是「因为别的原因失败」。建议收紧成 `/no such table: v3_operation_evidence_refs|operation evidence refs mismatch/i`，与你刚给 recovery 负控做的收紧同理。
+
+### 3-4) #2 的新负控：**形态等价，判据成立**（复评问题 4）
+
+**先证它真的打在门上**：删掉 `store.ts` 的 `hydrateManifest(db, prepared.compressedManifest, prepared.id)` 那一行（我 Round 1 用的同一个变异，当时 `tests/history/` **547 pass / 0 fail** 全绿）——现在：
+
+```
+553 pass / 23 skip / 1 fail
+✗ the commit-time strict gate aborts transaction B when persisted refs stop matching the manifest
+```
+
+**我的 Round 1 #2（MAJOR）由此闭合。**
+
+**关于「同一事务内删除」与生产形态是否等价——等价，理由是可机械核对的三条**：
+
+1. **门看到的状态相同**：注入点 `transactionBFailureInjectorForTests?.("refs")` 位于 `insertOperationEvidenceRefs(...)` 之后、strict hydrate 之前。「插入 N 条后删掉 1 条」与「本来就只插入 N−1 条」在事务内对后续语句是**同一个可见行集**（SQLite 事务内读自己的写）。
+2. **删除本身无额外副作用**：`SUMMARY_PROJECTION_TRIGGER_SQL` 里没有任何以 `v3_operation_evidence_refs` 为触发目标的 trigger（触发目标只有 `v3_operations` 与 `v3_transport_evidence`），所以这条 DELETE 不会连带触发别的东西，不会把「门变红」的功劳偷偷记到 trigger 头上。
+3. **失败后的可观测终态与生产一致**：用例已断言 canonical 行、summary 行、refs 行三者皆不存在，marker 保持事务前的 `'1'`，且 journal 行仍在（`format_version: 2`）——这正是生产里 transaction B ABORT 应有的形态，冻结架构矩阵第 2 行要求的「零发布」。
+
+**唯一不等价、也确实没被覆盖的一角（建议记账，不必本轮做）**：当前只覆盖「**少写一条 ref**」，没覆盖「**写了但值不对**」（例如 `byte_length` 偏 1、`sequence` 写错）。读路径已有 `byte_length+1` 的负控（`summary-projection-migration.it.test.ts:249`），但**提交时**这一形态没有对照。若要补，最小改动是把同一个注入器改成 `UPDATE … SET byte_length=byte_length+1`，加一条同形用例即可。
+
+### 3-5) 门禁口径：并入我 #9c 的结论，**不补新解释**
+
+你报的 `16 shards · 860 tests · 860 pass · 0 fail · 43.96s`，加上此前的 `2806`、`4200`，以及我 Round 1 亲自跑到的 `6705 / 5846 / 5796 / 5555`——**同一条命令、同一份 699 文件发现集合，至今已有 7 个互不相同的 tests 总数**。这与「exit code 可信、仪表不可信」的结论一致，并且现在有了更强的一条：**`fa28deb3` 把 `await p.exited` 改成与读管道并发之后，数字依旧乱跳**，所以管道背压不是（至少不是唯一）成因，我在 Round 1 给出的 `stripAnsi` 漏删 ESC 的假说也已被你的实测证伪（源码里含真实 ESC 字节）。
+
+按 `verified-by-a-wrong-query`，正确处置是**不再给它编第三个因果解释**，而是：① 交付文档一律**不引用这行 tally**，只引用 exit code 与「哪些用例失败」；② 把「parallel-test 汇总行不可复现，根因未定」作为独立条目记进 `docs/todo/deferred-backlog.md`，附上这 7 个数字与复跑命令；③ 真要拿数字，改用每个 shard 的 junit 产物汇总（`run` 已经用 junit reporter 落盘），那是结构化输入，不经这条正则。
+
+### 3-6) 本轮核验小结
+
+| 我 Round 1／R2 的发现 | 现状 |
+|---|---|
+| #7 / spec F1（BLOCKER） | 闭合，生产 + 判据双向已验（R2-1a） |
+| spec F2（BLOCKER） | 闭合；decode 侧有 GC 正控，邻接防线已按建议加注释说明其结构性不可正控 |
+| schema-5 升级路径（BLOCKER，存量缺陷） | **闭合**，四类库实测全安全，且 guard 由快照改为依赖断言 + 真实升级路径判据 |
+| #2 commit-time strict gate（MAJOR） | **闭合**，变异对照按目标变红 |
+| F3 守卫 false-green（我 R2-2 提出） | **闭合**，两个方向各有正控 |
+| #5 写路径退化判据（MAJOR） | **仍未闭合**（你已如实记为未闭合）；建议与 R2-1d 的 fallback 扫描一并用确定性工作量计数收口 |
+| #9 门禁仪表（MAJOR） | 结论不变：exit code 可信、tally 不可信、根因未定；按 3-5 处置 |

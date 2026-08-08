@@ -61,3 +61,21 @@
 **失败场景：** schema 6 中一个合法 v1／v2 operation 因 writer／migration 程序错误留下任意 `v3_operation_evidence_refs` 行。`validateAndMarkSummaryProjectionReady()` 经 `hydrateManifest()` 不看这些 refs，重投影 summary 并把全库标 ready；detail、list 与 search 正常发布该 operation。随后 `hydrateTransportEvidence()` 抛 `operation evidence refs mismatch`，GC 也 fail loud，且额外 ref 指向的 evidence 无法回收。该状态违反同一 operation 的 strict-read 一致性与冻结的 empty↔empty 对账契约，但因 normalized refs direct DML 本身在外部威胁边界外，定为 MAJOR 而非新增 BLOCKER。
 
 **修复建议：** 去掉 `hydrateManifest()` 的 format-v3 条件，对 v1／v2／v3 一律调用 `validatePersistedOperationEvidenceRefs()`；decoder 已把 v1／v2 refs规范化为空数组，所以无需新分支。新增 v1 与 v2 各一条负控：插入额外 normalized ref 后，detail、strict repair、summary fallback 与 search sidecar均拒绝／poison且不得发布 marker；再以 refs 为空的旧 fixture 作正样本防 false-red。修复方建议 `gpt-souls:implementer`。
+
+### F4 — MAJOR — wall-clock guard 被正确退役，但“commit 不随既有 History 长度退化”没有确定性替代门；status fixture 的 DROP 删除正当，但原 count 不变量只被部分守住
+
+**位置：** `tests/history/v3/store-performance.it.test.ts:90-132`、`tests/history/v3/canonical-performance.unit.test.ts:205-253`、`src/lib/history/v3/store.ts:890-895`、`tests/infra/management-routes.http.test.ts:372-389`、`src/routes/status/route.ts:124-139`。
+
+**① 原不变量与现状：** 原 `prepareRatio < 3`／`commitRatio < 5` 守的是“同一 operation 的 prepare／commit 成本不应随数据库中既有 History 行数增长而显著上升”。删除阈值后，该测试只打印时间，不能阻断任何回归。`canonical-performance.unit.test.ts:205-253` 的 deterministic work counter 与 recursive SCC guard只覆盖 `ModelOperationRecorder` 的 captured-value traversal／arena copy，主体是单条 record 的 canonical capture；它不执行 `commitPreparedOperation()`、不触达 SQLite，也不能发现每次 commit 新增一次全表 scan。因此它不是该不变量的替代门。
+
+**证据：** 本轮在 HEAD `b0992a6c` 执行 `bun test tests/history/v3/store-performance.it.test.ts tests/infra/management-routes.http.test.ts`，结果 `15 pass / 0 fail`；report-only 输出为 `prepareRatio=0.6662`、`commitRatio=0.6844`。当前生产实现已把每次 commit 的 `getSummaryProjectionReadiness()` 全表聚合换成 marker PK 查询 `isSummaryProjectionReady()`（`store.ts:890-895`），所以现存具体 O(N) 回归已修；但 `rg` 在 tests 中未找到任何针对 commit SQL 工作量／query plan／既有行数依赖的硬门。原 wall-clock 门本身也判别力不足：它受 CPU／SQLite warmup 噪声影响而 false-red，且 256 行、3×／5×阈值曾放过真实无索引全表 scan。故“直接恢复原 ratio”不正确，但“只删断言”同样丢失契约。
+
+**影响：** 后续任何在 commit hot path 中重新引入 `COUNT/SUM` 全表 scan、按既有 operations 循环、或无界 summary reconciliation 的改动都可全绿合并；这是 frozen write-path complexity 的验收缺口，当前代码虽已 O(1)，仍属 MAJOR 测试／架构门缺失。
+
+**① 修复建议：** 保留 wall-clock 为 report-only，新增**确定性 SQLite 工作量门**，测量对象必须是 `commitPreparedOperation()` 而非 recorder capture。优先使用 SQLite statement/scan-status 能力或 driver 注入的只读 prepare/step observer，比较相同 prepared operation 在 0 行与大 N 行基线上的 statement 数、full-scan steps／visited rows，要求与 N 无关；若当前 driver 无该能力，可加窄 test seam 统计 readiness 查询触达行数，并配 mutation 把 `isSummaryProjectionReady` 换回 `getSummaryProjectionReadiness`，确认目标测试按全表 scan 机制变红。不要用源码字符串禁止某一函数名代替执行判据。修复方建议 `gpt-souls:implementer`。
+
+**② 原不变量与变更判断：** management test 原本守“`GET /api/status` 的 persisted count 来自 canonical `v3_operations COUNT(*)`，不解析损坏的 summary payload”。旧 `DROP v3_operation_summaries_after_summary_update` 只是让旧 trigger 不自动修复／覆盖坏 fixture；该 trigger 已由 migration 002 明确退役（当前只在 `summary-schema.ts:92` 的 cleanup SQL 中出现），现在 protected canonical UPDATE 自身会 poison summary并撤 marker。因此删除对不存在 trigger 的 DROP 是**正当 fixture 迁移**，不是放宽产品断言；保留 DROP 只会让正确 schema false-red。
+
+**② 剩余判别力缺口：** 当前 malformed `summary_json` 仍能拦截“直接 `JSON.parse(summary_json)`”这种错误实现，但不足以完整证明 count 只依赖 canonical root。F1 修复后 marker-false summary facade会 hydrate合法 manifest并从 canonical重投影，完全不读坏 `summary_json`；把 status count误接到该 facade仍可能返回1而本测试全绿。直接 `COUNT(*) FROM v3_operation_summaries`（不筛 ready）也会在当前一行 fixture上返回1。故 DROP 删除本身合理，但“还有谁守原完整不变量”的答案是：`status/route.ts:128-136` 当前实现确实用 `countV3Operations()`，测试只守住其中“不得解析 summary JSON”的子集，没有守住“不得依赖 summary row存在／状态或 hydrate canonical”的全部语义。
+
+**② 修复建议：** 保留现有坏 JSON case，并增加正交状态：删除该 operation 的 summary row（或同时造 missing／poisoned rows），再把 canonical manifest改成无法 hydrate但 operation root仍存在，断言 `/api/status` 仍为200且 `historyEntryCount` 精确等于 `v3_operations` 行数。这样可同时咬住 summary-table count、ready-only count与 canonical hydrate三类错误接线；正样本保留正常 operation count，避免 false-red。此补强可与①同一修复轮处理，但不要恢复已退役 trigger DROP。

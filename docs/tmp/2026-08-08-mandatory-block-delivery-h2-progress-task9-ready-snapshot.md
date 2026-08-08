@@ -95,8 +95,11 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 ### 未闭合（须在Task 9收口前处置）
 
 - **#2（MAJOR）已闭合**（commit `af5e4553` 之后的 `cf377959` 批次前）：Transaction B的commit-time strict gate原先零鉴别力——现有注入器只测「在该点回滚」，与「strict校验是否真的在跑」互相独立，删掉 `store.ts:924` 那行仍全绿。修法不改生产代码：让注入器在 `refs` 阶段**删掉一条真实ref行**（改变真实数据，而非抛异常），strict gate若在跑就必须检出并回滚。**鉴别力已实证**：删掉该行时恰好该条变红（`36 pass / 1 fail`），恢复后37全绿。
-- **#5的判据侧**仍未闭合：实现已修（O(1) marker查找），但「写路径不随历史长度退化」目前仍无人守。评审建议改为确定性工作量计数（SQL语句／扫描行数比值）而非wall-clock ratio——不受CPU争用影响、无false-red，且N=256即可抓到整表扫描。**读侧同族问题已记入backlog**（marker缺席时列表fallback走遍全表，N=2000实测 3167ms → 5452ms），两者应用同一套计数判据一起收口。
-- **官方门稳定性与tally可复现性**（根因未定，见上）。
+- **#5的判据侧已闭合**（commit `2b2c1d43`）：实现早已修好（O(1) marker查找），缺的是判据。新判据**不用计时**，改问SQLite本身——包装 `db.prepare` 捕获一次提交执行的全部SQL，对每条跑 `EXPLAIN QUERY PLAN`，断言其中没有对任何「行数随历史增长的表」（`v3_operations` / `v3_operation_summaries` / `v3_objects` / `v3_tracks` / `v3_timeline_chunks`）的全表 `SCAN`。这类判据不受CPU争用影响、无false-red，且在任意N下都成立。
+  - **鉴别力实证过程中先做出了一条假判据，值得记**：第一版在只跑 `ensureV3Schema` 的库上运行，而 `v3_operation_summaries` 是由**迁移**创建的——表不存在时 `getSummaryProjectionReadiness` 提前返回，那条O(N)聚合**根本没被执行**，于是把O(1)改回O(N)时判据仍然全绿。**「变异后没变红」当时的真解是「判据测了个空」，不是「实现没问题」**。补上 `ensureV3Schema` + `applyForwardMigrations` 后，变异下红在 `offenders` 断言、且offender精确指向 `SCAN v3_operation_summaries`；恢复后全绿。
+  - 另一处自我纠正：初版用32次flood打底，导致同文件的CAS用例超时15s（false-red）。查询计划由schema决定、不依赖行数（此处无ANALYZE统计），故砍到2次，既保持有效又不拖慢邻居。
+- **#2的负控已补齐第二个方向**（commit `2b2c1d43`）：原先只覆盖「少写一条ref」，按复评建议加了「写了但值不对」（`byte_length+1`），两个方向同一注入器、参数化两例。
+- **官方门稳定性与tally可复现性**：**根因未定，且已排除两个假说**——ANSI假说被探针证伪、管道背压虽是真实隐患（已修 `fa28deb3`）但修完数字依旧乱跳。同一命令至今给出 **7个互不相同**的tally（860 / 2806 / 4200 / 5555 / 5796 / 5846 / 6705）。**不补第三个解释**。已记入 `docs/todo/deferred-backlog.md`，并确立交付纪律：**只引exit code与失败用例名，不得用tally数字作规模或增减证据**。
 
 ## schema-5 升级路径BLOCKER（本轮新发现并闭合，commit `cf377959`）
 
