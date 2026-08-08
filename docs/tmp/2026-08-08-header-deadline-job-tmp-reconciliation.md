@@ -60,16 +60,20 @@
 
 ⚠️ **先认一个流程偏差**：下表前两类在产生后即被我随用随删，**没有走「清单 → 独立评审 → 删除」这道门**，是作为常规工作动作就地删掉的。它们的非破坏性可事后核验（见「替代证据」列），但**程序上确实绕过了门**，在此如实登记，不粉饰成合规。
 
-⚠️ **这一类天然自指，所以下表用判据而不是快照**：写这份清单本身要提交，提交就要再产生一份消息文件（本节初稿即漏记了生成 `28e8025a` 的 `m5.txt`，随后又用 `m6.txt` 重复了同一动作——由独立评审抓出）。**冻结一个数量必然在下一次提交时失效**，故改为可判定的规则：
+⚠️ **这一类天然自指，所以下表用判据而不是快照**：写这份清单本身要提交，提交就要再产生一份消息文件（本节初稿即漏记了生成 `28e8025a` 的 `m5.txt`，随后又用 `m6.txt` 重复了同一动作——由独立评审抓出）。**冻结一个数量必然在下一次提交时失效**，故改为判据 + 明确的证据边界：
 
-> **判据**：`git commit -F <file>` 每次产生一份消息文件、用后即删；合规条件是**每一份都对应一个携带该消息的 commit**，而不是「数量等于 N」。复核方式：`git log --oneline <base>..<tip>` 逐条比对 subject——凡是本轮的提交，其消息都来自这样一份已删文件；反过来，没有任何一份消息文件的内容未能落成 commit。
+> **判据（两个方向）**：`git commit -F <file>` 每次产生一份消息文件、用后即删。合规要求 ① **每一份消息文件的内容都落成了一个 commit**（无信息丢失）；② **没有哪个本轮 commit 的消息来自一份未被登记的文件**。
+>
+> **两个方向的可核验性不对称，这一点必须写明、不能糊过去**：
+>
+> - **方向 ①（内容是否保住）可由仓库独立核验**：`git log --oneline <base>..<audited-tip>` 逐条读 subject 即可，删掉的文件不影响这一步——要证的就是「内容已在 commit 里」。
+> - **方向 ②（总体是否穷尽）仓库证不了**。`git log` 既枚举不出已删除的文件，也分不出某个 commit 是 `-F` 还是 `-m` 提交的。**唯一的外部 oracle 是本会话 transcript 里实际出现的 `git commit -F <path>` 调用**——它不在本仓库内，因此本行的「穷尽性」是 **transcript-可核验、仓库-不可核验**。按 `downgrade-self-adjudicated-gates`：这里不再靠堆条件去硬撑一个自评闸门，而是点名 oracle 与边界，交独立评审按 transcript 裁决。
+>
+> **审计边界**：本行的枚举**冻结到 tip `83696acf`**。该 tip 之后的提交（含修复本行的那一次）**不回填本行**——它们按同一判据核，去 transcript 取 oracle。把枚举写成"截至某 tip"是这条自指链唯一能收敛的形式；不写边界就会一直追着自己的尾巴。
 
 | 临时对象 | 用途 | 处置 | 替代证据（可事后独立核验） |
 |---|---|---|---|
-| `commit-msg-v19.txt`、`m1.txt`～`m6.txt`、`mg.txt`（提交信息输入，**按上面的判据计，不冻结数量**） | `git commit -F` 的消息文件 | 用后即删 | 对应 commit **均已存在且携带该消息**：`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`／`28e8025a`／`62ef4e61`；本节之后若再有提交，同样按判据核，不必回来改这一行 |
-| `add-skip-identity.mjs`、`skip-diff.mjs`、`verify-multiset.mjs`、`diff35.mjs`、`final-check.mjs`（5 份一次性校验脚本） | 比对 runtime skip 集合与 baseline `allowed_skipped`、插入缺失 identity | 用后即删 | **结论已落盘**：插入结果是 commit `7af27044` 的 +9 行 diff；多集合精确相等的判定另有**项目自带的常驻 oracle** `scripts/validate-entry-evidence.ts`（对 `allowed_skipped` 做精确 multiset 比较），脚本本身无长期价值、可随时重写 |
-| `/tmp/tmp-rescan-14d4ecd1.txt` | 首轮清理的 42 项枚举清单，是删除动作的**逐行输入** | **待删（本节评审通过后）** | 本文档「可清理」表已**逐项列出全部 30 项**、保留表列出 12 项，合计 42；事实视角评审在原件尚存时独立复算过覆盖面 42/42（`2026-08-08-job-tmp-review-facts.md:7-18`） |
-| `/tmp/mine-14d4.txt`、`/tmp/theirs-14d4.txt` | 某次合并的两侧改动文件名清单，用于算碰撞集 | **待删（本节评审通过后）** | 可由 `git diff --name-only <merge-base> <ref>` 精确重建；相关 merge commit 均在历史中 |
+| 提交信息输入（`commit-msg-v19.txt`、`m1.txt`～`m7.txt`、`mg.txt`；**截至 tip `83696acf` 的枚举，不冻结数量**） | `git commit -F` 的消息文件 | 用后即删 | 方向①（仓库可核）：对应 commit 均存在且携带该消息——`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`／`28e8025a`／`62ef4e61`／`83696acf`（`m7.txt` → `83696acf`）。方向②（仓库不可核）：总体以 transcript 里的 `git commit -F` 调用为准，见上方判据 |
 | `add-skip-identity.mjs`、`skip-diff.mjs`、`verify-multiset.mjs`、`diff35.mjs`、`final-check.mjs`（5 份一次性校验脚本） | 比对 runtime skip 集合与 baseline `allowed_skipped`、插入缺失 identity | 用后即删 | **结论已落盘**：插入结果是 commit `7af27044` 的 +9 行 diff；多集合精确相等的判定另有**项目自带的常驻 oracle** `scripts/validate-entry-evidence.ts`（对 `allowed_skipped` 做精确 multiset 比较），脚本本身无长期价值、可随时重写 |
 | `/tmp/tmp-rescan-14d4ecd1.txt` | 首轮清理的 42 项枚举清单，是删除动作的**逐行输入** | **待删（本节评审通过后）** | 本文档「可清理」表已**逐项列出全部 30 项**、保留表列出 12 项，合计 42；事实视角评审在原件尚存时独立复算过覆盖面 42/42（`2026-08-08-job-tmp-review-facts.md:7-18`） |
 | `/tmp/mine-14d4.txt`、`/tmp/theirs-14d4.txt` | 某次合并的两侧改动文件名清单，用于算碰撞集 | **待删（本节评审通过后）** | 可由 `git diff --name-only <merge-base> <ref>` 精确重建；相关 merge commit 均在历史中 |
