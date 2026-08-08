@@ -132,7 +132,7 @@ bun test --parallel .unit.test .it.test .http.test
 
 结果：6514 pass、5 fail，6528 tests、634 files、155.82s。失败均不触及本任务文件：
 
-- `tests/shutdown/shutdown-signals.it.test.ts`：PTY fixture 未见 `READY`；
+- `tests/shutdown/shutdown-signals.pty.test.ts`（原取证 commit 当时后缀为 `.it.test.ts`）：PTY fixture 未见 `READY`；
 - `tests/diagnostics/shutdown-barrier.it.test.ts`：5s timeout；
 - `tests/history/v3/db-health.it.test.ts`：5s timeout；
 - `tests/observability/unknown-endpoint-server.it.test.ts`：Bun worker SIGILL；
@@ -141,7 +141,7 @@ bun test --parallel .unit.test .it.test .http.test
 按用户要求对失败项单跑判别：
 
 ```sh
-bun test tests/shutdown/shutdown-signals.it.test.ts tests/diagnostics/shutdown-barrier.it.test.ts tests/history/v3/db-health.it.test.ts
+bun test tests/shutdown/shutdown-signals.pty.test.ts tests/diagnostics/shutdown-barrier.it.test.ts tests/history/v3/db-health.it.test.ts
 ```
 
 结果：16 pass、0 fail，4.59s。

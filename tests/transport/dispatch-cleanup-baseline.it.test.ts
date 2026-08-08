@@ -280,7 +280,10 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
         sleep: (_ms, signal) => {
           backoffStarted.resolve()
           return new Promise<void>((resolve) => {
-            const release = () => resolve()
+            const release = () => {
+              signal.removeEventListener("abort", release)
+              resolve()
+            }
             releaseBackoff = release
             signal.addEventListener("abort", release, { once: true })
           })
@@ -310,6 +313,8 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
         (error: unknown) => ({ kind: "rejected" as const, error }),
       )
       expect(outcome.kind).toBe("rejected")
+      releaseBackoff()
+      await drainMicrotasks()
       expect(calls).toBe(2)
     } finally {
       releaseBackoff?.()

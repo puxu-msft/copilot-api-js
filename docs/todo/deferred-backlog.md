@@ -12,6 +12,8 @@
 - **触发条件**：为 buffered Anthropic 路径请求 B2 行为，或需要在 `max_retries>0` 耗尽后给尚未交付语义内容的 stream 再尝试一次。**发现方**：Task 4.0 review（reviewer，2026-07-28）；2026-08-08 更新为 live 已完成后的真实 deferred 边界。
 
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
+>
+> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
 
 ## translated Anthropic B2 recovery publication（2026-08-08）
 
@@ -986,6 +988,16 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：截断/断流只能看到泛型日志，无法从信号判别是 A（连接级/中间设备回收，GOAWAY 在场）还是 B（单流应用层 idle，无 GOAWAY、连接仍活）。
 - **理想架构 / 若做需改什么**：把连接/会话生命周期做成一等结构化事件（进 observability bus + 结构化日志 + /metrics）。**承重难题＝多路复用池化 session 的 request 关联**（一条 h2 session 被多并发 request 共享，GOAWAY/PING/session-close 非 1:1 归属某 request）——候选解 A（correlation-id 穿透 + 连接级事件扇出到在途 request）/ B（两级模型读时关联）/ C（全事件上 bus + 投影分发），详见 [docs/todo/upstream-transport-observability.md](upstream-transport-observability.md) §5。
 - **为何暂缓**：子项目 1（跨端点流终止归因统一，流级、per-request、不碰关联难题）先行独立交付；本片需先攻克多路复用关联模型（最硬），范围大，用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1 落地后、需在真实数据上区分 A/B 截断归因时。详细设计草案（范围/维度/关联模型/surface）已冻结在 [upstream-transport-observability.md](upstream-transport-observability.md)。
+
+## Bun HTTP/2 `end + rstCode=0` 能否区分 clean RST 与 END_STREAM（当前任务完成后专项调查，用户保持怀疑）
+
+- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
+- **当前已证事实**：应用层在已观察样本中可见 `end`、随后 `close`、`rstCode=0`，且 Responses 协议终止事件缺失。现有 Bun `node:http2` 路径未提供足以在应用层直接裁决“正常 END_STREAM”与“clean RST 被兼容层抹平”的独立信号。因此当前规格只记录原始事实与不可判状态，不把猜测持久化为根因。
+- **用户保留意见**：用户对“无法进一步区分”保持怀疑，要求当前任务完成后仔细排查。该怀疑不是已解决结论，也不是允许当前实现猜测；它要求寻找更强 oracle。
+- **调查问题**：① Bun runtime 内部是否保留但未暴露 RST／END_STREAM 差异；② `ClientHttp2Stream` 是否存在事件顺序、内部字段、诊断通道或 native handle 可可靠观测；③ Node 对照、TLS／HTTP2 帧级代理、GHC request-id 服务端日志能否提供独立 ground truth；④ 不同 RST code、`stream.close(0)`、`stream.destroy()`、正常 `end()` 在 Bun 各版本／Node 上的可重复行为矩阵；⑤ 若 Bun 是根因，最小上游修复或本项目可维护的 runtime patch 是什么。
+- **实验纪律**：使用真 Node HTTP/2 server 与帧级 oracle，不能把 Bun server fixture 当协议真相；每个场景同时保存服务端动作、客户端事件全序、`rstCode`、session GOAWAY、raw frame 或 runtime trace。正反样本必须成对：正常 END_STREAM 与 clean RST 均能稳定复现，oracle 能区分两者后才能接受分类机制。
+- **完成判据**：二选一并有实证。A：找到可靠、低开销且在生产 runtime 可用的区分信号，补 transport 分类、回归测试和 History 字段；B：证明当前 Bun 版本在可达 API／native trace 上确实丢失该信息，形成最小上游复现、版本范围与修复路径。只得到“代码看起来无法区分”或只跑单一坏样本不算完成。
+- **与当前任务的边界**：当前任务先实现 dispatch-scoped first-terminal snapshot、GOAWAY evidence 与诚实的 `indeterminate` 分类；专项调查若找到新 oracle，再以新增事实升级分类，不回写或伪造旧记录。
 
 ## 上游传输可观测子系统 — 子项目 3：history transportTrace 字段 + ui-v4 Transport 段（2026-07-14，transport-observability 分解；2026-07-22 更新：metrics 已归子项目 1）
 

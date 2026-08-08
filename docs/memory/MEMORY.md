@@ -59,6 +59,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md)
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md)
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md)
+- [阻断式 guard 的目的／false-red 成本／粒度未决时先确认](feedback-confirm-guard-purpose-before-hardening.md)
 - [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md)
 - [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md)
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md)

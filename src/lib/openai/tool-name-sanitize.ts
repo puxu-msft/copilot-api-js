@@ -38,6 +38,12 @@ import {
 // Mapper construction
 // ============================================================================
 
+// Real GHC `/responses` rejects dotted function names for GPT models with
+// `invalid_request_body` / `^[a-zA-Z0-9_-]+$`. This is an outbound-protocol
+// constraint, not a model-family capability; keep it beside the Responses
+// builder rather than inheriting the model-class rule (which allows GPT dots).
+const RESPONSES_TOOL_NAME_RULES = { allowDots: false, maxNameLength: 64 } as const
+
 /**
  * Build a tool-name mapper for a Chat Completions request from its function
  * tool definitions. Returns `null` when disabled, when there are no tools, or
@@ -56,11 +62,11 @@ export function buildChatCompletionsToolNameMapper(payload: ChatCompletionsPaylo
  * Build a tool-name mapper for a Responses request from its function tool
  * definitions. Returns `null` when disabled / no tools / no rewrite needed.
  */
-export function buildResponsesToolNameMapper(payload: ResponsesPayload, vendor?: string): ToolNameMapper | null {
+export function buildResponsesToolNameMapper(payload: ResponsesPayload, _vendor?: string): ToolNameMapper | null {
   if (!state.sanitizeToolNames) return null
   const names = (payload.tools ?? []).filter((tool) => tool.type === "function" || tool.type === "custom").map((tool) => tool.name)
   if (names.length === 0) return null
-  const mapper = createToolNameMapper(names, getToolNameRulesForModel(payload.model, vendor))
+  const mapper = createToolNameMapper(names, RESPONSES_TOOL_NAME_RULES)
   return mapper.hasChanges ? mapper : null
 }
 
@@ -180,7 +186,7 @@ export function restoreChatCompletionsChunkToolNames(chunk: unknown, mapper: Too
 
 /** Rename a Responses input item's function_call name to upstream form. */
 function renameResponsesInputItem(item: ResponsesInputItem, mapper: ToolNameMapper): ResponsesInputItem {
-  if (item.type === "function_call" && typeof item.name === "string" && mapper.hasOriginal(item.name)) {
+  if ((item.type === "function_call" || item.type === "custom_tool_call") && typeof item.name === "string" && mapper.hasOriginal(item.name)) {
     return { ...item, name: mapper.toUpstream(item.name) }
   }
   return item
@@ -227,6 +233,60 @@ function renameResponsesToolChoice(toolChoice: ResponsesPayload["tool_choice"], 
   return { ...toolChoice, name: mapper.toUpstream(toolChoice.name) }
 }
 
+/** Result of applying the final `/responses` wire-name constraint. */
+export interface SanitizedResponsesWireNames {
+  payload: ResponsesPayload
+  /** Explicit client-original ↔ final-wire mapper used by response restoration. */
+  mapper: ToolNameMapper | null
+}
+
+/** Build a collision-safe provenance mapper from explicit client/current/final names. */
+function buildResponsesProvenanceMapper(
+  currentNames: ReadonlyArray<string>,
+  sourceMapper: ToolNameMapper | null,
+  sourceMapperApplied: boolean,
+  targetMapper: ToolNameMapper | null,
+): ToolNameMapper | null {
+  if (!sourceMapper && !targetMapper) return null
+  const clientToWire = new Map<string, string>()
+  const wireToClient = new Map<string, string>()
+  for (const current of currentNames) {
+    const client = sourceMapperApplied ? (sourceMapper?.toClient(current) ?? current) : current
+    const wire = targetMapper?.toUpstream(current) ?? current
+    clientToWire.set(client, wire)
+    wireToClient.set(wire, client)
+  }
+  return {
+    toUpstream: (name) => clientToWire.get(name) ?? name,
+    toClient: (name) => wireToClient.get(name) ?? name,
+    hasOriginal: (name) => clientToWire.has(name),
+    hasChanges: [...clientToWire].some(([client, wire]) => client !== wire),
+  }
+}
+
+/**
+ * Apply the target-specific `/responses` name constraint to a body that has
+ * already reached Responses shape. `sourceMapperApplied` explicitly states
+ * whether the current body already carries source-wire names; this prevents
+ * both double-application and collision ambiguity when two mapper layers use
+ * the same intermediate string.
+ */
+export function sanitizeResponsesWireToolNames(
+  payload: ResponsesPayload,
+  sourceMapper: ToolNameMapper | null,
+  options: { sourceMapperApplied: boolean },
+): SanitizedResponsesWireNames {
+  if (!state.sanitizeToolNames) return { payload, mapper: sourceMapper }
+  const names = (payload.tools ?? []).filter((tool) => tool.type === "function" || tool.type === "custom").map((tool) => tool.name)
+  if (names.length === 0) return { payload, mapper: sourceMapper }
+  const targetCandidate = createToolNameMapper(names, RESPONSES_TOOL_NAME_RULES)
+  const targetMapper = targetCandidate.hasChanges ? targetCandidate : null
+  return {
+    payload: applyResponsesToolNameSanitization(payload, targetMapper),
+    mapper: buildResponsesProvenanceMapper(names, sourceMapper, options.sourceMapperApplied, targetMapper),
+  }
+}
+
 // ============================================================================
 // Responses — response restoration
 // ============================================================================
@@ -248,15 +308,15 @@ export const RESPONSES_NAME_BEARING_EVENTS = new Set<string>([
 ])
 
 /**
- * Restore `function_call` names (upstream → original) in a non-streaming
- * Responses response output. No-op when `mapper` is null. Returns a new
+ * Restore `function_call` / `custom_tool_call` names (upstream → original) in a
+ * non-streaming Responses response output. No-op when `mapper` is null. Returns a new
  * response object (never mutates input).
  */
 export function restoreResponsesOutputToolNames<T extends { output?: Array<{ type?: string; name?: string }> }>(response: T, mapper: ToolNameMapper | null): T {
   if (!mapper || !Array.isArray(response.output)) return response
   const source = response.output
   const output = source.map((item) => {
-    if (item.type === "function_call" && typeof item.name === "string") {
+    if ((item.type === "function_call" || item.type === "custom_tool_call") && typeof item.name === "string") {
       const restored = mapper.toClient(item.name)
       if (restored !== item.name) return { ...item, name: restored }
     }
@@ -285,7 +345,7 @@ export function restoreResponsesEventToolNames(event: unknown, mapper: ToolNameM
 
   // Per-item frames: name on `event.item`.
   const item = (event as { item?: { type?: string; name?: string } }).item
-  if (item && item.type === "function_call" && typeof item.name === "string") {
+  if (item && (item.type === "function_call" || item.type === "custom_tool_call") && typeof item.name === "string") {
     const restored = mapper.toClient(item.name)
     if (restored === item.name) return false
     item.name = restored
@@ -297,7 +357,7 @@ export function restoreResponsesEventToolNames(event: unknown, mapper: ToolNameM
   if (Array.isArray(output)) {
     let changed = false
     for (const out of output) {
-      if (out.type === "function_call" && typeof out.name === "string") {
+      if ((out.type === "function_call" || out.type === "custom_tool_call") && typeof out.name === "string") {
         const restored = mapper.toClient(out.name)
         if (restored !== out.name) {
           out.name = restored
