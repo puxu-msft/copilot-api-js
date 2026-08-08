@@ -223,9 +223,8 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, baseline } = parseOpenAiCc(raw)
+      const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx))
       truncateBaseline = baseline
-      requestContext = env.ctx
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
       // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
       // baseline) is populated for EVERY CC request (C3 — the direct/forward `/chat/completions` cells read
@@ -346,7 +345,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
  * only the static type over-claims. P2.3 may relax the envelope to
  * `ResolvedModel | undefined` once Anthropic's non-optional assumption is revisited.
  */
-function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
+function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
   // `body` is the wire-logical inbound (system-prompt already injected by the
   // route, P2.2-D3); `originalBodyForHistory` (when present) is the client's raw
   // pre-injection body for the history snapshot.
@@ -377,6 +376,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
     historyReservation: raw.historyReservation,
   })
+  onContext(ctx)
 
   ctx.setOriginalRequest({
     model: requestedModel,

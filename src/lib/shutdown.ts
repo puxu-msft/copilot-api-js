@@ -36,6 +36,7 @@ import {
 import {
   //
   drainHistoryAdmission,
+  drainHistoryAdmissionHandoffs,
   stopHistoryAdmission,
 } from "./history/worker/http-admission"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
@@ -218,6 +219,8 @@ export interface ShutdownDeps {
   drainModelOperationFinalizationsFn?: () => Promise<void>
   /** Stop pre-context History admission and reject queued operations in Step 1. */
   stopHistoryAdmissionFn?: (error: Error) => void
+  /** Wait until every granted reservation has either bound to a visible operation or released. */
+  drainHistoryAdmissionHandoffsFn?: () => Promise<void>
   /** Wait for admitted History operations to reach terminal persistence outcomes. */
   drainHistoryAdmissionFn?: () => Promise<void>
   /** Persistence seams used by lifecycle tests. Production uses the real stores. */
@@ -307,6 +310,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const drainModelOperationFinalizations =
     deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
   const stopAdmission = deps?.stopHistoryAdmissionFn ?? stopHistoryAdmission
+  const drainAdmissionHandoffs = deps?.drainHistoryAdmissionHandoffsFn ?? drainHistoryAdmissionHandoffs
   const drainAdmission = deps?.drainHistoryAdmissionFn ?? drainHistoryAdmission
   const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
   const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? (async () => await peekTelemetryRuntime()?.dispose())
@@ -342,6 +346,10 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // Reject only pre-context admission waiters. Already accepted operations own
   // bound reservations and continue losslessly through the operation registry.
   stopAdmission(new Error(`History admission stopped by ${signal}`))
+  // Close the acquire→bind/release handoff before the first operation-registry
+  // snapshot. When this resolves, every granted reservation is either released or
+  // bound to an operation already visible to the lossless drain oracle.
+  await drainAdmissionHandoffs()
   // Fire-and-forget: Steps 1–3 do not immediately force-close observer sockets.
   // The force-close boundary and final completion notification are awaited.
   setPhaseFireAndForget("stopping")

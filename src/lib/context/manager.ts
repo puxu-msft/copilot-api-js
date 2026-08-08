@@ -372,6 +372,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         query: opts.query,
         requestBodySize: opts.requestBodySize,
         historyReservation: opts.historyReservation,
+        deferHistoryReservationBinding: true,
         operationIdentity: opts.operationIdentity,
         // Pure resource-management hook — remove the context from the active
         // map when it settles. Lifecycle events reach the bus via the context's
@@ -415,6 +416,13 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       peekTelemetryRuntime()?.recordAccepted(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       operationScopes.set(ctx.id, ctx)
+      try {
+        opts.historyReservation?.bindOperationId(ctx.id)
+      } catch (error) {
+        activeContexts.delete(ctx.id)
+        operationScopes.delete(ctx.id)
+        throw error
+      }
       // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first
       // (`cancelReason=request_deadline`, operationSignal abort), then records the timeout terminal.
       // This fires ON TIME via a per-request timer (bypasses RC2's late scan); `unref` prevents it

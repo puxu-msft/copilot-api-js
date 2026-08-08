@@ -16,6 +16,7 @@ import {
   toEntrySummary,
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
+import { listHistoryOverlaySummaries } from "./overlay"
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
@@ -428,28 +429,21 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, terminalOnly } = options
 
   const operationKind = options.operationKind ?? "generation"
-  const inFlightSummaries = listInFlight()
-    .filter((entry) => inFlightMatchesSearch(entry, options.search))
-    .map((entry) => toEntrySummary(entry))
-    .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
+  const overlaySummaries = listHistoryOverlaySummaries().filter(
+    (summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options),
+  )
   const cursorSummary = resolveSummaryCursor(options, operationKind)
-  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
-  const persistedSummaries = [
-    ...listRecentModelOperationTerminals()
-      .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-      .map((record) => recentRecordToSummary(record)),
-    ...stored.rows,
-  ]
+  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + overlaySummaries.length + 1, cursorSummary)
 
   const seen = new Set<string>()
   const merged: Array<EntrySummary> = []
-  for (const summary of inFlightSummaries) {
+  for (const summary of overlaySummaries) {
     if (!seen.has(summary.id)) {
       seen.add(summary.id)
       merged.push(summary)
     }
   }
-  for (const summary of persistedSummaries) {
+  for (const summary of stored.rows) {
     if (!seen.has(summary.id)) {
       seen.add(summary.id)
       merged.push(summary)

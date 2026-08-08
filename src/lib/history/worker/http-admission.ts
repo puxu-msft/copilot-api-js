@@ -11,6 +11,22 @@ import {
 } from "./registry"
 
 let stopped = new AbortController()
+let pendingHandoffs = 0
+const handoffWaiters = new Set<() => void>()
+
+function beginHandoff(): () => void {
+  pendingHandoffs++
+  let settled = false
+  return () => {
+    if (settled) return
+    settled = true
+    pendingHandoffs--
+    if (pendingHandoffs === 0) {
+      for (const resolve of handoffWaiters) resolve()
+      handoffWaiters.clear()
+    }
+  }
+}
 
 const NOOP_RESERVATION: HistoryReservation = Object.freeze({
   reservationId: "history-disabled",
@@ -35,6 +51,7 @@ export async function withHistoryAdmission<T>(
   if (requestSignal.aborted) onRequestAbort()
   else if (stopped.signal.aborted) onStop()
 
+  const endHandoff = beginHandoff()
   try {
     const admission = getHistoryAdmissionController()
     const reservation = await admission.acquire({ signal: controller.signal })
@@ -44,10 +61,12 @@ export async function withHistoryAdmission<T>(
       bindOperationId(operationId: string): void {
         reservation.bindOperationId(operationId)
         lifecycle.phase = "bound"
+        endHandoff()
       },
       releaseBeforeBinding(reason: string): void {
         reservation.releaseBeforeBinding(reason)
         lifecycle.phase = "released"
+        endHandoff()
       },
     }
     try {
@@ -62,8 +81,15 @@ export async function withHistoryAdmission<T>(
       if (lifecycle.phase === "unbound") reservation.releaseBeforeBinding("History operation completed before binding")
     }
   } finally {
+    endHandoff()
     requestSignal.removeEventListener("abort", onRequestAbort)
     stopped.signal.removeEventListener("abort", onStop)
+  }
+}
+
+export async function drainHistoryAdmissionHandoffs(): Promise<void> {
+  while (pendingHandoffs > 0) {
+    await new Promise<void>((resolve) => handoffWaiters.add(resolve))
   }
 }
 
@@ -82,4 +108,7 @@ export async function drainHistoryAdmission(): Promise<void> {
 
 export function resetHistoryAdmissionLifecycleForTests(): void {
   stopped = new AbortController()
+  pendingHandoffs = 0
+  for (const resolve of handoffWaiters) resolve()
+  handoffWaiters.clear()
 }

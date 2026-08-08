@@ -299,8 +299,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const parsed = parseOpenAiResponses(raw)
-      requestContext = parsed.env.ctx
+      const parsed = parseOpenAiResponses(raw, (ctx) => (requestContext = ctx))
       resolvedModelName = parsed.resolvedModelName
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
       // it from env.requestState. The shared fallback-exchange scratch (§11.2c) is always threaded (the CHAT
@@ -413,7 +412,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
  * client body as `originalBodyForHistory` for the snapshot — parity with the CC
  * codec (P2.2-D3).
  */
-function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; resolvedModelName: string } {
+function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; resolvedModelName: string } {
   const incoming = raw.body as ResponsesPayload
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as ResponsesPayload
 
@@ -448,6 +447,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     historyReservation: raw.historyReservation,
     ...(raw.operationIdentity !== undefined && { operationIdentity: raw.operationIdentity }),
   })
+  onContext(ctx)
 
   ctx.setOriginalRequest({
     model: requestedModel,

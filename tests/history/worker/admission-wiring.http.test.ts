@@ -21,8 +21,10 @@ import {
 } from "~/lib/history/worker/admission"
 import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { setHistoryAdmissionControllerForTests } from "~/lib/history/worker/registry"
+import { setModels } from "~/lib/models/cache"
 import { setStateForTests } from "~/lib/state"
 
+import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { createFullTestApp } from "../../helpers/test-app"
 
@@ -134,6 +136,81 @@ describe("production History admission wiring", () => {
 
     controller.failBeforeTerminal("bound-handler-error", new Error("canonical finalizer rejected"))
     expect(controller.snapshot()).toMatchObject({ reserved: 0, waiting: 0, preTerminalFailuresTotal: 1 })
+  })
+
+  test("releases a reservation when codec parsing throws after context construction", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+
+    const response = await app.request("/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [{}],
+      }),
+    })
+
+    expect(response.status).toBeGreaterThanOrEqual(400)
+    await controller.waitForQuiescence()
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, waiting: 0, unacked: 0 })
+  })
+
+  test("every HTTP operation route blocks at the production admission boundary", async () => {
+    const requests = [
+      ["/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }],
+      ["/responses", { model: "gpt-4o", input: "hi" }],
+      ["/v1/messages", { model: "claude-sonnet-4.6", max_tokens: 8, messages: [{ role: "user", content: "hi" }] }],
+      ["/embeddings", { model: "text-embedding-3-small", input: "hi" }],
+      ["/v1/messages/count_tokens", { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hi" }] }],
+      ["/v1beta/models/gpt-4o:generateContent", { contents: [{ role: "user", parts: [{ text: "hi" }] }] }],
+      ["/v1beta/models/gpt-4o:countTokens", { contents: [{ role: "user", parts: [{ text: "hi" }] }] }],
+    ] as const
+    const held = await controller.acquire({ signal: new AbortController().signal })
+
+    for (const [path, body] of requests) {
+      const clientAbort = new AbortController()
+      const response = Promise.resolve(
+        app.request(
+          new Request(`http://localhost${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+            signal: clientAbort.signal,
+          }),
+        ),
+      )
+      await expectPending(response)
+      expect(controller.snapshot(), path).toMatchObject({ reserved: 1, waiting: 1 })
+      clientAbort.abort(new Error(`cancel ${path}`))
+      await response
+      expect(controller.snapshot(), path).toMatchObject({ reserved: 1, waiting: 0 })
+    }
+
+    held.releaseBeforeBinding("release fixture capacity")
+  })
+
+  test("management, History, metrics, and dry-run surfaces bypass model admission", async () => {
+    const held = await controller.acquire({ signal: new AbortController().signal })
+    const requests: ReadonlyArray<Request> = [
+      new Request("http://localhost/health/liveness"),
+      new Request("http://localhost/api/history"),
+      new Request("http://localhost/api/status"),
+      new Request("http://localhost/metrics"),
+      new Request("http://localhost/api/debug/dry-run-pipeline", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    ]
+
+    for (const request of requests) {
+      const response = await app.request(request)
+      expect(response.status, new URL(request.url).pathname).toBeGreaterThanOrEqual(200)
+      expect(controller.snapshot(), new URL(request.url).pathname).toMatchObject({ reserved: 1, waiting: 0 })
+    }
+
+    held.releaseBeforeBinding("release fixture capacity")
   })
 
   test("blocks a model operation at capacity without blocking liveness", async () => {

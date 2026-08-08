@@ -237,8 +237,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const parsed = parseAnthropic(raw)
-      requestContext = parsed.env.ctx
+      const parsed = parseAnthropic(raw, (ctx) => (requestContext = ctx))
       truncateBaseline = parsed.baseline
       resanitize = parsed.resanitize
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
@@ -405,7 +404,7 @@ interface ParseAnthropicResult {
  * web_search — so `raw.body` is the preprocessed + system-injected wire body, and
  * `raw.originalBodyForHistory` is the client's raw pre-injection body.
  */
-function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
+function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): ParseAnthropicResult {
   const incoming = raw.body as MessagesPayload
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
   const originalSnapshot = structuredClone(clientBody)
@@ -434,6 +433,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
     historyReservation: raw.historyReservation,
   })
+  onContext(ctx)
 
   ctx.setOriginalRequest({
     model: requestedModel,

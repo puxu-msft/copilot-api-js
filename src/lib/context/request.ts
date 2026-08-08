@@ -267,6 +267,8 @@ export function createRequestContext(opts: {
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
   historyReservation?: HistoryReservation
+  /** Manager-owned construction defers binding until the operation registry is published. */
+  deferHistoryReservationBinding?: boolean
   operationIdentity?: {
     kind: OperationKind
     connectionId?: string
@@ -288,7 +290,7 @@ export function createRequestContext(opts: {
   publisher?: ScopedPublisher<"request">
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
-  opts.historyReservation?.bindOperationId(id)
+  if (!opts.deferHistoryReservationBinding) opts.historyReservation?.bindOperationId(id)
   const historyAdmissionWaitMs = isHistoryPersistenceReservation(opts.historyReservation) ? opts.historyReservation.historyAdmissionWaitMs : undefined
   const rawAttachmentOwner = createRawOperationAttachmentOwner()
   const startTime = Date.now()
