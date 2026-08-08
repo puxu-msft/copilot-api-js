@@ -172,13 +172,19 @@ git commit -m "feat(context): model operation lifecycle blockers"
   - `beginModelOperationDeliveryFinalization(): void`
   - existing `finalizeModelOperationDelivery(input?)` now means successful delivery terminal
   - `failModelOperationDelivery(error: unknown): void`
-- `createRequestContext` option adds `onLifecycleFailure?: (id: string, input: { phase: "delivery" | "canonical"; error: unknown }) => void`.
+- `createRequestContext` option adds `onLifecycleFailure?: (id: string, input: { phase: "delivery" | "canonical"; error: unknown }) => boolean`。返回 `true` 仅表示 process shutdown lifecycle failure barrier 已同步持有该错误。
 
 - [ ] **Step 1: 写状态转换失败测试**
 
 ```ts
 const failures: Array<{phase:"delivery"|"canonical"; error:unknown}> = []
-const ctx = createRequestContext({ endpoint: "anthropic-messages", onLifecycleFailure: (_id, failure) => failures.push(failure) })
+const ctx = createRequestContext({
+  endpoint: "anthropic-messages",
+  onLifecycleFailure: (_id, failure) => {
+    failures.push(failure)
+    return true
+  },
+})
 expect(ctx.operationLifecycle).toMatchObject({ settled:false, delivery:{state:"open"}, canonical:"waiting", blocker:"request-running" })
 ctx.complete({ success:true, model:"m", usage:{input_tokens:1,output_tokens:1}, content:null })
 expect(ctx.operationLifecycle).toMatchObject({ settled:true, operationScope:{sealed:true}, delivery:{state:"open"}, blocker:"delivery-finalization" })
@@ -209,11 +215,11 @@ function lifecycleSnapshot(): OperationLifecycleSnapshot {
 }
 ```
 
-`begin...` 只允许 `open→finalizing`；成功方法允许 `open|finalizing→finalized`。失败方法先把原始 error 原子写入 RequestContext 自有 failure ledger，再发布 `{state:"failed",failureRegistered:true}` 并启动 canonical join；随后以 never-throw 通知 `onLifecycleFailure`，供 production manager 把同一 failure 收入 process shutdown barrier。`failureRegistered` 指 context-owned ledger 已登记，不依赖 callback 是否存在；直接构造的 RequestContext 也能形成可 join terminal。重复 terminal 调用幂等，首个 terminal outcome 胜出。
+`begin...` 只允许 `open→finalizing`；成功方法允许 `open|finalizing→finalized`。失败方法先保留原始 error，再同步调用 `onLifecycleFailure`；仅当 callback 返回 `true` 时发布 `{state:"failed",failureRegistered:true}` 并启动 canonical join。Callback 缺失、抛错或返回 false 时发布 `{state:"failed",failureRegistered:false}`，blocker 保持 `delivery-finalization`，不得伪称 shutdown barrier 已登记。直接构造 context 的失败测试必须显式提供成功登记 callback；另写负控证明无 callback 不会错误收口。重复 terminal 调用幂等，首个 terminal outcome 胜出。
 
 - [ ] **Step 4: 让 canonical finalizer join delivery terminal 与 operation quiescence**
 
-以 delivery terminal 替代 `deliveryFinalizationRequested` 布尔。启动条件为 pending logical terminal＋`isDeliveryTerminal(deliveryState)`；启动时设 `canonicalState="running"`，resolve 前设 `completed`。Catch 中先把 canonical error 写入 context-owned failure ledger并设 `canonicalState="failed"`，再 never-throw 通知 `onLifecycleFailure(...phase:"canonical")` 并 reject。`terminalMetadata` 增加 `deliveryFailure`，但仅在 delivery failed 时写入。
+以 delivery terminal 替代 `deliveryFinalizationRequested` 布尔。启动条件为 pending logical terminal＋`isDeliveryTerminal(deliveryState)`；启动时设 `canonicalState="running"`，resolve 前设 `completed`。Catch 中同步调用 `onLifecycleFailure(...phase:"canonical")`；仅在 callback 返回 true 时设 `canonicalState="failed"`，否则保持非 terminal `running`，让 blocker 继续暴露未登记 failure；两种情况 `whenModelOperationFinalized()` 都 reject 原始 error。`terminalMetadata` 增加 `deliveryFailure`，但仅在 delivery failed 时写入。
 
 - [ ] **Step 5: 验证合法偏序的两个方向**
 
@@ -236,15 +242,17 @@ git commit -m "feat(context): publish request finalization lifecycle"
 **Files:**
 - Modify: `src/lib/transport/dispatch-lifecycle.ts`
 - Modify: `src/lib/pipeline/generation/dispatch-scheduler.ts` only where needed to preserve the original cleanup error while releasing `active` in `finally`.
-- Modify: `src/lib/pipeline/generation/candidate.ts` only where needed to preserve candidate settlement/release after scheduler rejection.
+- Modify: `src/lib/pipeline/generation/candidate.ts` only where needed to preserve candidate settlement after scheduler rejection.
+- Modify: `src/lib/pipeline/generation/coordinator.ts`：candidate reservation 的真实 owner；所有 cleanup outcome 均在 `finally` release reservation 与 active runtime。
 - Test: `tests/transport/dispatch-lifecycle.unit.test.ts`
 - Test: `tests/pipeline/candidate-runtime.it.test.ts`
 - Test: `tests/pipeline/generation-recorder-driver.unit.test.ts`
+- Test: `tests/pipeline/generation-coordinator.it.test.ts`
 
 **Interfaces:**
 - Keeps existing `UpstreamDispatchLifecycle.quiesced: Promise<void>` signature; it may resolve or reject.
 - `dispose()` still returns `DispatchDisposalResult` on success and rejects with the original iterator cleanup error on failure.
-- Scheduler and candidate owners must release active slots/reservations in `finally` before rethrowing.
+- Scheduler 在 `finally` 释放 dispatch active slot；coordinator 在 `finally` 释放 candidate reservation 与 active runtime；candidate 保留 verdict。三层均在 release 后再传播原始 cleanup error。
 
 - [ ] **Step 1: 写 iterator cleanup rejection 红测试**
 
@@ -294,7 +302,7 @@ const complete = (error?: unknown): void => {
 
 - scheduler `active.delete(dispatch)` 仍执行；
 - dispatch settlement 为 failed 且携带原始 error；
-- candidate verdict／reservation 收口；
+- candidate verdict 收口；coordinator-owned reservation 与 active runtime 在 `finally` 释放；
 - 调用方收到原始 cleanup error 或包含它的既有 AggregateError；
 - 第二次 dispose／cancel 不重新占用 slot。
 
@@ -302,13 +310,13 @@ const complete = (error?: unknown): void => {
 
 - [ ] **Step 5: 运行 B1c focused tests**
 
-Run: `bun test tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts && bun run typecheck`
+Run: `bun test tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts && bun run typecheck`
 Expected: PASS／exit 0。
 
 - [ ] **Step 6: 提交 B1c**
 
 ```bash
-git add -- src/lib/transport/dispatch-lifecycle.ts src/lib/pipeline/generation/dispatch-scheduler.ts src/lib/pipeline/generation/candidate.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts
+git add -- src/lib/transport/dispatch-lifecycle.ts src/lib/pipeline/generation/dispatch-scheduler.ts src/lib/pipeline/generation/candidate.ts src/lib/pipeline/generation/coordinator.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts
 git commit -m "fix(transport): surface dispatch cleanup failures"
 ```
 
@@ -355,7 +363,7 @@ function releaseTrackedOperationIfTerminal(id: string): void {
 }
 ```
 
-`onSettled` 只删除 active、seal scope、登记 finalizer。`onLifecycleFailure` 是 process barrier 的唯一错误登记入口，并以 `(requestId, phase, error identity)` 去重；finalizer reject callback 只记录日志并调用同一 release primitive，不得再次 push 同一 canonical error。Finalizer resolve/reject 均在 RequestContext 已发布 canonical terminal state 后调用 release。禁止在两条 promise callback 内直接 `operationScopes.delete`。
+`onSettled` 只删除 active、seal scope、登记 finalizer。Manager 注入的 `onLifecycleFailure` 是 process barrier 的唯一错误登记入口：同步去重写入 `(requestId, phase, error identity)` 后返回 true；登记失败或重复但未持有对应 error 时返回 false。Finalizer reject callback 只记录日志并调用同一 release primitive，不得再次 push 同一 canonical error。Finalizer resolve/reject 均在 RequestContext 已发布 terminal lifecycle state 后调用 release；未登记 failure 的 blocker 不是 none，因此不会误删。禁止在两条 promise callback 内直接 `operationScopes.delete`。
 
 - [ ] **Step 4: 实现即时聚合与 failure drain**
 

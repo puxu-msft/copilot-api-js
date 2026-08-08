@@ -21,8 +21,21 @@
 
 首轮 reviewer 之外，主会话自审发现规格要求处理 iterator cleanup reject，而初版计划只在最终矩阵测试、没有实现任务。已新增 Task 3：让 `createDispatchLifecycle.quiesced` 对 `iterator.return()` error reject，并要求 scheduler／candidate 在 `finally` 释放 active slot、reservation 与 verdict 后传播原始错误。
 
-另一项自审修订：`failureRegistered` 由 RequestContext 自有 failure ledger 决定，不依赖 manager callback 是否存在；manager callback 只把同一 failure 收入 process shutdown barrier并去重。这样直接构造的 context 也能到达可 join delivery/canonical terminal。
+另一项首轮自审曾尝试把 `failureRegistered` 定义为 RequestContext 自有 failure ledger 已登记，不依赖 manager callback。第二轮 reviewer 以冻结 spec 证伪该解释：字段的权威含义是“process shutdown lifecycle failure barrier 已持有错误”。该尝试已由 P6 处置取代，不再是活计划。
 
 ## 复评门
 
-复评必须逐条确认 P1～P4 closed，并核对新增 Task 3、failure ledger 单一所有权、Task 1～8 编号与接口一致、规格 §§2～12 全覆盖。只有 0 blocker／0 major 才可执行。
+复评必须逐条确认 P1～P4 closed，并核对新增 Task 3、failure barrier 单一所有权、Task 1～8 编号与接口一致、规格 §§2～12 全覆盖。只有 0 blocker／0 major 才可执行。
+
+## 第二轮复评
+
+- Reviewer：内置 Agent `reviewer`，冻结对象 `760146ce77e032d1b1bd1cd40f83795cb36dfe66`。
+- 首次输出因 API mid-response 中断；主会话使用 `SendMessage` 恢复同一 reviewer，并把输出缩到 30～50 行。
+- Verdict：0 blocker／2 major。
+
+| ID | 发现 | 处置 | 修订 |
+|---|---|---|---|
+| P5 | Task 3 把 candidate reservation release 错归 `candidate.ts`；真实 owner 是 `coordinator.ts` | 采纳（C） | Task 3 加入 `coordinator.ts` 与 `generation-coordinator.it.test.ts`；明确 scheduler release dispatch slot、coordinator release candidate reservation／active runtime、candidate保留 verdict |
+| P6 | Plan 把 `failureRegistered` 偷换成 context-owned ledger，违背 spec“已进入 shutdown lifecycle failure barrier” | 采纳（C） | 保持 spec 不变；`onLifecycleFailure` 改为同步返回 boolean，只有 manager barrier 确认持有 error 才置 `failureRegistered:true`／`canonical:failed`；无 callback／登记失败保持 blocker，不得伪装 terminal |
+
+两条均经主会话对照 `coordinator.ts` 的 `candidateReservations` 所有权和 spec §§5.3／7.3 独立复核确认。修订后必须恢复同一 reviewer 复评 P5／P6，并检查没有新增 blocker／major。
