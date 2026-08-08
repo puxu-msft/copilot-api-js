@@ -965,6 +965,7 @@ export async function applyConfigToState(): Promise<Config> {
           )
         }
       }
+      if (h.persistence_queue_capacity !== undefined) setHistoryConfig({ historyPersistenceQueueCapacity: h.persistence_queue_capacity })
       if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
       if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
       if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
@@ -1196,23 +1197,27 @@ export async function applyConfigToState(): Promise<Config> {
       consola.info("[config] Reloaded config.yaml")
     }
 
-    // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
-    // With `response_header: 0` the TTFB abort signal is undefined, so a silently
-    // hung GHC upstream keeps a single streaming request pending for MINUTES until
-    // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
-    // mechanism itself is sound — disabling it is the footgun, see
-    // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
-    // (mid-stream silence unbounded). Warn at first apply / on actual change only —
-    // gated like the reload log so the per-request hot-reload path never spams.
+    // Guardrail: positive wall-clock terminators deliberately trade the frozen
+    // never-false-kill guarantee for bounded waiting. Warn at first apply / on an
+    // actual config change only, so the per-request hot-reload path never spams.
     if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
-      const disabledGuards: Array<string> = []
-      if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
-      if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
-      if (disabledGuards.length > 0) {
+      const boundedWaits: Array<string> = []
+      const timeouts = config.timeouts
+      if ((timeouts?.response_header ?? 0) > 0) boundedWaits.push("response_header (TTFB / time-to-first-byte)")
+      if ((timeouts?.stream_idle ?? 0) > 0) boundedWaits.push("stream_idle (mid-stream silence)")
+      if ((timeouts?.stale_request_max_age ?? 0) > 0) boundedWaits.push("stale_request_max_age (active upstream lifetime)")
+      if ((timeouts?.request_deadline ?? 0) > 0) boundedWaits.push("request_deadline (client request lifetime)")
+      for (const [model, seconds] of Object.entries(timeouts?.response_header_overrides ?? {})) {
+        if (seconds > 0) boundedWaits.push(`response_header_overrides.${model}=${seconds}s`)
+      }
+      for (const [model, seconds] of Object.entries(timeouts?.stream_idle_overrides ?? {})) {
+        if (seconds > 0) boundedWaits.push(`stream_idle_overrides.${model}=${seconds}s`)
+      }
+      if (boundedWaits.length > 0) {
         consola.warn(
-          `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
-            + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
-            + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+          `[config] bounded-wait override enabled: ${boundedWaits.join(", ")}. `
+            + `A live upstream may still be performing legitimate unbounded thinking when a wall-clock terminator fires; `
+            + `use positive values only when that bounded-wait tradeoff is intentional.`,
         )
       }
     }

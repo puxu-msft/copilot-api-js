@@ -47,10 +47,10 @@ describe("bundled config.yaml", () => {
     expect(config.anthropic?.stream_commit_after_sec).toBe(CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec)
   })
 
-  test("bundled defaults declare gpt-5.5 stream-idle override (600s)", async () => {
-    // §4.2: the built-in per-model idle override lives in bundled config.yaml
-    // (per-key merged with the user table), NOT in CONFIG_MANAGED_DEFAULTS.
+  test("bundled defaults do not re-enable a per-model wall-clock kill", async () => {
+    // A per-model override wins over the scalar timeout. Keeping an old positive override after
+    // disabling the scalar would silently preserve the exact false-kill path this default prevents.
     const config = await loadBundledDefaultConfig()
-    expect(config.timeouts?.stream_idle_overrides?.["gpt-5.5"]).toBe(600)
+    expect(config.timeouts?.stream_idle_overrides).toEqual({})
   })
 })

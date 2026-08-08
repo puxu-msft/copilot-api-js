@@ -60,7 +60,11 @@ import {
 } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
-import { setHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
+import {
+  //
+  resetHistoryPersistenceRuntimeForTests,
+  setHistoryAdmissionControllerForTests,
+} from "~/lib/history/worker/registry"
 import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -74,7 +78,11 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
-import { setDeliverySessionObserverForTests } from "~/lib/pipeline/delivery/session"
+import {
+  //
+  setDeliverySessionObserverForTests,
+  setDeliverySessionTestHooksForTests,
+} from "~/lib/pipeline/delivery/session"
 import {
   //
   resetUpstreamHook,
@@ -159,11 +167,13 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
   // Injected factory/writer seams: reset to their default (null/undefined) so a
   // mock injected by one test never leaks into the next (RFC §11 R2).
-  { name: "setHistoryPersistenceRuntimeForTests", reset: () => setHistoryPersistenceRuntimeForTests(undefined) },
+  { name: "setHistoryAdmissionControllerForTests", reset: () => setHistoryAdmissionControllerForTests(undefined) },
+  { name: "resetHistoryPersistenceRuntimeForTests", reset: resetHistoryPersistenceRuntimeForTests },
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
   { name: "setDeliverySessionObserverForTests", reset: () => setDeliverySessionObserverForTests(undefined) },
+  { name: "setDeliverySessionTestHooksForTests", reset: () => setDeliverySessionTestHooksForTests(undefined) },
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },

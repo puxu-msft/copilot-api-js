@@ -70,6 +70,8 @@ function makeEnv(body: unknown, onRecordAttemptFailure: (input: { willRetry: boo
     setAttemptCacheControlStripped() {},
     recordFeature() {},
     addQueueWaitMs() {},
+    modelOperationSnapshot: { dispatches: [] },
+    pinGenerationTerminalDispatch() {},
     selectGenerationWinner() {},
   } as unknown as RequestContext
   return {
@@ -87,21 +89,25 @@ function makeEnv(body: unknown, onRecordAttemptFailure: (input: { willRetry: boo
   } as unknown as RequestEnvelope
 }
 
-function makeCodec(env: RequestEnvelope): FormatCodec {
+function makeCodec(env: RequestEnvelope, renderResponse: FormatCodec["renderResponse"] = (frame) => frame): FormatCodec {
   return {
     format: "anthropic",
     parse: () => env,
     translateOut: (current) => current,
     prepareWire: (current) => ({ url: current.targetEndpoint ?? "/v1/messages", headers: new Headers(), body: current.body, stream: true }),
-    renderResponse: (frame) => frame,
+    renderResponse,
     renderResponseNonStreaming: (upstream) => upstream,
     formatError: () => ({ data: "{}" }),
     createResponseAccumulator: () => ({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" }),
   }
 }
 
-function makeDriver(input: { env: RequestEnvelope; open: (wire: PreparedRequest) => Promise<PhysicalTransportResponse> }) {
-  const codec = makeCodec(input.env)
+function makeDriver(input: {
+  env: RequestEnvelope
+  open: (wire: PreparedRequest) => Promise<PhysicalTransportResponse>
+  renderResponse?: FormatCodec["renderResponse"]
+}) {
+  const codec = makeCodec(input.env, input.renderResponse)
   const deps: DriverDeps = {
     codec,
     transport: {
@@ -208,7 +214,7 @@ describe("driver pre-content recovery", () => {
     expect(primary.ok).toBe(true)
     if (!primary.ok) throw new Error("primary should become ready")
     const outcome = await driver.runResponseSink(primary.upstream, primary.env, makeArraySink().sink)
-    expect(outcome).toMatchObject({ kind: "stream-error", error: primaryStreamError })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport", error: primaryStreamError })
 
     const recovered = await driver.runResponseRecovery(primary.upstream, primary.env, "transport-close")
 
@@ -216,6 +222,38 @@ describe("driver pre-content recovery", () => {
     if (recovered.ok) expect(recovered.upstream.headers.get("x-recovery-marker")).toBe("recovery")
     expect(recordedFailures).toContainEqual({ willRetry: true, nextStrategy: "precontent-recovery" })
     expect(openCalls).toBe(2)
+  })
+
+  test("runResponseSink tags renderer failures as codec-render", async () => {
+    const renderError = new Error("render failed")
+    const driver = makeDriver({
+      env: makeEnv({ messages: [] }),
+      open: async () => streamResponse("primary"),
+      renderResponse: () => {
+        throw renderError
+      },
+    })
+
+    const primary = await driver.runRequest({ body: {}, headers: new Headers() })
+    if (!primary.ok) throw new Error("primary should become ready")
+    await expect(driver.runResponseSink(primary.upstream, primary.env, makeArraySink().sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "codec-render",
+      error: renderError,
+    })
+  })
+
+  test("runResponseSink tags sink write failures as downstream-sink", async () => {
+    const sinkError = new Error("socket-shaped downstream failure")
+    const driver = makeDriver({ env: makeEnv({ messages: [] }), open: async () => streamResponse("primary") })
+
+    const primary = await driver.runRequest({ body: {}, headers: new Headers() })
+    if (!primary.ok) throw new Error("primary should become ready")
+    await expect(driver.runResponseSink(primary.upstream, primary.env, { write: async () => Promise.reject(sinkError) })).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "downstream-sink",
+      error: sinkError,
+    })
   })
 
   test("delivery gate prevents callers from selecting ready-state recovery after real content", async () => {

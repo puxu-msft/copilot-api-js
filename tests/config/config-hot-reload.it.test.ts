@@ -917,6 +917,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
+    configKey: "history.persistence_queue_capacity",
+    stateKey: "historyPersistenceQueueCapacity",
+    sampleYamlValue: "17",
+    expectedStateValue: 17,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
+  },
+  {
     configKey: "history.raw_capture.enabled",
     stateKey: "historyRawCaptureEnabled",
     sampleYamlValue: "true",

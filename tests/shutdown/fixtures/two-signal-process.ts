@@ -7,4 +7,4 @@ setupShutdownHandlers({
 })
 
 setInterval(() => {}, 60_000)
-process.stdout.write("READY\n")
+process.stdout.write(`READY pid=${process.pid}\n`)

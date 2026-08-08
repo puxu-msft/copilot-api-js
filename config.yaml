@@ -225,9 +225,13 @@ shutdown:
   abort_wait: 120
 
 timeouts:
+  # 用户冻结的不变量是绝不误杀合法长思考：活连接上的静默没有可证明安全的 wall-clock 上界，因此 bundled defaults 全部禁用此类终止器。
+  # The frozen invariant is never to false-kill legitimate thinking: silence on a live connection has no provably safe wall-clock bound, so bundled defaults disable these terminators.
+  # 运维可显式配置非零值以选择有界等待，但那是对该不变量的主动覆盖。
+  # Operators may explicitly configure nonzero values to choose bounded waiting, which is an intentional override of that invariant.
   # 单次尝试上游，从请求发起到开始收到 HTTP 响应头的最大秒数（0 = 不超时）。
   # Each upstream attempt: Max seconds from request start to receiving HTTP response headers (0 = no timeout).
-  response_header: 600
+  response_header: 0
 
   # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
   # Per-model response_header override (seconds), same keying as stream_idle_overrides. No built-in value.
@@ -235,7 +239,7 @@ timeouts:
 
   # 单次尝试上游，SSE 事件之间的最大间隔秒数（0 = 不超时）。适用于所有流式路径。
   # Each upstream attempt: Max seconds between SSE events (0 = no timeout). Applies to all streaming paths.
-  stream_idle: 600
+  stream_idle: 0
 
   # 按模型覆盖 stream_idle（秒），键为模型名子串（或 glob `*`/`?`）；"*" = 所有模型。
   # Per-model stream_idle override (seconds), keyed by model-name substring (or glob `*`/`?`); "*" = all models.
@@ -243,22 +247,21 @@ timeouts:
   # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。多键命中时具体度：literal 子串 > glob > "*"（同类再按键长最长胜）。
   # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Key specificity when multiple match: literal substring > glob > "*" (then longest key).
   #
-  # 引入理由：观察到 gpt-5.5 (effort=high) 爆发前有 266–462s 的零帧静默期，但一些早期模型不会。
-  # Reason: Observed gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a burst, but some earlier models do not.
-  stream_idle_overrides:
-    gpt-5.5: 600
+  # 观察到 gpt-5.5 (effort=high) 爆发前有 266–462s 的零帧静默期；这证明固定正阈值会误杀合法请求，所以 bundled config 不设覆盖值。
+  # gpt-5.5 (effort=high) has shown 266–462s zero-frame silent-reasoning gaps before a burst; this proves fixed positive bounds can kill valid requests, so the bundled config sets no override.
+  stream_idle_overrides: {}
 
   # 单次尝试上游，最大存活秒数（0 = 禁用）。
   # Max seconds an active upstream request can live (0 = disabled).
   #
   # TODO: rename stale_request_max_age as upstream_request_deadline
-  stale_request_max_age: 1200
+  stale_request_max_age: 0
 
   # 客户端请求的最大存活秒数（0 = 禁用）。一次客户端请求可能会被多次内部重试。
   # Max seconds an active client request can live (0 = disabled). One client request may be attempted multiple times.
   #
   # TODO: rename request_deadline as client_request_deadline
-  request_deadline: 1200
+  request_deadline: 0
 
 # ============================================================================
 # Upstream transport (GHC) / 上游传输
@@ -420,6 +423,10 @@ history:
   # Enable history recording. CLI --no-history takes precedence. Not hot-reloadable.
   enabled: false
   db_path: "history.db"
+
+  # 同时持有 History durability reservation 的 operation 上限。只按条数背压；必须为正整数，0 不表示无限。
+  # Maximum concurrently reserved History operations. Count-based only; positive integer, 0 is never unlimited.
+  persistence_queue_capacity: 256
 
   # 保留的最新成功/失败请求数（-1 = 无限制，0 = 临时禁止）。
   # Successful/Failed entries kept in SQLite (-1 = unlimited, 0 = temporarily disabled).

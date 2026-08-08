@@ -37,12 +37,20 @@ import {
   //
   DeliveryOwnerError,
   getDeliverySessionForAllocationPort,
+  recordDeliveryResponseOutcomeForTests,
   getDownstreamDeliverySession,
 } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-policy"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
+import {
+  //
+  asResponseCodecRenderError,
+  isResponseCodecRenderError,
+  ResponseCodecRenderError,
+  unwrapResponseCodecRenderError,
+} from "~/lib/pipeline/stream/response-processor"
 import {
   //
   classifyStreamError,
@@ -71,6 +79,7 @@ import type {
   RequestInspectStage,
   RequestInspection,
   OwnerOperation,
+  ResponseFailureSource,
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
@@ -209,6 +218,16 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
   /** Current candidate response session; follows buffered recovery to its fresh child candidate. */
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+  /** Candidate identity for an isolated evaluator; Task #4 may promote this exact handle after publication. */
+  getCandidateResponseIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
+  /** Promotes an already atomically-published, fully consumed evaluation candidate as the terminal winner. */
+  commitConsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Settles a fully consumed evaluation candidate as failed without selecting it as a delivery winner. */
+  discardConsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Disposes an evaluation candidate whose response was deliberately not consumed. */
+  disposeUnconsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Pins the request logical terminal to an already-existing failed primary dispatch without selecting a winner. */
+  pinGenerationTerminalDispatch(env: RequestEnvelope, dispatch: DispatchHandle): void
   /**
    * Starts the one parent-less recovery candidate saved by a failed pre-ready primary dispatch.
    * Throws when no such failure is available or the final prepared wire could double-execute a server tool.
@@ -228,7 +247,9 @@ interface GenerationBinding {
 
 interface PreReadyFailure {
   readonly coordinator: GenerationCoordinator<CandidateResponseSession>
+  /** The exact post-preflight envelope dispatched by the failed primary. */
   readonly env: RequestEnvelope
+  readonly terminalDispatch?: DispatchHandle
 }
 
 /** Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure. */
@@ -246,6 +267,7 @@ interface DriverGenerationRuntime {
   readonly bindings: WeakMap<UpstreamStream, GenerationBinding>
   bind(coordinator: GenerationCoordinator<CandidateResponseSession>, candidate: CoordinatedCandidate<CandidateResponseSession>): GenerationBinding
   currentSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+  currentIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
 }
 
 function createDriverGenerationRuntime(): DriverGenerationRuntime {
@@ -263,6 +285,10 @@ function createDriverGenerationRuntime(): DriverGenerationRuntime {
       const binding = bindings.get(upstream)
       return binding ? latestByCoordinator.get(binding.coordinator) : undefined
     },
+    currentIdentity(upstream) {
+      const binding = bindings.get(upstream)
+      return binding ? { candidate: binding.candidate.candidate, dispatch: binding.candidate.dispatch } : undefined
+    },
   }
 }
 
@@ -278,11 +304,50 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
-    runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
+    runResponseSink: (upstream, env, sink, opts) => {
+      const pump = runResponseSink(deps, upstream, env, sink, opts, generation)
+      return opts?.responseMode === "evaluate" ? pump : trackResponsePump(env, pump)
+    },
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
-    runPreContentRecovery: (reason) => runPreContentRecovery(deps, generation, lastPreReadyFailure, reason),
-    runResponseRecovery: (upstream, env, reason) => runResponseRecovery(deps, generation, upstream, env, reason),
+    getCandidateResponseIdentity: (upstream) => generation.currentIdentity(upstream),
+    commitConsumedCandidateResponse: async (upstream) => {
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot commit consumed response candidate without a generation binding")
+      // The publish owner has already atomically written the frames. First settle the real scheduler dispatch;
+      // only then expose this binding as terminal winner, so a settlement failure cannot falsely promote it.
+      await binding.coordinator.settleConsumedReady(binding.candidate, { verdict: "committed" }, "winner", "evaluation-committed")
+      binding.candidate.env.ctx.selectGenerationWinner(binding.candidate.candidate, binding.candidate.dispatch)
+    },
+    discardConsumedCandidateResponse: async (upstream) => {
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot discard consumed response candidate without a generation binding")
+      await binding.coordinator.settleConsumedReady(binding.candidate, { verdict: "failed", reason: "evaluation-discarded" }, "failed", "evaluation-discarded")
+    },
+    disposeUnconsumedCandidateResponse: async (upstream) => {
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot dispose unconsumed response candidate without a generation binding")
+      await binding.coordinator.disposeUnconsumedReady(
+        binding.candidate,
+        { verdict: "failed", reason: "evaluation-unconsumed-discarded" },
+        "failed",
+        "evaluation-unconsumed-discarded",
+      )
+    },
+    pinGenerationTerminalDispatch: (env, dispatch) => env.ctx.pinGenerationTerminalDispatch(dispatch),
+    runPreContentRecovery: (reason) => {
+      const failure = lastPreReadyFailure
+      const recovery = runPreContentRecovery(deps, generation, failure, reason)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime hook
+      failure?.env.ctx.trackOperationBody?.(recovery)
+      return recovery
+    },
+    runResponseRecovery: (upstream, env, reason) => {
+      const recovery = runResponseRecovery(deps, generation, upstream, env, reason)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime hook
+      env.ctx.trackOperationBody?.(recovery)
+      return recovery
+    },
   }
 }
 
@@ -432,10 +497,21 @@ async function runRequest(
     return { ok: true, upstream: candidate.upstream, env: candidate.env }
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
-    // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    rememberPreReadyFailure({ coordinator, env: afterHook })
+    // caller's explicit B2 recovery decision. No recovery is dispatched from this error path. Legacy and
+    // structural test contexts do not expose the optional canonical snapshot capability, so this metadata
+    // capture must never replace the primary exchange error.
+    const terminalDispatch = readLatestDispatchHandle(preflight.ctx)
+    rememberPreReadyFailure({ coordinator, env: preflight, ...(terminalDispatch !== undefined && { terminalDispatch }) })
     throw error
   }
+}
+
+function readLatestDispatchHandle(ctx: RequestEnvelope["ctx"]): DispatchHandle | undefined {
+  // `modelOperationSnapshot` is mandatory on production RequestContext but intentionally absent from
+  // structural/legacy contexts. The B2 diagnostic pin is optional metadata, never a new failure source.
+  if (!("modelOperationSnapshot" in ctx)) return undefined
+  const snapshot = ctx.modelOperationSnapshot
+  return snapshot.dispatches.at(-1)?.handle
 }
 
 async function runPreContentRecovery(
@@ -447,6 +523,7 @@ async function runPreContentRecovery(
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
   assertNoServerExecutionRisk(deps, failure.env, "pre-ready")
+  if (failure.terminalDispatch !== undefined) failure.env.ctx.pinGenerationTerminalDispatch(failure.terminalDispatch)
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
@@ -589,10 +666,14 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
   const createCandidate = ({
     role,
     parentCandidate,
+    metadata,
+    initialStrategy,
     env,
   }: {
     role: CandidateRole
     parentCandidate?: CandidateHandle
+    metadata?: { recoveryReason?: string }
+    initialStrategy?: string
     env: RequestEnvelope
   }): CandidateRuntime<CandidateResponseSession> => {
     const retry = createSemanticRetryPolicy(deps)
@@ -609,6 +690,8 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
     return createCandidateRuntime({
       role,
       ...(parentCandidate !== undefined && { parentCandidate }),
+      ...(metadata !== undefined && { metadata }),
+      ...(initialStrategy !== undefined && { initialStrategy }),
       env,
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
@@ -892,8 +975,12 @@ function runResponse(
 
 async function* applyResponsePostRender(frames: AsyncIterable<ClientFrame>, opts: RunResponseOpts): AsyncIterable<ClientFrame> {
   for await (const frame of frames) {
-    const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
-    if (transformed) yield transformed
+    try {
+      const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+      if (transformed) yield transformed
+    } catch (error) {
+      throw asResponseCodecRenderError(error)
+    }
   }
 }
 
@@ -950,6 +1037,7 @@ async function maybeRunHedgedResponseSink(
 
   const primary = withCandidateResponseOpts(binding.candidate, outerOpts)
   const now = (deps.monotonicNow ?? performance.now.bind(performance))()
+  let failureSource: ResponseFailureSource = "upstream-transport"
   try {
     const raced = await binding.coordinator.racePrimaryWithDelayedHedge({
       primary,
@@ -963,7 +1051,7 @@ async function maybeRunHedgedResponseSink(
     if (raced.kind === "failure") {
       binding.coordinator.releaseCandidate(binding.candidate.candidate)
       if (classifyStreamError(raced.error) === "client-abort") return { kind: "settled-abort" }
-      return streamErrorOutcome(raced.error, env)
+      return streamErrorOutcome(raced.error, env, raced.source)
     }
 
     const selected = raced.candidate
@@ -977,20 +1065,58 @@ async function maybeRunHedgedResponseSink(
     }
     getDownstreamDeliverySessionForPortOrSink(outerOpts?.wireAllocationPort, sink)?.noteWinner(source)
     if (raced.kind === "terminal") {
+      failureSource = "downstream-sink"
       await writeWinnerFrames(sink, raced.bufferedFrames)
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    await writeWinnerFrames(sink, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, frame)
-    binding.coordinator.releaseCandidate(selected.candidate)
-    return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+    // The selected candidate has already produced this prefix. Its live iterator still owns the
+    // remaining upstream generator and must be closed if the prefix cannot reach the sink.
+    const iterator = raced.liveFrames[Symbol.asyncIterator]()
+    let liveDrained = false
+    try {
+      try {
+        await writeWinnerFrames(sink, raced.bufferedFrames)
+      } catch (error) {
+        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        return streamErrorOutcome(error, env, "downstream-sink")
+      }
+      for (;;) {
+        let next: IteratorResult<ClientFrame>
+        try {
+          next = await iterator.next()
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
+        if (next.done) {
+          liveDrained = true
+          break
+        }
+        try {
+          await writeWinnerFrame(sink, next.value)
+        } catch (error) {
+          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+          return streamErrorOutcome(error, env, "downstream-sink")
+        }
+      }
+      binding.coordinator.releaseCandidate(selected.candidate)
+      return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+    } finally {
+      // Cleanup failure is diagnostic-only and must never replace the selected response outcome.
+      if (!liveDrained && iterator.return) {
+        try {
+          await iterator.return()
+        } catch (cleanupError) {
+          consola.warn(`[driver] hedge live iterator cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+        }
+      }
+    }
   } catch (error) {
     binding.coordinator.releaseCandidate(binding.candidate.candidate)
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-    return streamErrorOutcome(error, env)
+    return streamErrorOutcome(error, env, isResponseCodecRenderError(error) ? "codec-render" : failureSource)
   } finally {
     sink.close?.()
   }
@@ -1024,7 +1150,7 @@ function ownerFailureOutcome(failure: OwnerFailure, operation: OwnerOperation, e
   const decision = classifyOwnerFailure(failure, operation, { settled: env.ctx.settled })
   if (decision.kind === "client-aborted") return { kind: "settled-abort" }
   if (decision.kind === "delivery-finished") return { kind: "delivery-finished" }
-  return streamErrorOutcome(decision.error, env)
+  return streamErrorOutcome(decision.error, env, "delivery-owner")
 }
 
 function getDownstreamDeliverySessionForPortOrSink(
@@ -1055,9 +1181,42 @@ async function writeWinnerFrame(sink: ClientSink, frame: ClientFrame): Promise<v
  * Use this instead of a bare `{ kind: "stream-error", error }` literal; `tests/architecture`
  * guards that.
  */
-function streamErrorOutcome(error: unknown, env: RequestEnvelope, truncated?: boolean): { kind: "stream-error"; error: unknown; truncated?: boolean } {
-  if (classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
-  return { kind: "stream-error" as const, error, ...(truncated !== undefined && { truncated }) }
+function responseFailureSource(error: unknown): "upstream-transport" | "codec-render" {
+  return isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
+}
+
+function streamErrorOutcome(
+  error: unknown,
+  env: RequestEnvelope,
+  source: ResponseFailureSource,
+  truncated?: boolean,
+): {
+  kind: "stream-error"
+  error: unknown
+  source: ResponseFailureSource
+  diagnostics?: import("./types").ResponseFailureDiagnostics
+  truncated?: boolean
+} {
+  if (source === "upstream-transport" && classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
+  const diagnostics =
+    isResponseCodecRenderError(error) && error.supersededError !== undefined && error.supersededSource !== undefined && error.flushError !== undefined ?
+      {
+        supersededError: error.supersededError,
+        supersededSource: error.supersededSource,
+        flushError: error.flushError,
+      }
+    : undefined
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime diagnostic port
+  if (diagnostics) env.ctx.recordResponseFailureSupersession?.(diagnostics)
+  const outcome = {
+    kind: "stream-error" as const,
+    error: isResponseCodecRenderError(error) ? unwrapResponseCodecRenderError(error) : error,
+    source,
+    ...(diagnostics && { diagnostics }),
+    ...(truncated !== undefined && { truncated }),
+  }
+  recordDeliveryResponseOutcomeForTests(outcome)
+  return outcome
 }
 
 /**
@@ -1094,18 +1253,24 @@ async function runResponseSink(
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
-  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  const evaluating = opts?.responseMode === "evaluate"
+  const hedged = evaluating ? undefined : await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
   const unhedgedBinding = generation?.bindings.get(upstream)
-  if (unhedgedBinding) {
+  if (unhedgedBinding && !evaluating) {
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
     const allocationPort = opts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
-      const leg = await allocationPort.beginLeg("primary", {
-        candidateId: String(unhedgedBinding.candidate.candidate),
-        dispatchId: String(unhedgedBinding.candidate.dispatch),
-      })
-      if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
+      try {
+        const leg = await allocationPort.beginLeg("primary", {
+          candidateId: String(unhedgedBinding.candidate.candidate),
+          dispatchId: String(unhedgedBinding.candidate.dispatch),
+        })
+        if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
+      } catch (error) {
+        if (error instanceof DeliveryOwnerError) return streamErrorOutcome(error.cause, env, "delivery-owner")
+        throw error
+      }
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
@@ -1128,14 +1293,25 @@ async function runResponseSink(
       // side effects); identity when the format doesn't supply one (Anthropic). Applied AFTER
       // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
       // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
-      const toWrite = effectiveOpts.onRenderedFrame ? effectiveOpts.onRenderedFrame(frame) : frame
+      let toWrite: ClientFrame | undefined
+      try {
+        toWrite = effectiveOpts.onRenderedFrame ? effectiveOpts.onRenderedFrame(frame) : frame
+        if (toWrite)
+          env.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
+            stage: "client-transform",
+            transformId: "client:on-rendered-frame",
+            forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
+          })
+      } catch (error) {
+        return streamErrorOutcome(error, env, "codec-render")
+      }
       if (toWrite) {
-        env.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-          stage: "client-transform",
-          transformId: "client:on-rendered-frame",
-          forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-        })
-        await sink.write(toWrite)
+        try {
+          await sink.write(toWrite)
+        } catch (error) {
+          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+          return streamErrorOutcome(error, env, "downstream-sink")
+        }
         // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
         // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
         // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
@@ -1148,11 +1324,11 @@ async function runResponseSink(
     // classified client-abort) settles as abort — the handler writes nothing further.
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
     if (error instanceof LiveOwnerFailureError) return ownerFailureOutcome(error.failure, "close-anchor-before-real", env)
-    // Otherwise surface the RAW error (richest-data-flow): the format handler classifies
-    // it, shapes its protocol error frame, logs diagnostics, and settles ctx.fail.
-    return streamErrorOutcome(error, env)
+    if (isResponseCodecRenderError(error)) return streamErrorOutcome(error, env, "codec-render")
+    // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
+    return streamErrorOutcome(error, env, responseFailureSource(error))
   } finally {
-    sink.close?.()
+    if (!evaluating) sink.close?.()
   }
 }
 
@@ -1276,7 +1452,7 @@ export async function runResponseBufferedSink(
       return closed.ok ? undefined : ownerFailureOutcome(closed, operation, env)
     } catch (error) {
       if (!(error instanceof DeliveryOwnerError)) throw error
-      return streamErrorOutcome(error, env)
+      return streamErrorOutcome(error, env, "delivery-owner")
     }
   }
 
@@ -1300,7 +1476,18 @@ export async function runResponseBufferedSink(
   // the SINGLE flush IS the terminal → `isTerminalFlush:true`, byte-identical to the previous inline
   // whole-response commit (R1). C1 (spec §3.3): freeze the heartbeat BEFORE snapshotting `injected` +
   // flushing so a mid-flush timer tick can't inject a second anchor start(0).
-  type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
+  type FlushResult =
+    | { kind: "ok" }
+    | { kind: "client-abort" }
+    | { kind: "write-error"; error: unknown }
+    | { kind: "processing-error"; error: unknown; source: "codec-render" | "delivery-owner" }
+  const codecOperation = <T>(operation: () => T): T => {
+    try {
+      return operation()
+    } catch (error) {
+      throw asResponseCodecRenderError(error)
+    }
+  }
   const flushBufferedFrames = async (
     frames: Array<ClientFrame>,
     isTerminalFlush: boolean,
@@ -1325,39 +1512,43 @@ export async function runResponseBufferedSink(
       const closeAnchorBeforeReal = async (): Promise<void> => {
         const closeOutcome = await closeAnchorViaOwner("before-real")
         if (closeOutcome?.kind === "settled-abort") throw new StreamClientAbortError()
-        if (closeOutcome?.kind === "stream-error") throw closeOutcome.error
+        if (closeOutcome?.kind === "stream-error") throw new DeliveryOwnerError(closeOutcome.error, false)
       }
       // Zero-content terminal (message_delta/stop or error before ANY real block): close the anchor here so
       // it never dangles open (symmetry with live-reconcile's terminal close-off).
       if (isTerminalFlush) await closeAnchorBeforeReal()
       // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
       // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
-      const toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
+      const toFlush = codecOperation(() => (transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames))
       for (const frame of toFlush) {
-        // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
-        // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
-        if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
-        // Continuation stitch (spec §4.4): a continuation leg's upstream emits its OWN message_start (new
-        // id/usage) — DROP it so the client sees exactly one message_start across the whole stitched stream.
-        if (continuation && onContinuationLeg && continuation.isMessageStart(frame)) continue
-        // Close the anchor off BEFORE the first real content_block_start (sequential — never coexist).
-        if (anchor?.isContentBlockStart(frame)) await closeAnchorBeforeReal()
-        // Continuation re-index (C3): shift this leg's content_block_* by the wire-delivered block count
-        // (continuationOffset), so continuation blocks continue the client's index sequence. Inert on the
-        // primary leg (offset 0). Applied on top of any anchor remap (mutually exclusive in practice — the
-        // continuation path is anchor-dormant).
-        const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
-        let outFrame = anchor && anchorShift > 0 ? anchor.remap(frame, 1) : frame
-        if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
-        // Count every content block delivered to the client (incl. thinking) — the offset for the NEXT
-        // continuation leg (C3: wire count, not ledger length).
-        if (continuation && continuation.isContentBlockStart(frame)) wireDeliveredBlocks++
-        await sink.write(outFrame)
+        // Format callbacks are codec work: keep them outside the sink boundary so a network-shaped
+        // predicate/remap error cannot be relabelled as downstream delivery.
+        const format = codecOperation(() => {
+          if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) return { skip: true } as const
+          if (continuation && onContinuationLeg && continuation.isMessageStart(frame)) return { skip: true } as const
+          const closesAnchor = anchor?.isContentBlockStart(frame) ?? false
+          const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+          let outFrame = anchor && anchorShift > 0 ? anchor.remap(frame, 1) : frame
+          if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
+          const continuationBlockStart = continuation?.isContentBlockStart(frame) ?? false
+          return { skip: false, closesAnchor, outFrame, continuationBlockStart } as const
+        })
+        if (format.skip) continue
+        if (format.closesAnchor) await closeAnchorBeforeReal()
+        if (format.continuationBlockStart) wireDeliveredBlocks++
+        try {
+          await sink.write(format.outFrame)
+        } catch (error) {
+          if (classifyStreamError(error) === "client-abort") throw error
+          return { kind: "write-error", error }
+        }
       }
       return { kind: "ok" }
     } catch (error) {
-      // Client gone mid-flush (a `sink.write` reject) — map it so the buffered sink ALWAYS returns a
-      // ResponseOutcome, never a raw throw (mirrors runResponseSink's catch; the buffer is discarded).
+      // Only the actual sink.write boundary is downstream-sink. Buffer transforms and anchor ownership
+      // must retain their own provenance rather than being relabelled by this broad flush catch.
+      if (error instanceof ResponseCodecRenderError) return { kind: "processing-error", error: unwrapResponseCodecRenderError(error), source: "codec-render" }
+      if (error instanceof DeliveryOwnerError) return { kind: "processing-error", error: error.cause, source: "delivery-owner" }
       if (classifyStreamError(error) === "client-abort") return { kind: "client-abort" }
       return { kind: "write-error", error }
     }
@@ -1370,7 +1561,7 @@ export async function runResponseBufferedSink(
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
       let retreated = false
-      let thrown: unknown
+      let failure: { error: unknown; source: "upstream-transport" | "codec-render" } | undefined
       let drained = false
       let finish: import("./types").ResponseFinishResult | undefined
       const responseOpts: RunBufferedOpts = {
@@ -1385,34 +1576,47 @@ export async function runResponseBufferedSink(
       try {
         for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, false)) {
           if (frame.data === "[DONE]") continue
-          const toWrite = candidateOpts.onRenderedFrame ? candidateOpts.onRenderedFrame(frame) : frame
+          let toWrite: ClientFrame | undefined
+          try {
+            toWrite = candidateOpts.onRenderedFrame ? candidateOpts.onRenderedFrame(frame) : frame
+            if (toWrite)
+              currentEnv.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
+                stage: "client-transform",
+                transformId: "client:on-rendered-frame",
+                forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
+              })
+          } catch (error) {
+            throw asResponseCodecRenderError(error)
+          }
           if (!toWrite) continue
-          currentEnv.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-            stage: "client-transform",
-            transformId: "client:on-rendered-frame",
-            forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-          })
           if (retreated) {
-            // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
-            // was injected BEFORE the retreat, the live continuation stays SEQUENTIAL (spec 2026-07-22 §3.3):
-            // close the anchor (stop@0) before the first real content_block_start so no two blocks are ever
-            // open at once (never coexist — CLI-safe), then shift every real content_block_* by +1 and DROP a
-            // duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to the raw
-            // forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
-            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
-            if (anchor?.isContentBlockStart(toWrite)) {
+            // Keep format callbacks separate from the physical write: callback failures are codec-render,
+            // while only the actual sink write is downstream-sink.
+            const format = codecOperation(() => {
+              if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) return { skip: true } as const
+              const closesAnchor = anchor?.isContentBlockStart(toWrite) ?? false
+              const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+              return { skip: false, closesAnchor, outFrame: anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite } as const
+            })
+            if (format.skip) continue
+            if (format.closesAnchor) {
               const closeOutcome = await closeAnchorViaOwner("before-real")
               if (closeOutcome?.kind === "settled-abort") return closeOutcome
               if (closeOutcome?.kind === "stream-error") return closeOutcome
             }
-            const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
-            await sink.write(anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite)
+            try {
+              await sink.write(format.outFrame)
+            } catch (error) {
+              if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+              return streamErrorOutcome(error, env, "downstream-sink")
+            }
             continue
           }
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
           // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
           // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
-          if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
+          if (codecOperation(() => anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)))
+            anchorState.capturedMessageStart = toWrite
           // 首包埋点（spec 2026-07-14 §3.2）：首帧被扣留进 buffer 的时刻（entry-level first hold，
           // 跨失败 retry；once 语义保留全局最早）。protect_streaming_generation 与 L2 共用此函数。
           if (buffer.length === 0) currentEnv.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())
@@ -1438,13 +1642,14 @@ export async function runResponseBufferedSink(
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
             if (res.kind === "write-error") {
               // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
               // retreated resolution (never-swallow the write error). The `finally` closes the sink.
               notifyBufferedResolve?.("retreated", attempt, { vendor })
-              return streamErrorOutcome(res.error, env)
+              return streamErrorOutcome(res.error, env, "downstream-sink")
             }
-          } else if (candidateOpts.commitBoundaries?.(toWrite)) {
+          } else if (codecOperation(() => candidateOpts.commitBoundaries?.(toWrite) ?? false)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
             // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
             // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
@@ -1477,7 +1682,7 @@ export async function runResponseBufferedSink(
             // ran before this frame reached the loop). The OLD `attempt > 0` term was dead (the per-frame
             // close-off already covers recovery-candidate blocks) and was removed;
             // `anchor-multiblock-lifecycle.it.test.ts (c′)` locks the error-terminus ordering.
-            const isErrorTerminusFlush = opts.sawUpstreamError?.() ?? false
+            const isErrorTerminusFlush = codecOperation(() => opts.sawUpstreamError?.() ?? false)
             // Continuation-retry ledger feed (spec 2026-07-22 §4.2 / persistence-async-invariants §3
             // "record signals at the committed settle point"): snapshot the frames that are ABOUT to commit
             // BEFORE `buffer` is cleared, then record their canonical blocks into the ledger ONLY on a
@@ -1494,25 +1699,35 @@ export async function runResponseBufferedSink(
             buffer.length = 0
             committedAny = true
             if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
             if (res.kind === "write-error") {
               // A block committed, then the client-side write failed mid-commit — the committed prefix is
               // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
               notifyBufferedResolve?.("partial-degrade", attempt, { vendor })
-              return streamErrorOutcome(res.error, env)
+              return streamErrorOutcome(res.error, env, "downstream-sink")
             }
             // Commit succeeded (frames are on the wire) → record the delivered blocks into the continuation
             // ledger. Done AFTER the successful flush so a write-error above never records an undelivered
             // block. A zero-content `error` boundary yields no blocks (extractor drops non-content frames).
-            if (committedFrames && opts.committedBlocksLedger && opts.extractCommittedBlocks) {
-              for (const block of opts.extractCommittedBlocks(committedFrames)) opts.committedBlocksLedger.recordCommitted(block)
+            const extractCommittedBlocks = opts.extractCommittedBlocks
+            if (committedFrames && opts.committedBlocksLedger && extractCommittedBlocks) {
+              for (const block of codecOperation(() => extractCommittedBlocks(committedFrames))) opts.committedBlocksLedger.recordCommitted(block)
             }
           }
         }
         drained = true
       } catch (error) {
-        // Client gone → settle abort, write nothing further, never retry.
-        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-        thrown = error
+        // Codec/rewrite processing owns its marker even when its cause happens to look like a client abort.
+        // Only an unwrapped transport-origin abort settles this response as client-aborted.
+        const source = responseFailureSource(error)
+        if (source === "upstream-transport" && classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        failure = { error, source }
+      }
+
+      // A codec/rewrite failure never enters retry or continuation. Return it before the shared
+      // truncation branches so even a codec-thrown StreamClientAbortError cannot become settled-abort.
+      if (failure?.source === "codec-render") {
+        return streamErrorOutcome(failure.error, env, failure.source)
       }
 
       // Retreated to live: the frames are already forwarded — NO retry is possible (can't unsend).
@@ -1527,7 +1742,12 @@ export async function runResponseBufferedSink(
         if (closeOutcome && closeOutcome.kind !== "stream-error") return closeOutcome
         return (
           closeOutcome
-          ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+          ?? streamErrorOutcome(
+            failure?.error ?? new Error("upstream stream truncated: closed without message_stop"),
+            env,
+            failure?.source ?? "upstream-transport",
+            failure === undefined,
+          )
         )
       }
 
@@ -1543,7 +1763,17 @@ export async function runResponseBufferedSink(
       // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
-      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.())) {
+      let reachedTerminal = false
+      if (drained) {
+        try {
+          reachedTerminal = codecOperation(
+            () => candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.() || false,
+          )
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
+      }
+      if (reachedTerminal) {
         // Flush the buffered TAIL (everything after the last committed block boundary). On the
         // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
         // generation and this is the ONE flush — byte-identical to before (R1). On the block-level
@@ -1561,12 +1791,13 @@ export async function runResponseBufferedSink(
         sink.close?.()
         const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
+        if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
         if (res.kind === "write-error") {
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the
           // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate
           // denominator isn't a blind spot. The handler still settles the request as failed (delivery).
           notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
-          return streamErrorOutcome(res.error, env)
+          return streamErrorOutcome(res.error, env, "downstream-sink")
         }
         notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
         return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
@@ -1577,7 +1808,7 @@ export async function runResponseBufferedSink(
       // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
       // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
       // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
-      const retryable = (thrown ? classifyStreamError(thrown) === "other" : true) && !committedAny
+      const retryable = (failure ? classifyStreamError(failure.error) === "other" : true) && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the
@@ -1603,7 +1834,7 @@ export async function runResponseBufferedSink(
         const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, currentEnv)
         const recovered =
           parent ?
-            await coordinator.runRecovery(parent.candidate, thrown ? "transport-close" : "truncated-before-terminal", currentEnv)
+            await coordinator.runRecovery(parent.candidate, failure ? "transport-close" : "truncated-before-terminal", currentEnv)
           : await coordinator.runPrimary()
         generation?.bind(coordinator, recovered)
         currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
@@ -1633,16 +1864,22 @@ export async function runResponseBufferedSink(
       const ledger = opts.committedBlocksLedger
       const remainingShared = cap - attempt - continuationCount
       const continuationBudget = continuationCount === 0 ? Math.max(remainingShared, 1) : remainingShared
-      const canContinue =
-        committedAny
-        && (thrown ? classifyStreamError(thrown) === "other" : true)
-        && continuation !== undefined
-        && continuation.enabled
-        && ledger !== undefined
-        && opts.extractCommittedBlocks !== undefined
-        && continuationBudget > 0
-        && !hasCompleteInteractiveToolUse(ledger.snapshot())
+      let canContinue = false
+      try {
+        canContinue =
+          committedAny
+          && (failure ? classifyStreamError(failure.error) === "other" : true)
+          && continuation !== undefined
+          && continuation.enabled
+          && ledger !== undefined
+          && opts.extractCommittedBlocks !== undefined
+          && continuationBudget > 0
+          && !codecOperation(() => hasCompleteInteractiveToolUse(ledger.snapshot()))
+      } catch (error) {
+        return streamErrorOutcome(error, env, responseFailureSource(error))
+      }
       if (canContinue) {
+        if (!continuation || !ledger) throw new Error("[driver] continuation gate admitted without required hooks")
         continuationCount++
         // Snapshot this cut leg's frames + finalize its duration BEFORE the reset (D1 — a cut leg's frames
         // survive for diagnosis), mirroring the transparent-retry bookkeeping.
@@ -1656,7 +1893,12 @@ export async function runResponseBufferedSink(
         // as a prefix (ADR D3). The synthetic turns are faithfully recorded as real wire bytes on the
         // upstreamRequest track; createDriverRecordingPort tags every continuation-role dispatch through
         // the track's side-channel extensions, never by mutating this body or the upstream-original response.
-        const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
+        let continuationBody: unknown
+        try {
+          continuationBody = codecOperation(() => continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message))
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
         const contEnv = currentEnv.with({ body: continuationBody })
         try {
           const parent = generation?.bindings.get(current)
@@ -1711,7 +1953,12 @@ export async function runResponseBufferedSink(
       notifyBufferedResolve?.(degradeOutcome, attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
       return (
         closeOutcome
-        ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+        ?? streamErrorOutcome(
+          failure?.error ?? new Error("upstream stream truncated: closed without message_stop"),
+          env,
+          failure?.source ?? "upstream-transport",
+          failure === undefined,
+        )
       )
     }
   } finally {

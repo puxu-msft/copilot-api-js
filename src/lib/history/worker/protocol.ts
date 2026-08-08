@@ -222,6 +222,12 @@ export function createRawTargetDescriptor(revision: number, config: HistoryWorke
   }
 }
 
+export function estimateHistoryEnvelopeBytes(envelope: HistoryOperationEnvelope): number {
+  let bytes = 0
+  for (const command of envelope.publication.rawAttachment.rawCommands) bytes += command.bytes.byteLength
+  return bytes
+}
+
 export class HistoryWorkerProtocolError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)

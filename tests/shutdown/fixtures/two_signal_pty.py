@@ -2,6 +2,7 @@
 import json
 import os
 import pty
+import re
 import select
 import signal
 import sys
@@ -9,6 +10,7 @@ import termios
 import time
 
 fixture = sys.argv[1] if len(sys.argv) > 1 else "tests/shutdown/fixtures/two-signal-process.ts"
+middle_signal = sys.argv[2] if len(sys.argv) > 2 else None
 startup_delay_ms = int(os.environ.get("TWO_SIGNAL_READY_DELAY_MS", "0"))
 READY_TIMEOUT = 6.0
 pid, fd = pty.fork()
@@ -66,17 +68,37 @@ try:
     first_alive = os.waitpid(pid, os.WNOHANG)[0] == 0
     wait_for_cooked_mode()
     cooked_before_second_signal = True
-    os.write(fd, b"\x03")
-    deadline = time.monotonic() + 2.0
-    while True:
-        waited, status = os.waitpid(pid, os.WNOHANG)
+    middle_alive = None
+    status = None
+    if middle_signal:
+        match = re.search(rb"READY pid=(\d+)", output)
+        if not match:
+            raise RuntimeError(f"missing runtime pid in {bytes(output)!r}")
+        runtime_pid = int(match.group(1))
+        os.kill(runtime_pid, getattr(signal, middle_signal))
+        time.sleep(0.2)
+        waited, middle_status = os.waitpid(pid, os.WNOHANG)
+        try:
+            os.kill(runtime_pid, 0)
+            runtime_alive = True
+        except ProcessLookupError:
+            runtime_alive = False
+        middle_alive = waited == 0 and runtime_alive
         if waited == pid:
+            status = middle_status
+    if middle_alive is not False:
+        os.write(fd, b"\x03")
+    deadline = time.monotonic() + 2.0
+    while status is None:
+        waited, current_status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            status = current_status
             break
         if time.monotonic() >= deadline:
-            raise RuntimeError("second Ctrl+C did not exit within 2 seconds")
+            raise RuntimeError("child process did not exit within 2 seconds")
         time.sleep(0.01)
     lflag = termios.tcgetattr(fd)[3]
-    print(json.dumps({"firstAlive": first_alive, "cookedBeforeSecondSignal": cooked_before_second_signal, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
+    print(json.dumps({"firstAlive": first_alive, "middleAlive": middle_alive, "cookedBeforeSecondSignal": cooked_before_second_signal, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
 finally:
     try:
         os.kill(pid, signal.SIGKILL)
