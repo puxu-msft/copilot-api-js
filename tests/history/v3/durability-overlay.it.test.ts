@@ -62,7 +62,7 @@ afterEach(async () => {
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
   setStateForTests({ historyDbPath: "" })
-  setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 10 })
+  setV3PersistRetryConfig({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000 })
 })
 
 describe("recent terminal durability overlay", () => {
