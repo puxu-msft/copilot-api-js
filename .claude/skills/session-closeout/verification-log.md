@@ -154,3 +154,17 @@
 - **V14 活跃写入权收口** — ⚠️ `542007c9` 把 progress frontmatter 改为 `batch-1b-integrated-master-d3b4ac77-superseded-by-plan`，正文明确“已完成并停止更新”，八项待办全为 `[x]`；正式计划 Batch 1b 状态行成为活跃写入点。原文档 reviewer 逐条核验 C1～C6 后判 0 blocker／major。因本轮追加本日志，只记事实。｜结论：数据不足
 - **V7 闭环提交时点** — ⚠️ `git diff-tree --no-commit-id --name-only -r 542007c9` 精确列出正式 plan、Batch 1b progress、评审处置三路径；三个文件内的 `d3b4ac77` 状态锚点均由 `git show 542007c9:<path> | rg` 命中。`775b5fb5` 只更新 kickoff，把执行入口推进到 Task 2a；独立指令 reviewer 已判 kickoff 可合、0 blocker／major。记录形成时本轮收尾提交尚待 fast-forward 合入共享 `master`，最终落地由 Git ancestry 外部裁决，不据本条投证实票。｜结论：数据不足
 - **V6 权威引用＋语境复述** — ⚠️ progress 明确引用正式 plan 的 Batch 1b 状态行并停止更新；kickoff 以 `REVIEWED_PLAN_COMMIT=542007c9…`绑定同一 plan blob，同时完整复述 Task 2a 的启动门、首个 red test、crash windows 与证明边界。独立指令 reviewer 逐条核验 K1～K6 后判 kickoff 可合、0 blocker／major；本轮追加该日志，故仍不投票。｜结论：数据不足
+
+## 2026-08-08 · History Worker Batch 1b 收尾证据终审（核验基线 `43ffac97`，`master@d1011fe7`）
+
+> **本节所有条目一律不投证实票**：本会话已多次编辑 `.claude/skills/session-closeout/`（`2ad229ed`、`044170e1`、`794abd4e`，本节亦是新编辑），命中第 11 行判据。起草时我一度写了三张 ✅ 证实票，随后自查规则撤回——这正是该规则要防的自评污染。
+
+- **V8 正交视角带来增量覆盖** — ⚠️ 强观测，不投票。两个视角的 major **零重叠，且各自都改变了我的动作**。「接手方第一人称走查」视角产出 H1／H2（禁止在 Batch 1b 分支继续 Task 2a、安装位置步骤缺可执行命令与提交-确认闭环），全部落在「接手方会照着做出什么错误动作」；「事实证伪」视角（另派**未卷入**实例、跨模型）产出 D1／D2（冻结判据只要求说明字节来源守不住不变量、Git 顺序门约束不了 harness job cleanup），全部落在不变量与门的鉴别力。**若不派第二个视角会漏掉的具体东西**：D1 的 false-green 反例（`history-worker-batch-1b-wip.patch` 同路径被覆写为含未提交修复 → 新判据放行 → job cleanup 删掉唯一副本）与 D2 的执行接缝缺失，两者都不在接手视角主责范围内，却直接决定未提交工作会不会丢。反向亦成立：事实视角没提出 H1，而 H1 防的是下个会话在错误分支上开工。｜结论：数据不足
+- **V7 闭环提交时点** — ⚠️ ①**起草前的机械检查这次真跑了，原样输出如下**（本表历史上在此假绿过一次，教训是「粘不出输出就等于没跑」）：
+  - `git ls-files --error-unmatch -- <4 份接收者>` → 四行全部列出（`...closeout-review-final.md`、`...review-dispositions.md`、`...progress-impl-1b.md`、`tests/infra/entry-test-discovery-baseline.json`），无 `did not match` 报错。
+  - `git status --porcelain -uall -- <同 4 份>` → 仅 ` M docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md` 一行（reviewer 刚追加的复审节，随后即提交），其余三份为空。
+  - `git check-ignore -v -- <同 4 份>` → 无输出、`exit=1`，四份均未被 ignore（本表两次抓到过 `exp/` 被 `.gitignore` 静默覆盖的假绿形态，本轮不适用）。
+  ②评审放行后：`43ffac97` 的 `git diff-tree --no-commit-id --name-only -r` 精确为三份收尾产物，reviewer 报告本身作为 durable receiver 一并落盘。｜结论：数据不足
+- **新增负样本（不在自验表内，建议入表；按第 93 行先例处理）** — **「把不可控的平台生命周期事件写成受控 Git 门」**。**这不是对 V7 的证伪**——V7 断言的两个提交时点本轮都做到了；它命中的是 V7 **覆盖不到**的一层：V7 盯「产物有没有进提交」，盯不到「我给清理设的前置条件在物理上能不能被执行」。本轮该错误还被**逐行复述了 56 遍**（清单每行「清理前置」列），单看任一行都像已有 disposition，正是「判据之间留缝」而非「某条判据写错」。可执行改法：凡写下「X 必须晚于 Y」，先问 **X 由谁触发**——若触发方不读 Y，这条就不是门，只是愿望；应改写为「让 X 提前发生也无害」。已立记忆 [[methodology-ordering-gate-needs-a-trigger-that-reads-it]]。｜结论：新形态，待独立评审后决定是否入表
+- **V10 与冻结上游文档对账会被触发** — ⚠️ 触发有效，不投票。本轮抓到实质冲突：kickoff 的 `REVIEWED_PLAN_COMMIT` blob 门与「每批回填 plan 状态」构成两阶段时序，回填后旧 anchor 必然失效。处置是保持门 fail-closed、复审新 plan 提交、再由单独提交 `64e40640` 更新 anchor，而非放宽或移除门。｜结论：数据不足
+- **V9 新判据写鉴别力正控** — ⚠️ 本轮新增的 initialize 四字段判据有明确目标变异且**已实测**：旧 protocol 缺 `maxBackoffMs` 时 15 pass／1 fail，补第一项后缺 `maxTotalMs` 仍 15 pass／1 fail，完整 validator 落地后 68 pass／0 fail；终审 reviewer 独立复核确认删除任一目标 validator 后对应 `toThrow` 会红、不会由旁路断言代咬（其实跑 16 pass／0 fail）。Task 2a 的 `maxBackoffMs` 真实 backend 消费 mutation 尚未实现，明确留成执行期 gate。｜结论：数据不足
