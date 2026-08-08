@@ -350,21 +350,27 @@ git commit -m "refactor: separate header and lifecycle abort scopes"
 - Modify: `tests/transport/http2-client.it.test.ts`
 - Modify: `docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md` only for implementation status, not design changes
 
-- [ ] **Step 1：添加真实 h2c headers-then-long-body 回归**
+- [ ] **Step 1：只写 H2 回归测试，不改 production**
 
-在`http2-client.it.test.ts`通过`upstreamFetch("https://fixture.invalid/late",...)`而不是直接`http2Fetch`驱动；现有`setHttp2SessionFactoryForTests(() => http2.connect(url))`把逻辑https origin接到本地h2c server，确保selector真走HTTP/2。server立即`respond()`，延迟50ms才`end("late")`；设置`responseHeaderTimeoutMs:10`，断言body为late。
+在`http2-client.it.test.ts`通过`upstreamFetch("https://fixture.invalid/late",...)`驱动真实selector→HTTP/2 adapter；server立即`respond()`，延迟50ms才`end("late")`，设置`responseHeaderTimeoutMs:10`并断言body为late。
 
-修改`http2-client.ts`：把post-response匿名abort listener抽成具名`onPostResponseAbort`，在natural end、stream close和abort teardown上通过幂等`detachPostResponseAbort()`移除；pre-response timeout从未注册该listener。同文件新增计数：pre-response header-timeout的post-response listener=0 add/0 remove；natural end与post-header external abort的post-response listener各1 add/1 remove。三路都断言`onStreamClosed`一次、reservation最终回0。保留direct `http2Fetch` signal测试，证明一般body abort仍生效。
+同文件用test-only signal facade统计post-response abort listener：pre-response header-timeout应为0 add/0 remove；natural end与post-header external abort各应1 add/1 remove。三路都断言`onStreamClosed`一次、reservation最终回0。保留direct `http2Fetch` signal测试。
 
-- [ ] **Step 2：运行 transport 定向测试**
+- [ ] **Step 2：运行测试确认旧匿名 listener 被红门咬住**
 
 Run: `bun test tests/transport/http2-client.it.test.ts tests/transport/upstream-fetch.unit.test.ts tests/transport/http-transport.it.test.ts --timeout 30000`
 
-Expected: PASS。
+Expected: FAIL；旧实现的post-response listener为匿名函数，natural end无法remove，至少listener 1/1断言失败；headers-long-body行为应绿，证明失败来自cleanup机制。
 
-- [ ] **Step 3：运行阶段 1 全门**
+- [ ] **Step 3：实现具名幂等 listener cleanup**
 
-Run:
+修改`http2-client.ts`：把post-response匿名abort listener抽成具名`onPostResponseAbort`，在natural end、stream close和abort teardown上通过幂等`detachPostResponseAbort()`移除；pre-response timeout从未注册该listener。
+
+- [ ] **Step 4：运行绿门与正向 mutation**
+
+运行Step 2同一命令，Expected: PASS。冻结exact patch删除natural-end/close上的`detachPostResponseAbort()`调用，listener 1/1断言必须红；reverse-apply check后反向恢复。
+
+- [ ] **Step 5：运行阶段 1 全门**
 
 ```bash
 bun run typecheck
@@ -373,26 +379,25 @@ bun test tests/architecture/package-boundaries.unit.test.ts tests/architecture/c
 bun run test:backend
 ```
 
-Expected: 全部 PASS。若 history-search native 未构建，只有项目声明的显式 skip 可接受。
+Expected: 全部 PASS。若history-search native未构建，只有项目声明的显式skip可接受。
 
-- [ ] **Step 4：记录结构怪味**
+- [ ] **Step 6：记录结构怪味**
 
-至少核对：
+- `src/lib/fetch-utils.ts`：first-event helper是否只剩WS consumer。
+- `src/lib/transport/upstream-fetch.ts`：watchdog是否唯一实现。
+- `src/lib/openai/embeddings.ts`：deadline与shutdown signal是否仍分离。
+- `src/lib/transport/http2-client.ts`：pre/post-response listener是否各有唯一owner与幂等cleanup。
 
-- `src/lib/fetch-utils.ts`：`createUpstreamFirstEventTimeoutSignal` 是否只剩 WS consumer；任何 HTTP consumer 都必须当场修正，避免 API 契约再次泄漏。
-- `src/lib/transport/upstream-fetch.ts`：watchdog 是否成为唯一实现，调用点是否仍有第二份 timer。
-- `src/lib/openai/embeddings.ts`：prepared request 是否把 header deadline 与 shutdown signal 再次混成一字段。
+将`file:line + smell + disposition`写入阶段review disposition。
 
-将 `file:line + smell + disposition` 写入阶段 review disposition 或 commit 前记录。
-
-- [ ] **Step 5：提交 H2 回归测试**
+- [ ] **Step 7：提交 production + H2 回归测试**
 
 ```bash
 git add -- src/lib/transport/http2-client.ts tests/transport/http2-client.it.test.ts
 git commit -m "fix: clean up HTTP2 header deadline listeners"
 ```
 
-- [ ] **Step 6：独立 review**
+- [ ] **Step 8：独立 review**
 
 评审命题：
 
@@ -404,7 +409,7 @@ git commit -m "fix: clean up HTTP2 header deadline listeners"
 
 reviewer 必须逐条给 `file:line` 或命令输出，并双向检查 false-green/false-red。
 
-- [ ] **Step 7：收口 review 后提交阶段状态**
+- [ ] **Step 9：收口 review 后提交阶段状态**
 
 把阶段 1 commit 列表与测试命令写入 spec 的实施状态段；该状态提交只含文档：
 
@@ -413,7 +418,7 @@ git add -- docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md
 git commit -m "docs: mark header deadline scope landed"
 ```
 
-- [ ] **Step 8：合并当前 `master`，重跑定向门，再 fast-forward 主线**
+- [ ] **Step 10：合并当前 `master`，重跑定向门，再 fast-forward 主线**
 
 在隔离分支先 `git merge master`。若 master 新改动触及同一文件，解决后重跑 Task 3 Step 2-3。随后按 `git-preference:coordinating-a-shared-git-worktree` 检查主树 WIP；只在 Git 能无覆盖 fast-forward 时执行主树 `git merge --ff-only nghttp2-root-fixes`。不得 stash、restore 或覆盖 peer WIP。
 
@@ -623,11 +628,12 @@ git commit -m "feat: record HTTP2 termination evidence"
 
 **Interfaces:**
 - Produces: `UpstreamStream.getTransportTermination?: () => TransportTerminationObservation | undefined`
-- For failed-open: error carries latest immutable `getTransportTerminationObservation(error)` snapshot；正常 stream以 accessor在quiescence后取最终值
+- Produces: `UpstreamStream.terminationQuiesced?: Promise<void>`，HTTP/2由physical `requestClosed` resolve；非H2可省略
+- For failed-open: error carries latest immutable snapshot；正常stream在`lifecycle.quiesced`与`terminationQuiesced`均完成后读accessor最终值
 
 - [ ] **Step 1：写 streaming accessor 与 snapshot时序测试**
 
-用 h2 transport/injected evidence mock断流：local evidence到达后 accessor先显示local snapshot；后续peer evidence到达后同一 accessor显示ambiguous且保留两条。`await upstream.lifecycle.quiesced` 后连续两次读取必须 deep-equal且不再变化。正常流 accessor返回 undefined。
+用h2 transport/injected evidence mock断流：local evidence到达后accessor先显示local snapshot；body/iterator lifecycle先quiesce但physical close barrier仍pending时追加peer/session evidence；只有`await upstream.lifecycle.quiesced`再`await upstream.terminationQuiesced`后连续两次读取才必须deep-equal且不再变化。正常流accessor返回undefined，非H2 `terminationQuiesced`可undefined。
 
 - [ ] **Step 2：运行accessor测试确认红**
 
@@ -644,7 +650,7 @@ const termination = createTransportTerminationCollector()
 onTerminationEvidence: (value) => termination.append(value)
 ```
 
-返回 `UpstreamStream` 时暴露 `getTransportTermination: () => termination.observe()`。若 `http2Fetch` 已拥有collector，则通过 callback追加到transport collector，禁止复制归因逻辑。failed-open error附当时snapshot；scheduler仍在quiescence后优先读owned accessor取得最终值。
+返回`UpstreamStream`时暴露`getTransportTermination:()=>termination.observe()`和`terminationQuiesced`。HTTP/2的`sendUpstreamHttp`用`onStreamClosed` resolve physical barrier；非H2可省略。若`http2Fetch`已拥有collector，则通过callback追加到transport collector，禁止复制归因逻辑。failed-open error附当时snapshot；scheduler/recovery等待lifecycle+termination双barrier后优先读owned accessor。
 
 - [ ] **Step 4：保持 hook/mock 兼容**
 
@@ -680,7 +686,7 @@ git commit -m "feat: expose live transport termination provenance"
 
 - [ ] **Step 2：写六类 attribution 的双向 recovery tests**
 
-使用相同buffer/预算分别构造：local、ambiguous、unknown均`sendCount()===0`；peer、session在`!committedAny && attempt<cap`时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。关键竞态case：accessor初始snapshot为peer，`lifecycle.quiesced`前追加late local/session变ambiguous；helper必须等待barrier后返回false且不retry。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
+使用相同buffer/预算分别构造：local、ambiguous、unknown均`sendCount()===0`；peer、session在`!committedAny && attempt<cap`时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。关键竞态case：accessor初始snapshot为peer，iterator `lifecycle.quiesced`先resolve但`terminationQuiesced`仍pending；随后physical close追加local/session使snapshot变ambiguous并resolve第二道barrier。helper必须等待两道barrier后返回false且不retry。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
 
 - [ ] **Step 3：运行六类recovery测试确认红**
 
@@ -691,15 +697,22 @@ Expected: FAIL；当前`classifyStreamError(error)==="other"`会把带local/ambi
 - [ ] **Step 4：实现 helper，不改全局 classifyError**
 
 ```ts
-async function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): Promise<boolean> {
+async function finalTransportTermination(upstream: UpstreamStream, error: unknown): Promise<TransportTerminationObservation | undefined> {
   await upstream.lifecycle?.quiesced
-  const observation = upstream.getTransportTermination?.() ?? getTransportTerminationObservation(error)
+  await upstream.terminationQuiesced
+  return upstream.getTransportTermination?.() ?? getTransportTerminationObservation(error)
+}
+
+async function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): Promise<boolean> {
+  const observation = await finalTransportTermination(upstream, error)
   if (observation) return observation.attribution === "peer" || observation.attribution === "session"
   return classifyStreamError(error) === "other" // non-H2/legacy transport compatibility
 }
 ```
 
-必须先等待真实transport的`lifecycle.quiesced`，再优先读取live accessor；error snapshot可能早于cleanup中后到的local/session evidence。无lifecycle的legacy mock保持同步fallback。把retry与continuation两处`classifyStreamError(thrown)==="other"`换成`await isBufferedTransportCut(...)`。明确`local|ambiguous|unknown`返回false，不落legacy fallback。`classifyError(mid-body-close)`保持bad_request；普通S4不扩大。
+必须先等待真实transport的iterator lifecycle与physical termination双barrier，再优先读取live accessor；error snapshot可能早于physical close/session evidence。undefined barrier自然立即通过，legacy mock保持fallback。把retry与continuation两处`classifyStreamError(thrown)==="other"`换成`await isBufferedTransportCut(...)`。明确`local|ambiguous|unknown`返回false，不落legacy fallback。`classifyError(mid-body-close)`保持bad_request；普通S4不扩大。
+
+同时把`ResponseOutcome`的`stream-error`分支扩为`transportTermination?: TransportTerminationObservation`。`streamErrorOutcome(error,env,upstream?)`使用同一个`finalTransportTermination`在双barrier后附最终observation；所有拥有current upstream的buffered/live调用点传入，纯delivery error无upstream时保持absent。这样handlers已传递的整个outcome成为diagnostics与canonical共享的冻结事实载体。
 
 - [ ] **Step 5：明确不新增 server-tool gate**
 
@@ -760,7 +773,7 @@ git commit -m "docs: mark transport termination provenance landed"
 
 - [ ] **Step 5：合并最新 master、复验并 fast-forward主线**
 
-重复阶段 1 Task 3 Step 8 的 merge→复验→`--ff-only` 流程；任何同文件 master变化都触发重跑阶段 2 定向门和 merged-state review。
+重复阶段1 Task3 Step10的merge→复验→`--ff-only`流程；任何同文件master变化都触发重跑阶段2定向门和merged-state review。
 
 ---
 
@@ -784,7 +797,7 @@ git commit -m "docs: mark transport termination provenance landed"
 - Adds: `ModelOperationDispatch.termination?: TransportTerminationObservation`
 - Adds: `SettleDispatchInput.termination?: TransportTerminationObservation`
 - Adds: `DispatchSettlement.termination?: TransportTerminationObservation`
-- Adds: `RequestContext.setGenerationDispatchTerminationProvider(dispatch, { getObservation, quiesced })`，仅运行时、不持久化函数/Promise
+- Adds: `RequestContext.setGenerationDispatchTerminationProvider(dispatch, { getObservation, lifecycleQuiesced, terminationQuiesced })`，仅运行时、不持久化函数/Promise
 - Adds internal scheduler helper: `enrichSettlement(dispatch, settlement): DispatchSettlement`
 
 - [ ] **Step 1：写 recorder typed field 与 immutable settlement测试**
@@ -803,11 +816,13 @@ Expected: FAIL，分别命中termination字段/provider/barrier或round-trip缺�
 
 - [ ] **Step 4：scheduler 两条路径统一 enrichment**
 
-`ActiveDispatch` 保存 `getTransportTermination?`。抽取：
+`ActiveDispatch`保存`getTransportTermination?`、`lifecycleQuiesced`与`terminationQuiesced?`。抽取：
 
 ```ts
-function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettlement): DispatchSettlement {
+async function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettlement): Promise<DispatchSettlement> {
   const owned = active.get(dispatch)
+  await owned?.lifecycleQuiesced
+  await owned?.terminationQuiesced
   const termination = settlement.termination
     ?? owned?.getTransportTermination?.()
     ?? getTransportTerminationObservation(settlement.error)
@@ -815,21 +830,21 @@ function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettleme
 }
 ```
 
-`disposeDispatch()` 与正常 `scheduler.settle()` 都必须先 await `lifecycle.quiesced`，再调用同一helper，最后删除active并 `recordSettlement`。failed-open从error tag读取。测试分别驱动两条路径；mutation只修其中一条时另一条红。
+`disposeDispatch()`与正常`scheduler.settle()`都调用同一async helper，之后才删除active并`recordSettlement`。failed-open从error tag读取。测试分别驱动iterator先quiesce、physical barrier后resolve的两条路径；mutation只等第一道barrier或只修其中一路时，另一条红。
 
 - [ ] **Step 5：接通 driver recording port 与 RequestContext runtime provider**
 
-`recordOpened(dispatch,response)` 在stream成功打开时调用 `ctx.setGenerationDispatchTerminationProvider(dispatch,{ getObservation: response.upstream.getTransportTermination, quiesced: response.lifecycle.quiesced })`；RequestContext 的 `GenerationAttemptCapture` 保存provider/barrier但不序列化。修改 logical terminal/finalizer 顺序：
+`recordOpened(dispatch,response)`在stream成功打开时调用`ctx.setGenerationDispatchTerminationProvider(dispatch,{getObservation:response.upstream.getTransportTermination,lifecycleQuiesced:response.lifecycle.quiesced,terminationQuiesced:response.upstream.terminationQuiesced})`；RequestContext的`GenerationAttemptCapture`保存provider/barriers但不序列化。修改logical terminal/finalizer顺序：
 
 1. `recordGenerationLogicalTerminal()` 只冻结 `pendingGenerationTerminal`、seal operation scope并启动finalizer；不再当场settle尚未settled的final attempt。
 2. `pendingGenerationTerminal` 分开保存 `runtimeError`（原始对象，仅活到finalizer，用于读Symbol tag）与 `errorSnapshot`（`snapshotForRecorder`结果，用于持久化）；不得从snapshot恢复termination tag。
-3. `startGenerationFinalizerIfReady()` 先 `await operationScope.whenOperationQuiesced()`，再取得未settled final attempt的provider并 `await provider.quiesced`。transport barrier不由operation scope隐式保证，必须显式等待。
-4. `commitGenerationObservabilityTerminal()` 在双barrier之后、读取final attempt payload之前，若final attempt尚未settled，则按 `explicit termination → provider.getObservation() → getTransportTerminationObservation(runtimeError)` 冻结最终observation并调用 `settleGenerationAttempt`；持久化terminal error仍使用`errorSnapshot`。
+3. `startGenerationFinalizerIfReady()`先`await operationScope.whenOperationQuiesced()`，再取得未settled final attempt的provider，依次`await provider.lifecycleQuiesced`与`await provider.terminationQuiesced`（undefined自然通过）。两道transport barrier都不由operation scope隐式保证。
+4. `commitGenerationObservabilityTerminal()`在operation+iterator+physical三道barrier之后、读取final attempt payload之前，若final attempt尚未settled，则按`explicit termination → provider.getObservation() → getTransportTerminationObservation(runtimeError)`冻结最终observation并调用`settleGenerationAttempt`；持久化terminal error仍使用`errorSnapshot`。
 5. scheduler已经settled的attempt保持幂等，不重复settle；provider/barrier在finalizer读取完成前不得清理。
 
 - [ ] **Step 6：实现并校准真实最终失败 production-path 回归**
 
-在 `tests/context/generation-finalization.unit.test.ts` 构造真实 `UpstreamDispatchLifecycle`：stream pump先抛错，`ensureIteratorCleanup()`仍pending；logical terminal先发生，随后cleanup追加最后evidence并resolve `lifecycle.quiesced`。请求delivery finalization后断言canonical dispatch包含cleanup后的evidence，且Symbol-tagged raw error fallback可读。mutation只等operation barrier、从errorSnapshot读tag、或logical-terminal当场settle时，测试分别变红。
+在`tests/context/generation-finalization.unit.test.ts`构造真实`UpstreamDispatchLifecycle`+独立physical termination deferred：stream pump先抛错，iterator cleanup先resolve `lifecycleQuiesced`，physical close barrier仍pending；logical terminal先发生，随后physical close追加最后evidence并resolve `terminationQuiesced`。请求delivery finalization后断言canonical dispatch包含physical close后的evidence，且Symbol-tagged raw error fallback可读。mutations分别只等operation、只等iterator、从errorSnapshot读tag、logical-terminal当场settle，测试均须红。
 
 `candidate-runtime.it.test.ts`分别覆盖正常`scheduler.settle()`与`disposeDispatch()`内部顺序。`dispatch-termination-recording.it.test.ts`再用production `createDriverRecordingPort→RequestContext`验证这两路和terminal fallback都真正写入canonical record；删除provider注册、错绑handle或绕过recording port时必须红。
 
@@ -894,9 +909,9 @@ termination=unknown first-observed=stream-close evidence=1
 
 absence时保持旧行，不追加误导字段。unknown/ambiguous绝不渲染成peer；原始error detail仍保留。
 
-- [ ] **Step 5：接通 observation→diagnostics**
+- [ ] **Step 5：接通 frozen outcome→diagnostics**
 
-`logUpstreamStreamError` 优先读取 caller提供的live accessor最终snapshot，其次 `getTransportTerminationObservation(error)`；只取结构化值。`logUpstreamStreamTruncation` 的 clean EOF缺终态不是H2 termination，保持字段absent。
+阶段2已将`ResponseOutcome`的`stream-error`分支扩为可选`transportTermination`，并在双transport barrier后由driver冻结。`logUpstreamStreamOutcomeError(outcome,ctx)`优先读取`outcome.transportTermination`，其次`getTransportTerminationObservation(outcome.error)`；不再要求handler另传live accessor。现有Messages、Responses HTTP/WS、Chat callers已经传整个outcome，只需共享类型/函数测试；Gemini直接调用`logUpstreamStreamError(error,ctx)`的legacy路径继续只读error tag。`logUpstreamStreamTruncation`的clean EOF缺终态保持absent。
 
 - [ ] **Step 6：运行投影/日志 tests与 mutation**
 

@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前五轮累计 30/30 个独立 findings 已采纳；第六轮局部复评待完成（重复上报已合并进原 ID）
+- 状态：前六轮累计 33/33 个独立 findings 已采纳；第七轮局部复评待完成（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
@@ -38,3 +38,6 @@
 | R28 | C | buffered recovery在lifecycle quiescence前读peer snapshot | 采纳 | `isBufferedTransportCut`改async并先await `upstream.lifecycle?.quiesced`；新增peer→late local/session→ambiguous不重试回归与mutation。 |
 | R29 | C | Task3要求listener移除但未修改/提交http2-client | 采纳 | Task3明确把匿名post-response listener改成具名幂等detach；production+test精确提交改为`fix: clean up HTTP2 header deadline listeners`。 |
 | R30 | C | 三settlement测试未覆盖production recording port→RequestContext接缝 | 采纳 | 新建`tests/pipeline/dispatch-termination-recording.it.test.ts`，真实createDriverRecordingPort+scheduler+RequestContext覆盖settle/dispose/terminal fallback；进入red/green命令与pathspec。 |
+| R31 | C | Task3 production+test同写后直接PASS，无旧实现红门 | 采纳 | 重排为只写listener测试→旧匿名listener FAIL→实现具名幂等detach→PASS→删detach mutation→精确代码+测试提交。 |
+| R32 | C | recovery只等iterator lifecycle，physical stream evidence可后到 | 采纳 | UpstreamStream新增`terminationQuiesced`；recovery、scheduler两路、terminal fallback均依次等iterator+physical双barrier；late evidence变ambiguous不重试测试。 |
+| R33 | C | diagnostics声称读live accessor但未贯穿caller | 采纳 | `ResponseOutcome.stream-error`新增冻结`transportTermination`，driver双barrier后附值；共享outcome diagnostics优先读该字段，handlers已传整个outcome，无需另传accessor。 |

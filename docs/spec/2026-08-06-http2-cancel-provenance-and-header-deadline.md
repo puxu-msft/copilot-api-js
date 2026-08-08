@@ -102,7 +102,7 @@ termination observation 属于一次 physical dispatch。选择在 `ModelOperati
 数据流如下：
 
 1. `http2-client` 追加 `TransportTerminationEvidence` 并提供可重算的 `TransportTerminationObservation` snapshot；最终消费者在 quiescence 后读取；
-2. transport/driver 为每个 dispatch 提供 `{ getObservation, quiesced }`；所有 settlement 路径先等待对应 transport barrier，再取最终 observation；
+2. transport/driver 为每个dispatch提供`{getObservation, lifecycleQuiesced, terminationQuiesced}`；后两者分别代表iterator cleanup与physical stream close/evidence finalization。所有settlement/recovery先依次等待两道transport barrier，再取最终observation；
 3. `RequestContext` 的 logical terminal只保存runtime raw error与持久化snapshot并seal scope；finalizer先等operation quiescence，再等未settled final dispatch的transport quiescence，最后调用canonical recorder的`settleDispatch()`写入`ModelOperationDispatch.termination`；
 4. V3 manifest 原样持久化；
 5. `recordToHistoryEntry()` 投影到 `attempts[].transportTermination`；
@@ -186,7 +186,7 @@ local 与 peer evidence 的生产者独立，但事件调度顺序不能证明 w
 #### 产物
 
 - `ModelOperationDispatch.termination?: TransportTerminationObservation` 成为 canonical typed 字段。
-- `disposeDispatch()`、正常 `scheduler.settle()` 两路等待各自 `lifecycle.quiesced`；RequestContext 最终 terminal fallback 在 operation quiescence 后再等待未settled final dispatch的 transport barrier。三路均取最终 observation，再写 V3 manifest与 REST `attempts[].transportTermination`。
+- `disposeDispatch()`、正常`scheduler.settle()`两路等待各自iterator lifecycle与physical termination双barrier；RequestContext最终terminal fallback在operation quiescence后再等待未settled final dispatch的两道transport barrier。三路均取最终observation，再写V3 manifest与REST `attempts[].transportTermination`；`ResponseOutcome.stream-error.transportTermination`携带同一冻结值供console diagnostics消费。
 - `STREAM DISCONNECT` 增加稳定结构字段：attribution、first-observed、evidence 摘要、numeric code、local cause、session event；现有 elapsed/frame/byte/last-frame/silence 信号保留。
 - UI/API 使用后端 SSOT type；旧记录无字段时显示 absent，不伪造 observation。
 - 不做数据库 schema migration或 backfill：termination 随 manifest JSON 自然演进。
