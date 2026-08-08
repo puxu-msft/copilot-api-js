@@ -2,9 +2,9 @@
 
 > 状态：收尾候选，待最终主线 fast-forward 与独立终态报告复审。
 > 清单根：`/home/xp/.claude/jobs/0ff74836/tmp`
-> 生成口径：递归枚举 regular file 与 symlink；不含目录。
-> 总计：54 项，6137136 bytes。
-> 清理策略：本会话不手工删除任何项；逐项完成持久接收者核验后保留至 Claude job 目录自动清理，避免通配符删除与跨会话误伤。
+> 冻结边界：2026-08-08，在 `batch1b-terminal-report-message.txt` 与 `shared-main-index.terminal-review.snapshot` 产生后重新枚举；递归包含 regular file 与 symlink，不含目录。
+> 总计：56 项，6568459 bytes。
+> 清理策略：本会话不手工删除任何项；逐项完成持久接收者核验后保留至 Claude job 目录自动清理，避免通配符删除与跨会话误伤。冻结后不再在本根创建新路径；若人口或大小变化，必须重新生成本清单并复审。
 
 | 绝对路径 | 类型 | bytes | 用途 | 持久接收者／不可变替代证据 | 最终动作 | 清理前置 |
 | --- | --- | ---: | --- | --- | --- | --- |
@@ -37,6 +37,7 @@
 | `/home/xp/.claude/jobs/0ff74836/tmp/batch1b-review-fixes-message.txt` | file | 42 | 提交消息输入 | 对应本地 Git commit（`git log master..HEAD`） | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/batch1b-route-mutation.log` | file | 18165 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/batch1b-shutdown-mutation.log` | file | 46481 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
+| `/home/xp/.claude/jobs/0ff74836/tmp/batch1b-terminal-report-message.txt` | file | 46 | 提交消息输入 | 对应本地 Git commit（`git log master..HEAD`） | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/candidate-entry-test-discovery-baseline.json` | file | 53323 | entry evidence baseline 三方对账副本 | 已提交 `tests/infra/entry-test-discovery-baseline.json` 与 B3/B4 处置记录 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/check-junit-executed.py` | file | 693 | 一次性 JUnit executed 求和／边界正控脚本 | B4 处置记录中的 7285 testcase－30 skipped＝7255 executed 结论 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/close-worker-retry-review-message.txt` | file | 50 | 提交消息输入 | 对应本地 Git commit（`git log master..HEAD`） | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
@@ -60,5 +61,6 @@
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.final-closeout.snapshot` | file | 431215 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.post-v1.snapshot` | file | 431215 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.snapshot` | file | 429196 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
+| `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.terminal-review.snapshot` | file | 431277 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/ws-shutdown-sequence-probe.log` | file | 127873 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
 | `/home/xp/.claude/jobs/0ff74836/tmp/ws-shutdown-x10.log` | file | 130143 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 终态报告与接收者均已提交且最终主线 ancestry 验证通过 |
