@@ -92,3 +92,28 @@
 - 结构怪味：`.claude/skills/session-closeout/SKILL.md:61,70,74`，类型为“候选发现后回跳评审缺失 + 筛选职责泄漏到发现层”；处置为本轮修，因为会分别产生未裁决交付与静默漏项。
 - Blocker：0。Major：3。总体 verdict：**修复 major 后可进入下一阶段**。
 - 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`；Git 判据继续保持“读实际命令输出”，避免再新增全局 clean gate。
+
+# 复审轮三（`185236d1`）
+
+## 评审范围与证据
+
+- 范围：`git diff a60ce4ac..185236d1` 的四份改动，并 grep 最终 skill／memory／MEMORY／CLAUDE.md 的同源表述。
+- 已走查：按最终六步顺序模拟“tmp 中有 mutation patch，§3b 初看可删，§4 才发现 mutation 记录粒度不足、patch 承重”的正确样本；复用 Git `2.43.0` 前述正反探针核对 ff-only 文本。
+
+## 总体 verdict
+
+**存在 blocker。Blocker：1。**
+
+## 事实性发现
+
+[blocker] `.claude/skills/session-closeout/SKILL.md:49,63,71,78` — provisional 评审虽已移到 §5 前，但仍晚于 §3b 的不可逆删除，正确状态会被流程自身毁掉 — 固定顺序让 §3b 在第 49 行“持久化／评审 → 清理精确路径”，之后 §4 才发现非文件候选；而第 71 行明确承认 mutation 记录粒度不足时 tmp patch 本身承重。具体场景：§3b 单看 patch 已有 Git object 而判删，§4 回溯 mutation 后才发现需靠 patch 重建精确变异，此时唯一 patch 已删除，补派评审只能发现损失、不能恢复。修复建议：把 §3b 拆成“枚举但暂不删”与“统一 disposition 后清理”；顺序改为 §3b inventory → §4 非文件候选 → 合并 manifest 独立评审 → 持久化并验证接收载体 → 清理精确文件 → 复扫 → §5。或把 §4 候选发现整体前移到 §3b 删除门之前；不能只把评审放到 §5 前。
+
+[major] `.claude/skills/session-closeout/SKILL.md:63` — “没有新增 provisional 候选时才免”让候选完整性仍由作者自判，零候选时恰好没有独立方检查漏项 — 这是通过性／空结果不自证：作者漏掉第 2、3 或 6 类事件后会得到“0 行”，并据豁免跳过唯一能发现遗漏的补审；流程可形式合规但 false-green。修复建议：补审不因 0 行豁免；零候选也提交“六类逐类 0 + 本轮命令／裁决事件范围”的清单，由独立 reviewer 审核候选发现完整性。若要避免重复派审，应把这份零／非零清单在第一次 §1 前生成并纳入该轮，而不是由作者自行豁免。
+
+## 复审轮三结论
+
+- 第 6 类两个事实可观察到足以进入候选：命令执行可由 transcript／日志确认，“被用于实施或裁决”需指向具体 downstream 动作或裁决句才能复核；当前通用“来源（本轮哪个事件）”字段可承载该指针，未另报 major。
+- ff-only 文本两个方向均已闭合：in-progress operation 只报告并确认归属，不要求清理普通 dirt；实际 stderr 决定后续，重叠 dirt 由 Git 报告。三处 grep 表述一致，未发现新的成因全称或 clean gate。
+- 结构怪味：`.claude/skills/session-closeout/SKILL.md:49,63-78`，类型为“发现依赖晚于不可逆消费”；处置为本轮修，因为会删除后来才被证明承重的唯一证据。
+- Blocker：1。Major：1。总体 verdict：**存在 blocker**。
+- 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`，重点重排 §3b／§4 的动作依赖，而非再补局部例外。
