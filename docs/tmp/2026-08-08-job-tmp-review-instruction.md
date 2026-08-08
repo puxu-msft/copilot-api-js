@@ -41,16 +41,31 @@
 
 ## 整改与处置（2026-08-08 补记，作者方记录）
 
-⚠️ **先说这份补记为什么存在**：上面三条发现在会话内被整改后，我派了复评、复评在返回正文里给了 PASS，**但那次复评结论从未落盘**。于是磁盘上唯一的持久记录仍是「1 阻断级 + 1 Major + 1 Minor」，而我却在 `docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md` 与 `verification-log.md` 的 V19 里写成了「两份独立评审均判 0 blocker／0 major」。**该断言当时没有任何持久证据支撑，已由终审 reviewer 证伪并在两处更正。** 根因是项目那条既有教训「结论一律落盘绝不只活在对话里」——违反它就会写出无据的通过性断言（→ `docs/memory/feedback-conclusions-must-land-in-docs-not-chat.md`）。
+⚠️ **先说这份补记为什么存在**：上面三条发现在会话内被整改后，我派了复评、复评在返回正文里给了 PASS，**但那次复评结论从未落盘**。于是磁盘上唯一的持久记录仍是「1 阻断级 + 1 Major + 1 Minor」，而我却在 `docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md` 与 `verification-log.md` 的 V19 里写成了「两份独立评审均判 0 blocker／0 major」。**该断言当时没有任何持久证据支撑，已由终审 reviewer 证伪并在两处更正。**
+
+**可核事实只到这条失效链为止**：复评结论未落盘 → 磁盘上唯一持久记录仍是 1 阻断级 + 1 Major → 两处出现了无持久证据支撑的通过性断言。这条链命中了项目既有教训「结论一律落盘绝不只活在对话里」（→ `docs/memory/feedback-conclusions-must-land-in-docs-not-chat.md`）。**但「命中某条教训」不等于「已证明这是唯一根因」**——认知层面为什么会写下那句话，没有产生点标签，不作断言（→ `docs/memory/methodology-abort-provenance-tag-at-source-not-guess-at-boundary.md`：没有 source tag 就只写已排除什么，不写真因是什么）。
 
 下面只记**我的处置 + 此刻可独立核验的证据**，不复述那次未落盘的复评正文。
 
 | 发现 | 处置 | 此刻可核验的证据 |
 |---|---|---|
 | **发现 1（阻断级）** 本分支 §3b/V19 是被 master 追平并超越的旧稿 | 按发现建议做**并集合并**（不是二选一）：master 的顺序门与两条安全机制全部采纳，本分支独有的三个实测坑保留 | `.claude/skills/session-closeout/SKILL.md:49` 含 master 的「枚举 → 逐项 disposition → 持久化 → 提交并验证载体 → 清单过独立评审 → 清理 → 重新枚举」全序，以及「清单须 0 blocker/major 才可删」「复扫新文件使先前评审作废」「禁通配/自动清理绕过」。**第三方佐证**：终审 reviewer 在 `2026-08-08-header-deadline-final-merge-review.md` 的 C5 独立比对后确认「merge 增加 master 的独立评审／复扫失效门，同时保留 feature 的枚举坑」，并以 `git show --remerge-diff` 确认无手工吞改 |
-| **发现 2（Major）** §3b 步骤 1 的枚举命令在当前运行时无法照抄 | 采纳，写进正文 | `SKILL.md:51` 明写「隔离 worktree 会话里**变量展开 + 管道**的组合会被工具判为 too complex 而拒绝执行，换字面绝对路径即可」，并警告别误读成环境变量没设。**本轮实测复现两次**：本会话两条 `find … > file` 与 `for … done` 复合命令均被守卫拒绝 |
+| **发现 2（Major）** §3b 步骤 1 的枚举命令在当前运行时无法照抄 | 采纳，写进正文 | `SKILL.md:51` 明写「隔离 worktree 会话里**变量展开 + 管道**的组合会被工具判为 too complex 而拒绝执行，换字面绝对路径即可」，并警告别误读成环境变量没设。（另有一条**作者动作自述、不作为复评证据**：本会话两条复合命令被守卫拒绝过——无持久输出，事后不可独立核验） |
 | **发现 3（Minor）** V19「连续 3 次零保留」是提示句非判据 | 随 V19 采用 master 版本措辞而消解 | `SKILL.md:205` 的 V19 行已无该措辞；`grep '零保留' SKILL.md` 零命中 |
 
 **仍然成立的边界**：本文件记录的是**指令文本强度**的评审，它的发现不针对本次 job tmp 清理的**判定正确性**——后者由事实视角评审（0 blocker／0 major／3 minor，minor 已于 `548e3cf2` 修正）授权。这两件事此前被我合并成一句「均 0／0」，是错的；现在分开陈述。
+
+## 更正：commit `7af27044` 的提交信息含一处错误断言
+
+该提交的消息末尾写了「baseline 的 `runner_git_blob` 仍 pin `66d215f2`，而 runner 已被改成 `9998d99d`，producer 门在此之前就会 fail(4)」。**这句是错的**，由第二轮复评证伪、我已独立复核：
+
+- `scripts/capture-entry-evidence.ts:264` 明确定义 `runnerBlob = git rev-parse <entrySha>:scripts/parallel-test.ts`——**pin 指的是 `scripts/parallel-test.ts`，不是 `exp/inter-block-anchor-allocator/baseline-runs.sh`**（后者是 `:280` 的 `wrapper`，另一个对象）。
+- 实测 `git rev-parse HEAD:scripts/parallel-test.ts` = `66d215f2…`，**与 pin 完全一致**，pin 没有陈旧。
+
+我的错误形态：看到 `:280` 附近的 `wrapper` 变量就认定它是「runner」，没有回读 `:264` 那行定义——**从邻近的符号名推断，而不是打开定义**。
+
+**更正后的状态**：① 「producer 门因陈旧 pin 而硬红」这一说法作废；② 我**没有**跑过 producer，因此也**不声称**它是绿的——`fail(4)` 是否发生取决于 `parallel-test.ts` blob 与 files discovery 的实际比较结果，应在最终 merge 态直接运行、以实际 rc 裁决；③ 「不代改 peer 在飞的 gate 文件」这一处置**仍然恰当**，但理由改为「master 仍在前进、同批 evidence 文件持续变化、没有冻结的目标终态」，不再是那个错误的陈旧-pin 理由。
+
+commit 消息属已落地历史，共享分支不 amend（见 CLAUDE.md 并发会话纪律）；本节即该错误断言的更正记录。
 
 **未闭合项**：这份处置由作者自记，尚未经独立 reviewer 复核。
