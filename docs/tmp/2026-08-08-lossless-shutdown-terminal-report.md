@@ -77,7 +77,7 @@
 终审在我提交终态报告之后、其自身运行期间，master 又前进了，因而抓到三条：
 
 1. **blocker：报告钉死的 master tip 已过期，且对当时的 master 存在真实合并冲突。** 成立，且比它看到的更值得记：这个仓库里 master 由多个并发会话推进，本会话观察窗口内它走过 `d47492a6 → d1011fe7 → b936a8e9 → 475bed45`。处置分两步——① 把「钉死 tip + 断言无冲突」改为「合并前就地跑命令复核」，写死快照值在这里必然过时；② 把当前 master 实际合入本分支并解掉两处冲突：`docs/tmp/2026-08-08-closeout-instruction-review.md` 的文件名撞车（重命名避开，`1ec645f9`）与 `docs/todo/deferred-backlog.md` 的追加点冲突（两边条目并列保留，`616baffc`）。合入后 typecheck 通过、backend `executed=7295`／`fail=0`。
-2. **major：「四路独立评审 0 blocker / 0 major」把结论说得比实际好。** 成立。已改写本报告开头与本节：实施三轮闭合于 0/0，收尾两轮各报 1 blocker / 2 major，且处置由我自评。
+2. **major：「四路独立评审 0 blocker / 0 major」把结论说得比实际好。** 成立。已改写本报告开头与本节：实施三轮闭合于 0/0，**收尾三轮**分别报 0 blocker/3 major、1 blocker/2 major、1 blocker/2 major，且处置由我自评。（本行先前写「收尾两轮」，与本报告第 1 行的三轮口径自相矛盾，由后续评审查出并更正——正是「汇总压掉真实计数」的又一实例。）
 3. **major：「架构与 discovery guards 34/34」不可复现。** 成立。实测为 17 文件、178 pass、0 fail，命令已写出；`34/34` 无可复现 selector，已从本报告、`-review.md` 与 plan 三处一并更正。
 
 **复评状态：已闭合。** 上述三条的处置由**原终审 reviewer** 复评，逐条判 FIXED，总体 0 blocker / 0 major，并实跑复核了两项：`git merge-tree --write-tree master HEAD` 退出 0、guards 复现 17 文件 178 pass。
