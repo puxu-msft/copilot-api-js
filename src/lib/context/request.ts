@@ -762,7 +762,7 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown): void {
+  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown, hasError = false): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
     if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
@@ -793,7 +793,7 @@ export function createRequestContext(opts: {
         },
       }),
       ...(reason !== undefined && { reason }),
-      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      ...(hasError && { error: snapshotForRecorder(error) }),
     })
     attempt.settled = true
   }
@@ -1547,7 +1547,7 @@ export function createRequestContext(opts: {
 
     settleGenerationDispatch(dispatch, input) {
       const attempt = selectGenerationAttempt(dispatch)
-      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)
+      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error, "error" in input)
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {

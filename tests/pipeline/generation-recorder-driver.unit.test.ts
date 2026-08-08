@@ -152,8 +152,73 @@ describe("generation recorder v4 driver integration", () => {
     const terminal = await ctx.whenModelOperationFinalized()
 
     expect(terminal.terminal).toMatchObject({ winnerCandidate: identity.candidate, committedDispatch: identity.dispatch })
-    expect(terminal.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)?.verdict).toBe("committed")
+    const committedDispatch = terminal.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)
+    expect(committedDispatch?.verdict).toBe("committed")
+    expect(Object.hasOwn(committedDispatch ?? {}, "error")).toBe(false)
     expect(terminal.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("winner")
+  })
+
+  test("records an undefined consumed recovery quiescence error without adding it to clean settlements", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    const quiesced = Promise.reject(undefined)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const transport = {
+      send: makeTransport(async () => okStream([{ data: "unused" }])).send,
+      async open(): Promise<PhysicalTransportResponse> {
+        return {
+          kind: "stream",
+          lifecycle,
+          upstream: {
+            headers: new Headers(),
+            lifecycle,
+            frames: {
+              async *[Symbol.asyncIterator]() {
+                yield { data: "candidate" }
+              },
+            },
+          },
+        }
+      },
+    }
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      transport,
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected routing rejection")
+    const identity = driver.getCandidateResponseIdentity(request.upstream)
+    if (!identity) throw new Error("missing recovery identity")
+    await driver.runResponseSink(request.upstream, request.env, makeArraySink().sink, { responseMode: "evaluate" })
+
+    const outcome = await driver.commitConsumedCandidateResponse(request.upstream).then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+    expect(outcome).toEqual({ state: "rejected", error: undefined })
+    const liveDispatch = ctx.modelOperationSnapshot.dispatches.find((candidate) => candidate.handle === identity.dispatch)
+    expect(Object.hasOwn(liveDispatch ?? {}, "error")).toBe(true)
+    expect(liveDispatch?.error).toBeUndefined()
+    const dispatch = ctx.modelOperationSnapshot.dispatches.find((candidate) => candidate.handle === identity.dispatch)
+    expect(dispatch?.verdict).toBe("failed")
+    expect(Object.hasOwn(dispatch ?? {}, "error")).toBe(true)
+    expect(dispatch?.error).toBeUndefined()
+    expect(ctx.modelOperationSnapshot.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("failed")
+    ctx.fail("m", new Error("primary terminal"))
+    ctx.finalizeModelOperationDelivery()
+    await expect(ctx.whenModelOperationFinalized()).resolves.toBeDefined()
   })
 
   test("rejecting consumed recovery quiescence closes topology without promotion", async () => {

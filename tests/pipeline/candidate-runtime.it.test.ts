@@ -78,7 +78,7 @@ function recordingPort(options?: { throwSettlementOnce?: unknown }) {
       const row = dispatches.get(handle)!
       row.verdict = input.verdict
       row.settlementReason = input.reason
-      row.settlementError = input.error
+      if ("error" in input) row.settlementError = input.error
     },
   }
   return { port, candidates, dispatches }
@@ -302,7 +302,9 @@ describe("P6-T1 candidate dispatch runtime", () => {
     )
 
     expect(outcome).toEqual({ state: "rejected", error: undefined })
-    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed", settlementError: undefined })
+    const row = recording.dispatches.get(ready.dispatch)
+    expect(row).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed", settlementError: undefined })
+    expect(Object.hasOwn(row ?? {}, "settlementError")).toBe(true)
     await expect(ready.settleDispatch({ verdict: "failed", reason: "after-consumed-undefined" })).resolves.toBeUndefined()
   })
 

@@ -893,7 +893,11 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
           nextStrategy: settlement.retryNextStrategy,
           ...(settlement.waitMs !== undefined && { waitMs: settlement.waitMs }),
         })
-      if (explicit) ctx.settleGenerationDispatch(dispatch, settlement)
+      if (explicit)
+        ctx.settleGenerationDispatch(dispatch, {
+          ...settlement,
+          ...(("error" in settlement) && { error: settlement.error }),
+        })
     },
   }
 }

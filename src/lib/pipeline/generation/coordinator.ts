@@ -306,18 +306,19 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
 
     async settleConsumedReady(candidate, input, verdict, reason) {
       const runtime = runtimes.get(candidate.candidate)
+      let settlementFailed = false
       let settlementError: unknown
       try {
         await candidate.settleDispatch(input)
       } catch (error) {
+        settlementFailed = true
         settlementError = error
       } finally {
-        runtime?.settle({ verdict: settlementError === undefined ? verdict : "failed", reason: settlementError === undefined ? reason : "settlement-failed" })
+        runtime?.settle({ verdict: settlementFailed ? "failed" : verdict, reason: settlementFailed ? "settlement-failed" : reason })
         if (runtime) candidateReservations.get(runtime.handle)?.release()
         if (active === runtime) active = undefined
       }
-      if (settlementError !== undefined)
-        throw settlementError instanceof Error ? settlementError : new Error("Consumed ready settlement failed", { cause: settlementError })
+      if (settlementFailed) throw settlementError
     },
 
     async disposeUnconsumedReady(candidate, input, verdict, reason) {
