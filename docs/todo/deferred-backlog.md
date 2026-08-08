@@ -1205,6 +1205,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
 - **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。
 
+## shutdown drain source 仍由协调器手工枚举（2026-08-08，无损排空评审整改期间发现）
+
+- **根因 / 现状**：`src/lib/shutdown.ts` 的 production `ShutdownDrainSource.getActive()` 手工拼接 `RequestContextManager.getTrackedOperations()` 与 `listInFlightLightweightModelOperations()`。本轮正是因为旧实现只枚举前者，才漏掉 count_tokens／embeddings；修复后当前两类 operation 已闭合，但模式本身仍要求每新增一种不建 `RequestContext` 的旁路 operation 都记得回来改 shutdown 协调器。
+- **结构怪味**：职责错位 + 开放集合手工枚举。operation producer 决定“什么算已接纳”，shutdown 却在外部维护第二份成员清单；下一位复用者仍会踩同类漏接。
+- **理想架构 / 若做需改什么**：建立单一 accepted-operation registry／registration port，让 generation 与 lightweight producer 都向同一个只读 drain view 注册；shutdown 只消费该 view，不知道 operation 种类。迁移时保留每类日志投影，补“新增第三种测试 operation 不改 shutdown 也会被 drain”的正控，并保留本轮两个 omission mutation。
+- **为何暂缓**：当前只有两类 producer，现有 union 已由真实 HTTP 测试与双 mutation 锁住；抽统一 registry 会改动 `RequestContextManager` 所有权、test bootstrap 与日志类型，是独立架构重构，不影响本轮无损关闭正确性。
+- **触发条件**：新增第三种不建 `RequestContext` 的模型 operation，或下一次需要改 `ShutdownActiveOperation` 联合类型时，先做该收敛，禁止继续追加第三个 spread。
+
 ## native `list-search` 在过滤前物化全部全文命中（A3 review finding 4，2026-08-08 在 current master 复核仍成立）
 
 - **根因 / 现状**：`native/history-search/src/lib.rs` 的 `list_search_blocking` 先 `TopDocs::with_limit(searcher.num_docs()).order_by_score()`（`:287`、`:294`）拿到**全部**全文命中，再对每一条 `searcher.doc(address)`（`:306`）解压 stored document，**之后**才在 Rust 侧套结构 filter、排序、分页。于是每次 `search=` 列表请求的代价随「命中数」线性增长，且常数项是 stored-doc 解压——而 `operation_kind` / `endpoint` / `state` / `session_id` / `agent_id` 这些等值维**本来就是 `STRING`（已建索引）**，完全可以下推给倒排索引先筛掉。与计划里「fast-field keyset ＋ `limit+1`」的形状不符。
