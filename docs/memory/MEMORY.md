@@ -50,6 +50,7 @@
 - [config.schema.json 只由 .describe() 生成非 TSDoc](reference-config-schema-json-from-describe-not-tsdoc.md)
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md)
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md)
+- [test:backend 的测试总数不稳定、只有 0 fail 可引用](reference-parallel-test-total-count-unstable.md) — 同树同 commit 连跑得 4032/3756，别追这个假差异
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md)
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md)
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md)
