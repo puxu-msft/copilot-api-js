@@ -180,19 +180,53 @@ describe("createBus", () => {
 
   test("publishAndFlush respects deadlineMs", async () => {
     const bus = createBus()
+    const DEADLINE_MS = 50
     let done = 0
+    // The handler waits on a gate we never open before asserting, rather than on a timer. The
+    // original slept 500ms "intentionally past the deadline"; a gate is the limiting case of that
+    // same intent, and it takes the fixture out of the race: `done === 0` below no longer means
+    // "we beat a 500ms timer", it means the handler genuinely cannot have finished.
+    let releaseHandler!: () => void
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve
+    })
     bus.subscribe(async () => {
-      await new Promise((r) => setTimeout(r, 500)) // intentionally past the deadline
+      await handlerGate
       done++
     })
 
     const systemPub = bus.scope("system")
     const start = Date.now()
-    await systemPub.publishAndFlush({ kind: "system.shutdown_completed" }, { deadlineMs: 50 })
+    const result = await systemPub.publishAndFlush({ kind: "system.shutdown_completed" }, { deadlineMs: DEADLINE_MS })
     const elapsed = Date.now() - start
 
-    expect(elapsed).toBeLessThan(200) // deadline fired well before handler finished
+    // The causal oracle, and it reads no clock: the deadline leg is what returned us here, and it
+    // used the value we asked for — the message embeds `deadlineMs`. This is what the old
+    // `elapsed < 200` was inferring indirectly, and unlike that bound it also catches a deadline
+    // that is ignored entirely (returning at once would record no failure at all).
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures?.[0]).toMatchObject({
+      subscriber: "publishAndFlush",
+      phase: "async-handler",
+      eventKind: "system.shutdown_completed",
+    })
+    // `SubscriberFailure.error` is `unknown` by design, so narrow before reading the message.
+    const deadlineFailure = result.failures?.[0].error
+    expect(deadlineFailure).toBeInstanceOf(Error)
+    expect((deadlineFailure as Error).message).toBe(`Observability flush deadline exceeded after ${DEADLINE_MS}ms`)
     expect(done).toBe(0) // handler still in-flight
+    // Bound on the deadline's DURATION, deliberately kept at the old 4x (200ms). This one is NOT a
+    // loose outlier backstop like the streaming cases': the causal assertions above prove the
+    // deadline leg fired and that it reported the value we asked for, but the reported value is the
+    // REQUESTED one — an implementation whose timer runs for a different duration than it reports
+    // still satisfies them. Measured: with the timer set to 6x the request, a 2000ms ceiling passes
+    // while this one reddens, so widening it would trade away real coverage. Widening is therefore a
+    // guard-weakening decision, recorded for adjudication rather than taken here; see the
+    // dispositions doc. An implementation that ignores the deadline and waits for the handler shows
+    // up as a per-test timeout instead, since the gate stays shut.
+    expect(elapsed).toBeLessThan(DEADLINE_MS * 4)
+
+    releaseHandler()
     await bus.flush() // clean up
   })
 

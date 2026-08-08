@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import { createHash } from "node:crypto"
@@ -37,6 +38,16 @@ import {
   largeSseFixture,
   longConversationFixture,
 } from "./performance-fixtures"
+
+// Every criterion in this file is a RATIO — CAS byte savings, cold-vs-hot cost, retained-vs-peak
+// RSS. How long the work takes is NOT one of them: the CAS case alone hashes and compresses tens of
+// megabytes of fixture text, which costs ~4.5s of real CPU in isolation. Bun's per-test budget is a
+// wall-clock quantity, and under the 16-shard runner (`scripts/parallel-test.ts`) contention
+// stretched that case to 18.03s and timed it out at 15s while its actual ratios were 112x and 219x
+// against a 10x threshold — a healthy mechanism starved by an unrelated budget. Budget the file for
+// its real cost instead (>=10x the isolated worst case AND >=3x the worst observed under sharding);
+// never relax the ratios themselves. Same shape as `tests/infra/validate-entry-evidence.unit.test.ts`.
+setDefaultTimeout(60_000)
 
 function median(values: Array<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
@@ -164,7 +175,7 @@ describe("History V3 store performance", () => {
     console.log("HISTORY_V3_PERF cas-bytes", JSON.stringify({ operations: records.length, v2Bytes, pageDelta, liveBytes, physicalRatio, liveRatio }))
     expect(physicalRatio).toBeGreaterThanOrEqual(10)
     expect(liveRatio).toBeGreaterThanOrEqual(10)
-  }, 15_000)
+  })
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {
     const records = [
