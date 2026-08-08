@@ -46,9 +46,10 @@ interface DispatchRow {
   retryNextStrategy?: string
 }
 
-function createRecording() {
+function createRecording(options?: { throwCandidateSettlementOnce?: unknown }) {
   let candidateSequence = 0
   let dispatchSequence = 0
+  let candidateSettlementThrowPending = options?.throwCandidateSettlementOnce !== undefined
   const candidates = new Map<CandidateHandle, CandidateRow>()
   const dispatches = new Map<DispatchHandle, DispatchRow>()
   const port: DispatchRecordingPort = {
@@ -58,6 +59,10 @@ function createRecording() {
       return handle
     },
     settleCandidate(handle, input) {
+      if (candidateSettlementThrowPending) {
+        candidateSettlementThrowPending = false
+        throw options?.throwCandidateSettlementOnce
+      }
       candidates.get(handle)!.verdict = input.verdict
     },
     beginDispatch(input) {
@@ -491,6 +496,39 @@ describe("P6-T2 generation coordinator", () => {
     await expect(coordinator.disposeUnconsumedReady(primary, { verdict: "discarded", reason: "unconsumed" }, "failed", "caller-failed")).resolves.toBeUndefined()
     expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
     expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("recovery propagates candidate recording failure after disposal and allows a public retry", async () => {
+    const recordingError = new Error("candidate recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({ env: envelope("primary"), createCandidate: candidateFactory({ recording: recording.port, opens, processors }), generationBudget: budget })
+    const primary = await coordinator.runPrimary()
+
+    await expect(coordinator.runRecovery(primary, "recording-failed", envelope("recovery"))).rejects.toBe(recordingError)
+    expect(opens).toEqual(["primary"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+  })
+
+  test("consumed and unconsumed settlement propagate candidate recording failures", async () => {
+    for (const mode of ["consumed", "unconsumed"] as const) {
+      const recordingError = new Error(`${mode} candidate recording failed`)
+      const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+      const opens: Array<string> = []
+      const processors: Array<symbol> = []
+      const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+      const coordinator = createGenerationCoordinator({ env: envelope("primary"), createCandidate: candidateFactory({ recording: recording.port, opens, processors }), generationBudget: budget })
+      const primary = await coordinator.runPrimary()
+      const task = mode === "consumed" ? coordinator.settleConsumedReady(primary, { verdict: "committed" }, "winner", "consumed") : coordinator.disposeUnconsumedReady(primary, { verdict: "discarded", reason: "unconsumed" }, "failed", "unconsumed")
+      await expect(task).rejects.toBe(recordingError)
+      expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+      coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+      expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    }
   })
 
   test("concurrent recovery calls atomically consume one ready parent", async () => {

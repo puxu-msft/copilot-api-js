@@ -44,10 +44,12 @@ interface DispatchRow {
   settlementError?: unknown
 }
 
-function recordingPort(options?: { throwSettlementOnce?: unknown }) {
+function recordingPort(options?: { throwSettlementOnce?: unknown; throwCandidateSettlementOnce?: unknown }) {
   let candidateSequence = 0
   let dispatchSequence = 0
   let settlementThrowPending = options?.throwSettlementOnce !== undefined
+  let candidateSettlementThrowPending = options?.throwCandidateSettlementOnce !== undefined
+  let candidateSettlementCalls = 0
   const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; verdict?: CandidateVerdict; reason?: string }>()
   const dispatches = new Map<DispatchHandle, DispatchRow>()
   const port: DispatchRecordingPort = {
@@ -57,6 +59,11 @@ function recordingPort(options?: { throwSettlementOnce?: unknown }) {
       return handle
     },
     settleCandidate(handle, input) {
+      candidateSettlementCalls++
+      if (candidateSettlementThrowPending) {
+        candidateSettlementThrowPending = false
+        throw options?.throwCandidateSettlementOnce
+      }
       Object.assign(candidates.get(handle)!, input)
     },
     beginDispatch(input) {
@@ -81,7 +88,7 @@ function recordingPort(options?: { throwSettlementOnce?: unknown }) {
       if ("error" in input) row.settlementError = input.error
     },
   }
-  return { port, candidates, dispatches }
+  return { port, candidates, dispatches, candidateSettlementCalls: () => candidateSettlementCalls }
 }
 
 function envelope(label: string): RequestEnvelope {
@@ -179,6 +186,29 @@ function runtime(input: {
 
 describe("P6-T1 candidate dispatch runtime", () => {
   useIsolatedRuntime()
+
+  test("candidate settlement retries after a recording adapter rejection", () => {
+    const recordingError = new Error("candidate recording failed")
+    const recording = recordingPort({ throwCandidateSettlementOnce: recordingError })
+    const candidate = runtime({
+      env: envelope("candidate-recording-retry"),
+      recording: recording.port,
+      open: async () => streamResponse({
+        cancel() {},
+        async dispose() {
+          return { quiesced: true, connectionReusable: false }
+        },
+        quiesced: Promise.resolve(),
+      }, "candidate-recording-retry"),
+    })
+
+    expect(() => candidate.settle({ verdict: "failed", reason: "first" })).toThrow(recordingError)
+    candidate.settle({ verdict: "failed", reason: "second" })
+    candidate.settle({ verdict: "failed", reason: "third" })
+
+    expect(recording.candidateSettlementCalls()).toBe(2)
+    expect(recording.candidates.get(candidate.handle)).toMatchObject({ verdict: "failed", reason: "second" })
+  })
 
   test("WS fallback quiesces the failed dispatch and opens a force-HTTP dispatch in the same candidate", async () => {
     const recording = recordingPort()
