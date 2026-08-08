@@ -21,6 +21,7 @@ import type {
 import type { V3TimingSource } from "./store"
 
 import { toEntrySummary } from "../in-flight"
+import { matchesLifecycleQuery } from "../lifecycle-state"
 
 function nodeValues(record: ModelOperationRecord): Map<string, unknown> {
   return new Map([...record.arena.payloads, ...record.arena.frames].map((node) => [node.handle, node.value]))
@@ -467,8 +468,7 @@ export function recordMatchesQuery(record: ModelOperationRecord, options: QueryO
     if (![record.routing?.requestedModel, record.routing?.resolvedModel].some((model) => model?.toLowerCase().includes(needle))) return false
   }
   const state = lifecycleState(record)
-  if (options.state && state !== options.state) return false
-  if (!options.state && options.success !== undefined && state !== (options.success ? "completed" : "failed")) return false
+  if (!matchesLifecycleQuery({ state }, options)) return false
   if (options.from !== undefined && record.identity.createdAt < options.from) return false
   if (options.to !== undefined && record.identity.createdAt > options.to) return false
   return true

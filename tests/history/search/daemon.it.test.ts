@@ -41,6 +41,7 @@ import {
   //
   createHistorySearchDaemon,
   readTailCursor,
+  writeTailCursor,
 } from "~/lib/history/search/daemon"
 import {
   //
@@ -115,6 +116,8 @@ describe("history-search tail publication boundary", () => {
     commitOperation(dbPath, "publication-op", { conversation: "publicationneedle", responseBody: "resp", upstreamOnly: "up" })
 
     const staged: Array<string> = []
+    let committedDocs = 0
+    let opstamp = 0
     const index: NativeHistoryIndex = {
       async upsert(operationId) {
         staged.push(operationId)
@@ -122,12 +125,21 @@ describe("history-search tail publication boundary", () => {
       async upsertSummary(document) {
         staged.push(document.operationId)
       },
-      async flush() {},
+      async flush() {
+        // Mirror the native protocol rather than being friendlier than it: a commit
+        // publishes what was staged and advances the index's own opstamp, which is what
+        // the tail cursor records to prove it still describes THIS index.
+        committedDocs = staged.length
+        opstamp += 1
+      },
       async search() {
         return []
       },
       async listSearch() {
         return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+      },
+      async generation() {
+        return { docCount: committedDocs, opstamp }
       },
       async close() {},
     }
@@ -283,6 +295,100 @@ describe.skipIf(!NATIVE)("history-search daemon freshness attestation", () => {
   })
 })
 
+describe.skipIf(!NATIVE)("history-search cursor is bound to the index that produced it", () => {
+  test("a cursor that outlived its index cannot certify the rebuilt one — while an intact index keeps its cursor", async () => {
+    const dbPath = path.join(freshDir("daemon-generation-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-generation-index-"), "index")
+    commitOperation(dbPath, "generation-op", { conversation: "generationneedle", responseBody: "resp", upstreamOnly: "up" })
+    const db = openDatabase(dbPath)
+    const row = db.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("generation-op") as { committed_at: number }
+    closeDatabase()
+    const request = {
+      type: "list-search" as const,
+      query: "generationneedle",
+      filters: { operationKinds: ["generation"] },
+      limit: 10,
+      target: { committedAt: row.committed_at, operationIdsAtBoundary: ["generation-op"] },
+    }
+
+    const first = await openIndex(indexPath)
+    const building = createHistorySearchDaemon({ dbPath, indexPath, index: first })
+    await building.tailOnce()
+    await building.flush()
+    building.close()
+    await first.close()
+    expect(readTailCursor(indexPath)?.indexOpstamp).toBeGreaterThan(0)
+
+    // Positive control FIRST: a restart over the intact index must keep its cursor and
+    // attest immediately, with no re-tail. Without this, the rejection below would also
+    // be satisfied by a binding that simply distrusts every restart.
+    const intact = await openIndex(indexPath)
+    const restarted = createHistorySearchDaemon({ dbPath, indexPath, index: intact })
+    expect((await restarted.listSearch(request)).operationIds).toEqual(["generation-op"])
+    restarted.close()
+    await intact.close()
+
+    // The failure the binding exists for, reproduced through a path the native layer
+    // actually takes: with Tantivy's `meta.json` damaged, `open_index` falls back to
+    // `Index::create_in_dir` — a brand-new EMPTY index — while FORMAT and the cursor file
+    // survive. (Wiping the directory outright is NOT this case: the native refuses a
+    // non-empty directory it does not own, and a FORMAT bump deletes the cursor with it.)
+    fs.rmSync(path.join(indexPath, "meta.json"), { force: true })
+    expect(readTailCursor(indexPath)?.operationId).toBe("generation-op")
+
+    const rebuilt = await openIndex(indexPath)
+    const afterRebuild = createHistorySearchDaemon({ dbPath, indexPath, index: rebuilt })
+    await expect(afterRebuild.listSearch(request)).rejects.toThrow(/has not reached frozen target/)
+
+    // …and it recovers by re-tailing, rather than staying refused forever.
+    await afterRebuild.tailOnce()
+    await afterRebuild.flush()
+    expect((await afterRebuild.listSearch(request)).operationIds).toEqual(["generation-op"])
+
+    afterRebuild.close()
+    await rebuilt.close()
+  })
+})
+
+describe("history-search cursor without a recorded index opstamp", () => {
+  test("re-tails from the beginning instead of trusting a cursor it cannot check", async () => {
+    const dbPath = path.join(freshDir("daemon-legacy-cursor-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-legacy-cursor-index-"), "index")
+    commitOperation(dbPath, "legacy-op", { conversation: "legacyneedle", responseBody: "resp", upstreamOnly: "up" })
+    // A cursor written before the binding existed: it claims a frontier past this row.
+    writeTailCursor(indexPath, { committedAt: Date.now() + 60_000, operationId: "legacy-op", indexedAtBoundaryMs: ["legacy-op"] })
+
+    const staged: Array<string> = []
+    const index: NativeHistoryIndex = {
+      async upsert(operationId) {
+        staged.push(operationId)
+      },
+      async upsertSummary(document) {
+        staged.push(document.operationId)
+      },
+      async flush() {},
+      async search() {
+        return []
+      },
+      async listSearch() {
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+      },
+      // A healthy-looking index — documents present, opstamp far ahead — so the discard
+      // below can only come from the cursor being uncheckable, not from the index.
+      async generation() {
+        return { docCount: 5, opstamp: 99 }
+      },
+      async close() {},
+    }
+
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    await daemon.tailOnce()
+
+    expect(staged).toEqual(["legacy-op"])
+    daemon.close()
+  })
+})
+
 describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", () => {
   test("tails, hydrates, and indexes conversation + response text — excludes upstream-only frames", async () => {
     const dbDir = freshDir("daemon-basic-db-")
@@ -353,7 +459,15 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     // `indexedAtBoundaryMs` (2026-07-22, blocker-2 fix) always carries at least the
     // just-tailed row's own id — see daemon.ts's `advanceCursorPastRow`.
     const persistedCursor = readTailCursor(indexPath)
-    expect(persistedCursor).toEqual({ committedAt: expect.any(Number), operationId: "op-1", indexedAtBoundaryMs: ["op-1"] })
+    // `indexOpstamp` (2026-08-08) binds the cursor to the index commit that published it —
+    // see daemon.ts's `validateCursorAgainstIndex`. It is part of the cross-instance
+    // channel this test pins, so it is asserted here rather than loosened away.
+    expect(persistedCursor).toEqual({
+      committedAt: expect.any(Number),
+      operationId: "op-1",
+      indexedAtBoundaryMs: ["op-1"],
+      indexOpstamp: expect.any(Number),
+    })
 
     const index2 = await openIndex(indexPath)
     const daemon2 = createHistorySearchDaemon({ dbPath, indexPath, index: index2 })
