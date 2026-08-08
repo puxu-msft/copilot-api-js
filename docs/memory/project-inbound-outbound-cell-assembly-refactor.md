@@ -30,7 +30,7 @@ metadata:
 - **dead code 推迟 C5 统一删**:fork 互斥（migrated 只走 assembly）,codec direct/reverse 分支 + handler MESSAGES 供料变 dead 但**非双活**,与 codec 出站方法一起 C5 删（无双活安全不变量已满足,删除是清理非安全）。
 - **踩坑**:①改 ctx 加 side-channel 写 → 测试 ctx double 须补该方法（Guard B/C 缺 setInitialSanitizationInfo 抛错）②driver-level reverse IT 注入 strategies 绕过真装配器（R4 反例）→ 改传 reverseMapperHolder 驱动真 assembly ③base 有第 6 条**间歇** payload timeout flake（全套件高负载偶发 5000ms,隔离过,与重构无关,别当回归）④gpt-souls agent 底座故障（proxy 把 gpt 路由 /v1/messages 被拒,正是本重构要修的 bug 类）→ 改主会话 inline / Claude agent。
 
-**权威文档**（同一事实只写一处,深层看这些）:
+**权威文档**（以下来源负责深层契约与冲突裁决；本 memory 保留接手该主题所需的完整语境，并引用这些来源）:
 - [RFC 2026-07-13](../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)——**§0.1 三轮首轮裁决 + §11 定稿设计 + §11.9 v3 修订为权威**（§2-§10 是被证伪的 v1 ⊥ 正交,存档对照）。
 - 三层 plan [docs/plan/inbound-outbound-split/](../plan/inbound-outbound-split/)（plan.md:C0-C6 factory 锚点表 + 12-cell 真实策略栈 + R1-R5 红线;prompts/README:严格串行 DAG）。
 - [交接 kickoff](../rfc/inbound-outbound-split-kickoff.md)（T1-T3 已完成、新会话从 T4 起）。

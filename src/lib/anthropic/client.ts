@@ -24,21 +24,10 @@ import type {
 } from "~/types/api/anthropic"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import {
-  //
-  HTTPError,
-  isAbortError,
-} from "~/lib/error"
+import { HTTPError } from "~/lib/error"
 import { captureHttpHeaders } from "~/lib/fetch-utils"
 import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
-import {
-  //
-  getShutdownSignal,
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
@@ -65,9 +54,9 @@ export interface PostAnthropicUpstreamArgs {
   wire: Record<string, unknown>
   /** Prepared upstream headers (auth + anthropic-version + betas + passthrough). */
   headers: Record<string, string>
-  /** Resolved outbound model name — only used to tag the 529 shutdown error. */
+  /** Resolved outbound model name retained in the prepared transport contract. */
   model: string
-  /** Lifecycle abort signal (shutdown + client-abort, per caller policy). */
+  /** Request-owned lifecycle abort signal. */
   signal?: AbortSignal
   /** Maximum time to receive response headers; disarmed before body consumption. */
   responseHeaderTimeoutMs?: number
@@ -75,46 +64,22 @@ export interface PostAnthropicUpstreamArgs {
 
 /**
  * Thin upstream transport for prepared Anthropic wires: POST `wire` to
- * `${copilotBaseUrl}${path}` through the keepalive/timeout dispatcher, with the
- * shutdown-abort → retryable 529 wrap. Deliberately does NOT inspect
+ * `${copilotBaseUrl}${path}` through the keepalive/timeout dispatcher. It does
+ * not inspect
  * `response.ok`, parse the body, or branch on streaming — those stay with the
  * caller. Shared by the direct `/v1/messages` completion path and the
  * `/v1/messages/count_tokens` handler so both send byte-identical wires.
  */
 export async function postAnthropicUpstream(args: PostAnthropicUpstreamArgs): Promise<Response> {
-  try {
-    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
-    // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
-    return await upstreamFetch(`${copilotBaseUrl(state)}${args.path}`, {
-      method: "POST",
-      headers: args.headers,
-      body: JSON.stringify(args.wire),
-      signal: args.signal,
-      responseHeaderTimeoutMs: args.responseHeaderTimeoutMs,
-    })
-  } catch (error) {
-    // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
-    // client backs off and retries against the restarted instance, rather than
-    // surfacing a raw AbortError as a generic 500.
-    //
-    // The gate is CAUSAL, not temporal (same contract as send.ts): "the shutdown
-    // signal has fired" would also be true for a stale-reaper or hard-deadline
-    // cancellation that merely landed inside the drain window, and calling those
-    // "Server is shutting down" is the same fabrication this classifier family
-    // exists to stop. `isShutdownCausedAbort` matches the Phase 3 reason object
-    // itself; the caller's own signal reason is the second probe for transports
-    // that synthesize a fresh error instead of surfacing `signal.reason`.
-    const shutdownCaused = isShutdownCausedAbort(error) || (args.signal?.aborted === true && isShutdownCausedAbort(args.signal.reason))
-    if (shutdownCaused && error instanceof Error && isAbortError(error)) {
-      throw new HTTPError(
-        SHUTDOWN_ABORT_MESSAGE,
-        529,
-        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
-        args.model,
-      )
-    }
-    throw error
-  }
+  // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+  // transport/upstream-fetch.ts), so Bun upstream connections get TCP keepalive.
+  return await upstreamFetch(`${copilotBaseUrl(state)}${args.path}`, {
+    method: "POST",
+    headers: args.headers,
+    body: JSON.stringify(args.wire),
+    signal: args.signal,
+    responseHeaderTimeoutMs: args.responseHeaderTimeoutMs,
+  })
 }
 
 /** Options for {@link createAnthropicMessages}. */
@@ -182,12 +147,11 @@ export async function createAnthropicMessages(
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
-  // For NON-streaming requests, fold the shutdown signal into the lifecycle signal
-  // so Phase 3 can interrupt both header wait and body consumption. Streaming requests
-  // deliberately omit it: processAnthropicStream owns shutdown for the streamed body.
-  // Client disconnect remains a lifecycle abort on both paths. The response-header
-  // deadline is passed separately below and is disarmed when upstreamFetch resolves.
-  const upstreamSignal = combineAbortSignals(payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
+  // Client disconnect remains a request-owned lifecycle abort. The model-specific
+  // response-header deadline is passed separately and disarmed before body consumption.
+  // Shutdown deliberately contributes no signal: the first process signal must leave
+  // accepted requests fully capable of completing.
+  const upstreamSignal = opts?.clientAbortSignal
 
   const response = await postAnthropicUpstream({
     // web_search bypass hop: append the forwarded client query to the upstream path

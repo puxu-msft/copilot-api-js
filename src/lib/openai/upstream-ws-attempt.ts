@@ -35,7 +35,6 @@ import {
 } from "~/lib/fetch-utils"
 import { isWsResponsesSupported } from "~/lib/models/endpoint"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
   //
@@ -135,11 +134,10 @@ export async function attemptUpstreamResponsesWs(
   // timeout, or stream idle timeout can cleanly tear down the WS request and free
   // the connection's busy state.
   const requestAbort = new AbortController()
-  const shutdownSignal = getShutdownSignal()
   const clientAbortSignal = opts?.clientAbortSignal
   const reaperSignal = opts?.reaperSignal
   const dispatchSignal = opts?.dispatchSignal
-  const wsRequestSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal, dispatchSignal, requestAbort.signal)
+  const wsRequestSignal = combineAbortSignals(clientAbortSignal, reaperSignal, dispatchSignal, requestAbort.signal)
 
   // Forward external aborts into the local controller. Once the lifecycle handle exists,
   // the same callback also owns connection disposal so quiescence cannot depend on a consumer
@@ -159,7 +157,6 @@ export async function attemptUpstreamResponsesWs(
     externalAbortSources.push([source, handler])
     source.addEventListener("abort", handler, { once: true })
   }
-  forwardExternalAbort(shutdownSignal)
   forwardExternalAbort(clientAbortSignal)
   forwardExternalAbort(reaperSignal)
   forwardExternalAbort(dispatchSignal)
@@ -256,7 +253,7 @@ export async function attemptUpstreamResponsesWs(
     disposeAfterHandle = (reason) => {
       void ensureDisposal(reason)
     }
-    if (shutdownSignal.aborted || clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) disposeAfterHandle("Request aborted")
+    if (clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) disposeAfterHandle("Request aborted")
 
     return {
       kind: "ok",
@@ -267,7 +264,6 @@ export async function attemptUpstreamResponsesWs(
         ensureIteratorCleanup,
         requestAbort,
         isCancelled: () => requestAbort.signal.aborted,
-        shutdownSignal,
         clientAbortSignal,
         reaperSignal,
         idleTimeoutMs: resolveStreamIdleTimeoutMs(wire.model),
@@ -284,7 +280,7 @@ export async function attemptUpstreamResponsesWs(
     // the failure originated outside sendRequest (e.g. handshake error).
     requestAbort.abort()
     await connection.dispose("Before-first-event fallback")
-    const cancelled = shutdownSignal.aborted || clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted
+    const cancelled = clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted
     if (cancelled) return { kind: "fallback", error }
     manager.recordFallback(wire.model)
     consola.warn(
@@ -301,7 +297,6 @@ interface StreamWsEventsOptions {
   ensureIteratorCleanup: () => Promise<void>
   requestAbort: AbortController
   isCancelled: () => boolean
-  shutdownSignal: AbortSignal | undefined
   clientAbortSignal: AbortSignal | undefined
   reaperSignal: AbortSignal | undefined
   /** Per-model frame-idle timeout (ms; 0 = disabled), resolved by the caller (INV-2 — this deep fn never sees the model). */
@@ -310,9 +305,8 @@ interface StreamWsEventsOptions {
 }
 
 async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<ServerSentEventMessage> {
-  const { firstEvent, iterator, ensureIteratorCleanup, requestAbort, isCancelled, shutdownSignal, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } =
-    opts
-  const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal)
+  const { firstEvent, iterator, ensureIteratorCleanup, requestAbort, isCancelled, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } = opts
+  const idleAbortSignal = combineAbortSignals(clientAbortSignal, reaperSignal)
   let naturalCompletion = false
 
   try {
@@ -327,14 +321,10 @@ async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<Serv
         abortSignal: idleAbortSignal,
       })
       // STREAM_ABORTED here returns a CLEAN done on purpose. This generator is
-      // never consumed bare — its output is always wrapped by an outer abort
-      // guard (`guardSseIterable` in responses/handler.ts & fallback.ts, or the
-      // hand-written race loop in responses/ws.ts) that owns shutdown vs. client
-      // distinction and throws StreamShutdownError on shutdown. The outer guard
-      // observes the shutdown signal first (its abort racer settles ahead of
-      // this generator resuming + returning), so this clean return is shadowed
-      // and never surfaces as a false "natural completion". Do NOT change this to
-      // throw: that would break bare-iteration callers and double-handle shutdown.
+      // never consumed bare — its output is wrapped by an outer request-owned
+      // abort guard (`guardSseIterable` in responses/handler.ts & fallback.ts, or
+      // the hand-written race loop in responses/ws.ts). The outer guard preserves
+      // client/reaper/dispatch provenance; this inner generator only stops cleanly.
       if (result === STREAM_ABORTED) return
       if (result.done) {
         naturalCompletion = true

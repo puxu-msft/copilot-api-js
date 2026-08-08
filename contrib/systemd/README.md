@@ -6,7 +6,7 @@
 
 ## 原理一句话
 
-零停机靠 app 层 **`SO_REUSEPORT` 重叠窗口接管**：新槽先绑定 `:4141`（此刻新旧两槽同时监听，内核已开始把新连接分给两边），新槽就绪后向旧槽发 `SIGUSR2` 触发交接——旧槽立即关自己的 listen socket（停止 accept）并走 4-phase 优雅 drain，drain 完退出。全程无 socket activation、无 fd 传递，两个槽都是 systemd 原生管理的独立单元实例。
+零停机靠 app 层 **`SO_REUSEPORT` 重叠窗口接管**：新槽先绑定 `:4141`（此刻新旧两槽同时监听，内核已开始把新连接分给两边），新槽就绪后向旧槽发 `SIGUSR2` 触发交接——旧槽立即关自己的 listen socket（停止 accept），无损 drain 已接纳请求，随后完成 durability barrier 并退出。全程无 socket activation、无 fd 传递，两个槽都是 systemd 原生管理的独立单元实例。
 
 ## 安装
 
@@ -52,7 +52,7 @@ sudo /usr/local/bin/copilot-api-deploy.sh
 
 ## 为何 `Restart=on-failure` 而非 `always`
 
-交接（`SIGUSR2` handoff）时旧槽走完 4-phase drain 后是**正常退出（exit code 0）**。如果 `Restart=always`，systemd 会把这次“正常交接后的退出”也当作“需要重启”处理，把旧槽又拉起来——两个进程又抢占同一个端口/资源，交接变成无限重启循环。`on-failure` 只在**非零退出**（真崩溃）时才复活同色槽，交接产生的 exit 0 不触发。
+交接（`SIGUSR2` handoff）时旧槽无损 drain 并完成 durability barrier 后是**正常退出（exit code 0）**。如果 `Restart=always`，systemd 会把这次“正常交接后的退出”也当作“需要重启”处理，把旧槽又拉起来——两个进程又抢占同一个端口/资源，交接变成无限重启循环。`on-failure` 只在**非零退出**（真崩溃）时才复活同色槽，交接产生的 exit 0 不触发。
 
 ## 为何不用 `bun run start`（而是直连 `bun /path/main.ts start`）
 

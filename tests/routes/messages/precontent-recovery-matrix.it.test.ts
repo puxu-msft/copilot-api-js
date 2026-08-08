@@ -26,11 +26,7 @@ import { subscribeModelOperationTerminals } from "~/lib/history/v3/terminal-bus"
 import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
-import {
-  //
-  StreamClientAbortError,
-  StreamShutdownError,
-} from "~/lib/stream"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import {
   //
@@ -883,23 +879,6 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-request-cancel" }).entries[0]
     expect(entry?.attempts).toHaveLength(1)
-  })
-
-  test("shutdown-classified ready error is never replayed", async () => {
-    let calls = 0
-    applyFetchMock(
-      mock(() => {
-        calls += 1
-        return Promise.resolve(createSseResponseThenError([messageStartFrame({ id: "msg_shutdown", model: MODEL, inputTokens: 5 })], new StreamShutdownError()))
-      }),
-    )
-
-    const { createFullTestApp } = await import("../../helpers/test-app")
-    const response = await request(createFullTestApp(), "precontent-shutdown-no-replay")
-    const text = await response.text()
-
-    expect(calls).toBe(1)
-    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "overloaded_error" })
   })
 
   test.each([

@@ -312,12 +312,6 @@ describe("openai-cc codec — formatError", () => {
     expect(body.error.message).toBe("Stream idle timeout")
   })
 
-  test("shutdown → server_error", () => {
-    const codec = createOpenAiCcCodec()
-    const body = JSON.parse(codec.formatError("shutdown", makeEnv({})).data ?? "") as { error: { type: string } }
-    expect(body.error.type).toBe("server_error")
-  })
-
   test("other → server_error", () => {
     const codec = createOpenAiCcCodec()
     const body = JSON.parse(codec.formatError("other", makeEnv({})).data ?? "") as { error: { type: string } }

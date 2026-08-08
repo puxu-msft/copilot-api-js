@@ -944,22 +944,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 1048576,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  // ── shutdown.* ─────────────────────────────────────────────────────
-  {
-    configKey: "shutdown.graceful_wait",
-    stateKey: "shutdownGracefulWait",
-    sampleYamlValue: "33",
-    expectedStateValue: 33,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-  },
-  {
-    configKey: "shutdown.abort_wait",
-    stateKey: "shutdownAbortWait",
-    sampleYamlValue: "66",
-    expectedStateValue: 66,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  },
-
   // ── hooks.* (declarative only — see applyConfigToState) ─────────────
   {
     configKey: "hooks.upstream_module",

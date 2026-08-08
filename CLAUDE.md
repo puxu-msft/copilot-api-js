@@ -11,7 +11,7 @@
 
 ## 文档路由
 
-`docs/` 是本项目架构与决策的**单一事实源**，新会话 / 接手先读 [docs/DESIGN.md](docs/DESIGN.md)（尤其「活的架构现状」表——**当前活/wip/bypass/退役路径以此为准**），再下到具体 spec / ADR。**同一事实只写一处** → user-rule `70-save-knowledge`。
+`docs/` 是本项目架构与决策的**权威来源层**，新会话 / 接手先读 [docs/DESIGN.md](docs/DESIGN.md)（尤其「活的架构现状」表——**当前活/wip/bypass/退役路径以此为准**），再下到具体 spec / ADR。README、CLAUDE.md、skill、HANDOVER 与 memory 可以按各自读者需要完整复述，但必须引用同一个权威 doc / ADR / spec，冲突时回到该来源裁决；不得把“单一事实源”误解成“同一事实只能出现一次”，也不得为了 DRY 把完成任务所需的上下文削成裸指针。易变状态与数字若复述，须带权威引用和快照/commit/date；类型 owner、明细账→派生摘要、活跃进度写入权移交等真正的单写入源仍保持唯一。→ user-rule `41-doc-mgmt` `one-authority-allows-contextual-restatement`。
 
 面向不同读者的三份始终生效文档：
 - [README.md](README.md) —— 面向用户：功能、安装、使用、示例。

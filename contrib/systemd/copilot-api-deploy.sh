@@ -17,7 +17,7 @@ echo "当前活槽=$CUR，换代到=$NEXT"
 # SIGUSR2、持续正常服务——这是相对「原地 restart」的硬优势。
 systemctl start "copilot-api@$NEXT"
 
-# B1：脚本发交接信号 → 旧槽停 accept + 4-phase drain（与 SIGTERM 走同一套 gracefulShutdown，
+# B1：脚本发交接信号 → 旧槽停 accept + 无损 drain（与 SIGTERM 走同一套 gracefulShutdown，
 # 仅日志区分 handoff vs 真关机）。
 systemctl kill -s SIGUSR2 "copilot-api@$CUR"
 

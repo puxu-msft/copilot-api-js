@@ -5,7 +5,6 @@ import {
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
-import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
@@ -58,7 +57,7 @@ export function prepareEmbeddingsRequest(payload: EmbeddingRequest): PreparedEmb
     url: `${copilotBaseUrl(state)}/embeddings`,
     payload: normalizedPayload,
     headers: copilotHeaders(state),
-    signal: getShutdownSignal(),
+    signal: undefined,
     responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(payload.model),
   }
 }
