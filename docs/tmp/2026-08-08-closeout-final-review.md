@@ -24,3 +24,11 @@
 ## 主观建议
 
 无。以上均为会直接改变用户合并动作或评审闭合判断的事实性问题。
+
+## 固定 commit `7fcaef69` 复评
+
+- **原 blocker：FIXED。** `git merge-tree --write-tree master HEAD` 在固定 commit 退出 0；第 5 节不再钉死 master tip，并给出合并前就地复跑命令及两个已知冲突点的处置。
+- **原 major（评审汇总）：FIXED。** 报告开头与第 4 节准确区分实施评审的 0/0、两轮收尾评审的 1 blocker／2 major，以及处置尚待复评的状态，不再把整体说成 0/0。
+- **原 major（guards 计数）：FIXED。** 实跑 `bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts` 得到 17 files、178 pass、0 fail，报告、shutdown review 与 plan 三处一致。
+- **复评资格：** 这三条属于 C 级可逆文档处置，交回原发现者明确复评是合适的；无分歧时不强制换第三方。若报告坚持写“未卷入方复评”，则我不符合该字面身份，应将其改成“原终审 reviewer 复评”，或另请未卷入第三方。
+- **复评 verdict：** 0 blocker／0 major，三条均闭合。
