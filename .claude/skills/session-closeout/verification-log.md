@@ -144,7 +144,7 @@
 
 ## 2026-08-08 · History Worker Batch 1b 主线收口（核验基线 `775b5fb5`）
 
-- **V1 触发链** — ❌ 用户明确发出“已合并，收尾”后，本会话才调用本 skill；此前虽已完成代码、门禁、评审与主线 fast-forward，但没有主动走完六步。命中“用户点名”负样本。｜结论：证伪
+- **V1 触发链** — ⚠️ 客观事实是用户明确发出“已合并，收尾”后，本会话才调用本 skill；此前虽已完成代码、门禁、评审与主线 fast-forward，但没有主动走完六步。不过 V1 只断言“上下文快满、任务没完”时的触发链，本轮属于普通完成收口，不在其适用域，故不计 V1 分母。｜结论：数据不足
 - **V12 每 commit 更新** — ❌ 按 progress frontmatter 的 `base=90e777bc…` 用正文规定的 `--first-parent` 口径审计 15 个提交，发现 5 个含实现／状态改动但未同时更新 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`：`cca342ff`、`df0c7bf4`、`94205e89`、`0415646e`、`d3b4ac77`。缺口集中在评审整改、floor 校准与最终文档／合并点，说明后半程退化成一次性收口更新。最终进度内容已完整回填，但不改变该过程判据失败。｜结论：证伪
 - **V14 活跃写入权收口** — ⚠️ `542007c9` 把 progress frontmatter 改为 `batch-1b-integrated-master-d3b4ac77-superseded-by-plan`，正文明确“已完成并停止更新”，八项待办全为 `[x]`；正式计划 Batch 1b 状态行成为活跃写入点。原文档 reviewer 逐条核验 C1～C6 后判 0 blocker／major。因本轮追加本日志，只记事实。｜结论：数据不足
 - **V7 闭环提交时点** — ⚠️ `git diff-tree --no-commit-id --name-only -r 542007c9` 精确列出正式 plan、Batch 1b progress、评审处置三路径；三个文件内的 `d3b4ac77` 状态锚点均由 `git show 542007c9:<path> | rg` 命中。后续 `775b5fb5` 只更新 kickoff，把执行入口推进到 Task 2a；最终本轮提交路径仍须在独立指令复审闭合后核。因本轮追加本日志，不投证实票。｜结论：数据不足
