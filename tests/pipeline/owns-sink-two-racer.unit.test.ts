@@ -126,7 +126,7 @@ describe("owns-sink two-racer integration (heartbeat SOFT vs upstream-idle HARD)
 
     await sink.write(PING)
 
-    expect(written).toEqual([PING])
+    expect(written).toEqual([{ event: "ping", data: '{"type":"ping"}' }])
   })
 
   test("client-abort → settled-abort, zero terminal bytes written to the dead stream", async () => {
