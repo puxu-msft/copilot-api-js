@@ -36,6 +36,7 @@ import type {
   ModelOperationRecord,
   OperationKind,
 } from "./model-operation-record"
+import type { OperationBlocker } from "./operation-lifecycle"
 import type {
   //
   InboundQuery,
@@ -44,6 +45,16 @@ import type {
 
 import { snapshotWithSummary } from "./activity-summary"
 import { createRequestContext } from "./request"
+
+/** Every {@link OperationBlocker} except `"none"` — a tracked operation is never retained once its blocker is `"none"` (the release primitive removes it synchronously at that point). */
+export type TrackedOperationBlocker = Exclude<OperationBlocker, "none">
+
+/** Immediate aggregation over the tracked-operation registry — never a parallel running counter (Task 4 §Step 4). */
+export interface TrackedOperationsSnapshot {
+  readonly count: number
+  readonly byBlocker: Readonly<Record<TrackedOperationBlocker, number>>
+  readonly oldestAgeMs: number
+}
 
 // ─── Manager Interface ───
 
@@ -89,8 +100,14 @@ export interface RequestContextManager {
    */
   getTrackedOperations(): Array<RequestContext>
   readonly trackedOperationCount: number
-  /** Drain every generation finalizer and surface any canonical-finalization rejection. */
-  drainModelOperationFinalizations(): Promise<void>
+  /**
+   * Immediate aggregation over the tracked-operation registry (recomputed on every call — never a
+   * parallel running counter, so it can never drift from `getTrackedOperations()`). `now` defaults
+   * to `Date.now()`; tests pass a fixed value for deterministic `oldestAgeMs` assertions.
+   */
+  getTrackedOperationsSnapshot(now?: number): TrackedOperationsSnapshot
+  /** Drain every pending canonical finalizer and surface any registered delivery/canonical lifecycle failure. */
+  drainLifecycleFailures(): Promise<void>
 
   /** Start periodic cleanup of stale active contexts */
   startReaper(): void
@@ -247,6 +264,12 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   const operationScopes = new Map<string, RequestContext>()
   const pendingModelOperationFinalizations = new Set<Promise<ModelOperationRecord>>()
   const modelOperationFinalizationFailures: Array<unknown> = []
+  // Process shutdown lifecycle failure barrier storage — dedup key is `${requestId}:${phase}`.
+  // This IS the barrier `onLifecycleFailure` (passed to every `createRequestContext`) consults —
+  // the frozen spec's authoritative meaning of `failureRegistered: true` is "the process shutdown
+  // lifecycle failure barrier has synchronously taken ownership of this error", never a
+  // context-local ledger (see plan Global Constraints + progress file "已作废路线").
+  const lifecycleFailureBarrier = new Map<string, { error: unknown }>()
   const publisher = options?.publisher
   const armDeadlineTimers = options?.armDeadlineTimers ?? true
   // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
@@ -356,6 +379,22 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
     }
   }
 
+  /**
+   * The single release primitive for `operationScopes` (Task 4 Step 3). Both the finalizer
+   * resolve AND reject branches call this — never `operationScopes.delete` directly — so there is
+   * exactly one place that decides whether a tracked operation may leave the registry. Reads the
+   * ctx's OWN published lifecycle snapshot rather than assuming the caller's outcome implies
+   * `blocker === "none"`: a rejected finalizer whose failure was NOT registered by the barrier
+   * (`onLifecycleFailure` returned false/threw/absent) keeps `blocker === "canonical-finalization"`
+   * — deleting it anyway would make the shutdown drain and `/api/status` silently stop reporting a
+   * genuinely-unresolved failure (exactly the "false-green skip" the frozen spec forbids).
+   */
+  function releaseTrackedOperationIfTerminal(id: string): void {
+    const ctx = operationScopes.get(id)
+    if (!ctx || ctx.operationLifecycle.blocker !== "none") return
+    operationScopes.delete(id)
+  }
+
   return {
     create(opts) {
       const ctx = createRequestContext({
@@ -384,19 +423,44 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
             tracked.sealOperationScope()
             const finalization = tracked.whenModelOperationFinalized()
             pendingModelOperationFinalizations.add(finalization)
+            // Terminal outcome (resolve or reject) is handled ONLY here — the single release
+            // primitive below, never inline in these two callbacks (Task 4 Step 3: "禁止在两条
+            // promise callback 内直接 operationScopes.delete"). By the time either branch runs,
+            // RequestContext has already published its terminal lifecycle state (delivery
+            // finalized/failed + canonical completed/failed), so `blocker` reads "none" and the
+            // release is safe. A rejected finalizer's error is queued for `drainLifecycleFailures()`
+            // — that is the process barrier's OWN durability drain, separate from (and in addition
+            // to) `onLifecycleFailure`, which is the synchronous registration gate `failGenerationDelivery`/
+            // the canonical catch consult before publishing a terminal `"failed"` lifecycle state.
             void finalization.then(
               () => {
                 pendingModelOperationFinalizations.delete(finalization)
-                operationScopes.delete(id)
+                releaseTrackedOperationIfTerminal(id)
               },
               (error: unknown) => {
                 pendingModelOperationFinalizations.delete(finalization)
-                operationScopes.delete(id)
                 modelOperationFinalizationFailures.push(error)
                 consola.error(`[context] Generation finalization failed for ${id}:`, error)
+                releaseTrackedOperationIfTerminal(id)
               },
             )
           }
+        },
+        // Process shutdown lifecycle failure barrier — the ONLY synchronous registration entry
+        // point for a delivery/canonical lifecycle failure (Task 4 Step 3). Dedupes on
+        // `(requestId, phase, error identity)` so a repeated call for the SAME already-registered
+        // error returns true (idempotent — a canonical catch racing a late delivery-failure retry
+        // must not silently under-report), while a genuinely new error for an id/phase pair that
+        // already holds a DIFFERENT error returns false (this barrier holds one error per phase,
+        // by design — it is a presence gate, not a multi-error collector; `drainLifecycleFailures()`
+        // is the durability drain for the finalizer promise, and is where multiple distinct
+        // rejections across different requests actually accumulate).
+        onLifecycleFailure: (requestId, failure) => {
+          const key = `${requestId}:${failure.phase}`
+          const existing = lifecycleFailureBarrier.get(key)
+          if (existing !== undefined) return existing.error === failure.error
+          lifecycleFailureBarrier.set(key, { error: failure.error })
+          return true
         },
         publisher,
       })
@@ -449,7 +513,36 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       return operationScopes.size
     },
 
-    async drainModelOperationFinalizations() {
+    getTrackedOperationsSnapshot(now = Date.now()) {
+      const byBlocker: Record<TrackedOperationBlocker, number> = {
+        "request-running": 0,
+        "operation-body": 0,
+        "delivery-finalization": 0,
+        "canonical-finalization": 0,
+      }
+      let oldestStartTime: number | undefined
+      for (const ctx of operationScopes.values()) {
+        const { blocker } = ctx.operationLifecycle
+        // A tracked operation is NEVER retained with blocker "none" — `releaseTrackedOperationIfTerminal`
+        // is the sole point that may delete from `operationScopes`, and it only leaves a ctx in place
+        // when blocker !== "none". Seeing "none" here means that release contract was violated somewhere
+        // (a stray direct `operationScopes.delete` bypass, or a new terminal path that forgot to route
+        // through the release primitive) — surface it as a loud invariant violation rather than silently
+        // folding it into the public aggregate (Task 4 Step 4: "证明 release 接缝漏执行，而不是把它计入公开聚合").
+        if (blocker === "none") {
+          throw new Error(`[context] invariant violation: tracked operation ${ctx.id} has blocker "none" (release primitive was bypassed)`)
+        }
+        byBlocker[blocker]++
+        if (oldestStartTime === undefined || ctx.startTime < oldestStartTime) oldestStartTime = ctx.startTime
+      }
+      return Object.freeze({
+        count: operationScopes.size,
+        byBlocker: Object.freeze(byBlocker),
+        oldestAgeMs: oldestStartTime === undefined ? 0 : now - oldestStartTime,
+      })
+    },
+
+    async drainLifecycleFailures() {
       while (pendingModelOperationFinalizations.size > 0) {
         await Promise.allSettled(pendingModelOperationFinalizations)
       }

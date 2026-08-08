@@ -86,7 +86,45 @@ describe("manager dual registry (C5 Task 5)", () => {
     completeCtx(ctx)
     ctx.finalizeModelOperationDelivery()
     await expect(ctx.whenModelOperationFinalized()).rejects.toThrow(/open candidate/i)
-    await expect(manager.drainModelOperationFinalizations()).rejects.toThrow("Generation finalization failed")
+    await expect(manager.drainLifecycleFailures()).rejects.toThrow("Generation finalization failed")
     expect(manager.trackedOperationCount).toBe(0)
+  })
+
+  test("getTrackedOperationsSnapshot aggregates immediately by blocker with exact shape", async () => {
+    const manager = createRequestContextManager()
+
+    // ctx1: settled, but a tracked operation-body child is still pending — blocker "operation-body".
+    const ctx1 = manager.create({ endpoint: "anthropic-messages" })
+    let release!: () => void
+    ctx1.trackOperationBody(new Promise<void>((r) => (release = r)))
+    completeCtx(ctx1)
+
+    // ctx2: settled with no operation-body child (quiesces instantly), but delivery never started —
+    // blocker "delivery-finalization".
+    const ctx2 = manager.create({ endpoint: "anthropic-messages" })
+    completeCtx(ctx2)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const now = ctx1.startTime + 1000
+    expect(manager.getTrackedOperationsSnapshot(now)).toEqual({
+      count: 2,
+      byBlocker: { "request-running": 0, "operation-body": 1, "delivery-finalization": 1, "canonical-finalization": 0 },
+      oldestAgeMs: now - ctx1.startTime,
+    })
+
+    // Zero-count shape: oldestAgeMs is 0, byBlocker sums to 0.
+    release()
+    await new Promise((r) => setTimeout(r, 5))
+    ctx1.finalizeModelOperationDelivery()
+    await ctx1.whenModelOperationFinalized()
+    ctx2.finalizeModelOperationDelivery()
+    await ctx2.whenModelOperationFinalized()
+    await Promise.resolve()
+    expect(manager.getTrackedOperationsSnapshot(now)).toEqual({
+      count: 0,
+      byBlocker: { "request-running": 0, "operation-body": 0, "delivery-finalization": 0, "canonical-finalization": 0 },
+      oldestAgeMs: 0,
+    })
   })
 })
