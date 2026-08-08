@@ -316,3 +316,197 @@ Expected: true   Received: false
 - 本评审**未修改**被评审对象的任何源码或测试；工作树内只新建了本报告 `docs/tmp/2026-08-08-task9-review-acceptance.md`。
 - 所有变异注入与探针都在 `/tmp/t9`（tar 副本，`node_modules` 符号链接到主树）内进行，每次注入后均反向还原并 `diff -q` 校验。
 - 在工作树内运行过两次官方测试门禁（只读执行，测试自身用 DI 临时目录沙箱）。**期间观察到同伴的未提交改动**（`M src/lib/history/v3/store.ts`、`M tests/history/v3/transport-evidence.it.test.ts`），未触碰。
+
+---
+
+---
+
+# 复评 Round 2（HEAD `129a4dbd`）
+
+复评基线：`/tmp/t10` = 工作树 tar 副本，`git show 129a4dbd:src/lib/history/v3/store.ts` 与副本 `diff -q` 逐字节一致。整棵 `tests/history/` 基线 **`550 pass / 23 skip / 0 fail`**（原 HEAD 是 547，新增 3 条：1 条 dml fallback 负控 + 2 条 journal identity 负控）。
+
+## R2-1 —— BLOCKER 闭合复核（复评问题 1）
+
+### 结论：**两个 BLOCKER（我的 #7 = spec F1；spec F2）都真的闭合了，生产侧与判据侧都闭合。修在了正确的层。** 另有一条相邻契约的代价必须记账，见 R2-1d。
+
+### a) #7 / F1 —— 生产缺陷闭合，且判据有鉴别力（双向已验）
+
+**正向（正确状态不被判红）**：`/tmp/t10` 原样跑我 Round 1 的同一份探针 `probe-fallback-gap.ts`：
+
+```
+STEP1 readiness {"ready":true,"pending":0,"poisoned":0} marker= 1
+STEP2 derived row {"projection_status":"poisoned","projection_error":"canonical operation changed"} marker= null
+STEP3 fallback read returns [{"id":"gap-op","endpoint":"unknown","previewText":""}]
+```
+
+STEP3 从 Round 1 的 `ATTACKER-CONTROLLED` / `FABRICATED PREVIEW` 变成重投影值。缺陷闭合。
+
+**反向（错误状态必须被判红）**：把缓存快捷返回按原缺陷形态重新注入 `summaryFromRow`（用子查询取回 `v3_operations.summary_json` 并直接返回），探针 STEP3 立刻回到 `ATTACKER-CONTROLLED`，整棵 `tests/history/` 变 **`549 pass / 1 fail`**，唯一变红的正是新增负控：
+
+```
+✗ History V3 canonical operation DML final states > the marker-absent fallback publishes the canonical reprojection, never the tampered cached summary
+```
+
+独立复现了协调方自报的 `36 pass / 1 fail`。该负控从**真实读路径** `visitV3Summaries` 取值而不是直接调内部函数，符合「wire 正确性用独立 oracle」。
+
+**修在正确层的核实（`fix-at-the-shared-base-not-where-you-noticed`）**：`rg -n "summary_json" src/` 全仓清点，修复后剩余的读取点全部在 `summary-store.ts`（`:95`、`:116`、`:142`、`:163`），且**每一条都带 `projection_status='ready'` 过滤**、只经派生表。再逐个核实这些 raw primitive 的**生产**调用点是否都被 `withValidatedSummarySnapshot` 包住（这正是进度文件「结构怪味」一节点名要求独立评审做的检查）：
+
+| 调用点 | 是否在 snapshot 内 |
+|---|---|
+| `sessions.ts:28`、`:149` | 是（显式包裹） |
+| `stats.ts:107` | 是 |
+| `queries.ts:351`、`:414`、`:473` | 是 |
+| `queries.ts:231`（`resolveReadySummaryCursor`）、`:263`（`queryReadySummaryCandidates`）、`:321`（`hasPersistedSummaryMatching`） | 是——三者都只在 `queries.ts:512-516` 那个 `withValidatedSummarySnapshot` 闭包里被调用；`:321` 另受 `useReadyProjection` 门控，marker 缺席分支走 `persistedIds`，不碰 raw primitive |
+
+**结论：`summaryFromRow` 当时确实是唯一未受 marker 保护的消费者，修在它身上就是共用基座，没有修浅。** 另外，重投影用的 `recordToEntrySummary(record, stored)` 与 `validateAndMarkSummaryProjectionReady`（`store.ts:1316`）写回 `summary_json` 用的是**同一个函数**，所以 ready 快路径与 fallback 路径的取值按构造一致，不会出现「两条路径给客户端不同答案」的新分叉。
+
+### b) spec F2 —— 闭合；并且**协调方对自己变异结果的判读不完整**（请以本条为准）
+
+协调方报告：「只去掉 decode 侧断言时 recovery 那条仍绿（邻接防线接住、错误信息相同）；两道一起去掉 → 2 fail。我判定这是纵深防御而非假绿。」
+
+**独立复跑，结论：判定的结果对，但支撑它的实验漏了一条测试，真正没有对照的那一层被认反了。**
+
+| 变异 | `tests/history/` | 变红的用例 |
+|---|---|---|
+| 基线（HEAD 原样） | `550 pass / 0 fail` | — |
+| **只**去掉 decode 侧两处 `assertRecordOperationIdentity`（`store.ts:1804`、`:1812`） | `549 pass / 1 fail` | `✗ garbage collection refuses a journal payload whose embedded identity belongs to another row before deleting` |
+| **只**去掉 recovery 的邻接防线（`store.ts:1862` 的 `if (prepared.id !== row.operation_id)`） | **`550 pass / 0 fail`（全绿）** | 无 |
+
+也就是说：
+
+- **decode 侧断言并不是「无对照的纵深防御」——它有自己的正控**，只是那条正控在 **GC** 用例上，不在 recovery 用例上。原因是 GC 路径 `journalEvidenceRefGroups`（`store.ts:1653`）**只有** decode 这一道，没有邻接防线。协调方只看了 recovery 那条测试，所以没看见它。
+- **真正零鉴别力的是 recovery 里的邻接防线** `store.ts:1862`：单独删掉它，全套件依旧全绿。
+
+**我对这一层的裁决**：邻接防线**不构成 finding，也不必补测试**——它防的是「prepare 路径将来改写 identity」这一在当前实现下**结构上不可达**的形态，要给它造正控就必须去变异 prepare 路径本身，那是把测试写成实现的镜像。正确处置是**把「本行为结构性无法正控」写进它旁边的注释**（现在的注释只说它是 adjacent defence，没说这件事），让后来者不会误以为它被守着。
+
+**可以顺手加强、且零成本的一处**：recovery 那条负控现在断言 `/journal operation identity mismatch/i`，而 decode 侧抛的是 `[history/v3] journal operation identity mismatch: expected X, got Y`、邻接防线抛的是裸 `journal operation identity mismatch`——两者都命中同一个正则，所以该用例**分不出是哪一层拦的**。把它的断言收紧到 `/journal operation identity mismatch: expected .*, got /`，recovery 用例就同时成为 decode 层的正控，两条测试各自锚一层。这是我建议的最小改动，不新增测试。
+
+### c) 三个 BLOCKER 的口径澄清
+
+我 Round 1 报的 BLOCKER 只有 1 条（#7），spec 视角报了 2 条（F1、F2），F1 与我的 #7 同源。所以去重后是**两个不同缺陷**，两个都已闭合。若交付文档写「3 个 BLOCKER 已闭合」，建议改成「2 个不同缺陷（其中 1 个被两个视角各报一次）」，避免把同一缺陷计两次。
+
+### d) **MINOR（须记账，不得默默丢）——修复正确，但落在一条本就无界的 fallback 扫描上，常数变大约 1.7 倍**
+
+`queries.ts:267-291` 的 `queryCanonicalSummaryCandidates` 调 `visitV3Summaries` 时 **visitor 从不返回 `false`，也没有 limit**，即 marker 缺席时一次 History 列表请求会走遍整张 `v3_operations`。修复前后都是「每行完整 hydrate」（旧代码同样先调 `storedOperationFromRow` 才用缓存），所以**复杂度类没有变**；但把 `JSON.parse(缓存)` 换成 `recordToEntrySummary(record, stored)` 之后常数明显变大。
+
+实测（探针 `/tmp/t10/probe-fallback-cost.ts`，2000 条 operation、每条 20 轮 ~400B 消息，`visitV3Summaries` 全表遍历，取 3 次中位）：
+
+| 版本 | N | `visitV3Summaries` 中位耗时 |
+|---|---|---|
+| 修复前形态（保留缓存快捷返回） | 2000 | **3167 ms** |
+| HEAD `129a4dbd`（一律重投影） | 2000 | **5452 ms** |
+
+**为什么必须记账而不是接受**：marker 缺席正是**升级后第一次启动**的常态（migration 002 撤 marker，直到 startup strict repair / backfill 跑完之前一直缺席），而这恰好是用户最可能去点 History 的时刻；线性外推到 2 万条即 ~55s 单请求。
+
+**这不是回退理由**——交出被篡改的投影比慢严重得多，修复方向正确。正确处置是按 `no-silently-cut-but-defer` 把「fallback 列表路径无界全表扫描 + 每行全 hydrate」作为独立条目写进 `docs/todo/deferred-backlog.md`（根因 / 当前行为 / 理想架构 = fallback 也按 keyset 分页并早停 / 为何暂缓 / 若做需改什么），而不是让它随本轮 remediation 一起消失在提交历史里。**顺带**：`store-performance.it.test.ts` 现在既没有写路径退化判据（我的 #5，未闭合），也没有 fallback 读路径的任何判据——这两个缺口应该一起用同一个「确定性工作量计数」方案收口。
+
+---
+
+## R2-2 —— schema-5 → 6 升级路径裁决（复评问题 2）
+
+### 裁决：**你的推理是对的，升级路径确实是坏的。你列的两条「反向证据」都不是反证——它们结构上看不见这个缺陷。**
+
+### 2-1) 实测：真实 schema-5 库跑完整生产序列，必然失败
+
+先看 fixture 的真实形态（探针 `/tmp/t10/probe-fixture.ts`，只读打开 `tests/history/v3/fixtures/transport-evidence/schema5-manifest-v1.db`）：
+
+```
+TABLES ["history_store_identity","v3_journal","v3_meta","v3_objects","v3_operations",
+        "v3_search_backlog","v3_search_membership","v3_search_objects","v3_timeline_chunks","v3_tracks"]
+TRIGGERS []
+V3META [{"key":"schema_version","value":"5"}]
+HISTMETA ERR SQLiteError: no such table: history_meta
+```
+
+**关键事实：真实 schema-5 库连 `history_meta` 都没有 → ledger 为空。** 这是判断整件事的枢纽。
+
+再按 `state.ts:123-127` 的生产顺序原样跑（探针 `/tmp/t10/probe-schema5-upgrade.ts`：`openDatabase` → `ensureV3Schema` → `applyForwardMigrations`，`/tmp/t10` 与 HEAD `129a4dbd` 逐字节一致）：
+
+```
+BEFORE version {"value":"5"}
+AFTER ensureV3Schema version {"value":"5"}
+AFTER ensureV3Schema has evidence table null
+MIGRATIONS THREW: Migration 001-operation-summary-projection (up) failed: Original error: no such table: main.v3_transport_evidence
+LEDGER null
+FINAL TABLES [... 无 v3_transport_evidence / v3_operation_evidence_refs / v3_operation_summaries ...]
+```
+
+**`initHistory` 对 migration 失败是 rethrow（refuse-to-start 契约），所以任何持有 schema-5 History 库的存量用户，升级后服务起不来，且 ledger 永远为空、每次重启在同一处死。** 这是 BLOCKER 级的产品缺陷。
+
+机制与你说的完全一致：`ensureV3Schema`（`store.ts:362-374`）在 `version !== "6"` 时早退（它明确声明不拥有版本迁移），而 `MIGRATIONS`（`migrations/index.ts:67`）把 `001-operation-summary-projection` 排在 `001-transport-evidence-schema` 之前，前者 exec 的 `SUMMARY_PROJECTION_MIGRATION_SQL` 里含 `SUMMARY_PROJECTION_TRIGGER_SQL`，后者有 **4 条以 `v3_transport_evidence` 为触发目标**的 trigger 语句（探针 `probe-split-triggers.ts` 实测计数=4）——SQLite 在 `CREATE TRIGGER` 时就要求**目标表**存在。
+
+### 2-2) 你那两条「反向证据」为什么不是反证
+
+| 你引用的证据 | 实际情况 |
+|---|---|
+| `transport-evidence-migration.it.test.ts:53` 那条 schema-5 测试在旧顺序下是绿的 | 它 `const migration = MIGRATIONS.find(name === "001-transport-evidence-schema"); await applyForwardMigrations(db, [migration])` ——**注入单条 migration 列表，根本没跑 `001-operation-summary-projection`**。同文件 `:91` 的 rollback 测试同样只注入这一条。两条都**从不驱动出厂 `MIGRATIONS` 数组**，所以结构上看不见顺序缺陷（`appliesTo 命中 ≠ 链被驱动` 的同型） |
+| `:45` 那条顺序 guard | 见下，它是快照不是不变量 |
+
+**还有一条更像、但同样看不见的**：`migrations-wiring.it.test.ts:193` 「production startup leaves a schema-5 database unchanged…」确实走真实 `initHistory`，但它的 fixture 里写死了 `INSERT INTO history_meta(key,value) VALUES('schema_migrations','["001-operation-summary-projection"]')`——**预先把 001 标记为已执行**，于是 001 被跳过，正好把这条排序风险中和掉。我核过 `git show 10891dff~3:` （即 `ab594029`），这个 ledger 预置**早于本轮 Task 9**，不是本轮引入的。
+
+**所以判据侧的真实缺口是（MAJOR）**：截至 HEAD `129a4dbd`，**没有任何一条已提交测试把出厂 `MIGRATIONS` 数组跑在一个真实的、ledger 为空的 schema-5 库上**。`legacy-db-fixtures.it.test.ts` 在 HEAD 版本里 `grep -c applyForwardMigrations` = **0**（我复核过 `git show 129a4dbd:` 与 `/tmp/t10` 副本，两者都是 0）——你现在未提交的那条 `test.each` 是**第一条**这么做的测试，它一写出来就撞红了，这正说明缺口在哪。
+
+### 2-3) 归属：**这是存量缺陷，不是本轮三个 commit 引入的**
+
+`git log -S "v3_transport_evidence_before_identity_update" -- src/lib/history/v3/summary-schema.ts` → **`72b51429 fix: invalidate changed History evidence`**，它是 `10891dff` 的祖先，且**不在** `ab594029..129a4dbd` 这 6 个提交里。在 72b51429 之前，`SUMMARY_PROJECTION_TRIGGER_SQL` 不含任何以 evidence 表为目标的 trigger，schema-5 空 ledger 库升级是通的。所以：**Task 9 既没引入它、也没闭合它**；但它落在同一片代码面上，且现在已经被 F3 的负控暴露，交付前必须闭合。
+
+### 2-4) 那条顺序 guard 到底守什么：**是快照，不是 Umzug 语义不变量**
+
+`migrations/storage.ts` 的 `HistoryMetaStorage`：`logMigration` 是 `if (!list.includes(name)) list.push(name)`，`executed()` 直接返回该数组，Umzug 的 pending 集合 = `MIGRATIONS` 里不在 executed 中的项、**按 MIGRATIONS 数组顺序执行**。**ledger 是一个集合，它的存储顺序只是插入顺序，没有任何代码依赖它。** 因此 `transport-evidence-migration.it.test.ts:45` 那条 `MIGRATIONS.map(name)` 全等断言，守的不是 append-only 语义，而是一张**数组快照**；它的测试名（「registers … **after** the existing summary migration」）把一个**错误方向**的依赖固化成了守卫——真实依赖恰好相反。
+
+### 2-5) 前移 `001-transport-evidence-schema` 是否安全：**安全，四类库全覆盖**
+
+实测（`/tmp/t10` 内以 `MIGRATIONS.unshift(MIGRATIONS.splice(1, 1)[0])` 在模块尾部就地换序，不动字面量）：
+
+```
+MIGRATIONS OK; version now {"value":"6"}
+LEDGER ["001-transport-evidence-schema","001-operation-summary-projection","002-summary-integrity-invalidation"]
+FINAL TABLES [... v3_transport_evidence / v3_operation_evidence_refs / v3_journal_evidence_refs / v3_operation_summaries 全部就位 ...]
+```
+
+| 库形态 | ledger | 旧顺序 | 新顺序 | 依据 |
+|---|---|---|---|---|
+| 全新库 | 空 | `ensureV3Schema` 已建 v6 全表 → 001-summary OK；transport-evidence 见 `version==="6"` 早退 | 同上，只是先早退再建 summary。**等价** | 换序后 `tests/history/` 545 pass，失败的 5 条全是顺序快照（见 2-7） |
+| schema-5 + 空 ledger（真存量） | 空 | **失败，refuse-to-start** | **成功升到 6** | 上面两个探针 |
+| schema-5 + ledger 含 001-summary（中间版本用户） | 含 001 | 001 跳过 → transport-evidence 升 6 → 002 | 完全相同（001 仍跳过） | pending 由集合成员关系决定，与顺序无关 |
+| 已升到 6 + 三条齐全 | 全 | 全跳过 | 全跳过 | 同上 |
+
+### 2-6) 但我不建议只做换序——给出我认为最小且正确的收口形状
+
+**换序是必要且安全的，但它只让依赖「恰好被满足」，没有把依赖写下来。** 我实测了另一条路（`probe-split-triggers.ts`）：把 `SUMMARY_PROJECTION_TRIGGER_SQL` 中 4 条以 `v3_transport_evidence` 为目标的语句剔除后，剩余部分在真实 schema-5 库上 `exec` **成功**，装出 5 条 summary 侧 trigger。所以「拆分 trigger SQL、让每条 migration 只拥有自己的 DDL」在技术上可行。
+
+**但我不推荐拆分作为本次的修法**，理由是拆分会引入一个更差的中间态：`v3_operation_summaries_after_insert` 的**触发体**里引用 `v3_operation_evidence_refs`（SQLite 建 trigger 时不解析触发体内的表，所以能建成功），拆分后 schema-5 库会短暂存在「summary trigger 已装、evidence 表还没建」的状态；一旦 `001-transport-evidence-schema` 在那之后失败，库里就留着一条一写就炸的 trigger。**换序则保证 evidence 表先于任何 summary trigger 存在，不产生这种中间态。**
+
+因此我建议的收口是三件，缺一不可：
+
+1. **换序**：`001-transport-evidence-schema` 移到 `001-operation-summary-projection` 之前，并在 `MIGRATIONS` 数组处写一行注释点名理由（`SUMMARY_PROJECTION_TRIGGER_SQL` 含 `CREATE TRIGGER … ON v3_transport_evidence`，目标表必须先存在）。
+2. **把快照 guard 换成表达依赖的 guard**：`transport-evidence-migration.it.test.ts:45` 与 `migrations.it.test.ts:112` 现在的 `toEqual([...])` 改为断言**相对次序**——`indexOf("001-transport-evidence-schema") < indexOf("001-operation-summary-projection")`，并在断言旁写明这条次序是 DDL 依赖而非风格。`migrations-wiring` 的三处 ledger 断言仍按集合语义更新为新插入顺序即可（它们守的是「哪些跑过」，不是顺序）。
+3. **补上真正缺的那条判据**：把出厂 `MIGRATIONS`（不传第二参）跑在 `schema5-manifest-v1.db` 的真实副本上，断言 `v3_meta.schema_version → "6"`、三张 evidence 表存在、ledger 三条齐全、且 legacy row 仍可 `hydrateManifest`。**你现在未提交的那条 `test.each` 已经很接近，把它保留下来就是这条判据**——它是唯一驱动出厂数组的升级路径测试，别在换序后因为它转绿就顺手删掉。
+
+### 2-7) 那 5 条红：**全部是顺序快照，没有一条是行为回归，也不是级联**（复评问题 4）
+
+我在 `/tmp/t10` 换序后跑 `tests/history/` 得 `545 pass / 23 skip / 5 fail`，与你观察一致。逐条打开失败断言：
+
+| 用例 | 失败在哪一行 | 性质 |
+|---|---|---|
+| `registers the transport-evidence migration after the existing summary migration` | `transport-evidence-migration.it.test.ts:46` `MIGRATIONS.map(name)` 全等 | 数组快照 |
+| `an explicitly empty migration list is a no-op on a bare DB` | `migrations.it.test.ts:112` **同一个 `MIGRATIONS.map(name)` 全等断言** | 数组快照（顺带：这条断言与该用例标题毫不相干，属名实不符，建议拆走） |
+| `initHistory(true) creates history_meta on the opened V3 db` | `migrations-wiring.it.test.ts:101` ledger 数组全等 | ledger 插入顺序快照 |
+| `a non-empty injected MIGRATIONS array runs REAL DDL…` | `:180` ledger 数组全等 | 同上 |
+| `initHistory rethrows (not swallows) when a migration fails` | `:256` ledger 数组全等 | 同上 |
+
+失败 diff 一律是 `- "001-operation-summary-projection"` / `+ "001-operation-summary-projection"` 换位，**没有任何一条断言的是行为**（建表、触发器存在、rethrow、幂等、回滚等断言全部照绿）。所以这 5 条既不是真实波及、也不是共享 DB 状态级联，而是**同一个「把顺序写死成字面量」的快照判据被复述了 5 遍**（`one-authority-allows-contextual-restatement` 的反面：5 处复述、0 处说明理由）。
+
+### 2-8) 附带裁决：F3 那道 `hasOperationEvidenceRefsTable` 守卫**引入了一个 false-green**
+
+读了你未提交的 diff（`git diff -- src/lib/history/v3/store.ts`）。方向对：无条件查询会让 pre-schema-6 库整体读不出来，那是真 false-red，必须挡。**但守卫的判别对象选错了一层**（`align-probe-depth-with-subject`）：docstring 论证的是「**schema 5 及更早**没有这张表，且只可能存 v1/v2 manifest」，而代码判的是「**这张表存不存在**」。两者不等价——一个 **schema-6** 库若因任何原因缺了 `v3_operation_evidence_refs`（例如 `transport-evidence-migration.it.test.ts:91` 那条 rollback 测试构造的形态），`hydrateManifest` 会对**含非空 ref 集的 v3 manifest 整个跳过对账**，静默 fail-open——正是 F3 要修的那类「一个消费者放行、另一个拒绝」重新出现。
+
+最小修法（保留全部 F3 收益、去掉 fail-open，一行）：
+
+```ts
+if (manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db)) validatePersistedOperationEvidenceRefs(db, manifest, expectedOperationId)
+```
+
+v3 manifest **永远**对账（缺表就大声失败），v1/v2 只在表存在时对账（legacy 库照常可读）。另建议给它配一条负控：schema-6 库 DROP 掉 ref 表后读 v3 manifest 必须抛，而不是返回。
+
+**另一处轻微代价（非 false-green，仅记录）**：`hasOperationEvidenceRefsTable` 每次 `hydrateManifest` 都要查一次 `sqlite_schema`，而 marker 缺席的 fallback 列表会对全表逐行 hydrate（见 R2-1d，2000 行已 5.4s），等于再加 2000 次查询。可在调用侧提升一次、或与 R2-1d 的 backlog 条目一并处理。

@@ -94,9 +94,25 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 ### 未闭合（须在Task 9收口前处置）
 
-- **#2（MAJOR）** Transaction B的commit-time strict gate（`store.ts:919`）整行删除后 `tests/history/` 仍全绿——零鉴别力。需补的负控必须**改变真实数据**（如让 `insertOperationEvidenceRefs` 少写一条ref或写错 `byte_length`），而非沿用抛异常的注入器，否则测不到gate本身。
-- **#5的判据侧**：实现已修，但「写路径不随历史长度退化」目前仍无人守。评审建议改为确定性工作量计数（SQL语句／扫描行数比值）而非wall-clock ratio——不受CPU争用影响、无false-red，且N=256即可抓到整表扫描。
-- **官方门稳定性与tally可复现性**（见上，根因未定）。
+- **#2（MAJOR）已闭合**（commit `af5e4553` 之后的 `cf377959` 批次前）：Transaction B的commit-time strict gate原先零鉴别力——现有注入器只测「在该点回滚」，与「strict校验是否真的在跑」互相独立，删掉 `store.ts:924` 那行仍全绿。修法不改生产代码：让注入器在 `refs` 阶段**删掉一条真实ref行**（改变真实数据，而非抛异常），strict gate若在跑就必须检出并回滚。**鉴别力已实证**：删掉该行时恰好该条变红（`36 pass / 1 fail`），恢复后37全绿。
+- **#5的判据侧**仍未闭合：实现已修（O(1) marker查找），但「写路径不随历史长度退化」目前仍无人守。评审建议改为确定性工作量计数（SQL语句／扫描行数比值）而非wall-clock ratio——不受CPU争用影响、无false-red，且N=256即可抓到整表扫描。**读侧同族问题已记入backlog**（marker缺席时列表fallback走遍全表，N=2000实测 3167ms → 5452ms），两者应用同一套计数判据一起收口。
+- **官方门稳定性与tally可复现性**（根因未定，见上）。
+
+## schema-5 升级路径BLOCKER（本轮新发现并闭合，commit `cf377959`）
+
+**发现路径**：给F3补负控时，在真实fixture上跑完整 `ensureV3Schema + applyForwardMigrations` 撞到；随后交独立reviewer裁决，裁决确认「推理成立，升级路径确实是坏的，两条『反向证据』都不是反证」。
+
+- **缺陷**：`MIGRATIONS` 中 `001-operation-summary-projection` 排在 `001-transport-evidence-schema` 之前，但前者安装的触发器目标是后者创建的 `v3_transport_evidence`（实测该SQL含4条以它为触发目标的语句）。全新库看不见这个顺序问题——`ensureV3Schema` 已建好整个schema-6地基；而真实schema-5库上 `ensureV3Schema` 按设计早退（它不拥有版本迁移），于是summary迁移先跑、撞上不存在的表、抛错且ledger保持为空。`applyForwardMigrations` rethrow ⇒ **存量schema-5用户升级后服务起不来，且每次重启同一处死**。
+- **归属**：存量缺陷，`git log -S` 定位到 `72b51429`（早于本轮基线 `ab594029`）。Task 9既没引入也没闭合它，但它在Task 9的交付面上，必须闭合。
+- **为何一直没被发现（判据缺口，MAJOR）**：`transport-evidence-migration.it.test.ts` 的两条相关用例都走 `applyForwardMigrations(db, [单条注入])`，**从不驱动出厂数组**；`migrations-wiring.it.test.ts` 那条走真实 `initHistory`，但fixture写死 ledger 已含 `001-operation-summary-projection`（该预置早于Task 9）。HEAD上 `legacy-db-fixtures.it.test.ts` 对 `applyForwardMigrations` 的引用数为 **0**。本轮新增的 `test.each` 是第一条把出厂数组跑在真实空ledger的schema-5库上的判据。
+- **收口三件**（按裁决建议）：①换序 + 在 `MIGRATIONS` 处注释点名DDL依赖方向；②把两处**全等快照**改成**相对次序**断言——`storage.ts` 的 `logMigration` 是 `if (!list.includes(name)) push`、pending由**集合成员关系**决定，ledger顺序无人依赖，所以那两处快照守的不是真不变量，其中一处的测试名还把方向相反的依赖固化成了守卫；四处ledger数组全等断言相应改为集合语义；③保留新增的 `test.each` 作为升级路径判据。**不拆分trigger SQL**：实测可行，但 `after_insert` 的触发体引用 `v3_operation_evidence_refs`，拆分会留下「trigger已装、表未建」的中间态，换序无此中间态。
+- **guard变更记录（放宽既有guard，按纪律留痕）**：被改的两处快照与四处ledger全等断言，原本守的不变量经裁决确认为「数组字面量」而非任何行为契约；改形后行为断言（建表/trigger/rethrow/幂等/回滚）**全部照绿**，无一行为回归、无级联。裁决同时指出 `migrations.it.test.ts:112` 那条快照与其用例标题（"empty migration list is a no-op"）毫不相干，属名实不符，已移除并把顺序断言归位到 `transport-evidence-migration.it.test.ts`。
+
+## F3（MAJOR，spec视角）— legacy manifest hydrate 跳过 refs 对账
+
+- **缺陷**：`hydrateManifest` 仅在 `formatVersion === 3` 时对账normalized refs。相邻的 `hydrateTransportEvidence` 与GC路径对v1／v2**也**对账（decoder已把v1／v2的refs规范化为空数组，契约是空↔空），恰好反证这个版本条件是漏闸而非有意契约——同一operation可被strict repair发布为ready、却被evidence hydrate与GC拒绝，消费者间不一致。
+- **修法与一次自我纠错**：先去掉版本条件，实测**打红2条legacy可读性测试**——schema-5库根本没有ref表，无条件查询会让旧库整个读不出来，这是真false-red。遂加表存在性守卫。但复评指出该守卫**引入了新的false-green**：docstring论证的是「schema ≤5」而代码判的是「表存不存在」，**判别对象错了一层**——schema-6库若缺ref表，含非空refs的v3 manifest会被整个跳过对账、静默fail-open。最终形态：`if (manifest.formatVersion === 3 || hasOperationEvidenceRefsTable(db))`，版本在前、表探测只作legacy allowance。
+- **判据**：v1／v2各一条负控（迁到schema 6后插入多余normalized ref必须拒绝）+ 每条内含正样本（未受污染的legacy行必须仍可hydrate，防false-red）；另加一条守false-green的负控（schema-6库缺ref表时，v3 manifest仍须对账）。**鉴别力已实证**：把守卫改回只判表存在的形态，恰好该条变红；恢复后38全绿。
 
 ## 结构怪味审计
 
