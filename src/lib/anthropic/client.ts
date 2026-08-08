@@ -29,11 +29,8 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
-import {
-  //
-  createResponseHeaderTimeoutSignal,
-  captureHttpHeaders,
-} from "~/lib/fetch-utils"
+import { captureHttpHeaders } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   getShutdownSignal,
@@ -70,8 +67,10 @@ export interface PostAnthropicUpstreamArgs {
   headers: Record<string, string>
   /** Resolved outbound model name — only used to tag the 529 shutdown error. */
   model: string
-  /** Combined abort signal (timeout + shutdown + client-abort, per caller policy). */
+  /** Lifecycle abort signal (shutdown + client-abort, per caller policy). */
   signal?: AbortSignal
+  /** Maximum time to receive response headers; disarmed before body consumption. */
+  responseHeaderTimeoutMs?: number
 }
 
 /**
@@ -91,6 +90,7 @@ export async function postAnthropicUpstream(args: PostAnthropicUpstreamArgs): Pr
       headers: args.headers,
       body: JSON.stringify(args.wire),
       signal: args.signal,
+      responseHeaderTimeoutMs: args.responseHeaderTimeoutMs,
     })
   } catch (error) {
     // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
@@ -182,23 +182,12 @@ export async function createAnthropicMessages(
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
-  // For NON-streaming requests, fold the shutdown signal into the fetch signal
-  // so a Phase 3 abort interrupts the (long) header-wait instead of hanging
-  // until responseHeaderTimeout / Phase 4 force-close. Streaming requests deliberately
-  // omit it: the stream guard in processAnthropicStream owns shutdown
-  // for the streamed body, and aborting the fetch mid-body would tear down the
-  // ReadableStream underneath that guard.
-  // `clientAbortSignal` (when supplied) is always folded in: a client
-  // disconnect should terminate the upstream call on both stream and
-  // non-stream paths.
-  // `model` = `wire.model` (the resolved outbound name, same key space as send.ts's
-  // `modelId`) — NOT `payload.model` (client's raw name), so the per-model timeout
-  // key matches what the request is actually sent as.
-  const upstreamSignal = combineAbortSignals(
-    createResponseHeaderTimeoutSignal(model),
-    payload.stream ? undefined : getShutdownSignal(),
-    opts?.clientAbortSignal,
-  )
+  // For NON-streaming requests, fold the shutdown signal into the lifecycle signal
+  // so Phase 3 can interrupt both header wait and body consumption. Streaming requests
+  // deliberately omit it: processAnthropicStream owns shutdown for the streamed body.
+  // Client disconnect remains a lifecycle abort on both paths. The response-header
+  // deadline is passed separately below and is disarmed when upstreamFetch resolves.
+  const upstreamSignal = combineAbortSignals(payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
 
   const response = await postAnthropicUpstream({
     // web_search bypass hop: append the forwarded client query to the upstream path
@@ -208,6 +197,7 @@ export async function createAnthropicMessages(
     headers,
     model,
     signal: upstreamSignal,
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(model),
   })
 
   if (opts?.headersCapture) {

@@ -26,11 +26,8 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
-import {
-  //
-  captureHttpHeaders,
-  createResponseHeaderTimeoutSignal,
-} from "~/lib/fetch-utils"
+import { captureHttpHeaders } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   getShutdownSignal,
@@ -253,7 +250,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   // shutdown is idempotent). A shutdown-abort rewritten to a retryable 529 (below) is prevented
   // from spawning a new attempt by the driver's attempt-boundary cancel gate (RC1+RC3 atomic).
   // `clientAbortSignal` and `reaperSignal` (ctx.lifecycleSignal) are always folded too.
-  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), getShutdownSignal(), clientAbortSignal, reaperSignal, dispatchSignal)
+  const fetchSignal = combineAbortSignals(getShutdownSignal(), clientAbortSignal, reaperSignal, dispatchSignal)
 
   let response: Response
   try {
@@ -265,6 +262,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
       headers,
       body: JSON.stringify(body),
       signal: fetchSignal,
+      responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
       ...(params.onTrailers && { onTrailers: params.onTrailers }),
     })
   } catch (error) {
@@ -282,10 +280,10 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     // a client that hung up in that window (hence the explicit client-signal guard,
     // which the old `getShutdownSignal().aborted` form was missing).
     //
-    // The fetch signal's own reason is the second probe: a transport that synthesizes a
-    // fresh AbortError instead of surfacing `signal.reason` would otherwise lose the
-    // provenance. `fetchSignal.reason` is the FIRST aborted source's reason (AbortSignal.any
-    // semantics), so this cannot mistake a reaper/deadline cancel for a shutdown.
+    // The lifecycle signal's own reason is the second probe: a transport that synthesizes
+    // a fresh AbortError instead of surfacing `signal.reason` would otherwise lose the
+    // provenance. `fetchSignal.reason` is the FIRST aborted lifecycle source's reason
+    // (AbortSignal.any semantics), so this cannot mistake a reaper cancel for shutdown.
     if (
       rewriteShutdownAbort
       && error instanceof Error

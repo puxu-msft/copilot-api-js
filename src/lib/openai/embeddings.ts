@@ -4,10 +4,9 @@ import {
   copilotHeaders,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
@@ -39,6 +38,7 @@ export interface PreparedEmbeddingsRequest {
   readonly payload: EmbeddingRequest & { input: Array<string> }
   readonly headers: Record<string, string>
   readonly signal: AbortSignal | undefined
+  readonly responseHeaderTimeoutMs: number
 }
 
 export interface EmbeddingsExchange {
@@ -58,7 +58,8 @@ export function prepareEmbeddingsRequest(payload: EmbeddingRequest): PreparedEmb
     url: `${copilotBaseUrl(state)}/embeddings`,
     payload: normalizedPayload,
     headers: copilotHeaders(state),
-    signal: combineAbortSignals(createResponseHeaderTimeoutSignal(payload.model), getShutdownSignal()),
+    signal: getShutdownSignal(),
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(payload.model),
   }
 }
 
@@ -69,6 +70,7 @@ export async function executeEmbeddingsRequest(prepared: PreparedEmbeddingsReque
     headers: prepared.headers,
     body: JSON.stringify(prepared.payload),
     signal: prepared.signal,
+    responseHeaderTimeoutMs: prepared.responseHeaderTimeoutMs,
   })
   if (!response.ok) throw await HTTPError.fromResponse("Failed to create embeddings", response)
   return {

@@ -31,6 +31,7 @@ import {
   _resetShutdownState,
   gracefulShutdown,
 } from "~/lib/shutdown"
+import { setStateForTests } from "~/lib/state"
 import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
@@ -93,6 +94,33 @@ describe("createUpstreamHttpTransport", () => {
     expect(upstream.lifecycle).toBeDefined()
     await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
     await expect(upstream.lifecycle!.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+
+  test("response-header timeout is disarmed before a delayed streaming body", async () => {
+    setStateForTests({ responseHeaderTimeout: 0.01 })
+    setFetchMock((_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            init?.signal?.removeEventListener("abort", onAbort)
+            controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"late"}}]}\n\n'))
+            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+            controller.close()
+          }, 40)
+          const onAbort = () => {
+            clearTimeout(timer)
+            controller.error(init?.signal?.reason)
+          }
+          init?.signal?.addEventListener("abort", onAbort, { once: true })
+        },
+      })
+      return new Response(body, { status: 200 })
+    })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+
+    expect((await collect(upstream.frames)).map((frame) => frame.data)).toEqual(['{"choices":[{"delta":{"content":"late"}}]}', "[DONE]"])
   })
 
   test("physical open returns a mandatory stream lifecycle", async () => {
