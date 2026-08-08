@@ -27,9 +27,9 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 
 ## 剩余项
 
-- 扩充 combined-seam tests，覆盖 fresh same-value ID、finish frame顺序、public flat/internal rich与outcomes preserved，随后逐项实施与正控。
-- 运行完整 Task 1b／Task 3矩阵、deterministic performance、target lint和`bun run test:backend`；每个红测试分类、修复或作为阻塞记录。
-- 每个实现commit同步本文件并填入source SHA→本树SHA映射。
+- public flat／internal rich、finish frame顺序与outcomes preserved已有Task 1b／Task 3定向套件覆盖；本轮新增fresh same-value ID combined seam并已绿。剩余的测试实施项为零。
+- 唯一未闭合门为`bun run test:backend`：进程级SIGUSR2导致两次执行均exit 1，必须定位信号来源或在稳定环境重跑。
+- 实现收口后需要主会话安排独立代码复审；本叶子执行单元不能派生reviewer。
 
 ## 在途意图
 
