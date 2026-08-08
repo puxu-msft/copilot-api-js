@@ -51,3 +51,19 @@
 - `temp-manifest.md:7` — 怪味类型：同一不变量的弱一档复述；处置：本轮 major，须按 D1 修。
 - `terminal-report.md:63-64`↔`temp-manifest.md:6` — 怪味类型：门与不可控执行机制脱节；处置：本轮 major，须按 D2 修。
 - 扫描范围还包括四字段 owner／alias／protocol 接缝及 shared working tree／index collision 门；未发现额外 blocker／major 结构怪味。
+
+## 复审轮（`43ffac97`）
+
+- 复审基线：候选 `43ffac9701d015796da45ade974f6c8dc2de44e5`；共享 `master@d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`。
+- 状态：逐项复核中。
+
+- **D1 复核：通过。** manifest `:7-14` 已完整写入承重不变量、路径变化整表门、内容变化逐路径语义复核，以及 patch／原始测试证据／恢复副本／报告草稿不得凭同路径放行的例外；反例与本轮 240-byte false-red disposition 均保留，未写松。
+- **D2 复核：通过。** 全文 grep 未发现残余“Git 门约束 harness cleanup”主张；terminal report `:44-45,72` 与 manifest `:6` 均明确安全性来自已提交 receiver、自动 cleanup 不可控，`master` ancestry 仅门控集成完成及 branch／worktree 清理。manifest 56 行清理前置全部改为无时序前置。
+- **批量替换与 receiver 复核：通过。** 机械比较 `922b741b` 与 `43ffac97`：旧、新均 56 行且路径集合相等；path／type／bytes／用途／最终动作零变化，仅 receiver 26 行与清理前置 56 行按整改意图变化。每行仍为 7 列，56 行均含统一“无时序前置”文本，未见静默删除或表格破坏。
+- 20 份 `*message.txt` 的内容逐一在 `git log d1011fe7 --format=%s` 精确命中，故“对应 commit 已在 master 祖先”真实。6 份 patch 中，`history-worker-batch-1b-wip.patch` 的 SHA-256 与 progress `:20` 完全一致；两份 mutation patch 对应 progress `:55` 的正控说明；其余旧／空／baseline patch 的长期结论由已提交 progress、review dispositions、baseline 与 Git graph 承接。整改列出的 durable receiver 文件均存在于 commit `43ffac97`。
+- **文档互相对账：通过。** report `:44-46,66-72` 与 manifest `:6-14` 对安全不依赖 cleanup 时机、D1 条件、240-byte disposition、56 项人口及 `master` ancestry 职责的叙述一致；未发现新自相矛盾。
+
+### 复审 verdict
+
+- **可定稿。** 原 2 条 major 均已闭合；本轮未发现 blocker／major，仅余不影响定稿的表述边界。
+- **Blocker：0；Major：0。** 候选 `43ffac97` 可再次 fast-forward 后按报告门确认集成完成。

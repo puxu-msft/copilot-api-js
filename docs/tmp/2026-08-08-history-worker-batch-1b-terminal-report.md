@@ -1,6 +1,6 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）。终审已完成（0 blocker／2 major，两条均已采纳整改）；本报告、清单与终审报告的闭环提交待再次 fast-forward 进 `master`。
+> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）。终审两轮闭环：首轮 0 blocker／2 major，整改后复审 **0 blocker／0 major、可定稿**。本报告、清单与终审报告的闭环提交待再次 fast-forward 进 `master`。
 > 核验基线：`master@d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
@@ -63,7 +63,7 @@
 2. ~~在共享checkout执行 `git merge --ff-only`~~ **已由用户完成**，`master@d1011fe7`。
 3. ~~从共享checkout复验安装位置~~ **已完成**，逐条结果见「Git、发布与工作树状态」：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail、13条净路径无残留、三处无关 WIP 保留。
 4. ~~重新冻结临时证据清单人口~~ **已完成**：fast-forward 后重枚举仍为 56 项路径、6,568,699 bytes，与冻结值一致，无漂移。
-5. ~~本报告与临时清单交独立reviewer终审~~ **已完成**：未卷入的跨模型 reviewer 在候选 `922b741b` 上判 **0 blocker／2 major**，报告落盘于 `docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`。两条 major 均已采纳整改（见下「终审处置」）。
+5. ~~本报告与临时清单交独立reviewer终审~~ **已完成，两轮闭环**：未卷入的跨模型 reviewer 首轮在候选 `922b741b` 上判 **0 blocker／2 major**；两条均全额采纳整改后（`43ffac97`），同一 reviewer 复审判 **0 blocker／0 major、可定稿**，并独立复核了整改本身没有引入新缺陷（清单整改前后均 56 行、路径集合一致、每行 7 列、无静默删除；20 份提交消息 receiver 均精确命中 `master@d1011fe7` 祖先提交）。报告落盘于 `docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`（首轮 + 复审轮两节）。
 6. 提交整改后的报告、清单与终审报告，并 fast-forward 进 `master`。**这是「可宣告集成完成、可清理本 branch／worktree」的门，不是临时证据清理的门**——后者不可控且已被设计成何时发生都无害。
 
 ## 终审处置

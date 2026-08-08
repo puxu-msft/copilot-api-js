@@ -1,6 +1,6 @@
 # History Worker Batch 1b 临时证据处置清单
 
-> 状态：Batch 1b 已集成主线（`master@d1011fe7`）。终审已完成（0 blocker／2 major，均已整改）；本清单与终态报告的闭环提交待再次 fast-forward 进 `master`。
+> 状态：Batch 1b 已集成主线（`master@d1011fe7`）。终审两轮闭环（首轮 0 blocker／2 major → 整改后复审 0 blocker／0 major、可定稿）；本清单与终态报告的闭环提交待再次 fast-forward 进 `master`。
 > 清单根：`/home/xp/.claude/jobs/0ff74836/tmp`
 > 冻结边界：2026-08-08，在 `batch1b-terminal-report-message.txt` 与 `shared-main-index.terminal-review.snapshot` 产生后重新枚举；递归包含 regular file 与 symlink，不含目录。
 > 总计：56 项路径；字节快照 6568459 bytes（初次冻结）／6568699 bytes（终审前重枚举）／6568699 bytes（fast-forward 落地后重枚举，无漂移）。
