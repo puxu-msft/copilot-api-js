@@ -4,7 +4,7 @@
 
 **目标：** 让 response-header deadline 在收到 headers 后解除，并让 HTTP/2 local CANCEL、peer RST、session termination 与 unknown 具备结构化、可持久化的来源证据。
 
-**架构：** `upstreamFetch` 统一拥有可解除的 header watchdog，普通生命周期 signal 继续覆盖 body。HTTP/2 transport 在 close 产生点维护 first-writer-wins termination 状态，通过只读 accessor 与 error tag 交给 driver；canonical `ModelOperationDispatch` 再把该事实持久化并投影给 History、日志与 UI。`TransportTermination` 记录事实，`TransportErrorReason` 保持 retry 语义，两者不合并。
+**架构：** `upstreamFetch` 统一拥有可解除的 header watchdog，普通生命周期 signal 继续覆盖 body。HTTP/2 transport 在 close 产生点追加 termination evidence，在 quiescence 后派生保守 attribution；local 与 peer/session evidence 并存时标为 ambiguous，而不是用 first-writer 伪造因果顺序。只读 observation accessor 与 error tag交给 driver，canonical `ModelOperationDispatch` 再持久化并投影给 History、日志与 UI。`TransportTerminationObservation` 记录事实，`TransportErrorReason` 保持 retry 语义，两者不合并。
 
 **技术栈：** TypeScript、Bun、Node `node:http2`、WHATWG `Response`/`ReadableStream`、History V3 canonical manifest、React `ui-v4`。
 
@@ -15,11 +15,11 @@
 - 不启用、不扩展 `anthropic.protect_streaming_generation`；旧 whole-response L2 未来独立删除。
 - 不改变 block-level commit、continuation retry、`partial-degrade`、endpoint 默认值或 server-tool retry 产品策略。
 - `REFUSED_STREAM` 继续是 HTTP/2 唯一具 RFC 9113 零处理保证、可在普通 S4 network-retry 中重发的 stream error。
-- `TransportTermination` 是事实；`TransportErrorReason` 是策略语义。新增 union member必须触发穷尽检查。
-- local intent 在调用 `req.close()` 前记录，first-writer-wins；错误字符串不能覆盖结构化来源。
+- `TransportTerminationEvidence/Observation` 是事实；`TransportErrorReason` 是策略语义。新增 union member必须触发穷尽检查。
+- local intent 在调用 `req.close()` 前追加；后续 stream/session evidence 继续保留。`firstObserved` 不是 wire 因果证明，冲突 attribution 必须是 ambiguous。
 - GOAWAY 只 retire session；在途 stream 正常完成时不得记录 session termination。
 - 旧 History 不 backfill；缺字段保持可读，不能伪造为 peer。
-- H2 RST fixture 使用 `stream.destroy(error)` 并验证客户端确实看到结构化 reset；禁止用未校准的 `stream.close(code)` 作为 peer oracle。
+- peer CANCEL=8 fixture 使用显式 Node test server 的 capability-gated `kHandle.rstStream(8)`，并让 Bun production `http2Fetch` 验证实际 wire code；公共 `stream.close(code)` 与 `stream.destroy(error)` 都不能冒充 CANCEL oracle。
 - 测试不得访问真实 GHC 或 4141；进程级验证使用非 4141 端口、独立配置和独立 History。
 - 每阶段开始前合并当前本地 `master`；每个 load-bearing 测试按 `proving-where-a-command-ran` gate 绑定 worktree。
 - 每阶段结束必须输出结构怪味记录：`file:line`、类型、本轮修或 backlog及理由。
@@ -41,14 +41,14 @@
 
 ### 阶段 2
 
-- `packages/foundation/src/error/transport-termination.ts`：`TransportTermination` SSOT、error tag、first-writer-wins recorder primitive。
+- `packages/foundation/src/error/transport-termination.ts`：`TransportTerminationEvidence/Observation` SSOT、evidence collector、attribution 派生与 error snapshot tag。
 - `packages/foundation/src/error/cancellation-reason.ts`：扩充可持久化 local signal cause。
 - `packages/foundation/src/stream.ts`、`src/lib/abort-bridge.ts`、`src/lib/shutdown.ts`、`src/lib/transport/dispatch-lifecycle.ts`：让 client/shutdown producer 带结构化 cause，并让 lifecycle owner 原样转发 external reason；显式 dispatch dispose 才生成 `dispatch-cancel`。
 - `tsconfig.json`：core compatibility alias 指向 foundation termination SSOT。
-- `src/lib/transport/upstream-fetch.ts`：`onTermination` callback 类型。
-- `src/lib/transport/http2-client.ts`：每 stream termination recorder、session→stream 通知、error tagging。
-- `src/lib/transport/http-transport.ts`、`src/lib/transport/responses-transport.ts`、`src/lib/pipeline/types.ts`：向 live response 暴露只读 termination accessor。
-- `src/lib/pipeline/driver.ts`：buffered recovery 用结构化 termination 排除 local/unknown，同时保留非 H2 legacy 行为。
+- `src/lib/transport/upstream-fetch.ts`：`onTerminationEvidence` callback 类型。
+- `src/lib/transport/http2-client.ts`：每 stream evidence collector、session→stream 通知、error snapshot tagging。
+- `src/lib/transport/http-transport.ts`、`src/lib/transport/responses-transport.ts`、`src/lib/pipeline/types.ts`：向 live response 暴露只读 observation accessor。
+- `src/lib/pipeline/driver.ts`：buffered recovery 只接受 attribution=`peer|session`，排除 `local|ambiguous|unknown`，同时保留非 H2 legacy 行为。
 - `tests/transport/http2-client.it.test.ts`、`tests/transport/http-transport.it.test.ts`、`tests/transport/responses-transport.it.test.ts`、`tests/pipeline/buffered-sink.unit.test.ts`：方向判别和 recovery 双向控制。
 
 ### 阶段 3
@@ -177,19 +177,29 @@ test("disarming the header deadline does not disarm the request lifecycle signal
 })
 ```
 
-`responseWhoseBodyRejectsOn` 在本测试文件内定义，结构与 Step 1 的 stream listener 相同，不引入 production helper。
+`responseWhoseBodyRejectsOn` 在本测试文件内定义，结构与 Step 3 的 stream listener 相同，不引入 production helper。
 
-- [ ] **Step 6：运行阶段 primitive 测试**
+- [ ] **Step 6：添加确定性竞态与单次清理 oracle**
+
+使用 `tests/helpers/fake-clock.ts` 的 `FakeClock` 固定三种终局：
+
+1. headers-first：在 deadline tick 前 resolve Response；`settlements===1`、`clock.liveTimerCount===0`，之后 advance 不 abort body。
+2. timeout-first：先 `clock.advance(timeoutMs)`，再尝试 resolve headers；只得到同一个 `TimeoutError`，`settlements===1`、`liveTimerCount===0`。
+3. external-abort-first：caller reason胜出，header timer清除；`settlements===1`、`liveTimerCount===0`。
+
+“same tick”用同一 `fireAt` 的两个 barrier分别按注册顺序构造 headers-first与timeout-first，不依赖真实 event loop运气。`AbortSignal.any` 的内部 listener不可作为公开测试 seam，不伪造 add/remove计数；listener清理由 H2 integration在具名 post-response listener上验证：给 test-only signal facade记录 add/remove，断言 natural end、external abort、header timeout三路各add/remove一次。同时断言 `onStreamClosed` 只调用一次、reservation最终回0。
+
+- [ ] **Step 7：运行阶段 primitive 测试**
 
 Run: `bun test tests/transport/upstream-fetch.unit.test.ts --timeout 10000`
 
 Expected: PASS。
 
-- [ ] **Step 7：执行正向变异控制**
+- [ ] **Step 8：执行正向变异控制**
 
-冻结一个 exact patch，把 `.finally(() => clearTimeout(timer))` 临时改成不 clear。运行 Step 3 的 long-body 测试，必须因 `TimeoutError` 变红；反向应用同一 patch并执行 reverse-apply check。再冻结第二个 patch，把 `combined` 改成只用 `header.signal`，运行 lifecycle test，必须变红。遵循 `mutation-baseline-must-contain-the-real-impl`，不得整文件 restore。
+冻结一个 exact patch，把 `.finally(() => clearTimeout(timer))` 临时改成不 clear。运行 Step 3 的 long-body测试和 Step 6 cleanup矩阵，必须变红；反向应用同一 patch并执行 reverse-apply check。再冻结第二个 patch，把 `combined` 改成只用 `header.signal`，运行 lifecycle test必须变红。第三个 patch允许 timeout与resolve双 settle，Step 6 的 `settlements===1` 必须变红。遵循 `mutation-baseline-must-contain-the-real-impl`，不得整文件 restore。
 
-- [ ] **Step 8：提交 Task 1**
+- [ ] **Step 9：提交 Task 1**
 
 ```bash
 git add -- src/lib/fetch-utils.ts src/lib/transport/upstream-fetch.ts tests/transport/upstream-fetch.unit.test.ts
@@ -394,61 +404,74 @@ git commit -m "docs: mark header deadline scope landed"
 - Create: `tests/infra/transport-termination.unit.test.ts`
 - Test: `tests/infra/abort-bridge.unit.test.ts`
 - Test: `tests/transport/dispatch-cleanup-baseline.it.test.ts`
-- Test: shutdown/stream classification tests that exhaust `CancellationCause`
+- Test: `tests/streaming/stream-guard.unit.test.ts`
+- Test: `tests/shutdown/shutdown-mid-stream.http.test.ts`
 
 **Interfaces:**
-- Produces: `TransportTermination`
-- Produces: `TransportTerminationRecorder` with `record(value): TransportTermination` and `current(): TransportTermination | undefined`
-- Produces: `tagTransportTermination(error, termination)` / `getTransportTermination(error)` through cause chain
+- Produces: `TransportTerminationEvidence` and `TransportTerminationObservation`
+- Produces: `TransportTerminationCollector` with `append(evidence): void`, `snapshot(): ReadonlyArray<...>`, `observe(): TransportTerminationObservation | undefined`
+- Produces: `tagTransportTerminationObservation(error, observation)` / `getTransportTerminationObservation(error)` through cause chain
 - Extends: `CancellationCause` with `client-disconnect | shutdown | response-header-timeout`
 
-- [ ] **Step 1：写 recorder first-writer-wins 和 cause-chain 测试**
+- [ ] **Step 1：写 append-only evidence、归因与 cause-chain 测试**
 
 ```ts
-test("first termination wins and survives error cause wrapping", () => {
-  const recorder = createTransportTerminationRecorder()
-  const local = recorder.record({ source: "local-signal", code: 8, cause: "request-deadline" })
-  recorder.record({ source: "peer-rst", code: 8 })
-  const wrapped = new Error("outer", { cause: tagTransportTermination(new Error("inner"), local) })
-  expect(recorder.current()).toEqual(local)
-  expect(getTransportTermination(wrapped)).toEqual(local)
+test("collector preserves conflicting evidence and derives ambiguous attribution", () => {
+  const collector = createTransportTerminationCollector()
+  collector.append({ kind: "local-signal", observedAt: 10, code: 8, cause: "request-deadline" })
+  collector.append({ kind: "stream-error", observedAt: 11, code: 8, errorCode: "ERR_HTTP2_STREAM_ERROR" })
+  const observation = collector.observe()
+  expect(observation).toEqual({
+    firstObserved: "local-signal",
+    attribution: "ambiguous",
+    evidence: [
+      { kind: "local-signal", observedAt: 10, code: 8, cause: "request-deadline" },
+      { kind: "stream-error", observedAt: 11, code: 8, errorCode: "ERR_HTTP2_STREAM_ERROR" },
+    ],
+  })
+  const wrapped = new Error("outer", { cause: tagTransportTerminationObservation(new Error("inner"), observation!) })
+  expect(getTransportTerminationObservation(wrapped)).toEqual(observation)
 })
 ```
 
-另测 unknown、session、body cancel 的 frozen value与不可改写。
+同文件覆盖 local-only→local、peer-only→peer、session-only→session、peer+session无local→session、local+session→ambiguous、bare stream-close code0→unknown、追加顺序不丢 evidence、返回值 deep-frozen。
 
 - [ ] **Step 2：实现 termination SSOT**
 
-```ts
-export type TransportTermination =
-  | Readonly<{ source: "local-signal"; code: number; cause?: CancellationCause }>
-  | Readonly<{ source: "local-body-cancel"; code: number }>
-  | Readonly<{ source: "peer-rst"; code: number }>
-  | Readonly<{ source: "session"; event: "error" | "close"; code?: number }>
-  | Readonly<{ source: "unknown"; code?: number }>
-```
-
-Symbol tag和 recursive cause reader跟 `transport-reason.ts` 同型；recorder 只接受首写并 `Object.freeze`。
+按 spec 定义 evidence union与 observation。collector 不允许写 `unknown` evidence；unknown只由 `observe()` 在已有 failure close但证据不足时派生。归因优先看 evidence集合而非首写：local+非零stream reset/session→ambiguous；无local但有session→session（同时保留stream evidence）；无local/session且有非零stream reset→peer。规则在类型注释中冻结并由Step 1逐格覆盖。Symbol tag只附不可变 observation snapshot，不附 live collector。
 
 - [ ] **Step 3：扩充 producer cause，但不改变边界结果**
 
 - `bridgeClientAbort`：`clientAbort.abort(cancellationAbortError("client-disconnect", "Client disconnected"))`。
 - `shutdownAbortReason()`：保留 fresh object identity，同时 tag 为 `shutdown`。
 - Task 1 的 header timeout error：tag 为 `response-header-timeout`，`name` 仍为 `TimeoutError`。
-- `createDispatchLifecycle(externalSignal)`：external abort 时直接 `controller.abort(externalSignal.reason)`，不得再经 `cancel(reasonString)` 洗成 `dispatch-cancel`；只有调用公开 `lifecycle.cancel(reason)` 的 hedge loser/forced disposal 路径生成 `dispatch-cancel`。
-- 现有 `switch(getCancellationCause)` 对这三个新 cause 必须显式处理或明确落已有 direct-signal 分支；不得因 default 吞掉。
+- 现有 `switch(getCancellationCause)` 对三个新 cause显式处理，保持现有 client-facing分类。
 
-- [ ] **Step 4：运行类型与 producer 测试**
+- [ ] **Step 4：给 dispatch lifecycle 写 external/explicit 双向测试并修实现**
 
-Run: `bun test tests/infra/transport-termination.unit.test.ts tests/infra/abort-bridge.unit.test.ts tests/infra/error.unit.test.ts tests/transport/dispatch-cleanup-baseline.it.test.ts tests/shutdown --timeout 30000`
+在现有 `tests/transport/dispatch-lifecycle.unit.test.ts` 添加：
+
+1. external controller以 tagged `request-deadline` reason abort；`lifecycle.signal.reason` 必须是同一对象，`getCancellationCause`仍为 request-deadline。
+2. 直接 `lifecycle.cancel("lost hedge")`；reason必须是新建的 dispatch-cancel。
+3. `dispose()` 在没有 external abort时仍产生 dispatch-cancel；external已先 abort时不得覆盖其 reason。
+
+实现中 external listener调用 `controller.abort(externalSignal.reason)` 并启动 iterator cleanup；不得经公开 `cancel(reasonString)`。公开 `cancel`/`dispose` 保持 `abortReason("dispatch-cancel")`。
+
+- [ ] **Step 5：运行类型与 producer 测试**
+
+Run: `bun test tests/infra/transport-termination.unit.test.ts tests/infra/abort-bridge.unit.test.ts tests/infra/error.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/transport/dispatch-cleanup-baseline.it.test.ts tests/streaming/stream-guard.unit.test.ts tests/shutdown/shutdown-mid-stream.http.test.ts --timeout 30000`
 
 Expected: PASS。
 
-- [ ] **Step 5：提交 Task 4**
+- [ ] **Step 6：执行 producer mutations**
+
+Mutation A：collector遇第二条 evidence提前return，ambiguous测试红。Mutation B：external listener重新调用 `dispose(reason.message)`，external identity测试红。Mutation C：显式 cancel原样转发无tag reason，dispatch-cancel正样本红。均用 exact patch/reverse-check恢复。
+
+- [ ] **Step 7：提交 Task 4**
 
 ```bash
-git add -- packages/foundation/src/error/transport-termination.ts packages/foundation/src/error/cancellation-reason.ts packages/foundation/src/index.ts tsconfig.json src/lib/abort-bridge.ts src/lib/shutdown.ts src/lib/transport/dispatch-lifecycle.ts src/lib/fetch-utils.ts tests/infra/transport-termination.unit.test.ts tests/infra/abort-bridge.unit.test.ts tests/infra/error.unit.test.ts tests/transport/dispatch-cleanup-baseline.it.test.ts tests/shutdown
-git commit -m "feat: define transport termination provenance"
+git add -- packages/foundation/src/error/transport-termination.ts packages/foundation/src/error/cancellation-reason.ts packages/foundation/src/index.ts tsconfig.json src/lib/abort-bridge.ts src/lib/shutdown.ts src/lib/transport/dispatch-lifecycle.ts src/lib/fetch-utils.ts tests/infra/transport-termination.unit.test.ts tests/infra/abort-bridge.unit.test.ts tests/infra/error.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/transport/dispatch-cleanup-baseline.it.test.ts tests/streaming/stream-guard.unit.test.ts tests/shutdown/shutdown-mid-stream.http.test.ts
+git commit -m "feat: define transport termination evidence"
 ```
 
 ## Task 5：HTTP/2 stream recorder 与 session 关联
@@ -456,76 +479,97 @@ git commit -m "feat: define transport termination provenance"
 **Files:**
 - Modify: `src/lib/transport/upstream-fetch.ts:43-58`
 - Modify: `src/lib/transport/http2-client.ts:95-1185`
-- Create: `tests/transport/fixtures/http2-peer-rst-oracle.mjs`
+- Create: `tests/transport/fixtures/http2-peer-cancel-server.mjs`
 - Test: `tests/transport/http2-client.it.test.ts`
 
 **Interfaces:**
-- Consumes: `createTransportTerminationRecorder()`
-- Produces: `classifyHttp2StreamTermination(input): TransportTermination | undefined`，production与fixture test共用
-- Produces: `UpstreamFetchInit.onTermination?: (termination: TransportTermination) => void`
-- Invariant: callback最多发布一次 failure termination；normal end不调用。
+- Consumes: `createTransportTerminationCollector()`
+- Produces: `UpstreamFetchInit.onTerminationEvidence?: (evidence: TransportTerminationEvidence) => void`
+- Produces: `UpstreamFetchInit.getTerminationObservation?:` 不新增；observation 由 transport-local collector accessor 暴露（Task 6）
+- Invariant: evidence callback可多次追加且保持顺序；normal end不发布 failure evidence。
 
-- [ ] **Step 1：先写 local body cancel 与 local signal 测试**
+- [ ] **Step 1：先写 local body cancel 与 local signal evidence 测试**
 
-扩展现有 body-cancel 测试，捕获 `onTermination`：
+扩展现有 body-cancel测试，捕获 evidence：
 
 ```ts
-const observed: TransportTermination[] = []
-const response = await http2Fetch(url, { onTermination: (value) => observed.push(value) })
+const observed: TransportTerminationEvidence[] = []
+const response = await http2Fetch(url, { onTerminationEvidence: (value) => observed.push(value) })
 await response.body!.cancel("test")
-expect(observed).toEqual([{ source: "local-body-cancel", code: http2.constants.NGHTTP2_CANCEL }])
+expect(observed.map(({ observedAt: _, ...value }) => value)).toContainEqual({
+  kind: "local-body-cancel",
+  code: http2.constants.NGHTTP2_CANCEL,
+})
 ```
 
-signal 测试用 tagged `request-deadline` reason，headers 后 abort并断言 local-signal/cause。
+signal测试用 tagged `request-deadline` reason，headers后 abort；断言先有 local-signal evidence，若 Bun随后发 stream error/close则它们也保留，最终 observation为 local或ambiguous，不允许丢 local cause。
 
-- [ ] **Step 2：写 faithful peer RST 与 unknown 双向测试**
+- [ ] **Step 2：建立真实 wire-level peer CANCEL=8 oracle，并跑 production client**
 
-server 用 `stream.destroy(new Error("peer reset"))`。测试先断言客户端真实 `rstCode !== 0` 或收到 `ERR_HTTP2_STREAM_ERROR`，再断言 `peer-rst`。另构造 session close/`rstCode=0` 无 local intent样本，断言 `unknown`，不能误判 peer。
+新增 `tests/transport/fixtures/http2-peer-cancel-server.mjs`，必须由测试显式解析 `node -p process.execPath` 得到 Node executable启动；fixture启动时输出 `{runtime:process.release.name,version,port}`，非 `node` 立即退出非零。server写一帧DATA后，通过 test-only capability probe找到 stream私有 `Symbol(kHandle)`，确认 `typeof handle.rstStream === "function"`，调用 `handle.rstStream(NGHTTP2_CANCEL)`；能力缺失时明确失败，绝不回退 `stream.close()`。
 
-固定新增 `tests/transport/fixtures/http2-peer-rst-oracle.mjs`：Node 进程启动 h2c server，用 `stream.destroy(new Error("peer reset"))`，client 将事件序列和 `rstCode` 输出 JSON。`http2-client.ts` 导出纯函数 `classifyHttp2StreamTermination({ local, session, ended, rstCode, streamErrored })`；production stream event handler和 `http2-client.it.test.ts` 都调用它。测试用 `Bun.spawn([process.execPath, fixture])` 执行 Node oracle，断言它先观测到非零 reset，再把该 JSON 输入同一个 production classifier并得到 `peer-rst`。Bun 主腿单独测试 recorder/local echo；不得因 Bun fixture 不忠实而跳过 peer 正样本。
+Bun测试进程继续使用 production `http2Fetch` 连接该 Node server，收集 `onTerminationEvidence`，先断言 body/req真实观测 `rstCode===8`，再断言 observation attribution=`peer`、evidence含 stream-close/error code8。这样 Node只产生wire，Bun production代码负责事件提取与callback，不做JSON回灌classifier。
 
-- [ ] **Step 3：在 entry 增加 active stream observers**
+- [ ] **Step 3：分开写 bare close、session、GOAWAY 正负矩阵**
+
+1. bare stream close/rstCode0、无session evidence→最终 unknown。
+2. session error先于stream close→evidence含session-error与stream-close，归session。
+3. stream close先于session close→先只有不足证据，session-close随后仍追加；quiescence后归session，不被unknown封口。
+4. local intent后session error→ambiguous，双方evidence均在。
+5. GOAWAY后在途stream正常end→无failure observation。
+
+mutation删除session通知后，第2/3正样本必须红；把bare close当peer，第1负样本必须红。
+
+- [ ] **Step 4：在 entry 增加 active stream evidence observers**
 
 `H2SessionEntry` 增加：
 
 ```ts
-activeStreams: Set<{ recordSession(event: "error" | "close", code?: number): void }>
+activeStreams: Set<{ appendSessionEvidence(event: "error" | "close", errorCode?: string): void }>
 ```
 
-stream 创建后注册 observer，`req.close` 后移除。session `error` 先通知 active streams再 dispose；session `close` 只补 first-writer。GOAWAY 继续只 retire，不通知 termination。
+stream创建后注册 observer，仅在stream真正quiesced后移除。session `error`/`close` 按发生顺序通知当前active streams，再 dispose；GOAWAY继续只retire、不追加 evidence。
 
-- [ ] **Step 4：实现 per-stream recorder**
+- [ ] **Step 5：实现 per-stream collector 与 publish helper**
 
-在 `runHttp2Fetch` 建 recorder。所有本地 `req.close(CANCEL)` 改为共享 helper：
+在 `runHttp2Fetch` 建 collector。所有本地 `req.close(CANCEL)` 使用共享 helper：
 
 ```ts
-const closeLocally = (termination: TransportTermination): void => {
-  publishTermination(recorder.record(termination))
+const closeLocally = (evidence: TransportTerminationEvidence): void => {
+  collector.append(evidence)
+  init.onTerminationEvidence?.(evidence)
   req.close(http2.constants.NGHTTP2_CANCEL)
 }
 ```
 
-- pre-response/post-response signal 使用 local-signal + `getCancellationCause(signal.reason)`。
-- `ReadableStream.cancel()` 使用 local-body-cancel。
-- stream error/close：local 已有值则 tag/发布该值；否则 session 已记录则 session；否则 `rstCode > 0` 则 peer-rst；否则 unknown。
-- natural `end` 后 close不发布 termination。
-- body `controller.error()` 的 Error 同时保留 `TransportErrorReason("mid-body-close")` 与 `TransportTermination`。
+- pre/post-response signal追加 local-signal + `getCancellationCause(signal.reason)`。
+- `ReadableStream.cancel()`追加 local-body-cancel。
+- stream error/end/close都检查当时 `req.rstCode`；任一事件看到非零code都追加peer结构evidence。只有`end`时code===0才标记natural end；code>0的end必须`controller.error()`，不能误当clean completion。
+- session observer追加session evidence。
+- body `controller.error()` 的 Error附当前 immutable observation snapshot；后续 evidence仍由 accessor在quiescence后提供最终值。
 
-- [ ] **Step 5：清理 listener 与 reservation 回归**
+- [ ] **Step 6：在 dispatch quiescence 前完成 evidence finalization**
 
-post-response abort listener改为具名函数，在 req close/natural end时移除。运行现有 reservation、idle reap、shutdown race tests，确认无 listener/slot 泄漏。
+post-response abort listener改为具名函数，在stream close/natural end时移除。stream `close` 不立即冻结 observation，也不立即从 `activeStreams` 删除 observer；先执行 `finalizeTransportEvidence()`：
 
-- [ ] **Step 6：运行 HTTP/2 定向测试与正向变异**
+1. 读取 entry 已记录的 session error/close evidence；
+2. 若 session listener 尚未运行但 `entry.session.closed || entry.session.destroyed`，追加 session-close evidence；
+3. `await new Promise<void>((resolve) => setImmediate(resolve))`，让同一 transport teardown turn 中反序到达的 session listener有机会追加；
+4. 再读取一次 session terminal state，随后移除 observer、调用 `onStreamClosed`、resolve `requestClosed`。
+
+observation 只在 accessor读取或附到error snapshot时派生，最终 canonical settlement须在 `lifecycle.quiesced` 后读取 accessor。测试用可控 fake session分别触发 `session-error→stream-close` 和 `stream-close→session-close-before-setImmediate`，两者最终evidence/attribution相同；另测普通stream close后下一轮无session事件时归unknown且observer清理。运行 reservation、idle reap、shutdown race，断言 `onStreamClosed`一次、active observer移除、slot回0。
+
+- [ ] **Step 7：运行 HTTP/2 定向测试与正向变异**
 
 Run: `bun test tests/transport/http2-client.it.test.ts --timeout 30000`
 
-Mutation A：临时把 local record 移到 `req.close()` 后，Bun local echo test必须红。Mutation B：让 peer 分支忽略 local intent，local test必须红。Mutation C：将 `rstCode=0` 判 peer，unknown test必须红。每次用 frozen exact patch注入/反向恢复。
+Mutation A：local close前不append，local cause测试红。Mutation B：collector丢后续stream/session evidence，ambiguous/session-order测试红。Mutation C：将rstCode0判peer，unknown测试红。Mutation D：GOAWAY通知termination，clean GOAWAY测试红。每次用 frozen exact patch注入/反向恢复。
 
-- [ ] **Step 7：提交 Task 5**
+- [ ] **Step 8：提交 Task 5**
 
 ```bash
-git add -- src/lib/transport/upstream-fetch.ts src/lib/transport/http2-client.ts tests/transport/fixtures/http2-peer-rst-oracle.mjs tests/transport/http2-client.it.test.ts
-git commit -m "feat: record HTTP2 stream termination source"
+git add -- src/lib/transport/upstream-fetch.ts src/lib/transport/http2-client.ts tests/transport/fixtures/http2-peer-cancel-server.mjs tests/transport/http2-client.it.test.ts
+git commit -m "feat: record HTTP2 termination evidence"
 ```
 
 ## Task 6：把 termination 暴露给 live transport，并保持失败对象携带 tag
@@ -540,33 +584,27 @@ git commit -m "feat: record HTTP2 stream termination source"
 - Test: `tests/transport/responses-transport.it.test.ts`
 
 **Interfaces:**
-- Produces: `UpstreamStream.getTransportTermination?: () => TransportTermination | undefined`
-- For failed-open: error carries `getTransportTermination(error)` tag
+- Produces: `UpstreamStream.getTransportTermination?: () => TransportTerminationObservation | undefined`
+- For failed-open: error carries latest immutable `getTransportTerminationObservation(error)` snapshot；正常 stream以 accessor在quiescence后取最终值
 
-- [ ] **Step 1：写 streaming accessor 测试**
+- [ ] **Step 1：写 streaming accessor 与 snapshot时序测试**
 
-用 h2 transport或 injected `onTermination` mock，断流后断言：
+用 h2 transport/injected evidence mock断流：local evidence到达后 accessor先显示local snapshot；后续peer evidence到达后同一 accessor显示ambiguous且保留两条。`await upstream.lifecycle.quiesced` 后连续两次读取必须 deep-equal且不再变化。正常流 accessor返回 undefined。
 
-```ts
-expect(upstream.getTransportTermination?.()).toEqual({ source: "peer-rst", code: 8 })
-```
+- [ ] **Step 2：实现 transport-local collector capture**
 
-正常流 accessor返回 undefined。
-
-- [ ] **Step 2：实现 transport-local capture**
-
-`sendUpstreamHttp` 新增 `onTermination` param并转发到 `upstreamFetch`。HTTP/Responses transport建立局部变量：
+`sendUpstreamHttp` 新增 `onTerminationEvidence` param并转发到 `upstreamFetch`。HTTP/Responses transport持有同一个 collector：
 
 ```ts
-let termination: TransportTermination | undefined
-onTermination: (value) => { termination ??= value }
+const termination = createTransportTerminationCollector()
+onTerminationEvidence: (value) => termination.append(value)
 ```
 
-返回 `UpstreamStream` 时暴露 `getTransportTermination: () => termination`。failed-open error 已由 h2 producer tag，无需另包一层。
+返回 `UpstreamStream` 时暴露 `getTransportTermination: () => termination.observe()`。若 `http2Fetch` 已拥有collector，则通过 callback追加到transport collector，禁止复制归因逻辑。failed-open error附当时snapshot；scheduler仍在quiescence后优先读owned accessor取得最终值。
 
 - [ ] **Step 3：保持 hook/mock 兼容**
 
-accessor optional；`physicalTransportFromSend` 不要求 mock 提供。真实 transport必须提供，测试覆盖真实路径和缺失 accessor 的 legacy mock路径。
+accessor optional；`physicalTransportFromSend` 不要求 mock提供。真实HTTP transport必须提供，测试覆盖真实路径、snapshot更新与缺失accessor的legacy mock路径。
 
 - [ ] **Step 4：运行 transport suites**
 
@@ -589,50 +627,28 @@ git commit -m "feat: expose live transport termination provenance"
 - Test: `tests/pipeline/continuation-retry.it.test.ts`
 
 **Interfaces:**
-- Consumes: `getTransportTermination(error)` and `current.getTransportTermination?.()`
+- Consumes: `getTransportTerminationObservation(error)` and `current.getTransportTermination?.()`
 - Produces internal helper: `isBufferedTransportCut(error, upstream): boolean`
 
 - [ ] **Step 1：将现有 RST fixture结构化**
 
-把测试中的：
+把测试中的裸字符串error改为附不可变observation snapshot的error；peer fixture示例包含一条 `stream-error code:8` evidence、`attribution:"peer"`。保留少量完全无observation的legacy mock测试，锁定非H2兼容行为。
 
-```ts
-new Error("Stream closed with error code NGHTTP2_CANCEL")
-```
+- [ ] **Step 2：写六类 attribution 的双向 recovery tests**
 
-改为：
-
-```ts
-tagTransportTermination(
-  tagTransportError(new Error("Stream closed with error code NGHTTP2_CANCEL"), "mid-body-close"),
-  { source: "peer-rst", code: 8 },
-)
-```
-
-保留少量 untagged legacy mock测试，锁定非 H2兼容行为。
-
-- [ ] **Step 2：先写 local/unknown 不重试、peer/session 可保持现有 recovery 的双向测试**
-
-四个 case使用相同 buffer/预算：
-
-- local-signal：`sendCount()===0`，outcome stream-error。
-- local-body-cancel：不重试。
-- unknown：不重试。
-- peer-rst/session：在 `!committedAny && attempt<cap` 时发生一次 recovery。
-
-另断言 committed block后 peer cut仍走 continuation/partial-degrade既有路径，不扩大透明 retry窗口。
+使用相同buffer/预算分别构造：local、ambiguous、unknown均 `sendCount()===0`；peer、session在 `!committedAny && attempt<cap` 时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
 
 - [ ] **Step 3：实现 helper，不改全局 classifyError**
 
 ```ts
 function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): boolean {
-  const termination = getTransportTermination(error) ?? upstream.getTransportTermination?.()
-  if (termination) return termination.source === "peer-rst" || termination.source === "session"
+  const observation = upstream.getTransportTermination?.() ?? getTransportTerminationObservation(error)
+  if (observation) return observation.attribution === "peer" || observation.attribution === "session"
   return classifyStreamError(error) === "other" // non-H2/legacy transport compatibility
 }
 ```
 
-但若 transport明确给 `source:"unknown"`，返回 false；不得落到 legacy fallback。把 retry与 continuation两处 `classifyStreamError(thrown)==="other"` 换成该 helper。`classifyError(mid-body-close)` 保持 `bad_request`；普通 S4 不因本阶段开始重发可能已处理的 POST。
+live accessor优先，因为error snapshot可能早于后到session evidence；该helper只在catch/stream drain已结束后调用。明确 `local|ambiguous|unknown` 返回false，不落legacy fallback。把retry与continuation两处 `classifyStreamError(thrown)==="other"` 换成helper。`classifyError(mid-body-close)` 保持bad_request；普通S4不扩大。
 
 - [ ] **Step 4：明确不新增 server-tool gate**
 
@@ -642,7 +658,7 @@ function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): boole
 
 Run: `bun test tests/pipeline/buffered-sink.unit.test.ts tests/pipeline/continuation-retry.it.test.ts --timeout 30000`
 
-Mutation A：让 local返回 true，local test红。Mutation B：让 peer返回 false，peer正样本红。Mutation C：让 unknown落 legacy fallback，unknown test红。
+Mutation A：让local/ambiguous返回true，负样本红。Mutation B：让peer/session返回false，正样本红。Mutation C：让explicit unknown落legacy fallback，unknown测试红。Mutation D：error snapshot优先于live accessor，后到session/ambiguous测试红。
 
 - [ ] **Step 6：提交 Task 7**
 
@@ -667,7 +683,7 @@ bun run test:backend
 
 核对并记录：
 
-- `TransportTermination` 是否错误复制到 core。
+- `TransportTerminationEvidence/Observation` 是否错误复制到 core。
 - `http2-client.ts` stream状态是否散成多组 boolean；若是，收成一个小 recorder/observer对象，不用 RLock/全局 map掩盖职责。
 - session observer set是否在每种 close路径清理。
 - recovery helper是否在 retry与 continuation重复实现。
@@ -678,8 +694,9 @@ bun run test:backend
 2. local error echo不能冒充 peer。
 3. 真实 peer样本能被识别，unknown不会被过严/过松误判。
 4. GOAWAY-only 不构成 termination。
-5. 全局 S4 retry未扩大；只有 buffered recovery消费 peer/session。
+5. 全局 S4 retry未扩大；只有 buffered recovery消费 attribution=`peer|session`，ambiguous不重试。
 6. 正确 local/client/shutdown行为仍保持原协议结果。
+7. `disposeDispatch`、正常 `scheduler.settle()`、最终 logical terminal fallback 三条路径都能在quiescence后取得最终observation。
 
 - [ ] **Step 4：收口并提交状态文档**
 
@@ -710,49 +727,49 @@ git commit -m "docs: mark transport termination provenance landed"
 - Test: `tests/history/v3/readonly-store.it.test.ts`
 
 **Interfaces:**
-- Adds: `ModelOperationDispatch.termination?: TransportTermination`
-- Adds: `SettleDispatchInput.termination?: TransportTermination`
-- Adds: `DispatchSettlement.termination?: TransportTermination`
-- Adds: `RequestContext.settleGenerationDispatch(... termination?)`
+- Adds: `ModelOperationDispatch.termination?: TransportTerminationObservation`
+- Adds: `SettleDispatchInput.termination?: TransportTerminationObservation`
+- Adds: `DispatchSettlement.termination?: TransportTerminationObservation`
+- Adds: `RequestContext.setGenerationDispatchTerminationProvider(dispatch, provider)`，仅运行时、不持久化函数
+- Adds internal scheduler helper: `enrichSettlement(dispatch, settlement): DispatchSettlement`
 
-- [ ] **Step 1：写 recorder field 与 first settlement测试**
+- [ ] **Step 1：写 recorder typed field 与 immutable settlement测试**
 
-在 model-operation recorder test中 settle dispatch：
+在 model-operation recorder test用含ambiguous evidence的observation settle dispatch，断言 snapshot逐字相等且deep-frozen；重复settle不得覆盖first settlement。另测无termination的成功dispatch保持字段absent。
 
-```ts
-recorder.settleDispatch(dispatch, {
-  verdict: "failed",
-  reason: "transport cut",
-  termination: { source: "peer-rst", code: 8 },
-})
-expect(recorder.snapshot().dispatches[0]?.termination).toEqual({ source: "peer-rst", code: 8 })
-```
+- [ ] **Step 2：扩展 canonical types/recorder并记录替代方案**
 
-重复 settle不得覆盖 first settlement。
+给 public/mutable/snapshot/settlement四处加 typed observation，使用 foundation SSOT import。`snapshotDispatch`保留immutable value。代码注释说明未采用 `settlementExtensions`/diagnostic bag，因为它们削弱typed exhaustiveness；不得再声称一等字段是数学唯一方案。
 
-- [ ] **Step 2：扩展 canonical types/recorder**
+- [ ] **Step 3：scheduler 两条路径统一 enrichment**
 
-给 public/mutable/snapshot/settlement四处加 termination，使用 foundation type import。`snapshotDispatch` 与 freeze path保留 immutable value。
-
-- [ ] **Step 3：scheduler settlement 自动采集 accessor**
-
-`ActiveDispatch` 保存 `getTransportTermination?`。`response.kind==="stream"` 时从 `response.upstream` 取 accessor；`disposeDispatch` 在 `recordSettlement` 前补：
+`ActiveDispatch` 保存 `getTransportTermination?`。抽取：
 
 ```ts
-const termination = settlement.termination ?? owned.getTransportTermination?.() ?? getTransportTermination(settlement.error)
+function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettlement): DispatchSettlement {
+  const owned = active.get(dispatch)
+  const termination = settlement.termination
+    ?? owned?.getTransportTermination?.()
+    ?? getTransportTerminationObservation(settlement.error)
+  return termination ? { ...settlement, termination } : settlement
+}
 ```
 
-只有存在时写入。failed-open 从 error tag读取。
+`disposeDispatch()` 与正常 `scheduler.settle()` 都必须先 await `lifecycle.quiesced`，再调用同一helper，最后删除active并 `recordSettlement`。failed-open从error tag读取。测试分别驱动两条路径；mutation只修其中一条时另一条红。
 
-- [ ] **Step 4：接通 driver recording port 与 RequestContext**
+- [ ] **Step 4：接通 driver recording port 与 RequestContext runtime provider**
 
-`DispatchSettlement`→`ctx.settleGenerationDispatch`→`settleGenerationAttempt`→`modelOperationRecorder.settleDispatch`逐层透传。compat attempt没有字段时不伪造。
+`recordOpened(dispatch,response)` 在stream成功打开时调用 `ctx.setGenerationDispatchTerminationProvider(dispatch,response.upstream.getTransportTermination)`；RequestContext 的 `GenerationAttemptCapture` 保存provider但不序列化函数。所有 `settleGenerationAttempt`（包括 `recordGenerationLogicalTerminal` 在 `src/lib/context/request.ts:831-840` 的最终fallback）按优先级 `explicit termination → provider() → error tag` 冻结最终observation，再调用 recorder。scheduler正常settlement仍显式传值；terminal fallback作为防漏最后一道门。
 
-- [ ] **Step 5：V3 raw manifest round-trip测试**
+- [ ] **Step 5：写真实最终失败 production-path 回归**
 
-在 readonly-store fixture写带 termination record，commit→readonly `hydrateManifest`，断言 canonical dispatch字段逐字相等。另用旧 fixture断言 absence正常。
+从 driver/candidate路径打开一个stream，注入peer evidence后使最终attempt失败且不进入recovery/continuation；驱动 `recordGenerationLogicalTerminal("failed")`，断言 canonical dispatch termination存在。另分别覆盖 `scheduler.settle()` recovery parent 与 `disposeDispatch()` cancellation，三条路径缺一即红。
 
-- [ ] **Step 6：运行 tests并提交**
+- [ ] **Step 6：V3 raw manifest round-trip测试**
+
+在 readonly-store fixture写带ambiguous observation record，commit→readonly `hydrateManifest`，断言 canonical dispatch字段和evidence顺序逐字相等。另用旧fixture断言absence正常。
+
+- [ ] **Step 7：运行 tests并提交**
 
 Run: `bun test tests/context/model-operation-record.unit.test.ts tests/history/v3/readonly-store.it.test.ts tests/context/generation-finalization.unit.test.ts --timeout 30000`
 
@@ -774,48 +791,44 @@ git commit -m "feat: persist dispatch transport termination"
 - Test: `tests/infra/upstream-stream-diagnostics.unit.test.ts`
 
 **Interfaces:**
-- Adds: `HistoryEntry.attempts[].transportTermination?: TransportTermination`
-- Adds: `UpstreamStreamDisconnectInfo.transportTermination?: TransportTermination`
+- Adds: `HistoryEntry.attempts[].transportTermination?: TransportTerminationObservation`
+- Adds: `UpstreamStreamDisconnectInfo.transportTermination?: TransportTerminationObservation`
 
 - [ ] **Step 1：先写 projection正反测试**
 
-- peer-rst canonical field投影到 attempt。
-- local-signal保留 `response-header-timeout`/`dispatch-cancel` cause。
-- old record字段 absent，投影仍成功且字段 undefined。
-- normal committed dispatch不产生 termination。
+- peer observation投影到attempt。
+- local observation保留 `response-header-timeout`/`dispatch-cancel` cause。
+- ambiguous observation保留local+peer双方evidence和顺序。
+- old record字段absent，投影仍成功且字段undefined。
+- normal committed dispatch不产生termination。
 
 - [ ] **Step 2：实现 History projection**
 
-在 attempt object加入：
-
-```ts
-...(attempt.termination !== undefined && { transportTermination: attempt.termination })
-```
-
-History type直接 import foundation SSOT，不复制 union。
+在attempt object按存在性投影 `attempt.termination`。History type直接import foundation SSOT，不复制union。
 
 - [ ] **Step 3：写 diagnostics formatter tests**
 
 期望片段：
 
 ```text
-termination=peer-rst h2-code=8
-termination=local-signal local-cause=response-header-timeout h2-code=8
-termination=session session-event=error
-termination=unknown
+termination=peer first-observed=stream-error evidence=1 h2-code=8
+termination=local first-observed=local-signal evidence=1 local-cause=response-header-timeout h2-code=8
+termination=ambiguous first-observed=local-signal evidence=2 local-cause=request-deadline h2-code=8
+termination=session first-observed=session-error evidence=2 session-event=error
+termination=unknown first-observed=stream-close evidence=1
 ```
 
-absence时保持旧行，不追加误导字段。unknown绝不渲染 `peer`。
+absence时保持旧行，不追加误导字段。unknown/ambiguous绝不渲染成peer；原始error detail仍保留。
 
-- [ ] **Step 4：接通 error→diagnostics**
+- [ ] **Step 4：接通 observation→diagnostics**
 
-`logUpstreamStreamError` 用 `getTransportTermination(error)`；若 error未 tag，可从 caller扩展的 ctx accessor读取，但只取结构化值。`logUpstreamStreamTruncation` 的 clean EOF缺终态不是 H2 termination，保持字段 absent。
+`logUpstreamStreamError` 优先读取 caller提供的live accessor最终snapshot，其次 `getTransportTerminationObservation(error)`；只取结构化值。`logUpstreamStreamTruncation` 的 clean EOF缺终态不是H2 termination，保持字段absent。
 
 - [ ] **Step 5：运行投影/日志 tests与 mutation**
 
 Run: `bun test tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts --timeout 30000`
 
-Mutation：删 projection字段，round-trip红；把 unknown formatter写成 peer，formatter test红；cause wrapping丢 tag，local cause test红。
+Mutation：删projection字段，round-trip红；把ambiguous/unknown formatter写成peer，formatter test红；丢第二条evidence或cause wrapping tag，ambiguous/local cause test红。
 
 - [ ] **Step 6：提交 Task 10**
 
@@ -838,14 +851,16 @@ git commit -m "feat: expose transport termination diagnostics"
 
 在 `MetaSegment` 读取 `entry.attempts?.at(-1)?.transportTermination`，显示：
 
-- `termination`：source
-- `h2 code`：numeric code
+- `termination`：attribution
+- `first observed`：firstObserved
+- `evidence`：数量
+- `h2 code`：evidence中的numeric code（多个不同值逐项显示，不静默挑一个）
 - `local cause`：local-signal cause
-- `session event`：session event
+- `session event`：session evidence kind
 
-所有字段 absent时不渲染空行。类型继续从 `@/types`→`~backend/lib/history/store` re-export，不在 UI 定义镜像 union。
+所有字段 absent时不渲染空行。类型继续从 `@/types`→`~backend/lib/history/store` re-export，不在UI定义镜像union。
 
-新建 `ui-v4/tests/MetaSegment.vitest.test.tsx`，沿用该目录的 Vitest + jsdom + Testing Library 模式渲染三种 entry：peer-rst 显示 source/code；local-signal 显示 cause；无 termination 时查询 `termination` label返回 null。该测试同时防止可选字段导致空行。
+新建 `ui-v4/tests/MetaSegment.vitest.test.tsx`，沿用Vitest+jsdom+Testing Library模式渲染四种entry：peer显示attribution/code；local显示cause；ambiguous显示双方evidence count且不显示成peer；无termination时查询label返回null。该测试同时防止可选字段导致空行。
 
 - [ ] **Step 2：运行 UI 验证**
 
@@ -895,8 +910,8 @@ bun run test:ui-v4
 必须逐条验证：
 
 1. header deadline作用域。
-2. local/peer/session/unknown双向判别。
-3. block-level recovery只消费结构化安全来源，且未扩大普通 S4 retry。
+2. local-only、peer-only、session-only、local+peer ambiguous、bare-close unknown、GOAWAY+clean-end六格双向判别。
+3. block-level recovery只消费 attribution=`peer|session`，且未扩大普通 S4 retry。
 4. canonical→persist→hydrate→REST→UI全链路。
 5. 日志与History一致，不把 absent/unknown说成 peer。
 6. 三阶段 commit各自可部署，commit message与内容相符。
@@ -932,9 +947,9 @@ bun run build:ui-v4
 
 - [x] Spec §1 用户裁决全部映射：旧 L2不启用；阶段性基础设施允许先合；逐阶段 merge。
 - [x] Spec §3.1 header deadline：Task 1-3覆盖 headers前、headers后、一般 signal、竞态、清理与 mutation。
-- [x] Spec §3.2-3.4 termination：Task 4-8覆盖 SSOT、local intent、peer/session/unknown、GOAWAY、clean end、双向控制。
+- [x] Spec §3.2-3.4 termination：Task 4-8覆盖 evidence SSOT、local-only、peer-only、session-only、local+peer ambiguous、bare-close unknown、GOAWAY+clean end与双向控制。
 - [x] Spec §3.5 History：Task 9-11覆盖 canonical owner、V3 round-trip、REST、日志、UI。
 - [x] Recovery契约：Task 7只收紧来源，不新增 server-tool gate，不扩大普通 S4 retry。
 - [x] Placeholder scan：无 TBD/TODO/“类似 Task N”/未定义接口。
-- [x] Type consistency：`TransportTermination`、`getTransportTermination`、`getTransportTermination?()`、`transportTermination` 命名全篇一致。
+- [x] Type consistency：`TransportTerminationEvidence`、`TransportTerminationObservation`、`getTransportTerminationObservation`、`getTransportTermination?()`、`transportTermination` 命名全篇一致。
 - [x] 每阶段都有定向测试、正向变异、结构怪味、独立 review、全量门和 master fast-forward步骤。

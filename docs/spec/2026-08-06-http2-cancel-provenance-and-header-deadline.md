@@ -23,10 +23,10 @@
 ### 2.1 目标
 
 1. response-header deadline 只覆盖获取响应头之前；响应头到达后，合法长 body 不受该时钟影响。
-2. transport 在 close 动作或 close 事件的产生点记录 termination provenance，不再靠错误字符串反推。
-3. 本地取消保留原始 `CancellationCause`；Bun 随后产生的同文本 `NGHTTP2_CANCEL` error 不得覆盖本地事实。
-4. peer stream reset、session termination、本地 signal、本地 body cancel、自然结束可区分；证据不足时必须标为 `unknown`，不得猜测。
-5. canonical `ModelOperationDispatch` 保存结构化 termination；History REST、诊断日志和 UI 类型从该单一事实源投影。
+2. transport 在 close 动作或 close 事件的产生点追加 termination evidence，不再靠错误字符串反推。
+3. 本地取消保留原始 `CancellationCause`；Bun 随后产生的同文本 `NGHTTP2_CANCEL` error 作为后续 stream evidence 保留，不得覆盖本地 intent。
+4. peer stream reset、session termination、本地 signal、本地 body cancel、自然结束可区分；对 wire 到达与 JS listener 调度之间不可观测的因果顺序，只报告 `firstObserved` 和完整 evidence，不声称真实发起方。
+5. canonical `ModelOperationDispatch` 保存结构化 termination observation；History REST、诊断日志和 UI 类型从该单一事实源投影。
 6. 新分类不得改变已有 block-level recovery 的产品契约；retry admission 必须显式消费允许的 termination 集合。
 
 ### 2.2 非目标
@@ -52,58 +52,75 @@
 
 ### 3.2 事实与策略分离
 
-`TransportTermination` 只描述观察到的 transport 事实；`TransportErrorReason` 继续描述上层错误分类/retry 所需的语义。二者不得合并成一个枚举：同一个事实可因 pre/post-header、是否已提交语义内容、协议保证不同而采用不同策略。
+`TransportTerminationObservation` 只描述本进程观察到的 transport evidence；`TransportErrorReason` 继续描述上层错误分类/retry 所需的语义。二者不得合并成一个枚举：同一组 evidence 可因 pre/post-header、是否已提交语义内容、协议保证不同而采用不同策略。
 
 建议的事实模型：
 
 ```ts
-export type TransportTermination =
-  | { source: "local-signal"; code: number; cause?: CancellationCause }
-  | { source: "local-body-cancel"; code: number }
-  | { source: "peer-rst"; code: number }
-  | { source: "session"; event: "error" | "close"; code?: number }
-  | { source: "unknown"; code?: number }
+export type TransportTerminationEvidence =
+  | { kind: "local-signal"; observedAt: number; code: number; cause?: CancellationCause }
+  | { kind: "local-body-cancel"; observedAt: number; code: number }
+  | { kind: "stream-error"; observedAt: number; code?: number; errorCode?: string }
+  | { kind: "stream-close"; observedAt: number; code?: number }
+  | { kind: "session-error"; observedAt: number; errorCode?: string }
+  | { kind: "session-close"; observedAt: number }
+
+export interface TransportTerminationObservation {
+  firstObserved: TransportTerminationEvidence["kind"]
+  attribution: "local" | "peer" | "session" | "ambiguous" | "unknown"
+  evidence: ReadonlyArray<TransportTerminationEvidence>
+}
 ```
 
-字段名可在实现计划中按项目命名风格细化，但判别能力不得下降。`code` 保存数字 HTTP/2 error code；日志可另渲染 `NGHTTP2_CANCEL` 等符号名。自然 `end` 是内部终态，不写 failure termination。GOAWAY 只表示 session 停止接收新 stream；在途 stream 若继续正常结束，不得因 GOAWAY 被标为 session termination。
+字段名可在实现计划中按项目命名风格细化，但判别能力不得下降。`code` 保存数字 HTTP/2 error code；日志可另渲染 `NGHTTP2_CANCEL` 等符号名。自然 `end` 是内部终态，不写 failure observation。GOAWAY 只表示 session 停止接收新 stream；在途 stream 若继续正常结束，不得因 GOAWAY 被标为 session termination。
 
-### 3.3 本地意图优先
+### 3.3 Evidence 追加与归因
 
-本地代码在调用 `req.close(code)` 前必须原子记录 termination intent。此后即使 Bun 对同一个 stream 发出 `ERR_HTTP2_STREAM_ERROR: Stream closed with error code NGHTTP2_CANCEL`，该 error 仍归入已记录的 local source，不得重判为 peer reset。
+本地代码在调用 `req.close(code)` 前必须原子追加 local intent evidence。后续 Bun `ERR_HTTP2_STREAM_ERROR`、stream close、session error/close 继续追加，不能被 first-writer 丢弃。`firstObserved` 只表示 JS 层最先观察到什么，不等于 wire 上真正先发生什么。
 
-本地意图只覆盖该 stream，不推断 session 或 sibling。重复 close 采用 first-writer-wins：首个已执行的终止动作是权威，后续 teardown 事件只补充诊断，不改来源。
+归因在 stream quiescence 后由完整 evidence 派生：
+
+- 只有 local intent，且尚无 stream/session 结构证据：当前 snapshot 为 `local`。
+- 无 local intent、无 session evidence，且有非零 stream `rstCode`/结构化 stream error：`peer`。
+- 无 local intent且有 session error/close：最终归 `session`，即使同时存在 stream error/close evidence也全部保留；session context 是更具体的可观测解释。
+- local 与任何非零 stream reset或 session evidence并存：`ambiguous`，保留双方 evidence；这包含 Bun 对本地 `req.close(CANCEL)` 产生的 error 回声，因为同一形状也可能是已到 socket但尚未派发 listener 的 peer RST，不得用 first-writer 宣称真实发起方。
+- 只有 `rstCode=0` 的 bare close、只有字符串、或没有结构证据：`unknown`。
+
+`unknown` 不是首个事件写入的 evidence；它是 quiescence 后证据仍不足的派生 attribution，因此后到的 session/peer evidence不会被吞掉。
 
 ### 3.4 peer/session 判定要求结构证据
 
-- 没有本地 intent、stream 报非零 `rstCode` 或结构化 stream error，才可判 `peer-rst`。
-- session 的 `error`/`close` 必须在 session 监听器处记录，并关联实际因此中断的 stream，才可判 `session`。单独 GOAWAY 只 retire session，不构成在途 termination。
-- 只有字符串含 `NGHTTP2_CANCEL`、只有 `rstCode=0`、或只有“close before end”时，证据不足，必须判 `unknown`。
-- 自然 `end` 后的 `close` 视为正常内部终态，不得产生 disconnect termination。
+- stream 在 `error`、`end` 或 `close` 任一事件上暴露非零 `rstCode`，或出现结构化 stream error，才构成 peer evidence；是否归因 peer还取决于是否同时存在 local/session evidence。非零 `rstCode` 的 `end` 不是 clean end，必须进入失败路径。
+- session 的 `error`/`close` 必须在 session 监听器处追加，并关联实际受影响的 stream。单独 GOAWAY 只 retire session，不构成在途 termination。
+- 只有字符串含 `NGHTTP2_CANCEL`、只有 `rstCode=0`、或只有“close before end”时，证据不足，最终 attribution 必须是 `unknown`。
+- 自然 `end` 后的 `close` 视为正常内部终态，不得产生 failure observation。
 
-### 3.5 canonical History 所有权
+### 3.5 canonical History 所有权与方案取舍
 
-termination 属于一次 physical dispatch，故一等字段放在 `ModelOperationDispatch`，不是 request 顶层、`OperationTrack.extensions` 或 REST-only 类型。数据流如下：
+termination observation 属于一次 physical dispatch。选择在 `ModelOperationDispatch` 增加一等 typed 字段，是因为它提供后端 SSOT、union 穷尽检查和直接 REST/UI 投影；这不是唯一可行形状。未采用 typed dispatch diagnostic／`settlementExtensions`：两者也能持久化，但前者把核心终态事实伪装成可重复诊断，后者是 opaque bag，都会削弱编译期约束。
 
-1. `http2-client` 产生 `TransportTermination`；
-2. transport/driver 将它附到 dispatch settlement；
+数据流如下：
+
+1. `http2-client` 追加 `TransportTerminationEvidence` 并在 quiescence 后派生 `TransportTerminationObservation`；
+2. transport/driver 在所有 dispatch settlement 路径取最终 observation；
 3. `RequestContext` 调用 canonical recorder 的 `settleDispatch()` 写入 `ModelOperationDispatch.termination`；
 4. V3 manifest 原样持久化；
 5. `recordToHistoryEntry()` 投影到 `attempts[].transportTermination`；
 6. `ui-v4` 经 `~backend/*` re-export 使用后端类型。
 
-`dispatchReason` 和 `error` 保留供人读与兼容；它们不再是 termination 来源的事实源。
+`dispatchReason` 和 `error` 保留供人读与兼容；它们不再是 termination attribution 的事实源。
 
 ## 4. Provenance 图
 
-| 一侧 | 生产者 | 观测点 | 上游来源 |
+| Evidence | 生产者 | 观测点 | 上游来源 |
 |---|---|---|---|
-| local signal | `http2-client` 的 AbortSignal listener | 调用 `req.close()` 前记录 intent | signal.reason；其中 request/reaper/dispatch 来源已由 `CancellationCause` 标记 |
-| local body cancel | WHATWG `ReadableStream.cancel()` | 调用 `req.close()` 前记录 intent | body consumer 主动释放 response |
-| peer stream reset | `ClientHttp2Stream` error/close | 无 local intent，且 stream 有非零 `rstCode`/结构化 stream error | peer 发来的 HTTP/2 stream termination |
-| session termination | `ClientHttp2Session` error/close | session listener 记录事件并通知实际受影响的 stream | 整条 H2 session 异常结束 |
-| natural completion | stream `end` 后 `close` | body adapter 的 `ended` 状态；仅作内部判别、不持久化 failure termination | peer 正常 END_STREAM |
+| local signal | `http2-client` 的 AbortSignal listener | 调用 `req.close()` 前追加 intent | signal.reason；request/reaper/dispatch/client/shutdown 由 `CancellationCause` 标记 |
+| local body cancel | WHATWG `ReadableStream.cancel()` | 调用 `req.close()` 前追加 intent | body consumer 主动释放 response |
+| stream error/close | `ClientHttp2Stream` error/close | 每个事件均追加，不因已有 local evidence跳过 | peer frame、local close回声或 session teardown；最终结合全部 evidence归因 |
+| session error/close | `ClientHttp2Session` error/close | session listener追加到仍 active的 stream | 整条 H2 session 异常结束 |
+| natural completion | stream `end` 后 `close` | body adapter 的 `ended` 状态；不持久化 failure observation | peer 正常 END_STREAM |
 
-local 与 peer 两侧不能追溯到同一生产者：local 由本进程在 close 调用前写入，peer 只在 local intent 缺失时由接收事件建立。`rstCode` 与错误字符串只是 peer 侧辅助证据，不能推翻 local intent。
+local 与 peer evidence 的生产者独立，但事件调度顺序不能证明 wire 因果顺序。故 observation 同时保留 `firstObserved` 与完整 evidence；归因冲突时诚实标为 `ambiguous`。
 
 ## 5. 渐进实施阶段
 
@@ -134,30 +151,31 @@ local 与 peer 两侧不能追溯到同一生产者：local 由本进程在 clos
 
 #### 产物
 
-- 在 `packages/foundation` 定义共享 `TransportTermination` 和读取/附着 primitive；core 不复制类型。
-- `http2-client` 对 local signal、body cancel、peer reset、session event、clean end、unknown 建立 first-writer-wins 状态。
-- transport error 保留 termination through cause chain；local error 同时保留 `CancellationCause`。
-- `classifyError` 和 block-level recovery 从结构化 termination/`TransportErrorReason` 显式裁决，不把所有 `mid-body-close` 或所有 `NGHTTP2_CANCEL` 统一视为同一来源。
+- 在 `packages/foundation` 定义共享 `TransportTerminationEvidence`、`TransportTerminationObservation` 和追加/派生 primitive；core 不复制类型。
+- `http2-client` 追加 local signal、body cancel、stream error/close、session error/close evidence，并在 quiescence 后派生 attribution；正常 end不产生 failure observation。
+- transport error 保留当前 evidence snapshot through cause chain；local evidence 同时保留 `CancellationCause`。
+- `classifyError` 和 block-level recovery 从结构化 observation/`TransportErrorReason` 显式裁决，不把所有 `mid-body-close` 或所有 `NGHTTP2_CANCEL` 统一视为同一来源。
 - 允许阶段内先合入尚无 History 消费者的类型/producer，但阶段结束前 live error classification 必须已消费它；History 消费留给阶段 3。
 
 #### Recovery 边界
 
-- `peer-rst`/可确认的 session close 可进入现有 transport-cut 分支，但是否透明重试仍受 block-level 已提交边界和既有预算约束。本任务不新增 server-execution-risk gate：当前 buffered recovery 没有该 gate，擅加会改变既有产品契约；相邻的 server-tool 双执行问题仍由其既有独立设计处理。
-- `local-signal`、`local-body-cancel` 不得被当成 upstream cut 重试。
-- `unknown` 保持当前保守终止行为，不因“可能是 peer”扩大重试。
+- attribution 为 `peer`/`session` 可进入现有 transport-cut 分支，但是否透明重试仍受 block-level 已提交边界和既有预算约束。本任务不新增 server-execution-risk gate：当前 buffered recovery 没有该 gate，擅加会改变既有产品契约；相邻的 server-tool 双执行问题仍由其既有独立设计处理。
+- attribution 为 `local`、`ambiguous`、`unknown` 不得被当成 upstream cut 重试。
+- 无 observation 的 non-H2/legacy transport 保留原 fallback，避免本轮误改其它 transport。
 - `REFUSED_STREAM` 的 RFC 9113 零处理保证保持独立，不被本阶段稀释。
 
 #### TDD
 
-1. Bun 本地 `req.close(CANCEL)` error 回声仍归 local signal/body cancel。
-2. local signal 保留 request-deadline、stale-reaper、request-cancel、dispatch-cancel 等 cause。
-3. 忠实 h2 RST fixture 使用 `stream.destroy(error)`；无 local intent 时归 peer reset。
-4. session teardown 与 stream RST 分开。
-5. clean EOF 不产生 failure termination。
-6. `rstCode=0`/无结构证据归 unknown。
-7. local cancel 不进入 block-level retry；peer cut 在既有安全门允许时仍能进入。
-8. 双向控制：错误状态不能冒充 peer；正确 peer 样本也不能被过严判据压成 unknown。
-9. 正向变异：去掉 local intent 写入、交换 local/peer 优先级、把 unknown 当 peer，相关测试必须分别变红。
+1. Bun 本地 `req.close(CANCEL)` error 回声保留 local intent和后续 stream evidence；只有 local evidence时归 `local`。
+2. local signal 保留 request-deadline、stale-reaper、request-cancel、dispatch-cancel、client-disconnect、shutdown 等 cause。
+3. test-only Node wire injector必须实测发出 CANCEL=8；Bun production `http2Fetch` 客户端观测该 wire并归 `peer`。
+4. local intent 与非零 peer reset evidence并存时归 `ambiguous`，两侧 evidence均保留。
+5. session error/close 与 bare stream close按两种事件顺序测试；无 local evidence时，后到 session evidence必须把最终 attribution从证据不足提升为 `session`；存在 local evidence时归 `ambiguous`。
+6. GOAWAY+正常 end无 failure observation；clean EOF不产生 failure observation。
+7. `rstCode=0`/无结构证据最终归 `unknown`，但不作为首写 evidence吞掉后续事件。
+8. `local|ambiguous|unknown` 不进入 block-level retry；`peer|session` 在既有提交/预算门允许时仍能进入。
+9. 双向控制：错误状态不能冒充 peer；正确 peer/session样本也不能被过严判据压成 unknown。
+10. 正向变异：丢弃后续 evidence、把 ambiguous 当 peer、让 unknown首写封口、漏 session通知，相关测试必须分别变红。
 
 #### 合并门
 
@@ -167,21 +185,22 @@ local 与 peer 两侧不能追溯到同一生产者：local 由本进程在 clos
 
 #### 产物
 
-- `ModelOperationDispatch.termination?: TransportTermination` 成为 canonical 字段。
-- dispatch settlement、V3 manifest、REST detail 的 `attempts[].transportTermination` 贯通。
-- `STREAM DISCONNECT` 增加稳定结构字段：source、numeric code、local cause、session event；现有 elapsed/frame/byte/last-frame/silence 信号保留。
-- UI/API 使用后端 SSOT type；旧记录无字段时正常显示 unknown/absent。
+- `ModelOperationDispatch.termination?: TransportTerminationObservation` 成为 canonical typed 字段。
+- `disposeDispatch()`、正常 `scheduler.settle()`、以及 RequestContext 最终 terminal fallback 三条 settlement 路径统一在 operation quiescence 后取最终 observation，再写 V3 manifest与 REST `attempts[].transportTermination`。
+- `STREAM DISCONNECT` 增加稳定结构字段：attribution、first-observed、evidence 摘要、numeric code、local cause、session event；现有 elapsed/frame/byte/last-frame/silence 信号保留。
+- UI/API 使用后端 SSOT type；旧记录无字段时显示 absent，不伪造 observation。
 - 不做数据库 schema migration或 backfill：termination 随 manifest JSON 自然演进。
 
 #### TDD
 
-1. peer CANCEL、client abort、header timeout、dispatch cancel、session close 投影为不同值。
-2. terminal error cause wrapping不丢 termination/cancellation cause。
-3. canonical record→V3 persist→hydrate→REST projection 保留全部字段。
+1. peer CANCEL、client abort、header timeout、dispatch cancel、session close、ambiguous evidence分别投影，双方 evidence不丢。
+2. terminal error cause wrapping不丢 evidence/cancellation cause。
+3. canonical record→V3 persist→hydrate→REST projection 保留全部字段与顺序。
 4. 旧 manifest/缺字段记录仍可读。
-5. 正常 completion 不写 disconnect termination。
-6. 日志 formatter 对 absent 字段兼容，并不把 unknown 渲染成 peer。
-7. mutation：折叠任意两种 source、删投影字段、删 hydrate round-trip，测试必须变红。
+5. 正常 completion 不写 disconnect observation。
+6. 最终 attempt 失败且没有 recovery/continuation时，真实 scheduler→RequestContext terminal path仍写 observation。
+7. 日志 formatter 对 absent 字段兼容，并不把 unknown/ambiguous渲染成 peer。
+8. mutation：折叠 evidence、漏任一 settlement路径、删投影字段、删 hydrate round-trip，测试必须变红。
 
 #### 合并门
 
@@ -189,37 +208,39 @@ local 与 peer 两侧不能追溯到同一生产者：local 由本进程在 clos
 
 ## 6. 测试夹具与实证纪律
 
-1. H2 RST 夹具必须使用经 wire oracle 校准的方式。项目既有实测表明 `stream.close(code)` 在部分 Node/Bun 形态不忠实；优先复用 `stream.destroy(error)` 夹具，并断言客户端实际看到非零 `rstCode`/error。
-2. 每个 gate 同时跑正样本和目标缺陷变异。只证明“变异会红”不证明覆盖完整，还必须构造 local/peer/session/unknown 四种相邻状态。
-3. Bun 与 Node 对本地 CANCEL 的事件序列不同，至少在 Bun 主测试腿覆盖真实回声；Node 腿用于确认实现不依赖 Bun 特例。
-4. 测试不得连接真实 GHC 或用户 4141。需要进程级验证时使用非 4141 端口和独立配置/History。
-5. 任何“source=peer-rst”结论必须由 provenance primitive 或忠实 wire fixture支持；日志文本不构成 oracle。
+1. H2 RST 夹具必须使用经 wire oracle 校准的方式。公共 `stream.close(code)` 在实测形态下不忠实；`stream.destroy(error)` 只能忠实产生 INTERNAL_ERROR=2。peer CANCEL=8 正控须在显式 Node test server 内使用 capability-gated、test-only 的底层 `kHandle.rstStream(8)`，fixture先输出 runtime identity并断言客户端真实看到 `rstCode=8`；私有 API绝不进入生产代码。
+2. Node fixture必须由显式 `node` executable启动，不能在 Bun下使用 `process.execPath`。客户端侧必须调用 production `http2Fetch` 和 evidence callback，不能把 JSON回灌另一个纯 classifier冒充接线测试。
+3. 每个 gate 同时跑正样本和目标缺陷变异。只证明“变异会红”不证明覆盖完整，还必须构造 local-only、peer-only、session-only、local+peer ambiguous、bare-close unknown、GOAWAY+clean-end六种相邻状态。
+4. Bun 与 Node 对本地 CANCEL 的事件序列不同，Bun主测试腿覆盖真实 local echo；Node server只负责产生可校准的 peer wire。
+5. 测试不得连接真实 GHC 或用户 4141。需要进程级验证时使用非 4141 端口和独立配置/History。
+6. 任何 `attribution=peer` 结论必须由结构化 evidence与忠实 wire fixture支持；日志文本不构成 oracle。
 
 ## 7. 可观测性与兼容性
 
 - 新字段是加性的；现有 API 消费者、旧 History 和旧日志解析不应失败。
 - operator-facing detail 保留原始 error message，同时追加结构化字段，避免为了机器可读性丢失底层信息。
 - termination 只记录 transport 事实，不包含请求正文、凭据或其他无关数据。
-- `TransportTermination` 的新增 union member必须触发所有策略与投影消费者的穷尽检查。
-- 旧 `dispatchReason` 字符串继续存在，但任何新判据不得读取它来判断来源。
+- `TransportTerminationEvidence` 的新增 union member必须触发 attribution、策略与投影消费者的穷尽检查。
+- 旧 `dispatchReason` 字符串继续存在，但任何新判据不得读取它来判断 attribution。
 
 ## 8. 结构改进与暂缓项
 
 | 位置 | 怪味 | 本轮处置 |
 |---|---|---|
 | `src/lib/fetch-utils.ts` + `src/lib/transport/send.ts` + `src/lib/transport/http2-client.ts` | response-header 时钟职责跨层泄漏 | 阶段 1 在共享 transport API 明确作用域并建立可解除 primitive |
-| `src/lib/transport/http2-client.ts` | local close 与 peer error 共用同一错误表面 | 阶段 2 在产生点记录 termination intent/event |
-| `packages/foundation/src/error/transport-reason.ts` | 现有 reason 同时被误当事实来源与 retry 语义 | 阶段 2 分出 `TransportTermination`，保留 `TransportErrorReason` 的策略职责 |
-| `ModelOperationDispatch.error/reason` | 人读字符串承担机器判定 | 阶段 3 新增一等 termination 字段，字符串退回兼容/展示职责 |
+| `src/lib/transport/http2-client.ts` | local close 与 peer error 共用同一错误表面，事件竞态无全序 | 阶段 2 追加全部 evidence，quiescence 后派生 attribution；冲突诚实标 ambiguous |
+| `packages/foundation/src/error/transport-reason.ts` | 现有 reason 同时被误当事实来源与 retry 语义 | 阶段 2 分出 `TransportTerminationEvidence/Observation`，保留 `TransportErrorReason` 的策略职责 |
+| `ModelOperationDispatch.error/reason` | 人读字符串承担机器判定 | 阶段 3 新增一等 typed observation 字段；记录替代方案取舍，字符串退回兼容/展示职责 |
 | 旧 `protect_streaming_generation` | whole-response 双轨与新 block-level buffering 重叠 | 本任务明确不启用、不扩展；删除由独立清理阶段处理，避免与 transport 根修耦合 |
 
 ## 9. 验收
 
 任务完成必须同时满足：
 
-1. header deadline 在 headers 后不再能关闭 body；pre-header timeout 仍有效。
-2. local CANCEL、peer RST、session termination、clean end、unknown 在结构上可区分。
-3. block-level recovery 不重试 local cancel，也不漏掉符合既有安全门的真实 peer cut。
-4. History 和日志能回答“谁终止了 stream、用什么 code、若为本地取消则原因是什么”。
-5. 旧记录、旧 API 消费者和正常成功流不回归。
-6. 三个阶段各自通过测试/review并已独立合并 `master`；没有把全部改动积成一次 catch-all merge。
+1. header deadline 在 headers 后不再能关闭 body；pre-header timeout 仍有效；headers/deadline 同 tick只有一个终局，timer/listener/stream reservation各释放一次。
+2. local-only、peer-only、session-only、local+peer ambiguous、bare-close unknown、clean end在结构上可区分，完整 evidence不丢。
+3. block-level recovery 不重试 local/ambiguous/unknown，也不漏掉符合既有提交/预算门的真实 peer/session cut。
+4. History 和日志能回答“本进程先观察到什么、有哪些证据、保守 attribution是什么、code/cause/event分别是什么”，但不对不可观测的 wire 因果顺序作过强声称。
+5. `disposeDispatch`、正常 `scheduler.settle()` 和 RequestContext 最终 terminal fallback 三条 settlement路径均保存最终 observation。
+6. 旧记录、旧 API 消费者和正常成功流不回归。
+7. 三个阶段各自通过测试/review并已独立合并 `master`；没有把全部改动积成一次 catch-all merge。
