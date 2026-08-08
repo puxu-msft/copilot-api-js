@@ -1,7 +1,7 @@
 ---
 name: methodology-probe-external-mechanism-before-writing-it-into-design
 description: 写设计时引用外部系统（SQLite/运行时/第三方库）的具体机制，必须先跑探针证实该机制存在且行为如你所想——本会话凭印象连犯三次同型错误
-metadata: 
+metadata:
   node_type: memory
   type: feedback
   originSessionId: d47f5188-e871-4ab0-a58a-82fc0713e57f

@@ -41,11 +41,16 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { setCaptureWorkObserverForTests } from "~/lib/context/model-operation-record"
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
-import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import {
+  //
+  resetHistoryPersistErrorStats,
+} from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { setSummaryPreviewVisitObserverForTests } from "~/lib/history/in-flight"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {
@@ -129,10 +134,12 @@ import {
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
   { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
+  { name: "setCaptureWorkObserverForTests", reset: () => setCaptureWorkObserverForTests(undefined) },
   { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "setSummaryPreviewVisitObserverForTests", reset: () => setSummaryPreviewVisitObserverForTests(undefined) },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "setHistorySearchClientForTests", reset: () => setHistorySearchClientForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },

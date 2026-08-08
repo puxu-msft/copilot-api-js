@@ -27,6 +27,13 @@
 - [V9] 2026-07-28 `1f7fd6bf` ｜视角：写方 —— **反面观测，格外可信（作者证伪自己）**：作者在**修复第一轮评审发现的过程中**新写了三条验收判据，三条全是「断言它能咬住某失败」而无任何变异实验，第二轮被逐条打掉（环数计数咬不住 re-export／`toBe` 对 primitive string 证明不了同一绑定／`git diff --stat` 对调用点无鉴别力）。写作现场：这三条写于一份**通篇在讲「守卫绿不自证」**的文档里。故 V9 的槽位是必要的，**但当轮同时暴露出「写了一句变异 ≠ 鉴别力已验证」**，验法已据此修订成区分「变异计划」与「实际红的观测」。｜结论：证伪→已修（V9 验法修订 1 次）
 - [V10] 2026-07-28 `1f7fd6bf` ｜视角：写方 —— **反面观测**：state→foundation 交接第一版**只字未提** spec `2026-07-22` §2.1 白纸黑字的「把 state 沉到 foundation day-1 走不通」+「强化 state 整个留 core 的正确性」，作者数小时内没想到去查冻结上游结论；由接手方走查视角的 reviewer 发现。这正是 V10 存在的理由。**同时暴露检索器不足**：初版验法的单关键词 `rg` 无法支持「无冲突」结论（主题会改名、旧文档只出现旧方案术语），已改成「候选文档逐份 disposition + 检索词与范围落盘」。｜结论：证伪→已修（V10 验法修订 1 次）
 
+## 2026-08-06 · Agent context-window 终态接力（会话 `046d7295`）
+
+- **V11 §6b 触发链** — ❌ **负样本并已修正文**。长时 implementer 明确返回 `400 … input exceeds the context window` 后，主会话仍按“API 错误一律 SendMessage”恢复一次；用户指出 context-window 超限是单调不可恢复终态。旧 §6b 只覆盖 5 MiB transcript 读取闸门与“预计将越界”的预防路径，没有给“已经收到模型 context-window 400”一个可达出口。正文现新增容量终态分类与新 agent 接力协议。｜结论：证伪→已修
+- **V13 中断后接手** — ⚠️ **接力已完成，但本轮编辑了 skill，不能投证实票**。新 agent 先读原 transcript，再核对进度文件、commit lineage、旧 agent worktree 与权威执行树；它恢复既有 7 个提交与两文件未提交 WIP，定位旧设计的 TREE-local `node_modules` false-red，继续完成 dependency closure，产出 `61bc05e3`／`0da98fda`／`fd129ffd`，infra 60 pass、backend 全绿。接力无需用户重述任务，但新 agent 仍通过 transcript 与磁盘重新核验关键状态——这是协议要求，不算“重新调查已确证事实”。｜结论：数据不足（作者票；方法实测可行）
+- **V15 逐条落盘** — ⚠️ 旧 agent 的大量语义提交与进度文件保住了已闭合工作，但最后一段未提交 dependency-closure WIP 仍需从旧 worktree机械恢复；这说明 write-as-you-go 降低了损失，却不能替代终态接力协议。｜结论：数据不足
+- **V18 context-window 接力** — ⚠️ **本轮是产生规则的实例，只记数据、不投证实票。** ①旧 agent `a52b…` 已由 `TaskStop` 终止，通知为 `status=killed`；②派新 agent `a7c…` 时明确要求旧 worktree 只读、不得破坏，并先读 transcript；③新 agent 报告逐祖先恢复 `0771b49b → eaa8099f → 00915750 → b71d4a1e → fdf7c12d → 2ce186d3 → 39fd3a31`，再恢复 validator/test 两文件未提交 WIP，最终产出 `61bc05e3`／`0da98fda`／`fd129ffd`，无需用户重述。**本次未完整保存的机械证据**：派活前旧树 diff baseline、WIP exact patch 文件、旧树结束快照、新 agent 独立进度文件。故本实例只能证明接力可行，不能证明新版协议的全部数据保护门已执行。｜结论：数据不足
+
 ## 定期度量（非自验，不适用毕业规则）
 
 - 2026-07-28 全仓基线 17/47（`find` + `head -8` 口径，含 3 份评审报告噪声）。**新交接合规率**按 SKILL.md 里钉的 `--diff-filter=A --since=2026-07-28` 口径另计——全仓比例受"旧的不追溯迁移"政策豁免影响，不能当证伪判据。
@@ -104,14 +111,6 @@
 - **V17 紧急纠错例外** — ❌ **补记一次证伪（发生在本会话早段，此前漏记）**。撤回 `MEMORY.md` 里「探测消息打断了 agent」这条被时间线证伪的因果时（中断早于探测 118 秒），我**在同一次撤回里立刻把「宿主一次失败的 fork resume」写成了真因**，而那同样只有时间相关性、没有产生点标签。**命中证伪条款③（根因未定时不得顺手写入新的因果解释）**，由后续评审抓出、已降级为「只写已排除什么」。SKILL.md §6 的正文已把这次写成反面教材，但**当时没在本日志记账**——两处记录的漂移本身也是本轮学到的（见下条）。
 - **新增观测（不在自验表内，建议入表）** — **「手工维护的汇总 + 明细，两个可独立写的点，没有对账门就必然漂」**。本轮在姊妹 skill `reshaping-a-bypassed-guard` 的 verification-log 里实测到：三张票写进了「逐条记录」，而「票数」小节纹丝不动停在 `0 证实`。修法不是提醒自己细心，而是**指定明细为唯一事实源、汇总降为派生视图**，并规定同一次编辑内更新 + 提交前重数对账。**本日志天然免疫**（它只有记录、没有汇总小节）——但上面 V17 那条「当时没记账」说明**另一种漂移仍在**：SKILL.md 正文写了教训、本日志没记票，同一事实的两个载体分岔。已并入记忆 [[methodology-downgrading-a-gate-needs-a-reachable-trigger]]。
 - **新增观测** — **reviewer 在同一份报告里自我推翻了刚提的一条 major**（按「第 3 行」字面 hash 报指纹不匹配 → 继续枚举 canonicalization 后确认作者记的值正是「含行尾 LF」版，当场自撤降为 nit）。这是「每闭合一条立刻落盘」的一个**副作用收益**：逐条写下来之后，它自己回头看得见前一条的判据取法。值得在派活模板里保留「允许并鼓励当场撤回自己的 finding」这层意思。
-## 2026-08-05 · GitHub Enterprise 鉴权主机规格（sha `75c00185`）
-
-- **V1 触发链** — ⚠️ 本轮触发原因是规格阶段完成、准备交用户审阅；主会话在最终 reviewer PASS 后主动调用本 skill，没有等用户提醒，也没有先宣告完成。但 V1 的现行断言只覆盖“上下文快满、任务没完”，本轮不属于它的适用场景，不能投证实票。｜结论：数据不足
-- **V7 闭环提交时点** — ⚠️ 机械检查再次抓到 `exp/` ignore 形态。初次 `git status --short` 只显示两份 spec，实验目录完全不可见；`git check-ignore -v` 定位 `.gitignore:27:exp/`，随后以逐文件 `git add -f` 纳入。最终门禁逐文件 `git ls-files` 列出 8/8 产物、逐路径 `status --porcelain -uall` 为空，`git diff-tree -r 75c00185` 包含两份最终收口文档。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
-- **V15 逐条落盘** — ⚠️ 负向证据，但按当前豁免规则只能记数据不足。本轮 reviewer 两次 `Server error mid-response`：派活没有给 `REPORT_FILE`，两次都没有可恢复的磁盘报告，只能 `SendMessage` 同一 agent 并把任务压到 20–40 行分段。无法证明中断前已闭合 finding，因此不投证伪票；但它再次说明“不指定报告文件时，任何已完成思考都只能赌最终 return”。｜结论：数据不足
-- **V8 正交视角** — ⚠️ 本轮是两个先后 reviewer，但第二位承担的是前一位 transcript 物理不可达后的替代复核，不是预先设计的正交视角，因此不计入 V8 分母。逐轮增量仍显著：合并态最后又抓出 debug 无 token 分支缺 oracle。｜结论：数据不足
-- **V9 鉴别力正控** — ⚠️ 规格中的每类新 gate 都写了目标 mutation，尤其合并态评审补出的 debug 三类 mutation、配置事务三类 mutation、proxy 旧预采样 mutation；实现尚未开始，均明确保留为执行期 gate，没有把“写了 mutation”冒充已实测红。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
-- **投票规则结构缺陷** — 当前第 11 行把“本轮编辑过该目录”一律判为不能投证实票，而本 skill 又要求每次使用后追加本目录内的 `verification-log.md`；两条合用会使任何按要求记录的会话都无法投证实票。该冲突需由独立的规则维护任务裁决：可选方向是明确排除“仅追加 verification-log”，或由外部记录者落票。本轮不修改 instruction text，避免在产品规格收尾中顺手改变全局流程。｜结论：待裁决
 
 ## 2026-08-05 · WebSearch tool_choice 修复与 worktree 集成（核验基线 `631578b2`）
 
@@ -121,6 +120,15 @@
 - **V7 闭环提交时点** — ✅ 提交后机械核验通过。项目 commit `9c546408` 的 `git diff-tree --no-commit-id --name-only -r` 精确包含 7 份文档／memory/实验更新 + 2 份独立评审报告，零额外路径；全局 skill commit `f9de23f` 精确包含 `isolating-from-a-shared-git-worktree/SKILL.md` 与 `proving-where-a-command-ran/verification-log.md` 两路径。两组集合均与提交前冻结清单逐行相等。｜结论：数据不足（本轮编辑该 log，不投证实票）
 - **独立审计限制（历史时点）** — 初次记录时会话有“Do not call the AgentTool unless the user requested it”的运行时约束，故当时 §1 subagent audit 未执行；本记录没有把主会话自审冒充独立评审。
 - **限制随后解除、审计已执行并闭环** — 用户明确授权后，派两条正交独立评审：协议/doc↔code 报告 `docs/tmp/2026-08-05-websearch-closeout-review-protocol.md`（Round 1：0 blocker / 3 major；Round 2：剩 1 major；Round 3：0 blocker / 0 major，可定稿）；instruction/Git 报告 `docs/tmp/2026-08-05-websearch-closeout-review-skill.md`（Round 1：2 major，Round 2 剩 1 major，Round 3：0 blocker / 0 major，可定稿）。本轮编辑该 log，按投票规则不投证实票。
+
+## 2026-08-05 · GitHub Enterprise 鉴权主机规格（sha `75c00185`）
+
+- **V1 触发链** — ⚠️ 本轮触发原因是规格阶段完成、准备交用户审阅；主会话在最终 reviewer PASS 后主动调用本 skill，没有等用户提醒，也没有先宣告完成。但 V1 的现行断言只覆盖“上下文快满、任务没完”，本轮不属于它的适用场景，不能投证实票。｜结论：数据不足
+- **V7 闭环提交时点** — ⚠️ 机械检查再次抓到 `exp/` ignore 形态。初次 `git status --short` 只显示两份 spec，实验目录完全不可见；`git check-ignore -v` 定位 `.gitignore:27:exp/`，随后以逐文件 `git add -f` 纳入。最终门禁逐文件 `git ls-files` 列出 8/8 产物、逐路径 `status --porcelain -uall` 为空，`git diff-tree -r 75c00185` 包含两份最终收口文档。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
+- **V15 逐条落盘** — ⚠️ 负向证据，但按当前豁免规则只能记数据不足。本轮 reviewer 两次 `Server error mid-response`：派活没有给 `REPORT_FILE`，两次都没有可恢复的磁盘报告，只能 `SendMessage` 同一 agent 并把任务压到 20–40 行分段。无法证明中断前已闭合 finding，因此不投证伪票；但它再次说明“不指定报告文件时，任何已完成思考都只能赌最终 return”。｜结论：数据不足
+- **V8 正交视角** — ⚠️ 本轮是两个先后 reviewer，但第二位承担的是前一位 transcript 物理不可达后的替代复核，不是预先设计的正交视角，因此不计入 V8 分母。逐轮增量仍显著：合并态最后又抓出 debug 无 token 分支缺 oracle。｜结论：数据不足
+- **V9 鉴别力正控** — ⚠️ 规格中的每类新 gate 都写了目标 mutation，尤其合并态评审补出的 debug 三类 mutation、配置事务三类 mutation、proxy 旧预采样 mutation；实现尚未开始，均明确保留为执行期 gate，没有把“写了 mutation”冒充已实测红。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
+- **投票规则结构缺陷** — 当前第 11 行把“本轮编辑过该目录”一律判为不能投证实票，而本 skill 又要求每次使用后追加本目录内的 `verification-log.md`；两条合用会使任何按要求记录的会话都无法投证实票。该冲突需由独立的规则维护任务裁决：可选方向是明确排除“仅追加 verification-log”，或由外部记录者落票。本轮不修改 instruction text，避免在产品规格收尾中顺手改变全局流程。｜结论：待裁决
 
 ## 2026-08-06 · 上游空正文 HTTP 499 有界重试（sha `d2607ec9`）
 

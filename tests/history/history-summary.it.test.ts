@@ -857,31 +857,6 @@ describe("summary cache consistency", () => {
     expect(getSummary(entry.id)).toBeUndefined()
   })
 
-  test.skip("FIFO eviction removes summary from cache", async () => {
-    await initHistory(true, 3)
-
-    const entries: Array<HistoryEntry> = []
-    for (let i = 0; i < 5; i++) {
-      entries.push(
-        insertHistoryEntry("anthropic-messages", {
-          model: "test",
-          messages: [{ role: "user", content: `msg-${i}` }],
-        }),
-      )
-    }
-
-    // First two entries should be evicted
-    expect(getSummary(entries[0].id)).toBeUndefined()
-    expect(getSummary(entries[1].id)).toBeUndefined()
-    // Remaining entries should still be cached
-    expect(getSummary(entries[2].id)).toBeDefined()
-    expect(getSummary(entries[3].id)).toBeDefined()
-    expect(getSummary(entries[4].id)).toBeDefined()
-
-    // getHistorySummaries should only return the 3 surviving entries
-    expect(getHistorySummaries().total).toBe(3)
-  })
-
   test("multiple updateEntry calls rebuild summary correctly each time", async () => {
     const entry = createEmptyEntry("anthropic-messages")
 
