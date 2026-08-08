@@ -270,6 +270,7 @@ describe("P6-T1 candidate dispatch runtime", () => {
     )
 
     expect(outcome.state).toBe("rejected")
+    if (outcome.state !== "rejected") throw new Error("undefined cleanup unexpectedly resolved")
     expect(outcome.error).toBeInstanceOf(AggregateError)
     expect((outcome.error as AggregateError).errors).toHaveLength(1)
     expect(((outcome.error as AggregateError).errors[0] as Error).message).toBe("undefined")
