@@ -192,22 +192,31 @@ describe("production History admission wiring", () => {
 
   test("management, History, metrics, and dry-run surfaces bypass model admission", async () => {
     const held = await controller.acquire({ signal: new AbortController().signal })
-    const requests: ReadonlyArray<Request> = [
-      new Request("http://localhost/health/liveness"),
-      new Request("http://localhost/api/history"),
-      new Request("http://localhost/api/status"),
-      new Request("http://localhost/metrics"),
-      new Request("http://localhost/api/debug/dry-run-pipeline", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      }),
+    const requests: ReadonlyArray<{ request: Request; expectedStatus: number }> = [
+      { request: new Request("http://localhost/health/liveness"), expectedStatus: 200 },
+      { request: new Request("http://localhost/history/api/entries"), expectedStatus: 200 },
+      { request: new Request("http://localhost/api/status"), expectedStatus: 200 },
+      { request: new Request("http://localhost/metrics"), expectedStatus: 200 },
+      {
+        request: new Request("http://localhost/api/debug/dry-run-pipeline", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        }),
+        expectedStatus: 400,
+      },
     ]
 
-    for (const request of requests) {
+    for (const { request, expectedStatus } of requests) {
       const response = await app.request(request)
-      expect(response.status, new URL(request.url).pathname).toBeGreaterThanOrEqual(200)
-      expect(controller.snapshot(), new URL(request.url).pathname).toMatchObject({ reserved: 1, waiting: 0 })
+      const path = new URL(request.url).pathname
+      expect(response.status, path).toBe(expectedStatus)
+      if (path === "/history/api/entries") {
+        const body = (await response.json()) as { entries: unknown; total: unknown }
+        expect(Array.isArray(body.entries)).toBe(true)
+        expect(typeof body.total).toBe("number")
+      }
+      expect(controller.snapshot(), path).toMatchObject({ reserved: 1, waiting: 0 })
     }
 
     held.releaseBeforeBinding("release fixture capacity")
