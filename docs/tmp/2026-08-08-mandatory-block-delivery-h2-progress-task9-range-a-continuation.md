@@ -27,9 +27,21 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 
 1. 候选 `e43d08ec..9f9b0d7b` 的净 patch 已通过 `git apply --check` 后应用并提交为 `c0db13ef`；导入的 substrate 定向集合为 `26 pass / 0 fail`。
 2. 已完成第一个 TDD 子单元并提交为 `7300cd5d`：新增 operation/journal normalized refs schema 与生产 A/B writer，新增 same-digest 双 sequence 正控；红测为 `no such table: v3_operation_evidence_refs`，修复后相关集合 `15 pass / 0 fail`。
-3. 当前子单元：journal recovery 对 persisted normalized refs 与实际 journal envelope refs 做有序六元组精确比对。红测在删除 sequence=2 后仍恢复（`Expected: 0; Received: 1`）；已加入 mismatch 拒绝，`13 pass / 0 fail`，待提交。
+3. 已完成 journal recovery 精确 ref 对账并提交为 `9c1dcc6b`：对 persisted normalized refs 与实际 journal envelope refs 做有序六元组精确比对。红测在删除 sequence=2 后仍恢复（`Expected: 0; Received: 1`）；加入 mismatch 拒绝后为 `13 pass / 0 fail`。
 4. 继续以测试先行落实 strict primitive、20 格 DML final state、A/B recovery、ready snapshot、healthy narrow path。
 5. 对每个语义 commit 更新本文件；最终运行 Task 9 定向、typecheck、target lint 与适用 backend 验证，完成独立评审前不得宣告完成。
+
+## 结构怪味审计
+
+- `src/lib/history/v3/store.ts:229-333`：schema DDL 同时存在于 current-floor 与 migration owner 两处，属镜像 schema 风险。本轮只在两处同步补 normalized refs，因为当前 migration 架构要求两条创建路径；后续 strict primitive 与 invalidation 不再继续把 policy 塞进 schema 字符串，应集中到 `summary-schema.ts`／专用 helper。
+- `src/lib/history/v3/store.ts:1589-1649`：journal payload 与 normalized refs 是同一事实的两份存储，属有意冗余。已在 recovery 加 ordered six-tuple equality gate；保留原因是 journal envelope 是 A recovery replay 源，normalized rows 为 indexed integrity/GC 根，不能降级为任一方单独真相。
+- `src/lib/history/queries.ts:214-281`：marker 判断与查询分散，属计划明确要求修复的 TOCTOU 风险。本轮未修，留给 `withValidatedSummarySnapshot` 子单元，验收是 marker/query race 正负控与 healthy narrow plan 不退化。
+
+## 接手注意
+
+- 当前 HEAD `9c1dcc6b`，下一步先为 strict primitive 写红测：operation normalized refs 漏/多/重排、summary 承重字段被 canonical mutation 后不得 ready，并先定位 migration/summary trigger 接缝再改代码。
+- 不要把 FK ON referenced evidence DELETE 的 ABORT 测试改成 poison；终稿 #16 明确所有 trigger side effects 回滚。对 missing evidence 的历史 corruption 测试必须显式 `PRAGMA foreign_keys = OFF`，因为 FK ON 正常防止直接 DELETE。
+- 不要以 `git commit --amend` 修正此前 commit 的进度文字；已用本次 progress-only commit 保留线性历史。
 
 ## 在途意图
 
