@@ -2,7 +2,7 @@
 
 > **状态：设计已获用户批准；独立首轮评审的 5 条 major 已全部采纳，复评 0 blocker／0 major；可进入实施计划。**
 >
-> **基线：** 当前本地 `master@cfe78b6425fbbaa05fd3d11df1582611c76c0f1f`；待整合的 direct-live pre-content recovery 来源为 `agent-ace4e48572710c13a@b7319c78e41e3059ad2269a8c1014640b016e848`。实施前必须重新读取实际 refs，不得把本段快照当执行期 HEAD。
+> **设计评审基线：** 初稿锚定 `master@cfe78b6425fbbaa05fd3d11df1582611c76c0f1f` 与 recovery 来源 `agent-ace4e48572710c13a@b7319c78e41e3059ad2269a8c1014640b016e848`。计划编写期间 recovery 已经独立评审、修订并进入 `master@e45536af134e85d1403c22e242355c944a9952a5`；本实施分支以 merge commit `bc71c1dc693261cade9481de3ef12de840b8e344` 吸收该 master，focused lifecycle／recovery sanity 为 118 pass／0 fail。后续实现只做本规格 lifecycle 加固，不重复整合 recovery。执行时仍须重新读取实际 refs，不得把本段快照当未来 HEAD。
 >
 > **用户裁决：** 不在 shutdown 层过滤逻辑状态为 `failed` 的条目，不按年龄自动删除 operation registry，不用 timeout 掩盖资源未收敛。完整整合 direct-live pre-content recovery，并从 candidate、dispatch、delivery、request operation owner 修复根因。本轮只实现 lifecycle blocker 诊断；A4 H2 canonical transport diagnostics 保持独立阶段。
 
