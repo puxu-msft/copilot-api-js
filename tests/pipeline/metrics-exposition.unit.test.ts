@@ -122,6 +122,33 @@ describe("renderPrometheusMetrics", () => {
     expect(text).toContain("# TYPE copilot_api_request_count_total counter")
     expect(text).toContain("# TYPE copilot_api_output_tokens_total counter")
   })
+
+  test("emits History admission and backend process gauges outside dimension counters", () => {
+    const text = renderPrometheusMetrics([], 0, {}, [], [], {
+      backend: "legacy",
+      capacity: 4,
+      reserved: 3,
+      unacked: 2,
+      waiting: 1,
+      estimatedBytes: 99,
+      overCapacity: false,
+      preTerminalFailuresTotal: 7,
+      sinkEnqueueErrorsTotal: 5,
+      pendingEnvelopes: 0,
+    })
+
+    expect(text).toContain('copilot_api_history_backend_info{backend="legacy"} 1')
+    expect(text).toContain("copilot_api_history_admission_capacity 4")
+    expect(text).toContain("copilot_api_history_admission_reserved 3")
+    expect(text).toContain("copilot_api_history_admission_unacked 2")
+    expect(text).toContain("copilot_api_history_admission_waiting 1")
+    expect(text).toContain("copilot_api_history_admission_estimated_bytes 99")
+    expect(text).toContain("copilot_api_history_admission_over_capacity 0")
+    expect(text).toContain("copilot_api_history_pre_terminal_failures_total 7")
+    expect(text).toContain("copilot_api_history_sink_enqueue_errors_total 5")
+    expect(text).toContain("copilot_api_history_worker_pending_envelopes 0")
+    expect(text).not.toContain('dimension="history"')
+  })
 })
 
 describe("buildMetricsExposition (live registry)", () => {
