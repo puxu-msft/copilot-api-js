@@ -30,7 +30,7 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
     expect(manager.activeCount).toBe(0)
 
     const tracker: ShutdownDrainSource = { getActive: () => manager.getTrackedOperations() }
-    const drainPromise = drainActiveRequests(2000, tracker, { pollIntervalMs: 10 })
+    const drainPromise = drainActiveRequests(tracker, { pollIntervalMs: 10 })
 
     // Give the drain time to poll a few times — it must still see the un-quiesced operation.
     await new Promise((r) => setTimeout(r, 60))
@@ -38,8 +38,7 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
 
     // Now let the operation quiesce → drain must complete "drained" (not "timeout").
     release()
-    const result = await drainPromise
-    expect(result).toBe("drained")
+    await expect(drainPromise).resolves.toBeUndefined()
     expect(manager.trackedOperationCount).toBe(0)
   })
 
@@ -50,8 +49,7 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
     ctx.finalizeModelOperationDelivery()
 
     const tracker: ShutdownDrainSource = { getActive: () => manager.getTrackedOperations() }
-    const result = await drainActiveRequests(2000, tracker, { pollIntervalMs: 10 })
-    expect(result).toBe("drained")
+    await expect(drainActiveRequests(tracker, { pollIntervalMs: 10 })).resolves.toBeUndefined()
   })
 
   test("drain waits after operation quiescence until delivery starts the generation finalizer", async () => {
@@ -60,12 +58,12 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
 
     const tracker: ShutdownDrainSource = { getActive: () => manager.getTrackedOperations() }
-    const drainPromise = drainActiveRequests(2000, tracker, { pollIntervalMs: 10 })
+    const drainPromise = drainActiveRequests(tracker, { pollIntervalMs: 10 })
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(manager.trackedOperationCount).toBe(1)
 
     ctx.finalizeModelOperationDelivery()
     await ctx.whenModelOperationFinalized()
-    await expect(drainPromise).resolves.toBe("drained")
+    await expect(drainPromise).resolves.toBeUndefined()
   })
 })

@@ -189,7 +189,7 @@ export type FeatureKind =
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 
-export type ShutdownPhase = "draining" | "aborting" | "finalized"
+export type ShutdownPhase = "draining" | "finalized"
 
 export type RateLimitMode = "normal" | "rate-limited" | "recovering"
 

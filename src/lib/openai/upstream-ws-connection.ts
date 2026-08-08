@@ -394,7 +394,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // same composite signal as the h2 path (client / reaper / hard deadline / dispatch /
         // shutdown), and dropping the reason entirely erases WHICH of them cancelled — the
         // boundary then has to guess, which is the failure mode this family of fixes exists
-        // to end. Both provenance readers (`getCancellationCause`, `isShutdownCausedAbort`)
+        // to end. Provenance readers such as `getCancellationCause`
         // walk the cause chain, so chaining preserves them.
         const connectAborted = (): Error =>
           signal.reason instanceof Error ?

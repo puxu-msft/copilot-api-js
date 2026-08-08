@@ -799,13 +799,6 @@ export const AnthropicConfigSchema = z
   })
   .strict()
 
-export const ShutdownConfigSchema = z
-  .object({
-    graceful_wait: nullableNonnegativeInt(),
-    abort_wait: nullableNonnegativeInt(),
-  })
-  .strict()
-
 export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
@@ -1462,7 +1455,6 @@ export const ConfigSchema = z
     forward_client_query_exclude: z.array(z.string()).optional(),
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
-    shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     upstream_transport: nullableSection(UpstreamTransportConfigSchema),
     server: nullableSection(ServerConfigSchema),
@@ -1565,7 +1557,6 @@ export type SystemPromptEntry = z.infer<typeof SystemPromptEntrySchema>
 export type EndpointScope = (typeof ENDPOINT_SCOPE_VALUES)[number]
 export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
-export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>

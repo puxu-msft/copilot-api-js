@@ -51,10 +51,11 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - 首次接力后全 backend 为 6681 pass／5 fail。`summary-query-performance` 的真实失败是前序 pending/recent overlay 让 `totalRequests=768≠512`，不是 wall-clock 阈值；该自管 DB fixture 现显式清两个 overlay。三个 shutdown HTTP／durability失败来自 bespoke fixture 的文件首测未先 `resetTestRuntime()`，以及磁盘 DB fixture 未在 `initHistory()` 前重建 admission。
 - Responses WS 的最后一个超时经起始／卡点 snapshot 探针定位：起始 `reserved=0`，卡点 `reserved=1/unacked=0` 且 context manager 无 active operation，说明 terminal publication subscriber 被清空。根因是 `useIsolatedRuntime()` 在 `resetTestRuntime()` 已通过 `initHistory()` 重接 production subscriber 后，又从后置 RESETTERS 调 `resetModelOperationTerminalBusForTests()` 把 subscriber 清掉。现 terminal bus 与 admission 均在 `resetTestRuntime()` 的 `initHistory()` 前重置，并从后置 RESETTERS 移除；WS 正常请求→shutdown 配对 2 pass／0 fail，整文件 14 pass／0 fail，fixture+completeness 8 pass／0 fail，typecheck 绿。临时诊断 probe 已全部撤销。
 - 隔离修复后全 backend 为 5630 pass／0 fail（16 shards，7282 executed，30 skipped，78.22s；`bun run test:backend`，当前提交 `1c54119f`）。两项 exact-patch 正控均命中目标机制并精确恢复：①移除 Chat Completions `withHistoryAdmission` 后 architecture test 报该 owner 0≠1（2 pass／1 fail）；②移除 shutdown Step 1 `stopAdmission` 后 ordering test 缺 `admission-stopped`（1 pass／1 fail）。恢复后合并目标集 5 pass／0 fail，两个生产文件无 diff。
+- 最终评审期间本地 master 合入首信号无损排空重写（`master@4c555ef9`），与 Batch 1b 的 `src/lib/shutdown.ts`、两份已退役 shutdown-abort 测试等路径重叠。语义合并以新规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 为权威：保留 lossless operation drain，Step 1 只拒绝尚未创建 context 的 admission waiter，canonical finalizer之后／token与History close之前 drain admission；不复活已删除的主动 abort 测试。合并态 typecheck绿，shutdown/admission/h2/rate-limit/architecture 交界集合 49 pass／0 fail。
 
 ## 在途意图
 
-- Batch 1b 原始起点为已集成的 `master@cfe78b64`；context-window 接力后执行基线更新为本地 `master@90e777bc`。只执行 plan Task 1b，不接 Batch 2a Worker semantic backend、restart policy、SQLite Worker owner 或 query RPC。
+- Batch 1b 原始起点为已集成的 `master@cfe78b64`；context-window 接力基线先更新为 `master@90e777bc`，最终又合入含 lossless shutdown 重写的 `master@4c555ef9`。只执行 plan Task 1b，不接 Batch 2a Worker semantic backend、restart policy、SQLite Worker owner 或 query RPC。
 - `RequestContextManager.create()` 保持同步；route 在 parse／dispatch 前 await reservation，再显式传入 context／lightweight producer。
 - History disabled 返回 no-op reservation；管理面与 dry-run 不创建 reservation，也不产生 admission wait histogram observation。
 - admission 继续独占 reservation／waiter 状态；runtime 继续独占 Worker pending envelope／generation；legacy backend 阶段 status 明确 `backend=legacy`，不要求 `admission.unacked === runtime.pendingEnvelopes`。

@@ -249,7 +249,6 @@ const ANTHROPIC_STREAM_ERROR_TYPE: Record<AnthropicErrorCauseKind, string> = {
   "header-timeout": "timeout_error",
   "request-deadline": "timeout_error",
   "reaper-cancel": "timeout_error",
-  shutdown: "overloaded_error",
   "client-abort": "api_error",
   "request-cancel": "api_error",
   "dispatch-cancel": "api_error",

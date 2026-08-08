@@ -1,5 +1,5 @@
 // contrib/pm2/ecosystem.config.cjs
-// pm2 托管样例：SIGINT/SIGTERM 触发既有 4-phase 优雅 drain（gracefulShutdown），
+// pm2 托管样例：SIGINT/SIGTERM 停止 ingress 并无损 drain 已接纳请求，
 // process.send('ready') 与 systemd sd_notify 共用同一个 notifyReady() 钩子。
 // 详见 docs/lifecycle.md「路径三：pm2」。
 //
@@ -13,10 +13,10 @@ const commonApp = {
   args: "start",
   wait_ready: true, // 等 process.send('ready')（notifyReady 的 pm2 腿）
   listen_timeout: 30000,
-  // 对齐 drain 宽限（shutdown.graceful_wait + abort_wait，默认 60+120=180s），留余量。
-  // 若 config.yaml 调大过这两个值，须同步调大本项，否则 pm2 会在 drain 完成前 SIGKILL。
-  kill_timeout: 200000,
-  // pm2 stop/restart 默认发 SIGINT → 已被 setupShutdownHandlers 接住触发 4-phase drain。
+  // pm2 只能配置有限 hard timeout，而 bundled request_deadline=0。该上限无法
+  // 严格保证无损排空；生产换代应先确认旧槽 activeRequests=0，再执行 delete。
+  kill_timeout: 1300000,
+  // pm2 stop/restart 默认发 SIGINT → setupShutdownHandlers 接住并启动无损 drain。
 }
 
 module.exports = {

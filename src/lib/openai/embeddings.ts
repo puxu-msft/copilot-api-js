@@ -5,9 +5,7 @@ import {
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
-import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
@@ -58,7 +56,7 @@ export function prepareEmbeddingsRequest(payload: EmbeddingRequest): PreparedEmb
     url: `${copilotBaseUrl(state)}/embeddings`,
     payload: normalizedPayload,
     headers: copilotHeaders(state),
-    signal: combineAbortSignals(createResponseHeaderTimeoutSignal(payload.model), getShutdownSignal()),
+    signal: createResponseHeaderTimeoutSignal(payload.model),
   }
 }
 

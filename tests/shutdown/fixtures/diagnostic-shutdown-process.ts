@@ -53,8 +53,7 @@ setupShutdownHandlers({
     gracefulShutdown(signal, {
       tracker: { getActive: () => [] },
       server: { close: async () => {} },
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
+      closeTokenRuntimeFn: async () => {},
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
       contextManager: { stopReaper: () => {} },

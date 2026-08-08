@@ -109,13 +109,10 @@ describe("graceful shutdown vs the h2 session pool", () => {
     const shutdownPromise = gracefulShutdown("SIGTERM", {
       tracker,
       server: createMockServer(),
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
+      closeTokenRuntimeFn: async () => {},
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
       contextManager: { stopReaper: () => {} },
-      gracefulWaitMs: 5000,
-      abortWaitMs: 500,
       drainPollIntervalMs: 10,
       drainProgressIntervalMs: 50_000,
     })

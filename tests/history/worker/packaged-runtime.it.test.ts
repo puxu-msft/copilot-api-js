@@ -31,7 +31,7 @@ beforeAll(async () => {
   const child = Bun.spawn([process.execPath, "x", "tsdown", "--out-dir", buildDir], { cwd: root, stdout: "pipe", stderr: "pipe" })
   const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
   if (exitCode !== 0) throw new Error(`packaged Worker build exited ${exitCode}:\n${stdout}\n${stderr}`)
-})
+}, 30_000)
 
 afterAll(() => {
   if (buildDir) rmSync(buildDir, { recursive: true, force: true })
