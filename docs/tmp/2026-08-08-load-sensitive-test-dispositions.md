@@ -367,10 +367,59 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
    **待验证（本轮未做）**：
    - **V1** 注入一个「终态后心跳定时器不被 clear」的真实泄漏（打生产代码，不翻测试状态），跑该文件，记录这四条是红是绿。红 → 有鉴别力，本条从未处置清单撤下；绿 → 才成立「盲」。
    - **V2** 仅在 V1 为绿时才需要：查 `2_000` 阈值与该测试里 keepalive 实际周期的关系——若被泄漏的定时器剩余延迟本来就 > 2000，`.every()` 照样为真，那才是真的盲。阈值与周期都要给实测值。
+
+   ### V1 执行结果（2026-08-08 当轮补做）：**未能判定，不是「有鉴别力」也不是「盲」**
+
+   先说**已经确证**的两件事（这两条本身就推进了问题）：
+
+   - **该心跳定时器对 FakeClock 是可见的，剩余延迟就是 `2000`**。在用例内插探针实测（跑完即撤）：
+     ```
+     PROBE A (after commit, before tail advance) timers = [2000]
+     PROBE B (after 2.5s advance, stream still open)  timers = [2000]
+     ```
+     配置是 `streamKeepalivePingSec: 2` → 周期 2000ms。**这直接回答了 V2 关心的阈值关系**：判据是 `delay > 2_000`，而心跳定时器的剩余延迟恰好是 `2000`，`2000 > 2000` 为 **false**——**只要它在断言点还活着，这四条就会红**。所以谓词的形状是对的，不存在「阈值定得太松、泄漏也照过」的问题。
+   - **但在断言点它是 `[]`**：`PROBE C (at assertion point, post-terminal) timers = []`。
+
+   于是问题收敛成一个具体的技术障碍：**我造不出「终态后仍有活心跳定时器」的状态**。逐级加码试了三种真实泄漏，全部仍 `[]`、四条断言全绿：
+
+   | 尝试 | 打在哪 | 断言点 timers | 结果 |
+   |---|---|---|---|
+   | `stop()` 不 clear 定时器 | `client-sink.ts:611-615`（`startFixedForwardIdleHeartbeat`） | — | 2 pass |
+   | tick 在 stopped 时**仍自我重排**（该 helper docstring 明写 `stop` 就是为防这个） | 同上 `:595` | — | 2 pass |
+   | **inline** heartbeat 的 tick 在 stopped/suspended 时仍自我重排 | `client-sink.ts:436` | `[]` | 1 pass |
+   | 上一条 **叠加** `close()` 完全不置 `stopped`、不 clear | 再叠 `:375` | `[]` | 1 pass |
+
+   前两次说明**这个用例根本没走 `startFixedForwardIdleHeartbeat`**（那是另一个 builder）——这本身是一次「mutation 没打到被走到的路径」，与第 3、4 条同型。后两次说明：即使 inline 心跳无限自我重排、且 `close` 完全失效，定时器在断言点仍然不在 FakeClock 的表里。**也就是说还有第三条路径在终态前后让它消失（或让该 sink 实例整个脱钩），我没定位到。**
+
+   **结论（严格按证据写）**：V1 **inconclusive**。不能说「已验证有效」，也**不能**升级成「已验证是盲的」——后者需要「存在真实泄漏而断言不红」，而我没能造出真实泄漏的**可观测状态**。目前唯一确定的是：谓词阈值与心跳周期的关系是**正确**的（2000 不 > 2000），若泄漏可见就会红。
+   **交给裁决方的下一步**（我没做，也不该由我自决）：定位终态路径上第三个让该定时器消失的地方（建议从 `createDownstreamDeliverySession` / 终态 finalize 一侧查，而不是继续在 `client-sink.ts` 里加码），在那里注入泄漏后重跑本判据；或改用一个不依赖 FakeClock 定时器表的 oracle。
+
    **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 5. **`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。** 实测（第 8 条 Mutation F）：放宽到 2000 就抓不到「deadline 实际等待时长 = 请求值的 6 倍」这一类了，因为因果 oracle 断言的 message 里嵌的是**请求值**、不是实际时长。所以本轮**保持 200 不变**。放宽 = 放弃该覆盖，属放宽既有 guard，须独立裁决。若要既保覆盖又降敏感，需改生产契约（把**实际**等待时长放进 failure）或注入可控时钟 seam——**两条都未实施、未验证**。
+6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码三次 `test:backend` 报 4856 / 5396 / 6394，而 `executed`/`skipped`/`fail` 三次一致（7297 / 31 / 0）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**（包括本文件前半段引用的 `4856 tests`——已在该处保留原样并由本条限定其口径）。建议单独派一次排查。
+
+## 本轮的分类判断被实测推翻过几次
+
+**8 条表面症状相同的测试，底下是 4 种不同的鉴别力结构；靠类比推进必然出错。** 下面每一条都是「先有一个看起来合理的分类判断，再被一次实跑推翻」的记录——列出来不是自我检讨，是给下一个想「统一处理这一类测试」的人一面墙。
+
+| # | 原判断（谁提出） | 实测结果 | 推翻它的那次观测 |
+|---|---|---|---|
+| 1 | 第二批 4 条「都是过分敏感的 outlier 兜底，放宽即可」（协调方派活前提） | **第 8 条不成立**，它的 `200` 是承重的 | 放宽到 2000 后 Mutation F（deadline 实际时长 6x）**抓不到**；改回 4x 才红（303ms） |
+| 2 | 第 6 条「可能与第 5 条同型」（协调方 + 我的初始倾向） | **不同型** | 同一个 Mutation B，第 5 条旧写法全绿、第 6 条旧写法红（`lowerBound:false`） |
+| 3 | 第 7 条「同文件，大概率同前两条之一」 | **第三种结构** | 它开着 `idleTimeoutMs`，因果判据更强（reject vs sentinel），但**仍对 Mutation B 全盲** |
+| 4 | 第 8 条「`done === 0` 大概已蕴含上界」 | **两条都不蕴含，且两条一起还漏一整类** | Mutation E（deadline 被完全忽略）下旧写法 `{"upperBound":true,"doneIsZero":true}` 全绿 |
+| 5 | 我写的「那四条 `liveTimerDelaysMs` 断言鉴别力为零」 | **过头断言，已撤回** | 「真空通过」只证明不变量成立；否定性结论不自证。V1 实测后仍 **inconclusive** |
+| 6 | 第 3 条注释声称「`guardCallback` 吸收 onClose 异常」 | **实为两层**，第一层是 `notifyClosed` 自己的 try/catch | 第一次 mutation 打在 `guardCallback` 上**没变红**，子进程直跑 rc=0 |
+| 7 | 第 4 条「mutation 打在 `freezeHeartbeat`/`close` 上就能证伪」 | **三次都没打到被走到的路径** | 三次全绿后插探针才发现断言点 `timers = []` |
+| 8 | V1「造个心跳泄漏就能定这四条有没有鉴别力」 | **造不出可观测的泄漏状态**，V1 未判定 | 四级加码（含无限自我重排 + `close` 完全失效）断言点仍 `[]` |
+
+**可复用的判据**（这才是这张表的价值）：
+
+- **「同形」只是症状层面的相似**。判鉴别力结构要问的是：**去掉这条断言后，哪些退化还会被抓住？** 这个问题只能靠**对每条候选 mutation 实跑**回答，读代码读不出来——本轮 8 次里有 5 次我的读码判断被实跑推翻。
+- **「mutation 没变红」永远有两解**：测试没咬住 vs mutation 没打到被走到的路径。本轮命中后者 **3 次**（第 3、4 条与 V1）。分辨方法是**独立观测被测机制本身**（子进程直跑 rc、插探针打印状态），不是再读一遍代码。
+- **否定性结论（「这条断言抓不到东西」）不自证**，需要「注入真实缺陷而它不红」的正面证据；拿不到就老实写 inconclusive，别升级成「盲」。
 
 ## 工具性教训：`Edit` 的替换覆盖面（本轮踩中一次，写成机械判据）
 
@@ -383,6 +432,27 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 **表头、小节标题、列表行首最危险**——它们看起来像定位符、不像内容。
 
+
+## 第二批收口验收（第 5–8 条全部落地后）
+
+`bun run typecheck` —— 绿。源码残留核验：`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数 **0**。
+
+`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片）连跑两次：
+
+```
+[parallel-test] 16 shards · 5396 tests · 5396 pass · 0 fail · 7297 executed · 31 skipped · 66.26s
+[parallel-test] 16 shards · 6394 tests · 6394 pass · 0 fail · 7297 executed · 31 skipped · 59.39s
+```
+
+**必须点名的一件事：这个 runner 的 `N tests` 字段在同一份代码上不稳定。** 本会话三次 `test:backend` 分别报 **4856 / 5396 / 6394**，而 `executed = 7297`、`skipped = 31`、`fail = 0` **三次完全一致**。三次之间的代码差异只有第 5–8 条的测试体改写（用例数没变：`stream-shutdown-race` 恒 25 条、`bus.unit` 恒 11 条），**解释不了 +1538 的漂移**。
+
+因此：
+
+- **可引用的口径是 `executed` / `skipped` / `fail`**（稳定，三次一致）；
+- **`N tests` 不可作为交付数字引用**，任何「本仓库有 N 条测试」的断言若取自这一行，都应视为未经交叉验证；
+- 成因**未定位**（不在本轮范围）。已作为一条独立发现登记进「未处置」清单第 6 条。
+
+这条正是 `cross-check-with-two-methods` 的一次实际命中：若只跑一次并把 `5396 tests` 写进交付物，它看起来完全正常，也没有任何信号提示它是错的。
 
 ## 收口验收（四条全部落地后）
 
