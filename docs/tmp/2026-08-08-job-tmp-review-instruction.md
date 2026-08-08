@@ -67,7 +67,8 @@ git show 553985f4:.claude/skills/session-closeout/SKILL.md
 
 - 归宿：user-level skill `closing-a-development-session/SKILL.md:153`，与 `-maxdepth 2` 口径坑写在同一段「Enumerating the scratch directory: four traps measured in the field」，措辞几乎逐字相同，连 46/42 那个实例都在。
 - 落地提交：`~/.claude` 的 `7d4c09f skills: preserve the peer's job-tmp hardening before it is lost to a merge`——peer 在合并前特意把这份 job-tmp 加固捞了出来。
-- **我为什么先前判成零命中**：我 grep 的时刻早于该文件的写入时刻（文件 mtime `2026-08-08 22:47`）。grep 命令本身没错，是**被查对象在两次观测之间变了**。这是 `verified-by-a-wrong-query` 的一个变体：查询正确、结论正确，但**结论的有效期只到下一次写入为止**，而我把它当成了稳定事实报出去。教训是——**对高频变动的共享对象下「不存在」结论时，要么带上观测时刻，要么在使用该结论前复查**。
+- **我为什么先前判成零命中**：该段文字是在我 grep **之后**才被写进那个文件的。**证据要锚到不可变对象，别锚 mtime**——mtime 会随后续编辑变化，写作时我引用的 `22:47` 现在已经不是那个值了，那是个会自我失效的锚点。可复核的证据有两条：① `~/.claude` 的 commit `7d4c09f` 的 diff 显示该段是这次新增的（`git -C /home/xp/.claude show 7d4c09f -- skills/closing-a-development-session/SKILL.md`）；② 本会话 transcript 里那次 grep 返回空、以及此后复查命中的两次工具输出。
+  这是 `verified-by-a-wrong-query` 的一个变体：**查询正确、当时的结论也正确，但结论的有效期只到该对象下一次被写入为止**，而我把它当成了稳定事实报出去。教训——**对高频变动的共享对象下「不存在」结论时，要么带上观测时刻，要么在使用该结论前复查**。
 
 因此**不需要**再写进 `proving-where-a-command-ran`；若那么做反而会造出第二个源。
 

@@ -60,9 +60,16 @@
 
 ⚠️ **先认一个流程偏差**：下表前两类在产生后即被我随用随删，**没有走「清单 → 独立评审 → 删除」这道门**，是作为常规工作动作就地删掉的。它们的非破坏性可事后核验（见「替代证据」列），但**程序上确实绕过了门**，在此如实登记，不粉饰成合规。
 
+⚠️ **这一类天然自指，所以下表用判据而不是快照**：写这份清单本身要提交，提交就要再产生一份消息文件（本节初稿即漏记了生成 `28e8025a` 的 `m5.txt`，随后又用 `m6.txt` 重复了同一动作——由独立评审抓出）。**冻结一个数量必然在下一次提交时失效**，故改为可判定的规则：
+
+> **判据**：`git commit -F <file>` 每次产生一份消息文件、用后即删；合规条件是**每一份都对应一个携带该消息的 commit**，而不是「数量等于 N」。复核方式：`git log --oneline <base>..<tip>` 逐条比对 subject——凡是本轮的提交，其消息都来自这样一份已删文件；反过来，没有任何一份消息文件的内容未能落成 commit。
+
 | 临时对象 | 用途 | 处置 | 替代证据（可事后独立核验） |
 |---|---|---|---|
-| `commit-msg-v19.txt`、`m1.txt`～`m4.txt`、`mg.txt`（6 份提交信息输入） | `git commit -F` 的消息文件 | 用后即删 | 对应 commit **均已存在且携带该消息**：`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`，`git log --oneline 2a4898e8..f4efacfe` 可逐条复核 |
+| `commit-msg-v19.txt`、`m1.txt`～`m6.txt`、`mg.txt`（提交信息输入，**按上面的判据计，不冻结数量**） | `git commit -F` 的消息文件 | 用后即删 | 对应 commit **均已存在且携带该消息**：`3be7182a`／`7af27044`／`819a7263`／`94b6d021`／`553985f4`／`f4efacfe`／`28e8025a`／`62ef4e61`；本节之后若再有提交，同样按判据核，不必回来改这一行 |
+| `add-skip-identity.mjs`、`skip-diff.mjs`、`verify-multiset.mjs`、`diff35.mjs`、`final-check.mjs`（5 份一次性校验脚本） | 比对 runtime skip 集合与 baseline `allowed_skipped`、插入缺失 identity | 用后即删 | **结论已落盘**：插入结果是 commit `7af27044` 的 +9 行 diff；多集合精确相等的判定另有**项目自带的常驻 oracle** `scripts/validate-entry-evidence.ts`（对 `allowed_skipped` 做精确 multiset 比较），脚本本身无长期价值、可随时重写 |
+| `/tmp/tmp-rescan-14d4ecd1.txt` | 首轮清理的 42 项枚举清单，是删除动作的**逐行输入** | **待删（本节评审通过后）** | 本文档「可清理」表已**逐项列出全部 30 项**、保留表列出 12 项，合计 42；事实视角评审在原件尚存时独立复算过覆盖面 42/42（`2026-08-08-job-tmp-review-facts.md:7-18`） |
+| `/tmp/mine-14d4.txt`、`/tmp/theirs-14d4.txt` | 某次合并的两侧改动文件名清单，用于算碰撞集 | **待删（本节评审通过后）** | 可由 `git diff --name-only <merge-base> <ref>` 精确重建；相关 merge commit 均在历史中 |
 | `add-skip-identity.mjs`、`skip-diff.mjs`、`verify-multiset.mjs`、`diff35.mjs`、`final-check.mjs`（5 份一次性校验脚本） | 比对 runtime skip 集合与 baseline `allowed_skipped`、插入缺失 identity | 用后即删 | **结论已落盘**：插入结果是 commit `7af27044` 的 +9 行 diff；多集合精确相等的判定另有**项目自带的常驻 oracle** `scripts/validate-entry-evidence.ts`（对 `allowed_skipped` 做精确 multiset 比较），脚本本身无长期价值、可随时重写 |
 | `/tmp/tmp-rescan-14d4ecd1.txt` | 首轮清理的 42 项枚举清单，是删除动作的**逐行输入** | **待删（本节评审通过后）** | 本文档「可清理」表已**逐项列出全部 30 项**、保留表列出 12 项，合计 42；事实视角评审在原件尚存时独立复算过覆盖面 42/42（`2026-08-08-job-tmp-review-facts.md:7-18`） |
 | `/tmp/mine-14d4.txt`、`/tmp/theirs-14d4.txt` | 某次合并的两侧改动文件名清单，用于算碰撞集 | **待删（本节评审通过后）** | 可由 `git diff --name-only <merge-base> <ref>` 精确重建；相关 merge commit 均在历史中 |
