@@ -22,7 +22,11 @@ import { drainV3Writer } from "~/lib/history/v3/store"
 import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
-import { StreamShutdownError } from "~/lib/stream"
+import {
+  //
+  StreamClientAbortError,
+  StreamShutdownError,
+} from "~/lib/stream"
 
 import {
   //
@@ -191,6 +195,119 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
+  test("pre-C9 recovery publication rejection discards R and retains the primary terminal", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    setDeliverySessionTestHooksForTests({
+      onBeforeRecoveryBatchCommit() {
+        throw new Error("publication preflight rejected")
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary preflight fallback" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_preflight_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-publication-preflight")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("msg_preflight_recovery")
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-preflight" }).entries[0]
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
+  test("post-C9 recovery publication failure does not fall back to the primary error", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    const rejectRecoveryWrite = true
+    setDeliverySessionTestHooksForTests({
+      onWrite() {
+        if (rejectRecoveryWrite) throw new Error("recovery wire torn")
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary must not surface" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_torn_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-publication-torn")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("primary must not surface")
+    // A physically torn wire may reject the best-effort recovery terminal; it must never append the primary error.
+    expect(text).not.toContain("msg_torn_recovery")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-torn" }).entries[0]
+    expect(entry?._index?.derived?.failureReason).toBe("recovery wire torn")
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
+  test("post-C9 client-gone publication aborts without appending the primary terminal", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    setDeliverySessionTestHooksForTests({
+      onWrite() {
+        throw new StreamClientAbortError()
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary abort fallback" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_client_gone_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-publication-client-gone")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("primary abort fallback")
+    expect(text).not.toContain("msg_client_gone_recovery")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
+  })
+
   test("translated pre-ready recovery disposal failure closes the unconsumed candidate and preserves primary terminal", async () => {
     const translatedModel = "claude-opus-4.8@responses"
     const cleanupError = new Error("translated recovery dispose rejected")
@@ -357,6 +474,42 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts).toHaveLength(2)
     expect(entry?.attempts?.[0]?.upstreamResponse?.success).toBe(false)
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
+  })
+
+  test("ready-live post-C9 recovery publication failure does not fall back to the primary error", async () => {
+    let writes = 0
+    setDeliverySessionTestHooksForTests({
+      onWrite() {
+        if (++writes > 1) throw new Error("ready recovery wire torn")
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return Promise.resolve(
+            createSseResponseThenError(
+              [messageStartFrame({ id: "msg_ready_primary", model: MODEL, inputTokens: 5 })],
+              tagTransportError(new Error("ready primary must not surface"), "refused-stream"),
+            ),
+          )
+        return Promise.resolve(createSseResponse(completeFrames("msg_ready_torn_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-ready-publication-torn")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("ready primary must not surface")
+    expect(text).not.toContain("msg_ready_torn_recovery")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-publication-torn" }).entries[0]
+    expect(entry?._index?.derived?.failureReason).toBe("ready recovery wire torn")
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
   test("unexpected handler failure never makes a fresh recovery dispatch", async () => {

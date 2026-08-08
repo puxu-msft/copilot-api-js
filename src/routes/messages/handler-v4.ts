@@ -436,6 +436,23 @@ type DirectRecoveryPublication =
   | { readonly kind: "wire-torn"; readonly error: Error }
   | { readonly kind: "commit-failed"; readonly error: unknown }
 
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error("Recovery disposition cleanup failed", { cause: error })
+}
+
+async function discardRecoveryEvaluation(evaluation: Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>): Promise<Error | undefined> {
+  try {
+    await evaluation.disposition.discard()
+    return undefined
+  } catch (error) {
+    return asError(error)
+  }
+}
+
+function withCleanupFailure(error: Error, cleanupError: Error | undefined): Error {
+  return cleanupError === undefined ? error : new AggregateError([error, cleanupError], "Recovery publication and cleanup both failed")
+}
+
 async function evaluateAndPublishDirectAnthropicRecovery(
   driver: ReturnType<typeof createPipelineDriver>,
   upstream: UpstreamStream,
@@ -449,7 +466,8 @@ async function evaluateAndPublishDirectAnthropicRecovery(
   resumeHeartbeat?.()
   const evaluation = await evaluateDirectAnthropicRecovery(driver, upstream, env, primaryError)
   if (evaluation.kind !== "complete") {
-    await evaluation.disposition.discard()
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (cleanupError !== undefined) throw cleanupError
     return { kind: "fallback" }
   }
   let staged: StagedDirectRecoveryFrames | undefined
@@ -463,13 +481,19 @@ async function evaluateAndPublishDirectAnthropicRecovery(
       },
     )
   } catch (error) {
-    await evaluation.disposition.discard()
-    if (error instanceof DeliveryOwnerError && error.committed) return { kind: "wire-torn", error }
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (error instanceof DeliveryOwnerError && error.committed) return { kind: "wire-torn", error: withCleanupFailure(error, cleanupError) }
+    if (cleanupError !== undefined) throw cleanupError
     return { kind: "fallback" }
   }
   if (!publication.ok) {
-    await evaluation.disposition.discard()
-    return publication.committed ? { kind: "client-gone" } : { kind: "fallback" }
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (publication.committed) {
+      // Client visibility is irrevocably gone after C9; cleanup failure cannot downgrade this to primary fallback.
+      return { kind: "client-gone" }
+    }
+    if (cleanupError !== undefined) throw cleanupError
+    return { kind: "fallback" }
   }
   if (staged) Object.assign(anchorState, staged.state)
   try {
