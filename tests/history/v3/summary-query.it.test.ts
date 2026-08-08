@@ -16,6 +16,7 @@ import {
 } from "~/lib/history/in-flight"
 import {
   //
+  getHistory,
   getHistorySummaries,
   getHistorySummariesAsync,
 } from "~/lib/history/queries"
@@ -161,6 +162,50 @@ describe("persisted list-search facade", () => {
       },
     })
   })
+
+  test("short-circuits conflicting lifecycle predicates without weakening a compatible strict search", async () => {
+    persist({ id: "search-failed", startedAt: 100, state: "failed" })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    let calls = 0
+    let capturedStates: Array<string> | undefined
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch(request) {
+        calls++
+        capturedStates = request.filters.states
+        return {
+          operationIds: ["search-failed"],
+          total: 1,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: ["search-failed"],
+            poison: [],
+          },
+        }
+      },
+    })
+
+    await expect(getHistorySummariesAsync({ search: "search", state: "failed", success: true })).resolves.toEqual({
+      entries: [],
+      total: 0,
+      nextCursor: null,
+      prevCursor: null,
+    })
+    expect(calls).toBe(0)
+
+    const compatible = await getHistorySummariesAsync({ search: "search", state: "failed", success: false })
+    expect(compatible.entries.map((entry) => entry.id)).toEqual(["search-failed"])
+    expect(calls).toBe(1)
+    expect(capturedStates).toEqual(["failed"])
+  })
 })
 
 describe("persisted summary SQL query", () => {
@@ -196,7 +241,7 @@ describe("persisted summary SQL query", () => {
     expect(querySummaryPage(getDatabase(), { model: "resolved-a" }, 10).total).toBe(1)
     expect(querySummaryPage(getDatabase(), { endpoint: "openai-responses" }, 10).entries.map((row) => row.id)).toEqual(["agent-failed"])
     expect(querySummaryPage(getDatabase(), { success: false }, 10).entries.map((row) => row.id)).toEqual(["agent-failed"])
-    expect(querySummaryPage(getDatabase(), { success: true, state: "failed" }, 10).entries.map((row) => row.id)).toEqual(["agent-failed"])
+    expect(querySummaryPage(getDatabase(), { success: true, state: "failed" }, 10)).toMatchObject({ entries: [], total: 0 })
     expect(querySummaryPage(getDatabase(), { sessionId: "s1", mainAgentOnly: true, pid: 11, from: 50, to: 150 }, 10).entries.map((row) => row.id)).toEqual([
       "main-complete",
     ])
@@ -316,7 +361,7 @@ describe("persisted summary SQL query", () => {
     })
   })
 
-  test("in-flight overlays use the same operation-kind and state precedence as persisted SQL", () => {
+  test("in-flight overlays apply state and success as intersecting predicates", () => {
     expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     putInFlight({ ...liveEntry("live-count", 300), operationKind: "count_tokens" })
     putInFlight({
@@ -328,7 +373,8 @@ describe("persisted summary SQL query", () => {
     putInFlight({ ...liveEntry("live-aborted", 100), state: "aborted", active: false })
 
     expect(getHistorySummaries().entries.map((row) => row.id)).toEqual(["live-failed", "live-aborted"])
-    expect(getHistorySummaries({ state: "failed", success: true }).entries.map((row) => row.id)).toEqual(["live-failed"])
+    expect(getHistory({ state: "failed", success: true })).toMatchObject({ entries: [], total: 0, totalPages: 0 })
+    expect(getHistorySummaries({ state: "failed", success: true })).toEqual({ entries: [], total: 0, nextCursor: null, prevCursor: null })
     expect(getHistorySummaries({ success: false }).entries.map((row) => row.id)).toEqual(["live-failed"])
   })
 

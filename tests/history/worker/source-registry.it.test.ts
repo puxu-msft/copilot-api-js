@@ -18,7 +18,7 @@ function startConfig(): HistoryWorkerStartConfig {
     semanticDbPath: ":memory:",
     configRevision: 1,
     rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
-    persistRetry: { maxAttempts: 1, backoffMs: 1 },
+    persistRetry: { maxAttempts: 1, backoffMs: 1, maxBackoffMs: 1, maxTotalMs: 1 },
     maintenanceIntervalMs: 60_000,
   }
 }

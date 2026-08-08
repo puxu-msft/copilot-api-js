@@ -51,6 +51,20 @@ export interface NativeHistoryListSearchResult {
   invalidCursor: boolean
 }
 
+/**
+ * The index's own commit state, read from Tantivy (`Searcher::num_docs` +
+ * `IndexMeta::opstamp`) rather than from a marker this project writes beside it.
+ *
+ * Used to bind the durable tail cursor to the index that produced it: both numbers only
+ * move forward while one index lives, so a lower `opstamp` — or a zero `docCount` under
+ * a non-null cursor — means the index was wiped or rebuilt underneath a cursor that
+ * outlived it, and that cursor can no longer attest anything.
+ */
+export interface NativeHistoryIndexGeneration {
+  docCount: number
+  opstamp: number
+}
+
 /** Stateful handle over one on-disk Tantivy index (napi class instance). */
 export interface NativeHistoryIndex {
   /** Legacy score-search upsert. Product list-search uses the complete summary document below. */
@@ -61,6 +75,8 @@ export interface NativeHistoryIndex {
   flush(): Promise<void>
   search(query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>>
   listSearch(request: NativeHistoryListSearchRequest): Promise<NativeHistoryListSearchResult>
+  /** This index's own commit state — see {@link NativeHistoryIndexGeneration}. */
+  generation(): Promise<NativeHistoryIndexGeneration>
   /** Flush any staged documents before the handle is released. */
   close(): Promise<void>
 }
