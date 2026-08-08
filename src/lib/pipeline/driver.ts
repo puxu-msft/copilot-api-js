@@ -855,6 +855,20 @@ function settledDispatchLifecycle(): import("./types").UpstreamDispatchLifecycle
 // Response side (S5→S7)
 // ============================================================================
 
+declare const assembledCandidateResponseOptsBrand: unique symbol
+
+type AssembledCandidateResponseOpts<T extends RunResponseOpts> = T & {
+  readonly [assembledCandidateResponseOptsBrand]: true
+}
+
+type AssertFalse<T extends false> = T
+
+type IsAssignable<From, To> = From extends To ? true : false
+
+// Type control: an unassembled option bag cannot reach the private assembled-only entry point.
+const unassembledOptsCannotUseAssembledEntry: AssertFalse<IsAssignable<RunBufferedOpts, AssembledCandidateResponseOpts<RunBufferedOpts>>> = false
+void unassembledOptsCannotUseAssembledEntry
+
 /** S5→S7: construct and return the branch-local processor iterable without an extra async-generator delegation layer. */
 function runResponse(
   deps: DriverDeps,
@@ -862,11 +876,10 @@ function runResponse(
   env: RequestEnvelope,
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
-  options: { readonly optsAlreadyMerged?: boolean } = {},
 ): AsyncIterable<ClientFrame> {
   const coordinated = generation?.bindings.get(upstream)?.candidate.processor
   if (coordinated) {
-    const effectiveOpts = options.optsAlreadyMerged ? (opts ?? {}) : mergeCandidateResponseOpts(coordinated.responseOpts, opts)
+    const effectiveOpts = mergeCandidateResponseOpts(coordinated.responseOpts, opts)
     return coordinated.processor.stream(upstream, effectiveOpts)
   }
   // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
@@ -914,13 +927,33 @@ function mergeCandidateResponseOpts<T extends RunResponseOpts>(candidate: Candid
   return merged
 }
 
-function currentCandidateResponseOpts(
+function currentCandidateResponseOpts<T extends RunResponseOpts>(
   generation: DriverGenerationRuntime | undefined,
   upstream: UpstreamStream,
-  outer: RunResponseOpts | RunBufferedOpts | undefined,
-): RunResponseOpts | RunBufferedOpts {
+  outer: T | undefined,
+): AssembledCandidateResponseOpts<T> {
   const candidate = generation?.currentSession(upstream)?.responseOpts
-  return mergeCandidateResponseOpts(candidate, outer)
+  return mergeCandidateResponseOpts(candidate, outer) as AssembledCandidateResponseOpts<T>
+}
+
+/** Runs a buffered attempt whose candidate and outer opts were already assembled exactly once. */
+function runAssembledCandidateResponse(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  opts: AssembledCandidateResponseOpts<RunBufferedOpts>,
+  generation: DriverGenerationRuntime | undefined,
+): AsyncIterable<ClientFrame> {
+  const coordinated = generation?.bindings.get(upstream)?.candidate.processor
+  if (coordinated) return coordinated.processor.stream(upstream, opts)
+  return runResponse(deps, upstream, env, opts, generation)
+}
+
+function withBufferedFinishObserver(
+  opts: AssembledCandidateResponseOpts<RunBufferedOpts>,
+  observe: (result: import("./types").ResponseFinishResult) => void,
+): AssembledCandidateResponseOpts<RunBufferedOpts> {
+  return { ...opts, onFinishResolved: observe } as AssembledCandidateResponseOpts<RunBufferedOpts>
 }
 
 async function maybeRunHedgedResponseSink(
@@ -1124,15 +1157,19 @@ async function runResponseSink(
       if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
     }
   }
-  const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
+  const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts)
+  const capturesFinish = unhedgedBinding !== undefined || effectiveOpts.finishResponse !== undefined || opts?.onFinishResolved !== undefined
   let finish: import("./types").ResponseFinishResult | undefined
-  const responseOpts: RunResponseOpts = {
-    ...effectiveOpts,
-    onFinishResolved(result: import("./types").ResponseFinishResult) {
-      finish = result
-      effectiveOpts.onFinishResolved?.(result)
-    },
-  }
+  const responseOpts: RunResponseOpts =
+    capturesFinish ?
+      {
+        ...effectiveOpts,
+        onFinishResolved(result: import("./types").ResponseFinishResult) {
+          finish = result
+          effectiveOpts.onFinishResolved?.(result)
+        },
+      }
+    : effectiveOpts
   try {
     for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
@@ -1374,7 +1411,7 @@ export async function runResponseBufferedSink(
       // Each attempt resolves the session for its current upstream exactly once. Outer caller options
       // retain their existing priority; the driver observer wraps the final merged callback instead of
       // re-merging the candidate later and accidentally replacing it.
-      const attemptBaseOpts = currentCandidateResponseOpts(generation, current, opts) as RunBufferedOpts
+      const attemptBaseOpts = currentCandidateResponseOpts(generation, current, opts)
       const notifyBufferedResolve = attemptBaseOpts.onBufferedResolve ?? opts.onBufferedResolve
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
@@ -1382,15 +1419,12 @@ export async function runResponseBufferedSink(
       let thrown: unknown
       let drained = false
       let finish: import("./types").ResponseFinishResult | undefined
-      const responseOpts: RunBufferedOpts = {
-        ...attemptBaseOpts,
-        onFinishResolved(result: import("./types").ResponseFinishResult) {
-          finish = result
-          attemptBaseOpts.onFinishResolved?.(result)
-        },
-      }
+      const responseOpts = withBufferedFinishObserver(attemptBaseOpts, (result) => {
+        finish = result
+        attemptBaseOpts.onFinishResolved?.(result)
+      })
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, { optsAlreadyMerged: true })) {
+        for await (const frame of runAssembledCandidateResponse(deps, current, currentEnv, responseOpts, generation)) {
           if (frame.data === "[DONE]") continue
           const toWrite = frame
           if (retreated) {
