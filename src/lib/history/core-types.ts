@@ -13,7 +13,7 @@ export interface QueryOptions {
   model?: string
   endpoint?: EndpointType
   success?: boolean
-  /** Exact lifecycle-state filter. When both are present, this takes precedence over `success`. */
+  /** Exact lifecycle-state filter. When both are present, both predicates apply; a conflict matches nothing. */
   state?: RequestLifecycleState
   /** Exclude active in-flight entries from the merged result. */
   terminalOnly?: boolean

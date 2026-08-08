@@ -27,6 +27,7 @@
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
+- [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 指控「逐项绑定错位」时先逐项复核再采纳；对照若恰是它没指控的那几项就检验不了指控，先写下影响集合再从集合内取样，争议交未卷入第三方
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — 编辑脚本的 assert 在写盘之前→失败即全丢而 commit 照跑，提交信息描述了没发生的事（一天内两次）；`bash -n`／smoke 绿在未编辑文件上同样通过、区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
@@ -64,6 +65,7 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；后者可能是 prune orphan，见 [node_modules](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 的隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④命令可能跑错树⑤不同基线 merge 会夹带无关祖先；树向 gate → skill `proving-where-a-command-ran`，集成单元/ancestry/恢复 → skill `git-preference:isolating-from-a-shared-git-worktree`
+- [隔离 worktree 会话合不了主线，只能交付到「可 fast-forward」](worktree-isolated-session-cannot-merge-shared-master.md) — master 被主检出占用 + 护栏拒 `-C` 共享树且无放行前缀；判据=`merge-base --is-ancestor master HEAD`，最后一条命令交用户
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
