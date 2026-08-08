@@ -57,7 +57,20 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 - `bun run typecheck`：通过。
 - Task 1b parser／encoder／public-boundary 子集：通过；Task 3 adapter／grammar／candidate／driver 子集：125 pass／0 fail；combined seam：22 pass／0 fail；canonical deterministic performance：5 pass／0 fail。
 - target ESLint：通过，仅有第三方`baseline-browser-mapping`数据陈旧warning。
-- 全后端：blocked，见本节SIGUSR2记录。
+- 全后端：最后一次全量执行仍未通过；SIGUSR2不作为失败归因。修复 A／B／C 后尚需重跑以取得新精确总数。
+
+## 本轮根因闭合
+
+- A：Task1b显式preserve policy的测试契约迁移，提交`1ca35e35`。
+- B：Task3 candidate adapter要求的`clientFormat`缺失于two-racer test fixture，提交`3d194954`；raw encoded SSE write已由独立decoder probe证实。
+- C：driver direct-sink路径对同一candidate response opts二次merge，嵌套`onUpstreamFrame`导致accumulator重复；shared修复提交`6aab6de4`。C的生产样本经History upstream track证为9个不重复frame，排除parser／rewrite／projection重复。
+- SCC：基线worktree在接入相同依赖后仍有同样two-racer与Anthropic golden failures，说明它们不由Task37引入；ratchet新增路径起点为Task37未改的`buffered-merge-reducer.ts`，未更新baseline。
+- UDS：单跑24 pass／0 fail，保留并发污染／环境候选。
+
+## 待执行验证
+
+- `bun run test:backend`：重跑并记录精确pass／fail／crash，不以SIGUSR2日志判失败。
+- 交付前独立审查：主会话须安排，叶子执行单元不可自派。
 
 ## 本轮自我批判
 
