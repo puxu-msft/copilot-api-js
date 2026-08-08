@@ -1,7 +1,7 @@
 # History Worker Batch 1b 终态报告
 
 > 状态：收尾候选，待本报告与临时证据清单独立复审、共享 `master` fast-forward及安装位置复验。
-> 核验基线：候选 `8f9a721476ade91485659827a5ee8c86a26cace2`；共享 `master@bea1dfa3`；日期 2026-08-08。
+> 核验基线：候选 `0ecbca65de2b72c6ed5967f688fef8295b874b6a`；共享 `master@d47492a6`；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
 ## 交付内容
@@ -20,14 +20,16 @@
 - 接手方第一人称视角reviewer对`560b427a`复审：0 blocker／major，逐条核验H1（禁止在本分支继续Task 2a，与kickoff `:20-22`一致）、H2（第4步命令块可执行、11个selector在该commit均存在、步骤5／6闭环）、H3（清单冻结边界与56项一致）、H4（状态行未把未完成写成已完成）。两条minor已在本轮采纳：临时清单字节漂移改为路径集合门＋来源说明，第4步WIP检查补false-red防线。
 - `master@82c0664e`只新增三份协议中立推理文档，与本轮代码／plan／kickoff／测试零路径交集；候选无冲突合入为`926b2478`，按moving-HEAD规则未重复全量验证。
 - `master@bea1dfa3`（nghttp2 header-deadline线13笔）确实触及Batch 1b相关路径——`tests/history/worker/admission-shutdown.unit.test.ts`、`tests/history/worker/overlay-read-surfaces.it.test.ts`、`tests/infra/entry-test-discovery-baseline.json`及五个History源文件，故按升级信号做了范围化复验，未按moving-HEAD规则免验。该合并未触及`src/lib/history/worker/protocol.ts`与`src/lib/history/v3/store.ts`，四字段重试契约不受影响。合入为`8f9a7214`（ort，145文件／+2377／−839）后：typecheck通过；Worker目标集9文件68 pass／0 fail；retry契约目标集3文件23 pass／0 fail。`git diff --check`报的两处EOF空行经`git diff --check master`确认源自master自身，非本轮引入。
+- `master@d47492a6`只在`docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md`一份文件上追加落地记录，与本轮零路径交集，合入为`0ecbca65`，按moving-HEAD规则未复验。
 
 ## Git、发布与工作树状态
 
-- 本报告起草基线`8f9a7214`相对共享`master@bea1dfa3`领先13笔本地提交（含三笔与master的合并）；本报告与临时清单的闭环提交会在其上另增一笔。`git diff --check master..8f9a7214`无输出，候选工作树在起草本报告前除收尾文档外无未提交代码。
-- 尚未执行最终fast-forward；共享`master`仍为`bea1dfa3`。任何“已集成最终收尾”的结论必须由`git merge-base --is-ancestor <final> master`外部裁决。
+- 本报告起草基线`0ecbca65`相对共享`master@d47492a6`领先15笔本地提交（含四笔与master的合并）；本报告与临时清单的闭环提交会在其上另增一笔。`git diff --check master..HEAD`无输出，候选工作树在起草本报告前除收尾文档外无未提交代码。
+- 尚未执行最终fast-forward；共享`master`仍为`d47492a6`。任何“已集成最终收尾”的结论必须由`git merge-base --is-ancestor <final> master`外部裁决。
+- **碰撞集已在`0ecbca65`重算为0**（2026-08-08）。候选净路径13条（`git diff --name-only master..HEAD`）：其中10条在共享检出中存在，逐条比对共享工作区文件与`master`同路径内容的md5，10对全部相等，故共享检出对这些路径无未提交改动；另3条（`src/lib/history/persist-retry-config.ts`、本报告、临时清单）在共享检出中不存在且无未追踪文件占位。共享主树的三处无关WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）均不在这13条内，fast-forward不会触及它们。**本会话的worktree隔离护栏拒绝对共享检出执行git写操作，故第3步必须由用户在共享checkout亲自执行。**
 - 未推送、未创建PR、未发布任何ref或artifact。
 - 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。取证需求结束且收尾提交确认在`master`祖先后，可由用户决定清理本分支／worktree。
-- 共享主树此前观测到`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP；最终fast-forward前须重新冻结共享index并重算碰撞集，不能复用旧快照。
+- 共享主树观测到`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP；碰撞集已按上条在`0ecbca65`基线上重算，未沿用旧快照。若fast-forward前共享`master`再次前进，须按同一方法重算后再执行。
 
 ## 临时证据
 
@@ -50,8 +52,8 @@
 ## 尚待动作
 
 1. 独立review本终态报告与临时证据清单到0 blocker／major。
-2. 重新冻结共享index并确认候选净路径与共享WIP碰撞集为0（对`git diff --name-only master..HEAD`与共享index脏路径求交集，结果必须为空）。
-3. 在共享checkout对`worktree-history-worker-batch-1b-resume`执行`git merge --ff-only`。
+2. ~~重新冻结共享index并确认候选净路径与共享WIP碰撞集为0~~ **已完成**（`0ecbca65`基线，13条净路径、碰撞0，方法与证据见「Git、发布与工作树状态」）。若fast-forward前`master`再次前进，须重算。
+3. 在共享checkout对`worktree-history-worker-batch-1b-resume`执行`git merge --ff-only`。**本会话护栏拒绝对共享检出执行git写操作，此步必须由用户执行。**
 4. 从共享checkout（不是本feature worktree）复验安装位置，逐条留证：
 
    ```bash
