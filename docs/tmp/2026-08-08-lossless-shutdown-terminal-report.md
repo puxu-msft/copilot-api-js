@@ -136,6 +136,10 @@
 - 本报告：第 1 行状态、第 5 节、第 8 节三处更正，并新增本节。
 - `docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md`：第二次冻结（53 个文件），补入收尾后半程新增文件的分类；14 个 commit-message 输入逐条与已落地 commit 的 subject 比对，14/14 相等。
 - 新增 `docs/tmp/2026-08-08-lossless-shutdown-self-tests.sh`：把自有测试集的精确文件清单从 job 临时目录提炼进仓库（原件写死 worktree 路径、收尾后失效；归档版自解析仓库根并加存在性校验），实跑退出 0、复现 100 tests / 12 files。
+- 新增记忆 `docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md` + `MEMORY.md` 索引行。
+- **更正四份他人文档的陈旧合并状态**：`docs/memory/project-{history-search-out-of-process,responses-buffered-merge-landed,symmetric-four-point-hooks}.md` 与 `docs/plan/monorepo-split/plan-telemetry-package.md` 仍称「待合并 master」，而其提交（`30a483df`／`8e0376d4`／`2a77bf7c`／`bd3aafe0`）早已在 master。逐个用 `git merge-base --is-ancestor` 复核后更正。**越界与否已交独立评审裁定**：机械更新一个可由 `merge-base` 判定的状态事实不越界、无需原作者裁决；若涉及结论或取舍则不适用此结论。
+
+**本批也经过独立评审**：合并后收尾产物评审报 0 blocker / 4 major——终态报告提交谱系表第十处陈旧断言（不含任何我扫过的关键词）、上述四组他人文档、记忆判据可被三种说法绕过且「当场登记」无载体、临时清单把 job 目录外已不可复核的事写成无条件「已核验」。四条全部处置并经复评 FIXED，0 blocker / 0 major。报告见 `docs/tmp/2026-08-08-lossless-shutdown-postmerge-review.md`。
 
 **因此需要再合一次**：
 
@@ -143,4 +147,4 @@
 git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-findings
 ```
 
-这批全是 `docs/` 下的文档与一个归档脚本，无代码改动。合并后本分支与 worktree 即可回收。
+这批全是 `docs/` 下的文档、记忆条目与一个归档脚本，无代码改动；对当前 master 的 `merge-tree` 退出 0。合并后本分支与 worktree 即可回收。
