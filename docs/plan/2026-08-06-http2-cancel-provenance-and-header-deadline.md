@@ -346,6 +346,7 @@ git commit -m "refactor: separate header and lifecycle abort scopes"
 ## Task 3：阶段 1 端到端 H2 回归、结构检查、评审与合并
 
 **Files:**
+- Modify: `src/lib/transport/http2-client.ts`
 - Modify: `tests/transport/http2-client.it.test.ts`
 - Modify: `docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md` only for implementation status, not design changes
 
@@ -353,7 +354,7 @@ git commit -m "refactor: separate header and lifecycle abort scopes"
 
 在`http2-client.it.test.ts`通过`upstreamFetch("https://fixture.invalid/late",...)`而不是直接`http2Fetch`驱动；现有`setHttp2SessionFactoryForTests(() => http2.connect(url))`把逻辑https origin接到本地h2c server，确保selector真走HTTP/2。server立即`respond()`，延迟50ms才`end("late")`；设置`responseHeaderTimeoutMs:10`，断言body为late。
 
-同文件新增具名listener计数：pre-response header-timeout的post-response listener=0 add/0 remove；natural end与post-header external abort的post-response listener各1 add/1 remove。三路都断言`onStreamClosed`一次、reservation最终回0。保留direct `http2Fetch` signal测试，证明一般body abort仍生效。
+修改`http2-client.ts`：把post-response匿名abort listener抽成具名`onPostResponseAbort`，在natural end、stream close和abort teardown上通过幂等`detachPostResponseAbort()`移除；pre-response timeout从未注册该listener。同文件新增计数：pre-response header-timeout的post-response listener=0 add/0 remove；natural end与post-header external abort的post-response listener各1 add/1 remove。三路都断言`onStreamClosed`一次、reservation最终回0。保留direct `http2Fetch` signal测试，证明一般body abort仍生效。
 
 - [ ] **Step 2：运行 transport 定向测试**
 
@@ -387,8 +388,8 @@ Expected: 全部 PASS。若 history-search native 未构建，只有项目声明
 - [ ] **Step 5：提交 H2 回归测试**
 
 ```bash
-git add -- tests/transport/http2-client.it.test.ts
-git commit -m "test: cover HTTP2 header deadline lifecycle"
+git add -- src/lib/transport/http2-client.ts tests/transport/http2-client.it.test.ts
+git commit -m "fix: clean up HTTP2 header deadline listeners"
 ```
 
 - [ ] **Step 6：独立 review**
@@ -671,7 +672,7 @@ git commit -m "feat: expose live transport termination provenance"
 
 **Interfaces:**
 - Consumes: `getTransportTerminationObservation(error)` and `current.getTransportTermination?.()`
-- Produces internal helper: `isBufferedTransportCut(error, upstream): boolean`
+- Produces internal helper: `isBufferedTransportCut(error, upstream): Promise<boolean>`
 
 - [ ] **Step 1：将现有 RST fixture结构化**
 
@@ -679,7 +680,7 @@ git commit -m "feat: expose live transport termination provenance"
 
 - [ ] **Step 2：写六类 attribution 的双向 recovery tests**
 
-使用相同buffer/预算分别构造：local、ambiguous、unknown均 `sendCount()===0`；peer、session在 `!committedAny && attempt<cap` 时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
+使用相同buffer/预算分别构造：local、ambiguous、unknown均`sendCount()===0`；peer、session在`!committedAny && attempt<cap`时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。关键竞态case：accessor初始snapshot为peer，`lifecycle.quiesced`前追加late local/session变ambiguous；helper必须等待barrier后返回false且不retry。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
 
 - [ ] **Step 3：运行六类recovery测试确认红**
 
@@ -690,14 +691,15 @@ Expected: FAIL；当前`classifyStreamError(error)==="other"`会把带local/ambi
 - [ ] **Step 4：实现 helper，不改全局 classifyError**
 
 ```ts
-function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): boolean {
+async function isBufferedTransportCut(error: unknown, upstream: UpstreamStream): Promise<boolean> {
+  await upstream.lifecycle?.quiesced
   const observation = upstream.getTransportTermination?.() ?? getTransportTerminationObservation(error)
   if (observation) return observation.attribution === "peer" || observation.attribution === "session"
   return classifyStreamError(error) === "other" // non-H2/legacy transport compatibility
 }
 ```
 
-live accessor优先，因为error snapshot可能早于后到session evidence；该helper只在catch/stream drain已结束后调用。明确 `local|ambiguous|unknown` 返回false，不落legacy fallback。把retry与continuation两处 `classifyStreamError(thrown)==="other"` 换成helper。`classifyError(mid-body-close)` 保持bad_request；普通S4不扩大。
+必须先等待真实transport的`lifecycle.quiesced`，再优先读取live accessor；error snapshot可能早于cleanup中后到的local/session evidence。无lifecycle的legacy mock保持同步fallback。把retry与continuation两处`classifyStreamError(thrown)==="other"`换成`await isBufferedTransportCut(...)`。明确`local|ambiguous|unknown`返回false，不落legacy fallback。`classifyError(mid-body-close)`保持bad_request；普通S4不扩大。
 
 - [ ] **Step 5：明确不新增 server-tool gate**
 
@@ -758,7 +760,7 @@ git commit -m "docs: mark transport termination provenance landed"
 
 - [ ] **Step 5：合并最新 master、复验并 fast-forward主线**
 
-重复阶段 1 Task 3 Step 7；任何同文件 master变化都触发重跑阶段 2 定向门和 merged-state review。
+重复阶段 1 Task 3 Step 8 的 merge→复验→`--ff-only` 流程；任何同文件 master变化都触发重跑阶段 2 定向门和 merged-state review。
 
 ---
 
@@ -775,6 +777,7 @@ git commit -m "docs: mark transport termination provenance landed"
 - Test: `tests/context/model-operation-record.unit.test.ts`
 - Test: `tests/context/generation-finalization.unit.test.ts`
 - Test: `tests/pipeline/candidate-runtime.it.test.ts`
+- Create: `tests/pipeline/dispatch-termination-recording.it.test.ts`
 - Test: `tests/history/v3/readonly-store.it.test.ts`
 
 **Interfaces:**
@@ -786,11 +789,11 @@ git commit -m "docs: mark transport termination provenance landed"
 
 - [ ] **Step 1：写 recorder typed field 与 immutable settlement测试**
 
-在 `tests/context/model-operation-record.unit.test.ts` 写ambiguous observation typed field/deep-freeze/absence测试；在 `tests/context/generation-finalization.unit.test.ts` 写双barrier+raw error测试；在 `tests/pipeline/candidate-runtime.it.test.ts` 写scheduler settle/dispose两路测试；在readonly-store写manifest round-trip。此时不改production。
+在 `tests/context/model-operation-record.unit.test.ts` 写ambiguous observation typed field/deep-freeze/absence测试；在 `tests/context/generation-finalization.unit.test.ts` 写双barrier+raw error测试；在 `tests/pipeline/candidate-runtime.it.test.ts` 写scheduler settle/dispose两路单元接缝测试；新建 `tests/pipeline/dispatch-termination-recording.it.test.ts`，用production `createDriverRecordingPort`、真实scheduler与真实RequestContext串起三路settlement，禁止fake recording port；在readonly-store写manifest round-trip。此时不改production。
 
 - [ ] **Step 2：运行全部新测试确认红**
 
-Run: `bun test tests/context/model-operation-record.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/history/v3/readonly-store.it.test.ts --timeout 30000`
+Run: `bun test tests/context/model-operation-record.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/dispatch-termination-recording.it.test.ts tests/history/v3/readonly-store.it.test.ts --timeout 30000`
 
 Expected: FAIL，分别命中termination字段/provider/barrier或round-trip缺失；不得仅有无关失败。
 
@@ -828,7 +831,7 @@ function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettleme
 
 在 `tests/context/generation-finalization.unit.test.ts` 构造真实 `UpstreamDispatchLifecycle`：stream pump先抛错，`ensureIteratorCleanup()`仍pending；logical terminal先发生，随后cleanup追加最后evidence并resolve `lifecycle.quiesced`。请求delivery finalization后断言canonical dispatch包含cleanup后的evidence，且Symbol-tagged raw error fallback可读。mutation只等operation barrier、从errorSnapshot读tag、或logical-terminal当场settle时，测试分别变红。
 
-在 `tests/pipeline/candidate-runtime.it.test.ts` 分别覆盖正常`scheduler.settle()`与`disposeDispatch()`，断言两路都await lifecycle quiesced后enrich。三条路径缺一即红。
+`candidate-runtime.it.test.ts`分别覆盖正常`scheduler.settle()`与`disposeDispatch()`内部顺序。`dispatch-termination-recording.it.test.ts`再用production `createDriverRecordingPort→RequestContext`验证这两路和terminal fallback都真正写入canonical record；删除provider注册、错绑handle或绕过recording port时必须红。
 
 - [ ] **Step 7：实现 V3 raw manifest round-trip**
 
@@ -839,7 +842,7 @@ function enrichSettlement(dispatch: DispatchHandle, settlement: DispatchSettleme
 运行Step 2同一命令，Expected: PASS。随后按Step 6说明注入三项mutations（只等operation barrier、从errorSnapshot读tag、logical terminal当场settle），每项须红并用exact patch反向恢复。
 
 ```bash
-git add -- src/lib/context/model-operation-record.ts src/lib/context/types.ts src/lib/context/request.ts src/lib/pipeline/generation/dispatch-scheduler.ts src/lib/pipeline/driver.ts tests/context/model-operation-record.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/history/v3/readonly-store.it.test.ts
+git add -- src/lib/context/model-operation-record.ts src/lib/context/types.ts src/lib/context/request.ts src/lib/pipeline/generation/dispatch-scheduler.ts src/lib/pipeline/driver.ts tests/context/model-operation-record.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/dispatch-termination-recording.it.test.ts tests/history/v3/readonly-store.it.test.ts
 git commit -m "feat: persist dispatch transport termination"
 ```
 

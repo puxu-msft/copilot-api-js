@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前四轮累计 27/27 个独立 findings 已采纳；第五轮重写待评审（重复上报已合并进原 ID）
+- 状态：前五轮累计 30/30 个独立 findings 已采纳；第六轮局部复评待完成（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
@@ -34,4 +34,7 @@
 | R24 | C | 目录pathspec/漏foundation stream等会漏改或卷并发WIP | 采纳 | 所有git add展开精确文件；Task4补foundation/stream、error/forward、post-commit-error及对应tests。 |
 | R25 | C | Tasks4–7/9–11缺首跑red，Task9测试落点不明 | 采纳 | 每Task重排为完整测试→首跑red→实现→绿门→mutation；Task9指定generation-finalization/candidate-runtime；Task10/11新test先red。 |
 | R26 | C | code8测试归属/执行遗漏 | 采纳 | code8保真固定归Task4 foundation单测；Task5红/绿命令同时运行该文件，阶段2总门覆盖。 |
-| R27 | C | Task3 H2测试修改未提交 | 采纳 | Task3新增独立`test: cover HTTP2 header deadline lifecycle`提交，再review与状态文档提交。 |
+| R27 | C | Task3 H2测试修改未提交 | 采纳 | Task3新增独立代码+测试提交，再review与状态文档提交。 |
+| R28 | C | buffered recovery在lifecycle quiescence前读peer snapshot | 采纳 | `isBufferedTransportCut`改async并先await `upstream.lifecycle?.quiesced`；新增peer→late local/session→ambiguous不重试回归与mutation。 |
+| R29 | C | Task3要求listener移除但未修改/提交http2-client | 采纳 | Task3明确把匿名post-response listener改成具名幂等detach；production+test精确提交改为`fix: clean up HTTP2 header deadline listeners`。 |
+| R30 | C | 三settlement测试未覆盖production recording port→RequestContext接缝 | 采纳 | 新建`tests/pipeline/dispatch-termination-recording.it.test.ts`，真实createDriverRecordingPort+scheduler+RequestContext覆盖settle/dispose/terminal fallback；进入red/green命令与pathspec。 |
