@@ -118,18 +118,26 @@
 ## 8. 未做的事（显式声明）
 
 - **未推送任何东西。** 所有提交都在本地，包括用户执行的那次 master 合并。
-- **本次收尾追加的文档更新尚未合入 master。** 见第 9 节——合并落地后我更新了四份文档里「待合并」的陈旧断言，这批提交仍只在分支上。
+- **本次收尾追加的文档更新，其合并状态不在本文断言范围内。** 见第 9 节的判定命令——自指的状态断言存在无穷回归，故本报告不写它自己合没合。
 - **未删除任何临时文件。** 见临时清单。
 - **未 cherry-pick peer 分支 `worktree-nghttp2-header-deadline`。** 该判断经复测成立——它自己合进 master 后 `lint:all` 即转绿。
 - **首信号后新建 upstream WS 仍无 shutdown 交叉测试直接覆盖。** 这一点在 skill 里显式标为证据边界，未扩大声称；已建 context 的 token refresh、新建 h2 与 pre-content recovery 三条均有直接证据。
 - **一处曾写出的不可复现数字已更正，记在这里以免被当成从未发生：** 本报告初版写「架构与 discovery guards 34/34」，该数字无可复现 selector，由终审抓出；实测为 17 文件 178 pass。同类风险已在验证表里用「命令」列固定住——每一行都要能被单独复跑。
 - **收尾三轮评审的处置已复评闭合。** 指令类文本三条由未卷入的第三方复评 FIXED；终审三条由原终审 reviewer 复评 FIXED（C 级，按分级可由其收口）。文档评审的三条由我自评后，其结论被终审独立重查并进一步收紧（正是终审抓出「四路 0/0」的夸大与「34/34」不可复现）。
 
-## 9. 合并落地之后的更新（本批仍待合并）
+## 9. 合并落地之后的更新
 
-用户于 2026-08-08 执行合并、产生 `ad8128ad` 之后，本报告在内的多份文档里「尚未合回 master、待合并」的断言**当场变成了陈旧状态**。这是收尾阶段最容易留下的一类错误：文档写于合并之前，而它描述的正是合并这件事本身。
+用户于 2026-08-08 执行合并、产生 `ad8128ad` 之后，本报告在内的多份文档里「尚未合回 master、待合并」的断言**当场变成了陈旧状态**。这是收尾阶段最容易留下的一类错误：文档写于合并之前，而它描述的正是合并这件事本身。修正这批后又合了第二次（`142923d3`）。
 
-本批更新（仍只在 `worktree-fix-shutdown-review-findings` 上）：
+> **本节不再断言自己的合并状态，请自行判定：**
+>
+> ```
+> git -C /home/xp/src/copilot-api-js merge-base --is-ancestor worktree-fix-shutdown-review-findings master && echo merged || echo pending
+> ```
+>
+> **为什么改成这个形状：** 上一版这里写的是「本批仍待合并」。它一旦被合并就变假，而修正它的那次提交本身又构成一批未合并的改动——如此无穷。**任何「本文当前未合并」式的自指状态断言都有这个回归**，唯一的出口是不去断言、改为给出判定命令。这是本轮那条教训（`docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md`）的边界情形：一般的过期断言靠「事实发生后回来改」解决，而**自指的**那类改不完，只能换形状。
+
+本批更新内容：
 
 - `docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`：状态头由「尚未合回 master」改为「已合入 master（`ad8128ad`）」，判定命令同步改为「应同时列出 `master`」的正向形态；实施结果的验证数字重锚。
 - `docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`：合并状态同上更正。
@@ -143,8 +151,10 @@
 
 **因此需要再合一次**：
 
+**若上面的判定命令输出 `pending`，合并方式**：
+
 ```
 git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-findings
 ```
 
-这批全是 `docs/` 下的文档、记忆条目与一个归档脚本，无代码改动；对当前 master 的 `merge-tree` 退出 0。合并后本分支与 worktree 即可回收。
+这批全是 `docs/` 下的文档、记忆条目与一个归档脚本，无代码改动。**分支与 worktree 在判定输出 `merged` 后即可回收**——回收前请再跑一次该命令，不要依据本文任何一处的叙述。
