@@ -1,6 +1,6 @@
 # 上游静默与 h2 池事故簇：终态历史与接手索引
 
-> **当前摘要：** direct Anthropic live B2 已实现于 `/v1/messages` 的 delayed-commit pre-ready、ready transport close 与 ready clean EOF before `message_stop` 三个入口；buffered B2 与 translated publication 仍 deferred／fail-closed。backend gate 已通过；最终 merged-state、code、verifier 与 doc reviews 仍进行中。
+> **当前摘要：** direct Anthropic live B2 已实现于 `/v1/messages` 的 delayed-commit pre-ready、ready transport close 与 ready clean EOF before `message_stop` 三个入口；buffered B2 与 translated publication 仍 deferred／fail-closed。实现及其最新 master 合并态均已通过独立评审、typecheck、backend gate，并于 2026-08-08 本地 fast-forward 到 `master@04d7a144`；未 push。
 >
 > **权威链接：** 当前架构见 [DESIGN.md](../DESIGN.md)；实现、C4／C5 与验证状态见 [tracked implementation report](2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)；仍未实现的边界见 [deferred backlog](../todo/deferred-backlog.md)；规范性目标与历史实证见 [upstream-silence spec](../spec/2026-07-23-upstream-silence-commit-timing.md)。本文不再作为易变执行状态的真相源。
 
