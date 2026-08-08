@@ -31,11 +31,13 @@ describe("operation-scope", () => {
     releaseA()
     await Promise.resolve()
     expect(resolved).toBe(false)
+    expect(scope.snapshot).toEqual({ sealed: false, childCount: 0, quiesced: false })
 
     scope.seal()
     await gate
     expect(resolved).toBe(true)
     expect(scope.sealed).toBe(true)
+    expect(scope.snapshot).toEqual({ sealed: true, childCount: 0, quiesced: true })
   })
 
   it("does NOT prematurely resolve when childCount transiently hits 0 before seal (buffered-retry re-registration)", async () => {
@@ -62,6 +64,17 @@ describe("operation-scope", () => {
     releasePump()
     await scope.whenOperationQuiesced()
     expect(resolved).toBe(true)
+  })
+
+  it("exposes an immutable snapshot", () => {
+    const scope = createOperationScope()
+    const snapshot = scope.snapshot
+
+    expect(Object.isFrozen(snapshot)).toBe(true)
+    expect(() => {
+      ;(snapshot as { sealed: boolean }).sealed = true
+    }).toThrow()
+    expect(scope.snapshot).toEqual({ sealed: false, childCount: 0, quiesced: false })
   })
 
   it("rejects child registration after the logical-terminal seal", () => {

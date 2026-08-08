@@ -4,9 +4,9 @@ base: 92858d08606ad0ff02eb6ec7779f765e3e6109fe
 branch: fix-long-resident-operations
 worktree: /home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations
 plan: docs/plan/2026-08-08-long-resident-operation-lifecycle.md
-agent_id: pending
+agent_id: a-impl-1
 session_id: pending
-status: ready
+status: in-progress — Task 1 complete; Task 2～3 and B1 merged-state review remain
 ---
 
 # B1 lifecycle 实施进度
@@ -19,8 +19,6 @@ status: ready
 
 ## 剩余项
 
-- Task 1：建立纯 lifecycle 模型与 OperationScope snapshot。
-  - 验收：两个 focused test 文件通过，typecheck exit 0。
 - Task 2：RequestContext 发布 logical／operation／delivery／canonical 四事实。
   - 验收：RequestContext 与 generation recorder tests 通过，合法偏序两方向均绿。
 - Task 3：dispatch cleanup rejection 可见；scheduler／candidate／coordinator 所有权释放。
@@ -30,7 +28,7 @@ status: ready
 
 ## 在途意图
 
-- 尚未开始代码编辑。
+- Task 2 将把 Task 1 的 `OperationScopeSnapshot` 与 lifecycle pure types 接入 `RequestContext`，发布 logical／operation／delivery／canonical 四事实。
 - `failureRegistered` 的权威含义是 process shutdown lifecycle failure barrier 已同步持有错误；不得改成 context-local ledger。
 - Candidate reservation 的真实 owner 是 `coordinator.ts`；scheduler 只拥有 dispatch active slot，candidate 只拥有 verdict。
 
