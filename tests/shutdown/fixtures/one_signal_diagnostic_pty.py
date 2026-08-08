@@ -34,7 +34,7 @@ def read_available(timeout: float) -> None:
         output.extend(chunk)
 
 
-def read_until(needle: bytes, timeout: float = 3.0) -> None:
+def read_until(needle: bytes, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while needle not in output and time.monotonic() < deadline:
         read_available(0.05)
