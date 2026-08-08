@@ -173,6 +173,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
       if (mode === "enveloped_ping") expect(types.indexOf("message_start")).toBeGreaterThan(types.indexOf("ping"))
       if (injectedAnchor) {
         expect(blockIndices[0]).toBe(0)
+        expect(types).toContain("content_block_stop")
         expect(types.indexOf("content_block_stop")).toBeLessThan(types.lastIndexOf("content_block_start"))
       } else {
         expect(blockIndices[0]).toBe(0)
