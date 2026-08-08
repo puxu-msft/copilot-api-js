@@ -35,6 +35,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -76,6 +77,7 @@ import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/revers
 import { applyConfigToState } from "~/lib/config/config"
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -152,6 +154,10 @@ function restoreStreamToolNames(data: string | undefined, mapper: ToolNameMapper
 }
 
 export async function handleChatCompletionV4(c: Context): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleChatCompletionV4Admitted(c, historyReservation))
+}
+
+async function handleChatCompletionV4Admitted(c: Context, historyReservation: HistoryReservation): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
@@ -206,6 +212,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -581,7 +588,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -611,7 +618,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -629,7 +636,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error(`[ChatCompletions:v4] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
     recordForwarded()
     env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -656,13 +663,13 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   await sink.write({ data: "[DONE]" })
   recordForwarded()
   env.ctx.complete(buildOpenAIResponseData(acc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }
 
 // ============================================================================
@@ -773,7 +780,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     recordForwarded()
     consola.debug("[ChatCompletions:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -792,7 +799,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -808,7 +815,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     consola.error(`[ChatCompletions:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   // The processor finish boundary already emitted reverse translator terminal frames.
@@ -824,7 +831,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "contentless-refusal") {
@@ -833,11 +840,11 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.write({ data: "[DONE]" })
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   await sink.write({ data: "[DONE]" })
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }

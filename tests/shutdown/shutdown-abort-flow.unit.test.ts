@@ -80,7 +80,7 @@ describe("abort signal + streaming integration", () => {
 
     // Simulate the pattern used in actual handlers:
     // for await (const event of stream) {
-    //   if (getShutdownSignal()?.aborted) break
+    //   if (requestSignal.aborted) break
     //   processEvent(event)
     // }
     for await (const event of createFakeStream(events, { delayMs: 10 })) {

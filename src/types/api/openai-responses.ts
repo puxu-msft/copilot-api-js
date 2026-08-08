@@ -45,7 +45,7 @@ export interface ResponsesOutputTextPart {
  * Can be a message, a function call record, or a function call output.
  */
 export interface ResponsesInputItem {
-  type?: "message" | "function_call" | "function_call_output" | "item_reference" | "reasoning" | (string & {})
+  type?: "message" | "function_call" | "custom_tool_call" | "function_call_output" | "custom_tool_call_output" | "item_reference" | "reasoning" | (string & {})
   /** Role for message-type items */
   role?: "user" | "assistant" | "system" | "developer"
   /** Content for message-type items */
@@ -193,6 +193,16 @@ export interface ResponsesFunctionCallOutput {
   status: "completed" | "incomplete"
 }
 
+/** A custom tool call output item (free-form string input, not JSON-schema arguments). */
+export interface ResponsesCustomToolCallOutput {
+  type: "custom_tool_call"
+  call_id: string
+  name: string
+  input: string
+  id?: string
+  namespace?: string
+}
+
 /** A reasoning output item (contains thinking summary and encrypted content for round-tripping) */
 export interface ResponsesReasoningOutput {
   type: "reasoning"
@@ -239,7 +249,13 @@ export interface ResponsesIncompleteWebSearchCallOutput {
 }
 
 /** Union of all output item types */
-export type ResponsesOutputItem = ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesReasoningOutput | ResponsesWebSearchCallOutput | ResponsesIncompleteWebSearchCallOutput
+export type ResponsesOutputItem =
+  | ResponsesMessageOutput
+  | ResponsesFunctionCallOutput
+  | ResponsesCustomToolCallOutput
+  | ResponsesReasoningOutput
+  | ResponsesWebSearchCallOutput
+  | ResponsesIncompleteWebSearchCallOutput
 
 /** Usage statistics */
 export interface ResponsesUsage {

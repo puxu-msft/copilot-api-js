@@ -46,7 +46,6 @@ import {
   StreamReaperCancelError,
   StreamRequestCancelError,
   StreamRequestDeadlineError,
-  StreamShutdownError,
   StreamUnknownCancelError,
 } from "~/lib/stream"
 
@@ -176,10 +175,6 @@ describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamEr
     expect(classifyStreamErrorType(err)).toBe("timeout_error")
   })
 
-  test("shutdown → overloaded_error (the one genuinely retry-now condition)", () => {
-    expect(classifyStreamErrorType(new StreamShutdownError())).toBe("overloaded_error")
-  })
-
   // Anthropic's wire has no cancellation literal, so the cancel kinds honestly degrade to
   // the generic bucket rather than borrowing an unrelated one.
   test.each([new StreamUnknownCancelError(), new StreamRequestCancelError(), new Error("transport reset"), "not an error", null])(
@@ -195,7 +190,6 @@ describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamEr
     // in either place is what let a "landed" deadline mapping never reach the wire.
     const cases: Array<[Error, StreamErrorKind]> = [
       [new StreamIdleTimeoutError(1000), "idle-timeout"],
-      [new StreamShutdownError(), "shutdown"],
       [new StreamClientAbortError(), "client-abort"],
       [new StreamReaperCancelError(), "reaper-cancel"],
       [new StreamRequestDeadlineError(), "request-deadline"],

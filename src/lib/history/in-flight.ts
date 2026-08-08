@@ -35,6 +35,14 @@ const entries = new Map<string, HistoryEntry>()
  */
 let summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
 
+type SummaryPreviewVisit = "blocks" | "messages"
+
+let summaryPreviewVisitObserver: ((kind: SummaryPreviewVisit) => void) | undefined
+
+export function setSummaryPreviewVisitObserverForTests(observer: ((kind: SummaryPreviewVisit) => void) | undefined): void {
+  summaryPreviewVisitObserver = observer
+}
+
 function getCachedSummaryText(entry: HistoryEntry): { preview: string; responsePreview: string } {
   const hit = summaryTextCache.get(entry)
   if (hit) return hit
@@ -69,6 +77,7 @@ export function listInFlight(): Array<HistoryEntry> {
 
 export function clearInFlight(): void {
   entries.clear()
+  summaryPreviewVisitObserver = undefined
   // Reset the summary-text memo too, so test isolation is explicit and deterministic
   // rather than relying on GC of prior entry instances. The WeakMap is naturally
   // invalidated per-entry in production (fresh object per update), so this only
@@ -99,6 +108,7 @@ function summarizeMessage(msg: MessageContent): string {
     let firstToolUse: string | undefined
     let firstToolResult: string | undefined
     for (const block of msg.content) {
+      summaryPreviewVisitObserver?.("blocks")
       if (!block || typeof block !== "object") continue
       const b = block as Record<string, unknown>
       if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
@@ -138,6 +148,7 @@ export function extractPreviewText(entry: Pick<HistoryEntry, "clientRequest">): 
   if (!messages || messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
+    summaryPreviewVisitObserver?.("messages")
     const summary = summarizeMessage(messages[i])
     if (summary) return summary
   }

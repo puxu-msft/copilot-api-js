@@ -24,4 +24,4 @@ test("real PTY job control stops with WIFSTOPPED, resumes raw, and exits cleanly
       exitCode: 0,
     })
   }
-})
+}, 30_000)

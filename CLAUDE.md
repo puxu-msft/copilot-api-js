@@ -11,7 +11,7 @@
 
 ## 文档路由
 
-`docs/` 是本项目架构与决策的**单一事实源**，新会话 / 接手先读 [docs/DESIGN.md](docs/DESIGN.md)（尤其「活的架构现状」表——**当前活/wip/bypass/退役路径以此为准**），再下到具体 spec / ADR。**同一事实只写一处** → user-rule `70-save-knowledge`。
+`docs/` 是本项目架构与决策的**权威来源层**，新会话 / 接手先读 [docs/DESIGN.md](docs/DESIGN.md)（尤其「活的架构现状」表——**当前活/wip/bypass/退役路径以此为准**），再下到具体 spec / ADR。README、CLAUDE.md、skill、HANDOVER 与 memory 可以按各自读者需要完整复述，但必须引用同一个权威 doc / ADR / spec，冲突时回到该来源裁决；不得把“单一事实源”误解成“同一事实只能出现一次”，也不得为了 DRY 把完成任务所需的上下文削成裸指针。易变状态与数字若复述，须带权威引用和快照/commit/date；类型 owner、明细账→派生摘要、活跃进度写入权移交等真正的单写入源仍保持唯一。→ user-rule `41-doc-mgmt` `one-authority-allows-contextual-restatement`。
 
 面向不同读者的三份始终生效文档：
 - [README.md](README.md) —— 面向用户：功能、安装、使用、示例。
@@ -52,7 +52,7 @@
 - **scope-ambiguity-then-ask。** 范围/意图歧义**先用代码+invariant 自解**（答案已被代码钉死就自己定并写推理、别仪式化提问）；确属用户偏好/风险取舍的真分叉才 `AskUserQuestion`，且摆 3-4 个带量化影响的选项而非 yes/no。**方向明确就别停**（执行顺序不是岔路；代码改完→文档同步→提交都直接做，只有矛盾/非此即彼/上下文不足/破坏性不可逆才停）→ user-rule `60` `dont-stop-if-clear`。
 - **no-premature-stop。** 不因 turn 长度/token 额度**或编译中间态**（删了函数但调用方还引用）停顿、设检查点或延后，推进到下一个 typecheck 绿或完成 checkpoint 再停；独立的跨文件 Edit/工具一律**消息内并行**，绝不串行。
 - **dont-ignore-existing-errors。** 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修（放任会掩盖新问题、使回归失去意义）；修前先读实际代码和类型定义确认根因，不猜测。
-- **subagent-explicit-rubric。** 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做（实现在主线、subagent 作独立核验层）；subagent 默认持 ROI/YAGNI 价值观与本项目冲突，派活必须 prompt 里**显式写裁判轴**（长远正确 + 完整），吸收其客观事实、对其判断谨慎取舍；reviewer 的"无消费者/可安全删除/已通过"等绝对断言**亲自对照代码/实测复核**，行动前读它引用的每个 `file:line`。→ user-rule `40-use-of-agents` + skill `verifying-authoritative-claims`。
+- **subagent-explicit-rubric。** 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做（实现在主线、subagent 作独立核验层）；用户长期授权当前及未来会话主动运行任意 subagent、无需逐次询问，**同时运行最多 10 个**（只授权派发与并发数，不扩张远端发布、破坏性操作、外部写入等权限边界）；subagent 默认持 ROI/YAGNI 价值观与本项目冲突，派活必须 prompt 里**显式写裁判轴**（长远正确 + 完整），吸收其客观事实、对其判断谨慎取舍；reviewer 的"无消费者/可安全删除/已通过"等绝对断言**亲自对照代码/实测复核**，行动前读它引用的每个 `file:line`。→ user-rule `40-use-of-agents` + skill `verifying-authoritative-claims`。
 - **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前/任务跨会话/上下文将满）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan（迁 `docs/plan/` + 四档状态注解）与实验产物（就地 `exp/<topic>/`，README 必含「它没有证明什么」）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交 ⑥ **跨会话交接**（`HANDOVER.md`+`KICKOFF.md` 主树即时提交、产物先提交再引用、待办带验收判据与证伪方式、把自己犯过的错写进去）。**唯一顺序例外：因「上下文将满」触发时 ⑥ 先做**——交接是唯一不可重做的产物。**另有一个非收尾触发：派 implementer 执行**多语义 commit、**或单 commit 但历时长/需试错**的工作时，**派活前先读该 skill 的 §6b**（进度文件：一 agent 一文件、随每个实现 commit 提交、只记 git 记不下的三样；配套的共树/判活/容量三条调度纪律也在那里）——等收尾时才读到就已经晚了。→ skill `session-closeout`（六步 how-to + §6b 与模板的单一源）。
 
 ### 大特性的工作流角色

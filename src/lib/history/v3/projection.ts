@@ -358,6 +358,7 @@ export function recordToHistoryEntry(
     | {
         durationMs?: number
         queueWaitMs?: number
+        historyAdmissionWaitMs?: number
         warningMessages?: HistoryEntry["warningMessages"]
         pipelineInfo?: HistoryEntry["pipelineInfo"]
         preprocessing?: HistoryEntry["preprocessing"]
@@ -382,6 +383,7 @@ export function recordToHistoryEntry(
     pinned: stored.pinned ?? false,
     lastUpdatedAt: endedAt ?? record.identity.createdAt,
     queueWaitMs: terminalMeta?.queueWaitMs,
+    historyAdmissionWaitMs: terminalMeta?.historyAdmissionWaitMs,
     ...(terminalMeta?.warningMessages && terminalMeta.warningMessages.length > 0 && { warningMessages: terminalMeta.warningMessages }),
     ...(terminalMeta?.pipelineInfo && { pipelineInfo: terminalMeta.pipelineInfo }),
     ...(terminalMeta?.preprocessing && { preprocessing: terminalMeta.preprocessing }),

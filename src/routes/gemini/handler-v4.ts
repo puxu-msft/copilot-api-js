@@ -28,6 +28,7 @@ import type { GeminiCodec } from "~/lib/codec/gemini/codec"
 import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -77,6 +78,7 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -159,6 +161,20 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
+  return await withHistoryAdmission(
+    c.req.raw,
+    "generation",
+    async (historyReservation) => await runGeminiRequestAdmitted(c, geminiBody, modelId, stream, historyReservation),
+  )
+}
+
+async function runGeminiRequestAdmitted(
+  c: Context,
+  geminiBody: GenerateContentRequest,
+  modelId: string,
+  stream: boolean,
+  historyReservation: HistoryReservation,
+): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
   const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
@@ -179,6 +195,7 @@ async function runGeminiRequest(
       path: c.req.path,
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -449,7 +466,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     recordForwarded()
     consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(model, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -476,7 +493,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -509,7 +526,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -522,7 +539,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     stop_reason: meta.finishReason,
     content: null,
   })
-  sink.finalize?.()
+  await sink.finalize?.()
 }
 
 /**
@@ -652,7 +669,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     recordForwarded()
     consola.debug("[gemini:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -676,7 +693,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -690,7 +707,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     consola.error(`[gemini:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   // Truncation (F2): a clean drain WITHOUT the mandatory `message_stop`. Drop the geminiTranslator's
@@ -717,7 +734,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "contentless-refusal") {
@@ -725,12 +742,12 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   // The processor finish boundary already emitted the geminiTranslator's stream-end frames.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }

@@ -180,7 +180,7 @@ describe("TerminalUi — terminal restore robustness (Task 6)", () => {
     const rawModeCalls = stdin.setRawMode.mock.calls.length
     // A second draining (or later phase) must not re-run restore.
     sys.publish({ kind: "system.shutdown_phase_changed", phase: "draining", previousPhase: "draining", needsFlush: false })
-    sys.publish({ kind: "system.shutdown_phase_changed", phase: "aborting", previousPhase: "draining", needsFlush: false })
+    sys.publish({ kind: "system.shutdown_phase_changed", phase: "finalized", previousPhase: "draining", needsFlush: false })
     expect(stdin.setRawMode.mock.calls.length).toBe(rawModeCalls)
   })
 

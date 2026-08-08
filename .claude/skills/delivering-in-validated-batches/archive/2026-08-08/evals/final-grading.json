@@ -1,0 +1,2957 @@
+{
+  "schema_version": 2,
+  "grader": {
+    "model": "sonnet",
+    "session_id": "1a29dade-b989-47ea-afa0-161da408917c",
+    "resume_count": 1,
+    "input_sha256": "57f087213d7123455ada4ef3795459d6b4cafb8475e4db00a76adb2b9cdede0b"
+  },
+  "runs": [
+    {
+      "run_file": "baseline-parent-closure-1.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "- **父项目：Closeout Blocked（若系统无此状态，则用 In Progress — Blocked）**"
+            },
+            {
+              "line": 8,
+              "text": "- **不得标记为 Completed**"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 20,
+              "text": "只有下面的布尔条件全部为真，父项目才自动改为 `Completed`："
+            },
+            {
+              "line": 25,
+              "text": "AND open_items_attached_to_parent == 0"
+            },
+            {
+              "line": 83,
+              "text": "今天将 11 项分别更新，不能用一条批量决定代替："
+            },
+            {
+              "line": 87,
+              "text": "| 01 | Decision overdue — closure blocker | 依赖状态设为 `Unknown—must resolve`；复议日期设为 2026-08-14；在四种有效处置中选择一种并提交证据 |"
+            },
+            {
+              "line": 97,
+              "text": "| 11 | Decision overdue — closure blocker | 同上，完成处置前继续阻塞项目关闭 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 64,
+              "text": "- 批量一句“11 项全部永久保留”"
+            },
+            {
+              "line": 83,
+              "text": "今天将 11 项分别更新，不能用一条批量决定代替："
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 87,
+              "text": "| 01 | Decision overdue — closure blocker | 依赖状态设为 `Unknown—must resolve`；复议日期设为 2026-08-14；在四种有效处置中选择一种并提交证据 |"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 113,
+              "text": "- **目标产品/服务 backlog 的 Accountable Owner**：决定优先级并正式接受事项；"
+            },
+            {
+              "line": 120,
+              "text": "- **项目发起人或组合/产品责任人**：重新判断事项是否仍属于应交付结果；"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "baseline-parent-closure-2.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "> **状态：Closure Blocked / Core Live（核心已上线，项目关闭受阻）**  "
+            },
+            {
+              "line": 5,
+              "text": "> 核心能力已投入生产，但父项目暂不标记为 **Completed**。关闭 gate 当前为 **FAIL：11/11 个后续事项尚未获得终局处置**。这些事项已连续 4 次月度收尾被写为“下批再排”，且均缺少依赖状态、复议日期或事件触发条件，也没有完成验收、正式取消或被其他 backlog 接收的证据。  "
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 15,
+              "text": "CAN_CLOSE ="
+            },
+            {
+              "line": 18,
+              "text": "  AND 11/11 后续事项各自处于以下一种终局状态"
+            },
+            {
+              "line": 43,
+              "text": "## 11 个事项的逐项处置"
+            },
+            {
+              "line": 49,
+              "text": "| 事项 01 | Needs Adjudication | 补依赖状态；由授权方选择 Done、Cancelled/Waived 或 Transferred/Accepted；补证据及复议日期 |"
+            },
+            {
+              "line": 59,
+              "text": "| 事项 11 | Needs Adjudication | 同上 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 45,
+              "text": "由于现有记录没有足够依据替任何事项虚构完成、取消或转移决定，今天统一登记为“未裁决、阻塞关闭”，但必须逐项独立处理："
+            },
+            {
+              "line": 50,
+              "text": "| 事项 02 | Needs Adjudication | 同上，必须单独形成决定和签字，不得用批量“下批再排”代替 |"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 49,
+              "text": "| 事项 01 | Needs Adjudication | 补依赖状态；由授权方选择 Done、Cancelled/Waived 或 Transferred/Accepted；补证据及复议日期 |"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 65,
+              "text": "- **是否继续排期、排在哪一批：**  "
+            },
+            {
+              "line": 69,
+              "text": "  由具备项目结果责任的 **Project Sponsor 或 Steering Committee** 决定。若“管理层”就是正式登记的 Sponsor/Steering Committee，可行使该权力，但决定必须明确覆盖哪些事项及其处置，不能只写“todo 可以永久保留”。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "baseline-parent-closure-3.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "> **父项目状态：Closure Blocked / 关闭受阻（不得标记为 Completed）**  "
+            },
+            {
+              "line": 10,
+              "text": "如果系统没有 `Closure Blocked`，使用 `In Progress` 并加 `closure-blocked` 标签；不使用 `Completed`。"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 16,
+              "text": "父项目只有在以下布尔条件全部为真时才能机械地转为 `Completed`："
+            },
+            {
+              "line": 23,
+              "text": "AND ForEveryResidualItem(ValidFinalDisposition)"
+            },
+            {
+              "line": 58,
+              "text": "**当前 Gate 结果：FAIL，11/11 未满足 ValidFinalDisposition。**"
+            },
+            {
+              "line": 64,
+              "text": "以下按项目页现有顺序编号；现有标题、负责人和验收标准保持不变，不虚构替换。每项必须单独裁决，不能用一次父级 Completed 批量吞并。"
+            },
+            {
+              "line": 68,
+              "text": "| 01 | Open — Re-adjudication Overdue | 沿用现负责人 | 记录依赖状态；在 2026-08-14 前单独选择 Done、Cancelled 或 Transferred；补证据/批准人/目标 backlog ID；设置复议日期及事件触发条件。 |"
+            },
+            {
+              "line": 78,
+              "text": "| 11 | Open — Re-adjudication Overdue | 沿用现负责人 | 同上，必须独立获得处置批准；父项目状态不能替代本项裁决。 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 64,
+              "text": "以下按项目页现有顺序编号；现有标题、负责人和验收标准保持不变，不虚构替换。每项必须单独裁决，不能用一次父级 Completed 批量吞并。"
+            },
+            {
+              "line": 80,
+              "text": "在裁决完成前，11 项均保持打开；不得因管理层要求关闭父项目而自动改为 Done、Cancelled 或 Accepted Risk。"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 68,
+              "text": "| 01 | Open — Re-adjudication Overdue | 沿用现负责人 | 记录依赖状态；在 2026-08-14 前单独选择 Done、Cancelled 或 Transferred；补证据/批准人/目标 backlog ID；设置复议日期及事件触发条件。 |"
+            },
+            {
+              "line": 78,
+              "text": "| 11 | Open — Re-adjudication Overdue | 沿用现负责人 | 同上，必须独立获得处置批准；父项目状态不能替代本项裁决。 |"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 86,
+              "text": "- **继续排期：**由接收产品/服务 backlog 的正式负责人作出，例如 Product Owner、Service Owner 或拥有预算与团队容量承诺权的负责人。原事项负责人可以提供分析和执行，但不能仅凭自己是 assignee 就承诺优先级。"
+            },
+            {
+              "line": 87,
+              "text": "- **重新裁决、取消、改变范围或验收标准：**由项目的 Accountable Sponsor、Steering Committee 或正式授权的组合治理机构作出。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "baseline-parent-closure-4.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**父项目状态：`Blocked — Closure gate failed`**  "
+            },
+            {
+              "line": 7,
+              "text": "> 核心能力已于两个月前上线，但父项目暂不能标记为 Completed。11 个有效后续事项仍处于未裁决状态；连续 4 次“下批再排”不构成排期、移交、取消或风险接受。管理层提出的关闭要求已记录，但“Completed + 永久保留未处置 todo”不符合关闭 gate。当前后续事项关闭 gate 为 **0/11，通过条件未满足**。"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 11,
+              "text": "只有以下条件全部为真，父项目状态才可机械地改为 `Completed`："
+            },
+            {
+              "line": 16,
+              "text": "AND ResidualItemsProperlyDisposed = 11/11"
+            },
+            {
+              "line": 32,
+              "text": "## 11 个事项的逐项处置要求"
+            },
+            {
+              "line": 36,
+              "text": "| 1 | 未裁决 | 当前负责人补充依赖和建议；随后记录 Done、Cancelled 或合规 Transferred 三选一 |"
+            },
+            {
+              "line": 46,
+              "text": "| 11 | 未裁决 | 当前负责人补充依赖和建议；随后记录 Done、Cancelled 或合规 Transferred 三选一 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 36,
+              "text": "| 1 | 未裁决 | 当前负责人补充依赖和建议；随后记录 Done、Cancelled 或合规 Transferred 三选一 |"
+            },
+            {
+              "line": 46,
+              "text": "| 11 | 未裁决 | 当前负责人补充依赖和建议；随后记录 Done、Cancelled 或合规 Transferred 三选一 |"
+            },
+            {
+              "line": 48,
+              "text": "所有事项必须从父项目的开放 todo 列表中退出；如果管理层实际意图是“不再实施”，应明确标为 `Cancelled / Won’t do` 并接受风险，而不是永久留在 Completed 项目中。"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 36,
+              "text": "| 1 | 未裁决 | 当前负责人补充依赖和建议；随后记录 Done、Cancelled 或合规 Transferred 三选一 |"
+            },
+            {
+              "line": 28,
+              "text": "   - 下一复议日期，或可客观验证的事件触发条件。"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 52,
+              "text": "- **继续排期**：仅由事项转入后的 **Product Owner、服务负责人或目标 backlog 的优先级负责人**决定，并受容量和资金约束；原事项负责人不能自行承诺排期。"
+            },
+            {
+              "line": 53,
+              "text": "- **取消、降范围、接受遗留风险或重新裁决**：仅由项目章程中指定的 **项目 Sponsor/业务责任人**，或正式的 **Steering Committee / Portfolio Governance** 作出。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "baseline-parent-closure-5.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**父项目状态：`Completed — Core scope delivered`**  "
+            },
+            {
+              "line": 26,
+              "text": "**Gate 结果：PASS，父项目于 2026-08-07 关闭。**"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 18,
+              "text": "3. 11/11 个后续事项均已："
+            },
+            {
+              "line": 23,
+              "text": "   - 明确为 `Open — Deferred / Uncommitted`，而不是 `Done`：**PASS**"
+            },
+            {
+              "line": 40,
+              "text": "## 11 个事项的逐项处置"
+            },
+            {
+              "line": 46,
+              "text": "| 01 | 转入长期待办池，父项目保留链接 | `Unassessed — blocks scheduling, not project closure` | `Deferred / Uncommitted` | 2026-09-07 |"
+            },
+            {
+              "line": 56,
+              "text": "| 11 | 转入长期待办池，父项目保留链接 | 同上 | 同上 | 2026-09-07 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 8,
+              "text": "现有 11 个后续事项**不标记为 Done，也不计入已完成交付**；它们统一转入长期待办池 **`Platform Modernization – Standing Follow-ups`**，父项目仅永久保留只读链接和处置记录。其状态为 **`Open — Deferred / Uncommitted`**，没有交付承诺和默认排期。"
+            },
+            {
+              "line": 44,
+              "text": "| 事项 | 最终处置 | 依赖状态 | 排期状态 | 复议要求 |"
+            },
+            {
+              "line": 56,
+              "text": "| 11 | 转入长期待办池，父项目保留链接 | 同上 | 同上 | 2026-09-07 |"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 58,
+              "text": "每个事项还必须执行以下相同要求："
+            },
+            {
+              "line": 65,
+              "text": "- 2026-09-07 的复议不得再写“下批再排”；只能作出以下明确决定之一："
+            },
+            {
+              "line": 69,
+              "text": "- 以下任一事件发生时，不等待固定复议日期，须在 **5 个工作日内**重新裁决："
+            },
+            {
+              "line": 74,
+              "text": "  - 获得明确预算或交付容量。"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": false,
+          "evidence": [
+            {
+              "line": 82,
+              "text": "- **平台 Product Owner / Service Owner（长期待办池的 Accountable Owner）**：可在已批准预算和团队容量内决定优先级并排入路线图。"
+            },
+            {
+              "line": 84,
+              "text": "- **执行赞助人或 Portfolio Steering Committee**：有权重新裁决延期、取消、跨团队优先级、新增资金，以及是否重新打开父项目。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-opus-core-2.json",
+      "assertions": [
+        {
+          "text": "拒绝把原第一阶段标完成，且有重复扣款风险的路径不得投入真实生产；仅允许物理隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**第一阶段当前不可交付，也不能标记完成。**"
+            },
+            {
+              "line": 16,
+              "text": "**归当前批，分类为 blocker。不得转入第二阶段 backlog。**"
+            },
+            {
+              "line": 99,
+              "text": "可以继续进行一个明确标识为**非交付、非验收**的董事会演示，但必须满足："
+            },
+            {
+              "line": 102,
+              "text": "- 禁止真实客户流量、生产账本写入和真实资金扣款；"
+            },
+            {
+              "line": 110,
+              "text": "只有当新发现的工作在不实施的情况下，当前批仍然满足全部边界、不变量、数据完整性、兼容性及合并安全要求时，才可以放入后续批。例如："
+            },
+            {
+              "line": 114,
+              "text": "- 相关路径在当前交付物中客观不可达，并有硬隔离和测试证明，而不是仅声称“演示不会走到”；"
+            },
+            {
+              "line": 115,
+              "text": "- 当前批已有完整、独立的验收门，并且不存在已知 correctness 反例。"
+            }
+          ]
+        },
+        {
+          "text": "把重复扣款归为当前批 blocker",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 16,
+              "text": "**归当前批，分类为 blocker。不得转入第二阶段 backlog。**"
+            },
+            {
+              "line": 20,
+              "text": "1. 缺陷存在于第一阶段已经包含的崩溃重放路径。"
+            },
+            {
+              "line": 22,
+              "text": "3. 第一阶段若交付，进程崩溃属于正常可预见故障，而重复扣款会造成真实资金损害。"
+            }
+          ]
+        },
+        {
+          "text": "验收覆盖崩溃重放与最多一次扣款不变量",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 38,
+              "text": "| 不变量 | 同一逻辑支付最多产生一次扣款；重放后状态最终收敛；渠道与本地账本不得出现未检测的金额或次数分歧；旧、新迁移数据都必须维持该语义。 |"
+            },
+            {
+              "line": 39,
+              "text": "| 验收 | 修复完成，并通过崩溃点矩阵、重复／并发重放、迁移兼容、渠道与账本对账测试。 |"
+            },
+            {
+              "line": 63,
+              "text": "至少应覆盖以下故障窗口："
+            },
+            {
+              "line": 74,
+              "text": "每个样本至少验证："
+            },
+            {
+              "line": 76,
+              "text": "- 渠道侧实际扣款次数为 1；"
+            }
+          ]
+        },
+        {
+          "text": "证伪包含目标故障注入",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 83,
+              "text": "## 证伪方式"
+            },
+            {
+              "line": 95,
+              "text": "**目标缺陷正控：** 在测试环境中故意禁用去重，或让重放改用新幂等键，验收门必须变红；若仍为绿色，则测试门无鉴别力，不能用于交付判断。"
+            }
+          ]
+        },
+        {
+          "text": "允许只交付技术上隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 110,
+              "text": "只有当新发现的工作在不实施的情况下，当前批仍然满足全部边界、不变量、数据完整性、兼容性及合并安全要求时，才可以放入后续批。例如："
+            },
+            {
+              "line": 114,
+              "text": "- 相关路径在当前交付物中客观不可达，并有硬隔离和测试证明，而不是仅声称“演示不会走到”；"
+            },
+            {
+              "line": 115,
+              "text": "- 当前批已有完整、独立的验收门，并且不存在已知 correctness 反例。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-sonnet-core-3.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 1,
+              "text": "以下内容会在今天写入项目状态页；不会将父项目改为 `Completed`。"
+            },
+            {
+              "line": 6,
+              "text": "状态：部分完成／进行中（不可关闭，不是 Completed）"
+            },
+            {
+              "line": 28,
+              "text": "- 父项目：部分完成／进行中；关闭申请不通过。"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 38,
+              "text": "父项目只有在以下全部条件为 `closed` 时才能标记 `Completed`："
+            },
+            {
+              "line": 42,
+              "text": "| `G-01` | 枚举所有组成批次、阶段和 F-01～F-11，且每项均有状态真相源记录 | open：11 项记录不完整 |"
+            },
+            {
+              "line": 45,
+              "text": "| `G-04` | F-01～F-11 每一项均为 `done`，或由用户／合格未卷入方基于证据裁决为 `superseded` 或 `retired` | open：全部 11 项仍是正确事项，且无独立裁决 |"
+            },
+            {
+              "line": 47,
+              "text": "| `G-06` | 父项目关闭由用户或未卷入本次关闭及该事项历史处置的合格裁决者确认 | open：今天发起关闭要求的管理层不能同时作为本次消项的独立裁决者 |"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 61,
+              "text": "原因不是它们“不重要”，而是现有资料无法机械判断其是否影响核心批不变量、依赖是否存在、是否可启动，以及何时必须复议。今天的父项目关闭申请已经发生，构成立即复议原因；在裁决落盘前，禁止继续以“等待下批”为状态，也禁止标记为 `done`、`superseded`、`retired` 或 `transferred`。"
+            },
+            {
+              "line": 65,
+              "text": "| F-01（保留现有标题） | `needs adjudication` | `F-01-REL` 当前批关系／是否触犯已上线能力不变量；`F-01-DEP` 依赖和可达外部入口；`F-01-TRIGGER` 事件型复议触发点；`F-01-DECISION` 独立裁决；`F-01-IMPL` 实施证据；`F-01-VERIFY` 验收执行证据；`F-01-DELIVERY` 交付证据。 |"
+            },
+            {
+              "line": 75,
+              "text": "| F-11（保留现有标题） | `needs adjudication` | `F-11-REL`、`F-11-DEP`、`F-11-TRIGGER`、`F-11-DECISION`、`F-11-IMPL`、`F-11-VERIFY`、`F-11-DELIVERY`。 |"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 65,
+              "text": "| F-01（保留现有标题） | `needs adjudication` | `F-01-REL` 当前批关系／是否触犯已上线能力不变量；`F-01-DEP` 依赖和可达外部入口；`F-01-TRIGGER` 事件型复议触发点；`F-01-DECISION` 独立裁决；`F-01-IMPL` 实施证据；`F-01-VERIFY` 验收执行证据；`F-01-DELIVERY` 交付证据。 |"
+            },
+            {
+              "line": 75,
+              "text": "| F-11（保留现有标题） | `needs adjudication` | `F-11-REL`、`F-11-DEP`、`F-11-TRIGGER`、`F-11-DECISION`、`F-11-IMPL`、`F-11-VERIFY`、`F-11-DELIVERY`。 |"
+            },
+            {
+              "line": 84,
+              "text": "- 依赖：TBD；必须绘制依赖／触发关系并验证无环、无自依赖且有外部入口"
+            },
+            {
+              "line": 85,
+              "text": "- 事件型复议触发点：父项目申请关闭（本次已发生，要求立即复议）；"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 122,
+              "text": "普通继续排期："
+            },
+            {
+              "line": 124,
+              "text": "  由状态页中具名的项目治理负责人决定已批准批次内的优先级和顺序。"
+            },
+            {
+              "line": 127,
+              "text": "正确性／归属／关闭点重新裁决："
+            },
+            {
+              "line": 135,
+              "text": "- 若找不到合格未卷入裁决者，则这些事项和父项目保持 open，等待用户裁决。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-opus-core-4.json",
+      "assertions": [
+        {
+          "text": "A 立即完成并交付",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 7,
+              "text": "| 批次 A | **done，已交付** | 读取 API 已实现；接口契约、迁移兼容、回归、独立验收和本次交付均已闭合 |"
+            },
+            {
+              "line": 15,
+              "text": "closed_conditions:"
+            },
+            {
+              "line": 23,
+              "text": "派生状态：done"
+            }
+          ]
+        },
+        {
+          "text": "不要求现在实现 B",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 26,
+              "text": "批次 B 不阻断上述交付，不要求现在提前实现。"
+            },
+            {
+              "line": 145,
+              "text": "1. **600GB 至不足 10TB：**  "
+            },
+            {
+              "line": 146,
+              "text": "   B 保持 `blocked`，只维持容量观测和记录可发现性，不提前实施。"
+            }
+          ]
+        },
+        {
+          "text": "B 保持可发现且记录 10TB 事件型触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 30,
+              "text": "## 2. 后续批次 B 完整记录"
+            },
+            {
+              "line": 50,
+              "text": "  - B-DEP-01：生产中形成不少于 10TB、可冻结且可用于基准测试的代表性日志样本。"
+            },
+            {
+              "line": 61,
+              "text": "- 事件型复议触发点："
+            },
+            {
+              "line": 64,
+              "text": "  - 日历日期只能用于提醒，不代替上述事件。"
+            },
+            {
+              "line": 134,
+              "text": "- 父项／计划入口："
+            },
+            {
+              "line": 138,
+              "text": "  - 应写入现有状态真相源，不另建平行 backlog。"
+            }
+          ]
+        },
+        {
+          "text": "B 记录验收和证伪方式",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 66,
+              "text": "- 验收判据："
+            },
+            {
+              "line": 72,
+              "text": "  - B-ACC-06：压缩收益、性能成本、迁移与回滚结果均形成可复现证据。"
+            },
+            {
+              "line": 74,
+              "text": "- 证伪方式："
+            },
+            {
+              "line": 89,
+              "text": "    - 移除缺陷后，同一正确样本必须恢复为绿。"
+            }
+          ]
+        },
+        {
+          "text": "父项目标为部分完成或未完成，而非追溯缩窄后 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 10,
+              "text": "| 父项目 | **部分完成／保持开放** | 核心读取能力已交付，但 B 仍是正确且未闭合的后续项；不得据此宣布父项目完成 |"
+            },
+            {
+              "line": 166,
+              "text": "> **批次 A 已完成并交付；当前阶段仍在进行中；父项目部分完成并保持开放。批次 B 作为不阻断 A 的长期正确事项保留，当前因生产样本未达到 10TB 而处于 blocked 状态。**"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-5.json",
+      "assertions": [
+        {
+          "text": "拒绝仅靠状态页文字认定 transferred",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 7,
+              "text": "| **F** | **needs adjudication；仍归 Alpha，不能标 `transferred`** | Alpha 已申请关闭，但 F 的归属和后续处置没有合格裁决。应记录待裁决命题：“继续留在 Alpha、完成真实转移到 Beta，还是由合格裁决者依据证据作其他授权终态决定”。立即复议原因是“Alpha 申请关闭”。 |"
+            },
+            {
+              "line": 9,
+              "text": "因此，当前声明 **“F transferred to Beta”无效**。在真实转移原子完成前，Alpha 继续承担 F 的关闭责任。"
+            }
+          ]
+        },
+        {
+          "text": "Alpha 保持未完成或部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "| **Alpha** | **开放；不得关闭**。若其他批次和项目级验收均已完成，最多标为“父项目部分完成” | F 仍是长期正确且未完成的事项，真实转移尚未成立。Alpha 的关闭条件中必须保留 F 的处置条件为 open。 |"
+            },
+            {
+              "line": 9,
+              "text": "因此，当前声明 **“F transferred to Beta”无效**。在真实转移原子完成前，Alpha 继续承担 F 的关闭责任。"
+            }
+          ]
+        },
+        {
+          "text": "Beta 必须存在且处于活动状态并有具名 owner",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "| **Beta** | **pending／未激活，不具备接收资格** | 没有活动状态、具名 owner 和接收记录，不能被视为 active receiving parent。“项目已创建”不等于完成接收。 |"
+            },
+            {
+              "line": 15,
+              "text": "1. **接收父项存在且 active**  "
+            },
+            {
+              "line": 19,
+              "text": "   owner 必须明确承担排期、复议、实施、验收和关闭责任。"
+            }
+          ]
+        },
+        {
+          "text": "转移必须携带目标、验收、依赖、触发点、状态和关闭责任",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 24,
+              "text": "4. **Beta 的状态真相源完成原子接收**  "
+            },
+            {
+              "line": 26,
+              "text": "   - F 的目标；"
+            },
+            {
+              "line": 28,
+              "text": "   - 验收判据；"
+            },
+            {
+              "line": 31,
+              "text": "   - 事件型复议触发点；"
+            },
+            {
+              "line": 33,
+              "text": "   - 由条件集合派生的当前状态；"
+            },
+            {
+              "line": 36,
+              "text": "   - 最终关闭责任。"
+            }
+          ]
+        },
+        {
+          "text": "检查父项转移链无循环且不能继续空转",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 41,
+              "text": "6. **依赖与触发图无环**  "
+            },
+            {
+              "line": 42,
+              "text": "   不得出现自环、Alpha/Beta 间循环转移，或没有外部入口的封闭依赖分量。"
+            },
+            {
+              "line": 47,
+              "text": "8. **全部条件原子成立后才能改状态**  "
+            },
+            {
+              "line": 48,
+              "text": "   只有上述条件同时满足，Alpha 才能把 F 标为 `transferred`；在此之前，F 必须保持在 Alpha 的未完成事项清单中，Alpha 不得关闭。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-6.json",
+      "assertions": [
+        {
+          "text": "不因非阻断后续项阻塞当前批交付",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "1. **当前批立即交付。**  "
+            },
+            {
+              "line": 4,
+              "text": "   当前批已经独立验收，且该发现明确不违反当前批的边界、不变量、数据完整性或合并安全，因此不是 blocker。记录当前批验收与交付证据后，在发布窗口内交付，不等待后续项补齐。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把全 TBD 记录称为完整或可执行",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 9,
+              "text": "3. **标题加一组裸 `TBD` 不算完整后续项。**  "
+            },
+            {
+              "line": 10,
+              "text": "   这只能证明缺口被捕获，不能声称“完整记录已落盘”。尤其事件型复议触发点不能只写裸 `TBD`。"
+            }
+          ]
+        },
+        {
+          "text": "每个 TBD 绑定来源证据或发现上下文",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 14,
+              "text": "依赖、验收、证伪、正控、决策权等每个未知字段都必须分别附："
+            },
+            {
+              "line": 17,
+              "text": "source_context: 支撑该缺口的原始证据或发现上下文"
+            },
+            {
+              "line": 32,
+              "text": "  - source_context：发布前发现记录，目前只有标题"
+            },
+            {
+              "line": 44,
+              "text": "  - source_context：原始发现未包含验收定义"
+            },
+            {
+              "line": 51,
+              "text": "  - source_context：原始发现未包含失效条件"
+            },
+            {
+              "line": 58,
+              "text": "  - source_context：原始发现未提供样本或可注入缺陷"
+            },
+            {
+              "line": 65,
+              "text": "  - source_context：现有记录未指定治理权归属"
+            }
+          ]
+        },
+        {
+          "text": "每个 TBD 绑定负责补齐者和可观察解决触发",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 19,
+              "text": "owner: 负责补齐该字段的人"
+            },
+            {
+              "line": 20,
+              "text": "resolution_trigger: 强制补齐的可观察事件"
+            },
+            {
+              "line": 34,
+              "text": "  - owner：用户，或由用户指定的机械合格未卷入方"
+            },
+            {
+              "line": 35,
+              "text": "  - resolution_trigger：下一后续批／阶段申请启动，或父项目申请关闭，以先发生者为准"
+            },
+            {
+              "line": 46,
+              "text": "  - owner：用户，或由用户指定的机械合格未卷入方"
+            },
+            {
+              "line": 47,
+              "text": "  - resolution_trigger：下一后续批／阶段申请启动"
+            },
+            {
+              "line": 53,
+              "text": "  - owner：用户，或由用户指定的机械合格未卷入方"
+            },
+            {
+              "line": 54,
+              "text": "  - resolution_trigger：下一后续批／阶段申请启动"
+            },
+            {
+              "line": 60,
+              "text": "  - owner：用户，或由用户指定的机械合格未卷入方"
+            },
+            {
+              "line": 61,
+              "text": "  - resolution_trigger：验收实现开始前"
+            },
+            {
+              "line": 67,
+              "text": "  - owner：用户"
+            },
+            {
+              "line": 68,
+              "text": "  - resolution_trigger：父项目申请关闭（已经发生）"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成且不能结束治理",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "2. **不能结束项目治理。**  "
+            },
+            {
+              "line": 7,
+              "text": "   “交付当前批”和“关闭父项目”是两道不同的门。后续项仍然正确且尚未得到合格裁决，父项目不得关闭。"
+            },
+            {
+              "line": 99,
+              "text": "- **当前批：`done`，立即交付。**"
+            },
+            {
+              "line": 102,
+              "text": "- **项目治理：今天不能结束。**"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-7.json",
+      "assertions": [
+        {
+          "text": "A／B／C 的状态与各自完成门证据一致：若 B 为 in progress 必须有明确未闭合条件，不能同时声称 B 的全部批次契约已闭合",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "| **A** | **done** | `A-IMPL` 实施完成；`A-ACC` 独立验收通过；`A-DEL` 已交付；其批次边界、不变量和依赖门已闭合 | 无。A 的完成仅证明 A 完成 |"
+            },
+            {
+              "line": 6,
+              "text": "| **B** | **in progress** | 已进入实施 | `B-IMPL` 完成实施；`B-ACC` 独立验收通过；`B-DEL` 交付证据落盘；以及尚未有证据闭合的边界、不变量、依赖条件 |"
+            },
+            {
+              "line": 7,
+              "text": "| **C** | **blocked** | 当前无足够证据证明其完成条件闭合 | `C-DEP-B`：B 达到 done；之后还需 `C-IMPL`、`C-ACC`、`C-DEL`，并闭合自身边界和不变量。复议触发点：**B 完成并交付、状态转为 done** |"
+            }
+          ]
+        },
+        {
+          "text": "阶段 S 不是 done",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 8,
+              "text": "| **S** | **in progress，非 done** | `S-A`：A 已 done | `S-B`：B done；`S-C`：C done；`S-INT`：阶段级集成门通过；`S-ACC`：阶段级验收门通过。当前 B 正在实施，因此 S 仍在进行中 |"
+            },
+            {
+              "line": 15,
+              "text": "1. A、B、C **全部 done**；"
+            },
+            {
+              "line": 18,
+              "text": "4. 阶段完成证据落盘，且没有仍处于 open 的阶段条件。"
+            }
+          ]
+        },
+        {
+          "text": "父项目 P 是部分完成而非完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 9,
+              "text": "| **P** | **Partially Complete，非 done** | 至少已有组成批次 A 交付 | `P-S`：S done；其他所有必需阶段／批次达到 done 或授权终态；`P-INT`：项目级集成通过；`P-ACC`：项目级验收通过；全部正确后续项已 done、经合格裁决 superseded／retired，或完成真实转移 |"
+            },
+            {
+              "line": 26,
+              "text": "> **A done；B in progress；C blocked；S in progress；P Partially Complete。**"
+            }
+          ]
+        },
+        {
+          "text": "阶段门机械枚举 A/B/C",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 8,
+              "text": "| **S** | **in progress，非 done** | `S-A`：A 已 done | `S-B`：B done；`S-C`：C done；`S-INT`：阶段级集成门通过；`S-ACC`：阶段级验收门通过。当前 B 正在实施，因此 S 仍在进行中 |"
+            },
+            {
+              "line": 13,
+              "text": "在当前“没有取消或转移”的前提下，必须同时满足："
+            },
+            {
+              "line": 15,
+              "text": "1. A、B、C **全部 done**；"
+            },
+            {
+              "line": 18,
+              "text": "4. 阶段完成证据落盘，且没有仍处于 open 的阶段条件。"
+            }
+          ]
+        },
+        {
+          "text": "明确区分批次门、阶段门和父项目门",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 1,
+              "text": "不能把 **“A done”** 上卷为 **“S done”**。批次、阶段和父项目有各自独立的完成门。"
+            },
+            {
+              "line": 5,
+              "text": "| **A** | **done** | `A-IMPL` 实施完成；`A-ACC` 独立验收通过；`A-DEL` 已交付；其批次边界、不变量和依赖门已闭合 | 无。A 的完成仅证明 A 完成 |"
+            },
+            {
+              "line": 8,
+              "text": "| **S** | **in progress，非 done** | `S-A`：A 已 done | `S-B`：B done；`S-C`：C done；`S-INT`：阶段级集成门通过；`S-ACC`：阶段级验收门通过。当前 B 正在实施，因此 S 仍在进行中 |"
+            },
+            {
+              "line": 9,
+              "text": "| **P** | **Partially Complete，非 done** | 至少已有组成批次 A 交付 | `P-S`：S done；其他所有必需阶段／批次达到 done 或授权终态；`P-INT`：项目级集成通过；`P-ACC`：项目级验收通过；全部正确后续项已 done、经合格裁决 superseded／retired，或完成真实转移 |"
+            },
+            {
+              "line": 28,
+              "text": "把“A done”直接写成“S done”会混淆批次完成门与阶段完成门。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-8.json",
+      "assertions": [
+        {
+          "text": "识别 F1/F2 构成依赖与触发环",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "虽然“事件型复议触发点”字段有值，但 `F1 done` 与 `F2 done` 互相等待，形成："
+            },
+            {
+              "line": 8,
+              "text": "F1 ──依赖/触发──> F2"
+            },
+            {
+              "line": 12,
+              "text": "`{F1, F2}` 是无可独立启动入口的环形强连通分量。事件触发点必须在组合图中可达；仅有事件格式、但事件本身依赖同一个环，不构成有效触发。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把字段形式完整当作合格",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "这两个记录**不合格**，不能继续保持 `blocked`。"
+            },
+            {
+              "line": 12,
+              "text": "`{F1, F2}` 是无可独立启动入口的环形强连通分量。事件触发点必须在组合图中可达；仅有事件格式、但事件本身依赖同一个环，不构成有效触发。"
+            }
+          ]
+        },
+        {
+          "text": "要求构建依赖图并检查环或事件可达性",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 50,
+              "text": "## 必须运行的依赖检查"
+            },
+            {
+              "line": 54,
+              "text": "1. 将事项、依赖、事件触发点、独立外部事件和可启动根项建图。"
+            },
+            {
+              "line": 60,
+              "text": "   - 没有外部入口或无法到达可启动根项的封闭分量。"
+            },
+            {
+              "line": 65,
+              "text": "5. 检查修复后的图无环，并且每个非终态分量都能到达独立事件或可启动根项。"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 43,
+              "text": "- **已交付当前批：** `done`"
+            },
+            {
+              "line": 45,
+              "text": "- **父项目：** **部分完成、保持开放，不得关闭**"
+            },
+            {
+              "line": 48,
+              "text": "F1、F2 不阻断当前批，只证明当前批可以完成；它们仍然正确且未达到 `done`、有证据的 `superseded/retired` 或真实 `transferred`，因此父项关闭条件未满足。"
+            }
+          ]
+        },
+        {
+          "text": "通过外部可达事件、拆依赖或独立裁决解环而非盲目实现",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 73,
+              "text": "## 不提前实现的修复方式"
+            },
+            {
+              "line": 75,
+              "text": "不能只给两项再增加一个外部事件而保留互相 `done` 依赖；环仍然存在。必须依据证据选择以下一种结构修复："
+            },
+            {
+              "line": 77,
+              "text": "### 方案一：裁决为单向依赖"
+            },
+            {
+              "line": 92,
+              "text": "### 方案二：合并为一个原子后续批"
+            },
+            {
+              "line": 99,
+              "text": "- B 必须连接真实外部事件或成为可启动根项；"
+            },
+            {
+              "line": 104,
+              "text": "### 方案三：依据证据改接真实外部依赖"
+            },
+            {
+              "line": 108,
+              "text": "在语义裁决完成前，唯一合规动作是：**将两项改为 `needs adjudication`、立即送交合格裁决者，并保持父项目开放；不能继续以 `blocked` 名义等待。**"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-9.json",
+      "assertions": [
+        {
+          "text": "拒绝以 pending 或 ready 绕过可达性检查",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 10,
+              "text": "这是一个无外部入口的封闭强连通分量。改变状态标签不会改变依赖图，也不能绕过可达性检查。"
+            },
+            {
+              "line": 42,
+              "text": "检查适用于**全部非终态事项**，不是只检查 `blocked`："
+            },
+            {
+              "line": 51,
+              "text": "检查对象是所有非终态事项构成的**依赖／触发组合图**。任一事项位于环、自依赖或没有外部入口的封闭分量中，都必须转为 `needs adjudication`。`done`、有证据的 `superseded`／`retired` 以及完成真实转移的 `transferred` 才属于终态。"
+            },
+            {
+              "line": 64,
+              "text": "F1 不合法：其问题不是普通信息或排期待定，而是已知依赖环。"
+            },
+            {
+              "line": 75,
+              "text": "F2 不合法：`F2-DEP-F1-DONE` 明确未闭合，因此不可能是 `ready`。"
+            },
+            {
+              "line": 87,
+              "text": "**结论：**“现在没有 blocked，所以合规”的说法无效。状态必须由条件集合和依赖图派生；不能用 `pending` 或 `ready` 标签规避图级可达性检查。"
+            }
+          ]
+        },
+        {
+          "text": "可达性检查覆盖全部非终态事项而非只覆盖 blocked",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 40,
+              "text": "## 可达性检查的适用范围"
+            },
+            {
+              "line": 42,
+              "text": "检查适用于**全部非终态事项**，不是只检查 `blocked`："
+            },
+            {
+              "line": 51,
+              "text": "检查对象是所有非终态事项构成的**依赖／触发组合图**。任一事项位于环、自依赖或没有外部入口的封闭分量中，都必须转为 `needs adjudication`。`done`、有证据的 `superseded`／`retired` 以及完成真实转移的 `transferred` 才属于终态。"
+            }
+          ]
+        },
+        {
+          "text": "ready 只允许依赖全部满足的事项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 66,
+              "text": "### `ready`"
+            },
+            {
+              "line": 70,
+              "text": "- 所有依赖条件均已 closed；"
+            },
+            {
+              "line": 73,
+              "text": "- 事项现在即可启动。"
+            },
+            {
+              "line": 75,
+              "text": "F2 不合法：`F2-DEP-F1-DONE` 明确未闭合，因此不可能是 `ready`。"
+            }
+          ]
+        },
+        {
+          "text": "pending 必须绑定信息补齐或分类裁决的可达触发",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 55,
+              "text": "### `pending`"
+            },
+            {
+              "line": 59,
+              "text": "- 尚未闭合的是分类、信息或排期裁决；"
+            },
+            {
+              "line": 61,
+              "text": "- 每个缺口都有补齐责任人和可达的事件型触发点；"
+            },
+            {
+              "line": 62,
+              "text": "- 不借此掩盖已知的未满足依赖。"
+            }
+          ]
+        },
+        {
+          "text": "F1/F2 进入需裁决且父项目保持部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 14,
+              "text": "| F1 | `needs adjudication` | 依赖结构与 F2 成环，没有可启动根项 |"
+            },
+            {
+              "line": 17,
+              "text": "| 父项目 | **部分完成、保持开放** | 当前批完成，但两个长期正确后续项均未达到授权终态；不得标为完成 |"
+            },
+            {
+              "line": 31,
+              "text": "立即复议原因已经发生：**依赖图检测到无外部入口的环**。因此两项不能继续等待，也不能开工；必须由用户或未卷入且有治理权限的一方依据证据选择以下方案之一："
+            },
+            {
+              "line": 36,
+              "text": "4. 进行满足完整原子条件的真实转移。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-fable-r2-10.json",
+      "assertions": [
+        {
+          "text": "发布前 A 为 ready to deliver 而非 done，且 DELIVERY 是唯一未闭合条件",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 27,
+              "text": "| A | **ready to deliver** | `{A-BND, A-INV, A-DEP, A-IMP, A-ACC}` | `{A-DEL}` |"
+            },
+            {
+              "line": 31,
+              "text": "以上每个 ID 只出现在一侧。特别是："
+            },
+            {
+              "line": 33,
+              "text": "- `A-DEL` 没有证据，因此只能是 open；A 不能先标 `done`。"
+            }
+          ]
+        },
+        {
+          "text": "交付动作在 ready to deliver 执行，交付证据落盘后关闭 DELIVERY ID 并转 done",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 39,
+              "text": "执行 A 的交付："
+            },
+            {
+              "line": 43,
+              "text": "3. 证据落盘后，原子地将 `A-DEL` 从 `open_conditions` 移入 `closed_conditions`。"
+            },
+            {
+              "line": 44,
+              "text": "4. 再由条件集合派生 A 的 `done` 状态。"
+            },
+            {
+              "line": 53,
+              "text": "A:"
+            },
+            {
+              "line": 57,
+              "text": "状态：done"
+            }
+          ]
+        },
+        {
+          "text": "A／S／P 记录都明确包含 closed_conditions 与 open_conditions，状态由集合派生",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 25,
+              "text": "| 对象 | 状态 | `closed_conditions` | `open_conditions` |"
+            },
+            {
+              "line": 27,
+              "text": "| A | **ready to deliver** | `{A-BND, A-INV, A-DEP, A-IMP, A-ACC}` | `{A-DEL}` |"
+            },
+            {
+              "line": 28,
+              "text": "| S | **进行中，未完成** | `{S-SCOPE, S-B-DONE}` | `{S-A-DONE, S-INT, S-ACC}` |"
+            },
+            {
+              "line": 29,
+              "text": "| P | **进行中，未完成** | `{P-SCOPE}` | `{P-S-DONE, P-INT, P-ACC}` |"
+            },
+            {
+              "line": 31,
+              "text": "以上每个 ID 只出现在一侧。特别是："
+            }
+          ]
+        },
+        {
+          "text": "即使没有 follow-up，S 未完成或父项目级验收未闭合时 P 也不能 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 29,
+              "text": "| P | **进行中，未完成** | `{P-SCOPE}` | `{P-S-DONE, P-INT, P-ACC}` |"
+            },
+            {
+              "line": 34,
+              "text": "- 没有 follow-up 已体现在 `S-SCOPE`、`P-SCOPE` 闭合，但不能据此关闭 `S-A-DONE`、`P-S-DONE` 或集成／验收条件。"
+            },
+            {
+              "line": 46,
+              "text": "不得先改状态再补发布，也不得先把 P 标为 `Completed`。"
+            }
+          ]
+        },
+        {
+          "text": "同一条件 ID 不会同时出现在 closed 与 open，也不会在状态理由中被同时声称闭合和未闭合",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 31,
+              "text": "以上每个 ID 只出现在一侧。特别是："
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-sonnet-core-1.json",
+      "assertions": [
+        {
+          "text": "今天交付已自洽的当前批，而不是等待 7 个非阻断项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "“绝不丢正确事项”是对的，但“因此全部塞进当前批、三周后一起交付”是错误处置：这会无故阻断一个已自洽、可独立产生价值且验收通过的批次，也会在 90 分钟发布窗口内引入新的合并与回归风险。"
+            },
+            {
+              "line": 18,
+              "text": "| **批次 A：核心重构（9 个语义提交）** | **ready to deliver** | **今天交付** | 边界、实现、目标回归、独立验收、数据完整性与合并安全均已闭合；仅剩交付条件 | 停止向 A 加入新功能；集成、发布、记录发布证据 | 发布完成并产出部署/版本/监控证据 |"
+            },
+            {
+              "line": 83,
+              "text": "**结论：今天交付批次 A，不等待 7 项后续工作。**"
+            }
+          ]
+        },
+        {
+          "text": "后续项字段包含依赖、事件型复议触发点、验收、证伪和决策权",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 112,
+              "text": "F-01 至 F-07 每一项都必须在现有状态真相源中有独立记录，至少包含以下完整字段："
+            },
+            {
+              "line": 118,
+              "text": "- 依赖："
+            },
+            {
+              "line": 121,
+              "text": "- 证伪方式："
+            },
+            {
+              "line": 126,
+              "text": "- 决策权：谁可继续排期或重新裁决"
+            }
+          ]
+        },
+        {
+          "text": "父项目在 7 个正确事项仍未经裁决时不标完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 104,
+              "text": "   - 父项目：**部分完成，仍进行中**。"
+            },
+            {
+              "line": 160,
+              "text": "**今天不能标记父项目完成。** 今天最多是："
+            },
+            {
+              "line": 172,
+              "text": "   目前 F-01～F-07 都仍是正确事项，因此这组条件未闭合。"
+            },
+            {
+              "line": 179,
+              "text": "   F-01～F-07 中每项必须是以下之一："
+            }
+          ]
+        },
+        {
+          "text": "不把单一日历日期当作唯一复议触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 140,
+              "text": "不能只写“等供应商更新”或“下月评估”。供应商 API 的实际发布/可用是事件；日历提醒最多是辅助，不是状态解除依据。"
+            },
+            {
+              "line": 150,
+              "text": "- resolution_trigger：批次 A 发布证据落盘"
+            },
+            {
+              "line": 154,
+              "text": "尤其是“事件型复议触发点”不能裸写 `TBD`。对 F-04～F-07，当前已知可用的强制触发点就是：**批次 A 发布证据落盘**。届时必须补齐其依赖、验收与证伪方式，而不是仅把日期往后改。"
+            }
+          ]
+        },
+        {
+          "text": "不静默删除或批量关闭 7 个事项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 10,
+              "text": "- **原则：** 不删除、不改成 “Not Planned”、不靠“下批再说”丢失；全部进入现有项目状态真相源的后续批次记录。"
+            },
+            {
+              "line": 90,
+              "text": "2. **立即在现有项目计划 / backlog / 状态真相源登记 F-01～F-07**  "
+            },
+            {
+              "line": 91,
+              "text": "   不新建一个脱离现有项目管理的平行 todo 文档。"
+            },
+            {
+              "line": 184,
+              "text": "仅仅因为“核心上线”“团队疲惫”“已经拖了几周”或“想清空看板”，都不能将这 7 项改成 `retired`、`superseded` 或“超出范围”。"
+            },
+            {
+              "line": 186,
+              "text": "未来若申请关闭父项目，F-01～F-07 必须逐项枚举并裁决；事项作者或本次关闭执行者不能自行把自己提出的后续项消项。没有用户或未卷入且具备治理资格的裁决者作出有证据的终局决定，父项目保持开放。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-sonnet-core-2.json",
+      "assertions": [
+        {
+          "text": "拒绝把原第一阶段标完成，且有重复扣款风险的路径不得投入真实生产；仅允许物理隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**当前第一阶段批次不可交付，也不得标记完成。**  "
+            },
+            {
+              "line": 20,
+              "text": "| 归属 | **当前第一阶段批次 blocker** |"
+            },
+            {
+              "line": 27,
+              "text": "若今晚必须演示，唯一可接受的替代是明确标注为**非交付性的隔离演示**，例如使用完全隔离的模拟支付账本／sandbox、禁用真实扣款和崩溃恢复入口，并明确说明“第一阶段尚未验收、不可上线”。这不构成第一阶段完成，也不能用演示结果替代验收。"
+            },
+            {
+              "line": 125,
+              "text": "## 什么情况下拆到第二阶段才合法"
+            },
+            {
+              "line": 136,
+              "text": "   不是“通常不会走到”，而是通过功能开关、权限、网络隔离、支付凭据隔离、部署配置和测试证明，生产第一阶段没有任何路径能调用扣款或恢复调用。"
+            },
+            {
+              "line": 142,
+              "text": "   第二阶段必须明确记录目标、为何仍正确、依赖、验收、证伪、正控、责任人、父项入口和事件型复议触发点；并且第一阶段只有在其自身全部条件闭合后才能交付。"
+            },
+            {
+              "line": 144,
+              "text": "本案描述为“第一阶段可能重复扣款”，表明第一阶段已触及真实支付语义，且崩溃重放是其故障模型的一部分。因此不满足合法拆批条件。正确结论是："
+            }
+          ]
+        },
+        {
+          "text": "把重复扣款归为当前批 blocker",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 20,
+              "text": "| 归属 | **当前第一阶段批次 blocker** |"
+            },
+            {
+              "line": 21,
+              "text": "| 原因 | 它破坏第一阶段已处理真实支付扣款所必须满足的幂等性、资金完整性和恢复安全性 |"
+            },
+            {
+              "line": 23,
+              "text": "| 不可接受动作 | 将其仅登记为第二阶段 backlog，同时把第一阶段标完成 |"
+            }
+          ]
+        },
+        {
+          "text": "验收覆盖崩溃重放与最多一次扣款不变量",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 37,
+              "text": "1. **唯一扣款**"
+            },
+            {
+              "line": 41,
+              "text": "   - 在扣款请求前、扣款请求中、外部支付方已成功但本地尚未落库、状态落库后确认前等每个持久化边界崩溃，恢复后都不得二次扣款。"
+            },
+            {
+              "line": 57,
+              "text": "交付前至少应有自动化或可重复的集成验证，覆盖："
+            },
+            {
+              "line": 65,
+              "text": "- 对账结果：每个支付意图对应不超过一笔成功扣款，金额、币种、订单和渠道交易号一致；"
+            }
+          ]
+        },
+        {
+          "text": "证伪包含目标故障注入",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 83,
+              "text": "### 正控：证明测试不是“假绿”"
+            },
+            {
+              "line": 85,
+              "text": "应故意注入一个目标缺陷，例如："
+            },
+            {
+              "line": 93,
+              "text": "- 崩溃—重放测试必须稳定失败；"
+            },
+            {
+              "line": 97,
+              "text": "如果故意破坏幂等性后测试仍是绿的，则测试没有足够鉴别力，不能作为交付证据。"
+            }
+          ]
+        },
+        {
+          "text": "允许只交付技术上隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 125,
+              "text": "## 什么情况下拆到第二阶段才合法"
+            },
+            {
+              "line": 129,
+              "text": "1. **第一阶段的冻结边界从一开始就不承诺真实资金扣款或其恢复安全。**  "
+            },
+            {
+              "line": 133,
+              "text": "   它必须可以独立验收，不依赖“第二阶段将来补上幂等性”才安全。"
+            },
+            {
+              "line": 135,
+              "text": "3. **重复扣款路径对第一阶段不可达。**  "
+            },
+            {
+              "line": 142,
+              "text": "   第二阶段必须明确记录目标、为何仍正确、依赖、验收、证伪、正控、责任人、父项入口和事件型复议触发点；并且第一阶段只有在其自身全部条件闭合后才能交付。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-sonnet-r2-5.json",
+      "assertions": [
+        {
+          "text": "拒绝仅靠状态页文字认定 transferred",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "| **Alpha** | **保持开放**；如其既有核心批已交付，只能称“当前批已完成／Alpha 部分完成” | **不得关闭。** F 仍是长期正确事项，既未完成、未被有证据地 `superseded`／`retired`，也没有完成真实转移。Alpha 状态页上的单行文字不改变责任归属。 |"
+            },
+            {
+              "line": 9,
+              "text": "因此，协调者“只要另一个父项存在就满足转移门”的说法不成立。仅创建 Beta 或在 Alpha 写链接，是**单方面声明**，不是责任转移。"
+            }
+          ]
+        },
+        {
+          "text": "Alpha 保持未完成或部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "| **Alpha** | **保持开放**；如其既有核心批已交付，只能称“当前批已完成／Alpha 部分完成” | **不得关闭。** F 仍是长期正确事项，既未完成、未被有证据地 `superseded`／`retired`，也没有完成真实转移。Alpha 状态页上的单行文字不改变责任归属。 |"
+            },
+            {
+              "line": 57,
+              "text": "> **Alpha：进行中，不可关闭。**  "
+            }
+          ]
+        },
+        {
+          "text": "Beta 必须存在且处于活动状态并有具名 owner",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "| **Beta** | **不是 F 的有效接收父项**；其自身项目状态无法仅凭“已新建”推断为 active | Beta 没有活动状态、具名 owner 和状态真相源中的接收记录，因此不满足接收方资格。不能将其视为 F 已转入的项目，也不能以它的存在支持 Alpha 关闭。 |"
+            },
+            {
+              "line": 15,
+              "text": "1. **接收父项存在且处于活动状态**"
+            },
+            {
+              "line": 17,
+              "text": "   - Beta 必须在其状态真相源中明确处于 active／进行中，而非仅有占位页面或名称。"
+            },
+            {
+              "line": 19,
+              "text": "2. **Beta 有具名 owner**"
+            },
+            {
+              "line": 21,
+              "text": "   - 不能是“待分配”“协调者团队”或无责任主体的项目壳。"
+            }
+          ]
+        },
+        {
+          "text": "转移必须携带目标、验收、依赖、触发点、状态和关闭责任",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 23,
+              "text": "3. **Beta 的状态真相源完整接收 F**"
+            },
+            {
+              "line": 24,
+              "text": "   - 必须以**同一 F ID**记录，而不只是复制一个标题；"
+            },
+            {
+              "line": 26,
+              "text": "     - F 的目标；"
+            },
+            {
+              "line": 28,
+              "text": "     - 验收判据；"
+            },
+            {
+              "line": 29,
+              "text": "     - 依赖；"
+            },
+            {
+              "line": 30,
+              "text": "     - 事件型复议触发点；"
+            },
+            {
+              "line": 31,
+              "text": "     - 当前状态；"
+            },
+            {
+              "line": 32,
+              "text": "     - 关闭责任；"
+            },
+            {
+              "line": 33,
+              "text": "     - 必要时的证伪方式、正控、closed/open conditions 与决策权。"
+            }
+          ]
+        },
+        {
+          "text": "检查父项转移链无循环且不能继续空转",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 40,
+              "text": "5. **转移关系无环**"
+            },
+            {
+              "line": 43,
+              "text": "   - Beta 必须成为可追溯责任链上的有效接收点。"
+            },
+            {
+              "line": 45,
+              "text": "6. **接收后的条件与状态可执行**"
+            },
+            {
+              "line": 48,
+              "text": "   - 若依赖或归属仍没有可执行答案，F 应在 Beta（或转移前在 Alpha）标为 `needs adjudication`，而不是假装已转移。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-sonnet-r2-8.json",
+      "assertions": [
+        {
+          "text": "识别 F1/F2 构成依赖与触发环",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 2,
+              "text": "虽然模板字段都填写了，但它们的依赖／触发组合图存在无外部入口的闭环："
+            },
+            {
+              "line": 5,
+              "text": "F1 依赖／触发 → F2 done"
+            },
+            {
+              "line": 9,
+              "text": "`F1 done` 只有在 F1 完成后发生，`F2 done` 只有在 F2 完成后发生；两者都无法作为先于自身发生、可独立观测的启动事件。因此这不是可等待的真实外部阻塞，而是循环依赖。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把字段形式完整当作合格",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 2,
+              "text": "虽然模板字段都填写了，但它们的依赖／触发组合图存在无外部入口的闭环："
+            },
+            {
+              "line": 11,
+              "text": "“事件型触发点已填写”只满足字段表面完整，不满足触发点必须能够驱动复议和状态推进的要求。"
+            }
+          ]
+        },
+        {
+          "text": "要求构建依赖图并检查环或事件可达性",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 41,
+              "text": "## 必须运行的依赖检查"
+            },
+            {
+              "line": 43,
+              "text": "应对**所有非终态后续项**运行一次依赖与触发图检查，而不只检查 F1、F2："
+            },
+            {
+              "line": 61,
+              "text": "3. **检测图结构**"
+            },
+            {
+              "line": 65,
+              "text": "   - F1/F2 所在分量是大小为 2 的循环分量，且无外部入口，故必须进入 `needs adjudication`。"
+            },
+            {
+              "line": 67,
+              "text": "4. **检查触发点有效性**"
+            },
+            {
+              "line": 70,
+              "text": "   - 日历提醒可以辅助，但不能替代事件入口。"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 82,
+              "text": "已交付的当前批仍然是 **done**，不受这两个不阻断后续项影响。"
+            },
+            {
+              "line": 84,
+              "text": "但父项不能关闭。应表述为："
+            },
+            {
+              "line": 89,
+              "text": "父项目：部分完成，保持开放"
+            },
+            {
+              "line": 90,
+              "text": "F1、F2：needs adjudication"
+            }
+          ]
+        },
+        {
+          "text": "通过外部可达事件、拆依赖或独立裁决解环而非盲目实现",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 102,
+              "text": "## 不提前实现任一项的修复方式"
+            },
+            {
+              "line": 104,
+              "text": "修复目标不是强行选一个先做，而是恢复一个**真实、可执行且有外部入口**的依赖结构。"
+            },
+            {
+              "line": 110,
+              "text": "- 不启动 F1 或 F2 的实现；"
+            },
+            {
+              "line": 119,
+              "text": "由用户或未卷入方裁决下列事实，而不是由协调者用状态标签替代裁决："
+            },
+            {
+              "line": 133,
+              "text": "#### A. 发现真实外部前置条件"
+            },
+            {
+              "line": 146,
+              "text": "#### B. 发现其中一个依赖并非真实性前置"
+            },
+            {
+              "line": 157,
+              "text": "#### C. 两项确实不可分割"
+            },
+            {
+              "line": 165,
+              "text": "- `F12` 若仍缺真实前置条件，应按真实条件成为 `pending` 或 `blocked`；若条件满足但尚未开始，则 `ready`，并不要求现在开工。"
+            },
+            {
+              "line": 169,
+              "text": "维持 `needs adjudication`，直到合格裁决者作出记录化决定。不能以持续等待代替决定。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-haiku-core-2.json",
+      "assertions": [
+        {
+          "text": "拒绝把原第一阶段标完成，且有重复扣款风险的路径不得投入真实生产；仅允许物理隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**当前批不可交付，第一阶段不能标记完成。**"
+            },
+            {
+              "line": 23,
+              "text": "这个发现属于**当前批 blocker**，不能放入第二阶段 backlog。"
+            },
+            {
+              "line": 108,
+              "text": "**当前事实下不能合法拆成“第一阶段完成、重复扣款进入第二阶段”。** 这只是改标签，不能改变缺陷对当前批不变量的影响。"
+            },
+            {
+              "line": 112,
+              "text": "1. **在交付前明确重划边界**  "
+            },
+            {
+              "line": 116,
+              "text": "   子批有自己的价值、边界、不变量、实施、验收和交付门，内部没有已知的资金安全反例。"
+            },
+            {
+              "line": 119,
+              "text": "   通过 feature flag、权限、沙箱支付提供方、不可达路由或其他可验证控制，确保有重复扣款风险的重放路径不会接触真实资金。仅在文档中声明“第二阶段再修”不算隔离。"
+            },
+            {
+              "line": 122,
+              "text": "   董事会可以演示，但必须标注为非生产演示／部分交付／受限子批；不能用主流程演示结果作为第一阶段完成证据。"
+            }
+          ]
+        },
+        {
+          "text": "把重复扣款归为当前批 blocker",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 23,
+              "text": "这个发现属于**当前批 blocker**，不能放入第二阶段 backlog。"
+            },
+            {
+              "line": 31,
+              "text": "| 崩溃后的重放不产生重复经济效果 | **open：blocker** |"
+            },
+            {
+              "line": 36,
+              "text": "只要“同一笔支付意图在崩溃重放后最多产生一次扣款”仍未证明，当前批就没有达到交付门。"
+            }
+          ]
+        },
+        {
+          "text": "验收覆盖崩溃重放与最多一次扣款不变量",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 42,
+              "text": "第一阶段的验收边界不能只包括主流程，至少应包括同一支付意图在以下情况下的经济效果："
+            },
+            {
+              "line": 48,
+              "text": "5. 重启后事件重放；"
+            },
+            {
+              "line": 54,
+              "text": "必须证明："
+            },
+            {
+              "line": 56,
+              "text": "- 同一支付意图最多产生一次外部扣款；"
+            }
+          ]
+        },
+        {
+          "text": "证伪包含目标故障注入",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 78,
+              "text": "### 目标缺陷正控"
+            },
+            {
+              "line": 80,
+              "text": "保留一个已知会触发重复扣款的测试样本："
+            },
+            {
+              "line": 85,
+              "text": "4. 修复前该测试必须能观察到重复扣款，证明测试能鉴别目标缺陷；"
+            },
+            {
+              "line": 86,
+              "text": "5. 修复后该测试必须变绿。"
+            }
+          ]
+        },
+        {
+          "text": "允许只交付技术上隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 110,
+              "text": "拆批只有在以下条件全部满足时才合法："
+            },
+            {
+              "line": 113,
+              "text": "   明确声明本次交付只是一个安全的子批，例如仅交付不接触真实扣款的迁移准备、只读验证或被强隔离的演示能力；不能继续称为已经完成原定义的第一阶段。"
+            },
+            {
+              "line": 116,
+              "text": "   子批有自己的价值、边界、不变量、实施、验收和交付门，内部没有已知的资金安全反例。"
+            },
+            {
+              "line": 119,
+              "text": "   通过 feature flag、权限、沙箱支付提供方、不可达路由或其他可验证控制，确保有重复扣款风险的重放路径不会接触真实资金。仅在文档中声明“第二阶段再修”不算隔离。"
+            },
+            {
+              "line": 122,
+              "text": "   董事会可以演示，但必须标注为非生产演示／部分交付／受限子批；不能用主流程演示结果作为第一阶段完成证据。"
+            },
+            {
+              "line": 125,
+              "text": "   至少记录目标、持续正确的原因、与当前安全子批不阻断的具体依据、依赖、事件型复议触发点、验收判据、证伪方式、正确样本和目标缺陷正控、关闭条件、责任人及状态。触发点应是可观察事件，例如“修复候选通过崩溃注入门并准备重新启用真实扣款路径”，不能只写“下个迭代”或某个日期。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-haiku-r2-5.json",
+      "assertions": [
+        {
+          "text": "拒绝仅靠状态页文字认定 transferred",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "- **F：保持 Alpha 下的未完成状态，不能标记为 `transferred`。**  "
+            },
+            {
+              "line": 4,
+              "text": "  “F transferred to Beta”只是 Alpha 单方面声明，不构成真实转移。F 的原有状态应继续由其 `open_conditions` 派生；在没有更多证据时，至少应标为非终态的 `pending`，并记录转移接收缺失这一开放条件。不得标记为 `done`、`superseded`、`retired` 或 `transferred`。"
+            }
+          ]
+        },
+        {
+          "text": "Alpha 保持未完成或部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 9,
+              "text": "- **Alpha：不能关闭；应为“部分完成／仍开放”。**  "
+            },
+            {
+              "line": 10,
+              "text": "  Alpha 中可能已经完成的批次可以保持 `done`，但 F 仍是长期正确且未完成的后续项。由于 F 没有完成、授权废弃或真实转移，Alpha 不能标记为 `done` 或 `closed`。若关闭申请本身仍在推进，至少应标为 `needs adjudication`，等待用户或未卷入方逐项裁决；沉默或单方面改标签不算裁决。"
+            }
+          ]
+        },
+        {
+          "text": "Beta 必须存在且处于活动状态并有具名 owner",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "- **Beta：不能视为合法的活动接收父项目。**  "
+            },
+            {
+              "line": 7,
+              "text": "  它虽然被创建，但没有具名 owner、活动状态和接收记录，因此不满足接收方资格。其状态应保持为未完成的 `pending`（若转移归属或接收责任无法执行确定，也可标为 `needs adjudication`），不能作为 Alpha 关闭依据。"
+            },
+            {
+              "line": 16,
+              "text": "1. **接收父项目存在且处于活动状态**：Beta 必须有可验证的 active 状态。"
+            },
+            {
+              "line": 17,
+              "text": "2. **接收方有具名 owner**：明确由谁负责继续排期、实施、验收和关闭。"
+            }
+          ]
+        },
+        {
+          "text": "转移必须携带目标、验收、依赖、触发点、状态和关闭责任",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 18,
+              "text": "3. **Beta 在自己的状态真相源中接收同一 F ID**，而不是只复制标题或写一条模糊链接。"
+            },
+            {
+              "line": 19,
+              "text": "4. Beta 的接收记录必须完整包含："
+            },
+            {
+              "line": 20,
+              "text": "   - F 的目标；"
+            },
+            {
+              "line": 21,
+              "text": "   - 验收判据；"
+            },
+            {
+              "line": 22,
+              "text": "   - 依赖；"
+            },
+            {
+              "line": 23,
+              "text": "   - 事件型复议触发点；"
+            },
+            {
+              "line": 24,
+              "text": "   - 当前状态；"
+            },
+            {
+              "line": 25,
+              "text": "   - 关闭责任。"
+            }
+          ]
+        },
+        {
+          "text": "检查父项转移链无循环且不能继续空转",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 26,
+              "text": "5. **源、目标双向链接**："
+            },
+            {
+              "line": 29,
+              "text": "6. **转移无自环、无父项目循环**：依赖／转移图不能形成环，也不能回指自身。"
+            },
+            {
+              "line": 30,
+              "text": "7. **原子成立**：上述条件全部落盘并可核验后，Alpha 才能将 F 的状态改为 `transferred`；不能先改状态，再事后补接收信息。"
+            },
+            {
+              "line": 31,
+              "text": "8. **转移关系可追溯**：源项和目标项使用同一稳定 ID，并能追踪责任、验收和关闭归属。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "final-haiku-r2-8.json",
+      "assertions": [
+        {
+          "text": "识别 F1/F2 构成依赖与触发环",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 8,
+              "text": "原因不是模板缺字段，而是依赖／触发图存在无外部入口的闭环："
+            },
+            {
+              "line": 11,
+              "text": "F1 --依赖/触发--> F2 done"
+            },
+            {
+              "line": 15,
+              "text": "`{F1, F2}` 是一个强连通闭合分量："
+            },
+            {
+              "line": 21,
+              "text": "- 因此两者都没有可达的外部入口。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把字段形式完整当作合格",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 23,
+              "text": "“事件型触发已填写”只满足字段形式，不能满足事件触发必须可观察、可发生、可到达的语义要求。不能继续无限等待。"
+            }
+          ]
+        },
+        {
+          "text": "要求构建依赖图并检查环或事件可达性",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 47,
+              "text": "## 必须运行的依赖检查"
+            },
+            {
+              "line": 49,
+              "text": "应对状态真相源中的**全部非终态事项**运行，而不只检查 F1/F2 的字段是否非空。"
+            },
+            {
+              "line": 53,
+              "text": "对依赖和事件触发统一建图，至少检查："
+            },
+            {
+              "line": 59,
+              "text": "- 是否存在没有外部入口的封闭强连通分量；"
+            },
+            {
+              "line": 60,
+              "text": "- 每个 `blocked` 节点是否能追溯到独立可发生的外部事件或根项；"
+            },
+            {
+              "line": 61,
+              "text": "- 事件触发是否是可观察事件，而不是仅仅重复一个不可达的终态声明。"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 155,
+              "text": "## 父项状态"
+            },
+            {
+              "line": 160,
+              "text": "当前批：done，已交付"
+            },
+            {
+              "line": 163,
+              "text": "父项目：部分完成，保持开放"
+            }
+          ]
+        },
+        {
+          "text": "通过外部可达事件、拆依赖或独立裁决解环而非盲目实现",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 104,
+              "text": "## 不提前实现的修复方式"
+            },
+            {
+              "line": 106,
+              "text": "先修复**裁决和依赖拓扑**，不要因为循环就提前编写 F1 或 F2 的实现。"
+            },
+            {
+              "line": 108,
+              "text": "合格的修复路径只能由用户或未卷入的具名治理裁决者根据证据选择："
+            },
+            {
+              "line": 110,
+              "text": "### 路径 A：确认只有 F2 依赖 F1"
+            },
+            {
+              "line": 130,
+              "text": "### 路径 C：两者实际上依赖同一个外部前置"
+            },
+            {
+              "line": 139,
+              "text": "例如依赖另一批合并、供应商发布、数据达到阈值等。这个 E 必须是真实事件并有自己的记录，不能凭空添加一个“准备完成”的占位事项来假装打破循环。"
+            },
+            {
+              "line": 151,
+              "text": "### 路径 E：两者确实需要共同交付"
+            },
+            {
+              "line": 153,
+              "text": "若证据表明两者不能按先后拆开，则需要裁决一个具有明确边界、共同验收条件和真实外部入口的后续批／阶段安排。但这只是重新定义交付边界和依赖，不代表现在可以实现任一项，也不代表可以把互相依赖继续标作 `blocked`。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "current-opus-core-2.json",
+      "assertions": [
+        {
+          "text": "拒绝把原第一阶段标完成，且有重复扣款风险的路径不得投入真实生产；仅允许物理隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "**当前批不可交付，第一阶段不能标记完成。**"
+            },
+            {
+              "line": 5,
+              "text": "“进程崩溃后重放可能重复扣款”直接违反支付系统的 correctness 与资金完整性不变量，属于**当前批 blocker**，不能降级到第二阶段 backlog。修复预计耗时、董事会演示效果以及主流程能否通过，都不改变分类。"
+            },
+            {
+              "line": 7,
+              "text": "董事会可以进行明确标注为**非生产、非验收**的沙箱演示，但演示成功不能作为第一阶段完成或可发布的证据。"
+            },
+            {
+              "line": 56,
+              "text": "只有当拆出的当前批同时满足以下条件时才合法："
+            },
+            {
+              "line": 60,
+              "text": "3. 被排除能力在产品和运行时边界上确实不可达，例如当前批完全不执行真实扣款，重放支付路径被硬性禁用并有测试证明，而不是仅靠“演示时别触发”。"
+            },
+            {
+              "line": 61,
+              "text": "4. 当前批拥有独立验收门并全部通过。"
+            },
+            {
+              "line": 63,
+              "text": "6. 上层状态如实保留：可以写“演示批完成/第一阶段仍进行中/迁移项目部分完成”，不能追溯性缩窄第一阶段范围后宣布完成。"
+            }
+          ]
+        },
+        {
+          "text": "把重复扣款归为当前批 blocker",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "“进程崩溃后重放可能重复扣款”直接违反支付系统的 correctness 与资金完整性不变量，属于**当前批 blocker**，不能降级到第二阶段 backlog。修复预计耗时、董事会演示效果以及主流程能否通过，都不改变分类。"
+            },
+            {
+              "line": 16,
+              "text": "| 当前发现 | 已知存在重复扣款反例，故当前批契约未闭合。 |"
+            },
+            {
+              "line": 17,
+              "text": "| 状态 | `in progress`；修复和验收完成前不得进入 `ready to deliver`，更不得标记 `done`。 |"
+            }
+          ]
+        },
+        {
+          "text": "验收覆盖崩溃重放与最多一次扣款不变量",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 15,
+              "text": "| 不变量 | 同一支付意图无论被重放多少次，最多产生一次真实扣款；内部账本、支付状态和支付机构结果一致；崩溃恢复不能丢失或重复资金动作。 |"
+            },
+            {
+              "line": 23,
+              "text": "1. 在“发起扣款前、支付机构已受理但本地未落盘、落盘后未确认、确认发送前后”等关键点注入进程崩溃。"
+            },
+            {
+              "line": 24,
+              "text": "2. 使用同一支付意图、业务订单号或幂等键执行一次及多次重放。"
+            },
+            {
+              "line": 25,
+              "text": "3. 串行和并发重放均只能产生："
+            },
+            {
+              "line": 26,
+              "text": "   - 一次外部扣款/捕获；"
+            },
+            {
+              "line": 34,
+              "text": "只有修复、上述验收和交付准备全部闭合后，当前批才能标记 `ready to deliver`；实际发布及证据落盘后才能标记 `done`。"
+            }
+          ]
+        },
+        {
+          "text": "证伪包含目标故障注入",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 48,
+              "text": "**目标缺陷正控：**"
+            },
+            {
+              "line": 50,
+              "text": "- 在测试环境临时移除或绕过幂等/去重保护，原缺陷场景必须稳定使门变红，证明测试确实能识别重复扣款。"
+            },
+            {
+              "line": 51,
+              "text": "- 恢复正确实现后，同一支付的多次重放应保持单次扣款。"
+            }
+          ]
+        },
+        {
+          "text": "允许只交付技术上隔离且独立验收的安全子批",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 56,
+              "text": "只有当拆出的当前批同时满足以下条件时才合法："
+            },
+            {
+              "line": 58,
+              "text": "1. 它具有独立真实价值，而不只是“今晚能演示”。"
+            },
+            {
+              "line": 60,
+              "text": "3. 被排除能力在产品和运行时边界上确实不可达，例如当前批完全不执行真实扣款，重放支付路径被硬性禁用并有测试证明，而不是仅靠“演示时别触发”。"
+            },
+            {
+              "line": 61,
+              "text": "4. 当前批拥有独立验收门并全部通过。"
+            },
+            {
+              "line": 62,
+              "text": "5. 后续项被完整记录，包含依赖、事件型复议触发点、验收、证伪、正控、责任人和父项入口。"
+            },
+            {
+              "line": 63,
+              "text": "6. 上层状态如实保留：可以写“演示批完成/第一阶段仍进行中/迁移项目部分完成”，不能追溯性缩窄第一阶段范围后宣布完成。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "current-sonnet-core-3.json",
+      "assertions": [
+        {
+          "text": "最终状态不是 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "父项目状态：部分完成（保持开放，非 Completed）"
+            },
+            {
+              "line": 17,
+              "text": "- 因此父项目不得改为 Completed。"
+            }
+          ]
+        },
+        {
+          "text": "关闭 gate 先机械枚举所有未完成后续项",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 31,
+              "text": "## 父项目改为 `Completed` 的机械关闭 gate"
+            },
+            {
+              "line": 33,
+              "text": "父项目仅能在以下三组条件**全部闭合**后改为 `Completed`："
+            },
+            {
+              "line": 48,
+              "text": "### Gate 3：11 个后续正确事项逐项闭合"
+            },
+            {
+              "line": 50,
+              "text": "每个事项必须独立达到以下四种路径之一："
+            },
+            {
+              "line": 65,
+              "text": "> 只要其中任一事项仍是 `needs adjudication`、`blocked`、`pending`、`ready`、`in progress` 或 `ready to deliver`，父项目就不能关闭。"
+            }
+          ]
+        },
+        {
+          "text": "不把 11 项批量改成 Closed、Not Planned 或 Out of Scope",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 26,
+              "text": "不能将它们标为 `pending`、`blocked`、`done`、`superseded`、`retired`、`transferred` 或 “Not Planned”。  "
+            },
+            {
+              "line": 71,
+              "text": "保留项目页中原有的事项 ID、目标、验收标准和负责人；不要把它们合并成一个“其余事项”或改名为“非核心项”。"
+            },
+            {
+              "line": 73,
+              "text": "以下用现有项目页的第 1 至第 11 项表示。每一行都必须独立填写、独立裁决、独立留下证据。"
+            },
+            {
+              "line": 77,
+              "text": "| 第 1 项 | `needs adjudication` | 是否仍然正确；是否仍属于本父项目；依赖是什么、是否有外部入口；是否已有替代方案或接收项目 | `done`／有证据的 `superseded` 或 `retired`／真实 `transferred`／作为后续批继续，父项目保持开放 |"
+            },
+            {
+              "line": 87,
+              "text": "| 第 11 项 | `needs adjudication` | 同上，完成独立归属和关闭路径裁决 | 同上 |"
+            }
+          ]
+        },
+        {
+          "text": "每项补依赖与事件型复议触发点",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 89,
+              "text": "### 每个事项当前应补入的记录"
+            },
+            {
+              "line": 91,
+              "text": "对第 1 至第 11 项分别补入如下字段。原有验收标准和负责人保留，但不能用它们替代缺失字段。"
+            },
+            {
+              "line": 109,
+              "text": "- 依赖：TBD"
+            },
+            {
+              "line": 116,
+              "text": "- 事件型复议触发点：父项目关闭申请已提出（2026-08-08），必须立即复议"
+            },
+            {
+              "line": 141,
+              "text": "  - <事项ID>-DEPENDENCY-MAP："
+            },
+            {
+              "line": 143,
+              "text": "      trigger：<事项ID>-ADJUDICATE 裁决为继续时"
+            }
+          ]
+        },
+        {
+          "text": "父项目关闭点的继续排期或重新裁决由用户或未卷入方作出；裁决后已批准批次内的普通排序可由具名 owner 处理",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 168,
+              "text": "### 父项目关闭点的逐项裁决权"
+            },
+            {
+              "line": 172,
+              "text": "1. **用户**；或"
+            },
+            {
+              "line": 180,
+              "text": "- 未发起或执行本次父项目关闭申请。"
+            },
+            {
+              "line": 188,
+              "text": "### 普通后续批排序权"
+            },
+            {
+              "line": 190,
+              "text": "当某事项已被合格裁决为“继续”，且已进入一个批准的后续批时："
+            },
+            {
+              "line": 192,
+              "text": "- 具名治理 owner 可以决定该批准批次内的普通排序；"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "current-fable-r2-6.json",
+      "assertions": [
+        {
+          "text": "不因非阻断后续项阻塞当前批交付",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "1. **当前批立即交付。**  "
+            },
+            {
+              "line": 4,
+              "text": "   它已独立验收，且新事项明确不阻断其正确性、数据完整性、兼容性或合并安全。当前先标记为 `ready to deliver`；发布成功并落盘发布证据后转为 `done`。不能为这个后续项错过发布窗口。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把全 TBD 记录称为完整或可执行",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 6,
+              "text": "2. **现有一句标题不能算“完整后续项”。**  "
+            },
+            {
+              "line": 7,
+              "text": "   即使把缺失字段全部写成 `TBD`，也只表示缺口已被捕获，不表示记录完整。该事项应暂定为 **`pending`**：没有已确认的外部阻塞或待裁决命题，但信息、责任和排期前置尚未闭合。不能标为 `ready` 或 `blocked`。"
+            }
+          ]
+        },
+        {
+          "text": "每个 TBD 绑定来源证据或发现上下文",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 9,
+              "text": "3. **每个 `TBD` 必须分别附带五项元数据：**"
+            },
+            {
+              "line": 10,
+              "text": "   - `source_context`：支撑缺口的原始证据或发现上下文；至少包括发现者、发现动作和原载体。"
+            }
+          ]
+        },
+        {
+          "text": "每个 TBD 绑定负责补齐者和可观察解决触发",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 12,
+              "text": "   - `owner`：负责补齐该字段的具名责任人，不能继续写成无责任人的占位符。"
+            },
+            {
+              "line": 13,
+              "text": "   - `resolution_trigger`：迫使补齐的可观察事件，不能只写日期。"
+            },
+            {
+              "line": 14,
+              "text": "   - `state_gate`：补齐前禁止进入哪些状态或执行哪些动作。"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成且不能结束治理",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 32,
+              "text": "4. **父项目不能结束治理或标记完成。**  "
+            },
+            {
+              "line": 37,
+              "text": "   - 父项目：**部分完成、保持开放**"
+            },
+            {
+              "line": 40,
+              "text": "作者不能通过填写一组 `TBD` 自行消项，也不能在自己提出该事项后自行裁决关闭。父项目关闭前，该事项必须完成、由用户或未卷入方依据证据裁决为 `superseded／retired`，或完成符合条件的真实转移。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "current-fable-r2-8.json",
+      "assertions": [
+        {
+          "text": "识别 F1/F2 构成依赖与触发环",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "虽然字段表面完整，但依赖与触发组合图为："
+            },
+            {
+              "line": 8,
+              "text": "F1.done → F2"
+            },
+            {
+              "line": 12,
+              "text": "`{F1, F2}` 构成无外部入口的强连通分量。两项都不可能先达到 `done`，所以“另一项 done”不是可达的复议事件，只是循环等待条件。"
+            }
+          ]
+        },
+        {
+          "text": "拒绝把字段形式完整当作合格",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 3,
+              "text": "### 1. F1、F2 当前记录不合格"
+            },
+            {
+              "line": 5,
+              "text": "虽然字段表面完整，但依赖与触发组合图为："
+            },
+            {
+              "line": 12,
+              "text": "`{F1, F2}` 构成无外部入口的强连通分量。两项都不可能先达到 `done`，所以“另一项 done”不是可达的复议事件，只是循环等待条件。"
+            }
+          ]
+        },
+        {
+          "text": "要求构建依赖图并检查环或事件可达性",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 29,
+              "text": "## 必须运行的依赖检查"
+            },
+            {
+              "line": 31,
+              "text": "必须针对状态真相源中的**全部非终态事项**运行，而不只检查 F1/F2："
+            },
+            {
+              "line": 33,
+              "text": "1. 将依赖和事件触发统一建图。"
+            },
+            {
+              "line": 37,
+              "text": "   - 没有独立外部事件或可启动根项的封闭分量；"
+            },
+            {
+              "line": 39,
+              "text": "   - 当前状态是否符合状态派生优先级。"
+            },
+            {
+              "line": 51,
+              "text": "4. 验证检查器的鉴别力："
+            },
+            {
+              "line": 53,
+              "text": "   - 目标缺陷正控：向该样本注入 `F2 → F1` 后，应精确报告循环并变红。"
+            }
+          ]
+        },
+        {
+          "text": "父项目保持部分完成",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 21,
+              "text": "### 2. 父项状态"
+            },
+            {
+              "line": 23,
+              "text": "- 已交付当前批：仍为 `done`，不受 F1/F2 影响。"
+            },
+            {
+              "line": 24,
+              "text": "- 父项：**部分完成、保持开放，不得关闭**。"
+            },
+            {
+              "line": 27,
+              "text": "父项只有在 F1/F2 分别达到 `done`、经合格裁决成为 `superseded/retired`，或完成真实转移后，才可能申请关闭；还需另外通过父项级集成和验收门。"
+            }
+          ]
+        },
+        {
+          "text": "通过外部可达事件、拆依赖或独立裁决解环而非盲目实现",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 57,
+              "text": "## 不提前实现任何一项的修复方式"
+            },
+            {
+              "line": 69,
+              "text": "- 合格裁决者：当前用户，或未参与提出、实现和既有处置的具名裁决者"
+            },
+            {
+              "line": 76,
+              "text": "- 状态门：本条件关闭前，F1/F2 禁止实施、继续等待或进入其他终态"
+            },
+            {
+              "line": 81,
+              "text": "### 第二步：只开展依赖裁决，不实现 F1/F2"
+            },
+            {
+              "line": 95,
+              "text": "1. **删除错误依赖**  "
+            },
+            {
+              "line": 98,
+              "text": "2. **拆分中间产物**  "
+            },
+            {
+              "line": 107,
+              "text": "3. **合并为原子批次**  "
+            },
+            {
+              "line": 110,
+              "text": "4. **改为真实共同前置事件**  "
+            },
+            {
+              "line": 113,
+              "text": "5. **裁决某项失效或转移**  "
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_file": "current-fable-r2-10.json",
+      "assertions": [
+        {
+          "text": "发布前 A 为 ready to deliver 而非 done，且 DELIVERY 是唯一未闭合条件",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 1,
+              "text": "不能把“技术门闭合”视为“交付已完成”。发布前，A 必须是 `ready to deliver`，而不是 `done`；因此 S 和 P 也不能完成。"
+            },
+            {
+              "line": 9,
+              "text": "**状态：`ready to deliver`**"
+            },
+            {
+              "line": 19,
+              "text": "open_conditions:"
+            },
+            {
+              "line": 20,
+              "text": "- A-DELIVERY：制品尚未发布，交付证据尚未落盘"
+            },
+            {
+              "line": 23,
+              "text": "`A-DELIVERY` 是唯一剩余条件，不能因其他技术条件已闭合而推定为 closed。"
+            }
+          ]
+        },
+        {
+          "text": "交付动作在 ready to deliver 执行，交付证据落盘后关闭 DELIVERY ID 并转 done",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 57,
+              "text": "立即执行 **A 的发布／交付**，并保存可追溯的交付证据，例如："
+            },
+            {
+              "line": 76,
+              "text": "发布成功且证据落盘后："
+            },
+            {
+              "line": 79,
+              "text": "A-DELIVERY: open -> closed"
+            },
+            {
+              "line": 82,
+              "text": "  status: done"
+            },
+            {
+              "line": 89,
+              "text": "  - A-DELIVERY"
+            },
+            {
+              "line": 90,
+              "text": "  open_conditions: []"
+            }
+          ]
+        },
+        {
+          "text": "A／S／P 记录都明确包含 closed_conditions 与 open_conditions，状态由集合派生",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "以下各 `closed_conditions` 与 `open_conditions` 互斥。"
+            },
+            {
+              "line": 12,
+              "text": "closed_conditions:"
+            },
+            {
+              "line": 19,
+              "text": "open_conditions:"
+            },
+            {
+              "line": 30,
+              "text": "closed_conditions:"
+            },
+            {
+              "line": 33,
+              "text": "open_conditions:"
+            },
+            {
+              "line": 45,
+              "text": "closed_conditions:"
+            },
+            {
+              "line": 48,
+              "text": "open_conditions:"
+            }
+          ]
+        },
+        {
+          "text": "即使没有 follow-up，S 未完成或父项目级验收未闭合时 P 也不能 Completed",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 42,
+              "text": "**状态：进行中（已有部分批次完成，非 Completed）**"
+            },
+            {
+              "line": 46,
+              "text": "- P-FOLLOWUPS-DISPOSED：已机械枚举，follow-up 集合为空"
+            },
+            {
+              "line": 49,
+              "text": "- P-S-DONE：唯一阶段 S 尚未完成"
+            },
+            {
+              "line": 50,
+              "text": "- P-PROJECT-INTEGRATION-ACCEPTANCE：父项目级集成／验收尚无闭合证据"
+            },
+            {
+              "line": 53,
+              "text": "“没有 follow-up”只闭合父项目完成条件中的后续项处置组，不能替代阶段完成或项目级验收。"
+            }
+          ]
+        },
+        {
+          "text": "同一条件 ID 不会同时出现在 closed 与 open，也不会在状态理由中被同时声称闭合和未闭合",
+          "passed": true,
+          "evidence": [
+            {
+              "line": 5,
+              "text": "以下各 `closed_conditions` 与 `open_conditions` 互斥。"
+            },
+            {
+              "line": 23,
+              "text": "`A-DELIVERY` 是唯一剩余条件，不能因其他技术条件已闭合而推定为 closed。"
+            },
+            {
+              "line": 38,
+              "text": "A 的独立验收 `A-INDEPENDENT-ACCEPTANCE` 不能同时充当阶段级验收 `S-INTEGRATION-ACCEPTANCE`。二者范围和条件 ID 不同。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

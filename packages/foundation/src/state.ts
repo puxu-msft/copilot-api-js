@@ -284,6 +284,12 @@ export interface State {
   readonly streamCommitAfterSec: number
 
   /**
+   * Enables one fresh upstream dispatch after a pre-content failure. The value is wired into runtime state;
+   * the handler's recovery decision and dispatch remain intentionally deferred to Task 4.3b.
+   */
+  readonly preContentRecovery: { enabled: boolean }
+
+  /**
    * L2 — transactional buffered retry for streaming Anthropic generations cut
    * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
    * `false` (default) = live streaming, no buffering. `"on"` = buffer every
@@ -599,6 +605,8 @@ export interface State {
    * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Maximum admitted History operations; strictly positive and hot-reloadable. */
+  readonly historyPersistenceQueueCapacity: number
   /** Optional raw capture is hot-reloadable through artifact generations. */
   readonly historyRawCaptureEnabled: boolean
   readonly historyRawCaptureDbPath: string
@@ -765,20 +773,6 @@ export interface State {
    * upstream-ws-connection.ts; wired to real connections in Plan 2. Default 300.
    */
   readonly pooledConnectionIdleTimeout: number
-
-  /**
-   * Shutdown Phase 2 timeout in seconds.
-   * Wait for in-flight requests to complete naturally before sending abort signal.
-   * Default: 60.
-   */
-  readonly shutdownGracefulWait: number
-
-  /**
-   * Shutdown Phase 3 timeout in seconds.
-   * After abort signal, wait for handlers to wrap up before force-closing.
-   * Default: 120.
-   */
-  readonly shutdownAbortWait: number
 
   /**
    * Maximum age of an active request before the stale reaper forces it to fail (seconds).
@@ -1415,6 +1409,7 @@ export function setAnthropicBehavior(
       | "streamKeepaliveEscalateSec"
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
+      | "preContentRecovery"
       | "protectStreamingGeneration"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
@@ -1507,18 +1502,35 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 
 export function setHistoryConfig(
   patch: Partial<
-    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+    Pick<
+      MutableState,
+      | "historyEnabled"
+      | "historyDbPath"
+      | "historyPersistenceQueueCapacity"
+      | "historyRawCaptureEnabled"
+      | "historyRawCaptureDbPath"
+      | "historyRawCaptureMaxObjectBytes"
+    >
   >,
 ): void {
+  const queueCapacityChanged =
+    patch.historyPersistenceQueueCapacity !== undefined && patch.historyPersistenceQueueCapacity !== mutableState.historyPersistenceQueueCapacity
   const rawCaptureChanged =
     (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
     || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
     || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
+  if (queueCapacityChanged) for (const listener of historyPersistenceQueueCapacityListeners) listener()
   if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
 }
 
+const historyPersistenceQueueCapacityListeners = new Set<() => void>()
 const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryPersistenceQueueCapacityChange(listener: () => void): () => void {
+  historyPersistenceQueueCapacityListeners.add(listener)
+  return () => historyPersistenceQueueCapacityListeners.delete(listener)
+}
 
 export function onHistoryRawCaptureChange(listener: () => void): () => void {
   historyRawCaptureListeners.add(listener)
@@ -1565,10 +1577,6 @@ export function setTelemetryConfig(
 export function onTelemetryConfigChange(listener: () => void): () => void {
   telemetryConfigListeners.add(listener)
   return () => telemetryConfigListeners.delete(listener)
-}
-
-export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
-  updateState(patch)
 }
 
 /**
@@ -1931,6 +1939,7 @@ export function resetConfigManagedState(): void {
     streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+    preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
@@ -2016,10 +2025,6 @@ export function resetConfigManagedState(): void {
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
     softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
-  setShutdownConfig({
-    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  })
   setHooksConfig({
     hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
     hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
@@ -2030,6 +2035,7 @@ export function resetConfigManagedState(): void {
   })
   setHistoryConfig({
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
     historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
     historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
     historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
@@ -2161,6 +2167,7 @@ const mutableState: MutableState = {
   streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+  preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
   bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
@@ -2187,6 +2194,7 @@ const mutableState: MutableState = {
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
   historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
   historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
@@ -2207,8 +2215,6 @@ const mutableState: MutableState = {
   modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
-  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
   requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,

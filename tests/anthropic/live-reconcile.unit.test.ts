@@ -33,6 +33,11 @@ import {
   reconcileLiveFrame,
   type ReconcileHooks,
 } from "~/lib/anthropic/live-reconcile"
+import {
+  //
+  createDownstreamDeliverySession,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -111,6 +116,22 @@ describe("reconcileLiveFrame", () => {
     // real message_start already went out (`messageStartForwarded`), so a later idle-tick injector won't
     // fabricate a second one. `injected`/`anchorBlockOpen`/`anchorClosed` stay false (no anchor was injected).
     expect(state).toMatchObject({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
+  })
+
+  test("NOT injected + a recovery message_start → drops only the duplicate while preserving the one client turn", () => {
+    const state: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
+    const h = hooks()
+    const primary = f("message_start", { message: { id: "primary" } })
+    const recovery = f("message_start", { message: { id: "recovery" } })
+
+    expect(reconcileLiveFrame(primary, state, h)).toEqual([primary])
+    expect(reconcileLiveFrame(recovery, state, h)).toEqual([])
   })
 
   test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
@@ -271,7 +292,12 @@ function stubSink(): { sink: ClientSink; rawSink: OwnerRawSink; calls: Array<{ m
     writeSyntheticEnvelope: (frame) => (calls.push({ m: "writeSyntheticEnvelope", frame }), Promise.resolve()),
     writeAnchor: (frame) => (calls.push({ m: "writeAnchor", frame }), Promise.resolve()),
     freezeHeartbeat: () => calls.push({ m: "freezeHeartbeat" }),
+    suspendHeartbeat: () => calls.push({ m: "suspendHeartbeat" }),
+    resumeHeartbeat: () => calls.push({ m: "resumeHeartbeat" }),
     close: () => calls.push({ m: "close" }),
+    finalize: () => {
+      calls.push({ m: "finalize" })
+    },
   }
   return { sink, rawSink: sink, calls }
 }
@@ -319,8 +345,30 @@ describe("makeReconcilingSink", () => {
     await dec.writeSyntheticEnvelope?.(err)
     await rawSink.writeAnchor?.(err)
     dec.freezeHeartbeat?.()
+    dec.suspendHeartbeat?.()
+    dec.resumeHeartbeat?.()
     dec.close?.()
-    expect(calls.map((c) => c.m)).toEqual(["writeSynthetic", "writeKeepalive", "writeSyntheticEnvelope", "writeAnchor", "freezeHeartbeat", "close"])
+    dec.finalize?.()
+    expect(calls.map((c) => c.m)).toEqual([
+      "writeSynthetic",
+      "writeKeepalive",
+      "writeSyntheticEnvelope",
+      "writeAnchor",
+      "freezeHeartbeat",
+      "suspendHeartbeat",
+      "resumeHeartbeat",
+      "close",
+      "finalize",
+    ])
+  })
+
+  test("does not inherit delivery identity because it rewrites winner frames", () => {
+    const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
+    const dec = makeReconcilingSink(delivery.clientSink, injectedState(), hooks())
+
+    // If driver winner writes can resolve this decorator as delivery, they bypass dec.write and skip
+    // duplicate-message removal, anchor close-off routing, and index remapping.
+    expect(getDownstreamDeliverySession(dec)).toBeUndefined()
   })
 
   test("optional inner methods absent → decorator leaves them undefined (array/WS sinks)", () => {
@@ -329,7 +377,10 @@ describe("makeReconcilingSink", () => {
     expect(dec.writeSynthetic).toBeUndefined()
     expect("writeAnchor" in dec).toBe(false)
     expect(dec.freezeHeartbeat).toBeUndefined()
+    expect(dec.suspendHeartbeat).toBeUndefined()
+    expect(dec.resumeHeartbeat).toBeUndefined()
     expect(dec.close).toBeUndefined()
+    expect(dec.finalize).toBeUndefined()
   })
 
   test("a bare sink cannot become a second anchor-close authority", async () => {

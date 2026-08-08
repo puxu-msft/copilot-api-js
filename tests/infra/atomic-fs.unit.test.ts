@@ -107,6 +107,50 @@ describe("atomicWriteJson", () => {
     expect(entries).toEqual(["data.json"])
   })
 
+  test("awaits failed cleanup and preserves the original write error", async () => {
+    const target = path.join(workDir, "data.json")
+    const writeError = new Error("simulated write failure")
+    const cleanupError = new Error("simulated cleanup failure")
+    const cleanupStarted = Promise.withResolvers<undefined>()
+    const releaseCleanup = Promise.withResolvers<undefined>()
+    const realWriteFile = fs.writeFile
+    const realUnlink = fs.unlink
+    ;(fs as any).writeFile = mock((filePath: Parameters<typeof fs.writeFile>[0], data: Parameters<typeof fs.writeFile>[1], opts?: unknown) =>
+      realWriteFile(filePath, data, opts as Parameters<typeof fs.writeFile>[2]).then(() => {
+        throw writeError
+      }),
+    )
+    ;(fs as any).unlink = mock(async () => {
+      cleanupStarted.resolve()
+      await releaseCleanup.promise
+      throw cleanupError
+    })
+
+    try {
+      let settled = false
+      const outcome = atomicWriteJson(target, { x: 1 }).then(
+        () => ({ kind: "resolved" as const }),
+        (error: unknown) => ({ kind: "rejected" as const, error }),
+      )
+      void outcome.finally(() => {
+        settled = true
+      })
+
+      await cleanupStarted.promise
+      await Promise.resolve()
+      expect(settled).toBe(false)
+
+      releaseCleanup.resolve()
+      const result = await outcome
+      expect(result.kind).toBe("rejected")
+      if (result.kind === "rejected") expect(result.error).toBe(writeError)
+      expect(fs.unlink).toHaveBeenCalledTimes(1)
+    } finally {
+      ;(fs as any).writeFile = realWriteFile
+      ;(fs as any).unlink = realUnlink
+    }
+  })
+
   test("rejects re-thrown writeFile error and cleans up tmp", async () => {
     const target = path.join(workDir, "data.json")
     const realWriteFile = fs.writeFile

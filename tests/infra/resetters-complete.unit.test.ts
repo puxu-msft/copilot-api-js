@@ -71,6 +71,9 @@ const EXEMPT: Record<string, string> = {
   // Handled inside resetTestRuntime (runtime trio), not the RESETTERS table.
   resetBusForTests: "handled by resetTestRuntime",
   resetRequestContextManagerForTests: "handled by resetTestRuntime",
+  resetModelOperationTerminalBusForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  resetHistoryAdmissionLifecycleForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  setHistoryAdmissionControllerForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
   // Path/config injector setters: per-test opt-in, not a default reset. Their
@@ -89,6 +92,9 @@ const EXEMPT: Record<string, string> = {
   _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  drainScheduledCalibrationPersistenceForTests: "action hook — consumes calibration's existing timer; resetAllLimitsForTesting owns reset",
+  drainScheduledNegotiationPersistenceForTests:
+    "action hook — consumes negotiation's existing timer; clearAnthropicFeatureNegotiationForTests owns reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
   // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
   // no module-global state of its own to reset; the timer itself is
@@ -109,6 +115,12 @@ const EXEMPT: Record<string, string> = {
   // ALREADY-registered resetV3WriterForTests.
   getV3PersistRetryConfigForTests: "read-only assertion hook — no state to reset",
   setV3CommitFailureInjectorForTests: "commit-failure injector setter — cleared by resetV3WriterForTests (registered)",
+  // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
+  // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
+  recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
+  // Injection setter remains available to tests that install explicit fakes. The fixture registers the
+  // async owning reset instead, because merely clearing the pointer would leak a live Worker.
+  setHistoryPersistenceRuntimeForTests: "runtime injector — reset via resetHistoryPersistenceRuntimeForTests (registered)",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {

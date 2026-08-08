@@ -986,6 +986,17 @@ export async function drainV3Writer(): Promise<void> {
   }
 }
 
+export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<string>): number {
+  const db = getDatabase()
+  ensureV3Schema(db)
+  if (operationIds.length === 0) return (db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n
+  return (
+    db.prepare("SELECT COUNT(*) AS n FROM v3_operations WHERE operation_id NOT IN (SELECT value FROM json_each(?))").get(JSON.stringify(operationIds)) as {
+      n: number
+    }
+  ).n
+}
+
 export function getV3StoreStatus(): V3StoreStatus {
   const db = getDatabase()
   ensureV3Schema(db)

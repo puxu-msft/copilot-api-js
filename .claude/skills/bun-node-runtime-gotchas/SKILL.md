@@ -1,11 +1,11 @@
 ---
 name: bun-node-runtime-gotchas
-description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 标准行为诡异」或 Bun 独有 API 能力边界时使用——undici.Response≠globalThis.Response（instanceof 跨 realm 假失败、Bun 下恰好相等掩盖 Node bug）、new Headers 对异大小写同名键逗号拼接非覆盖（头合并畸形双 Bearer）、bun:sqlite `.get()` 返 null 而 node:sqlite 返 undefined、触发器写入被计入 `.run().changes`、Bun.Terminal 伪终端不给子进程投递 SIGWINCH+stdout.rows 不刷新（PTY 测 resize 恒绿假测）、node-pty 在 bun 下 spawn 语义损坏、node:http2 服务端 pre-header 销毁 Bun 只发裸 close 不发 error（永挂）、net.connect() ENOENT 在 Bun.serve 请求处理器内抢在 post-connect listener 前投递致 uncaughtException 崩主进程（须 new Socket()+listener-before-connect）。凡「Bun 能跑 Node 挂」「两 runtime 行为分歧」或「Bun 独有 API 悄悄不工作」的排查。
+description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到 stdlib/Web 标准行为差异、Bun 独有 API 能力边界、undici 跨 realm、Headers 合并、bun:sqlite、Bun.Terminal/node-pty、node:http2 bare close、Bun.serve 内 net.connect ENOENT，或 spawn/PTY/supervisor 信号与清理疑似命中错误 PID 时使用。
 ---
 
 # Bun / Node 跨运行时 stdlib 陷阱
 
-本项目 bun-first 但 history 走 bun:sqlite（一等）/ node:sqlite（兼容）双驱动、上游 fetch 走 undici（见 skill `debugging-ghc-api-upstream-transport`），故常撞「同一 API 两 runtime 行为分歧」。这类 bug 的共性：**Bun 下恰好成立会掩盖 Node 路径的 bug**，`bun test` 测不到。判据永远是**实测两 runtime**，别凭直觉。
+本项目 bun-first 但 history 走 bun:sqlite（一等）/ node:sqlite（兼容）双驱动、上游 fetch 走 undici（见 skill `debugging-ghc-api-upstream-transport`），故常撞「同一 API 两 runtime 行为分歧」。默认先采用已有代码、文档与既有实测继续工作；当它们与新观测冲突、要据此排除方案、或 Bun 结果将被外推到 Node/不同启动形态时，才进入质疑阶段做最小交叉探针。质疑时必须写清 runtime、版本、平台、执行上下文、启动命令与被测对象，不能用一句“Bun 下实测”覆盖所有条件。
 
 ## undici.Response ≠ globalThis.Response（别用 `instanceof Response` 跨 realm）
 
@@ -37,6 +37,27 @@ new Headers({ authorization: "Bearer A", Authorization: "Bearer B" })
 2. **触发器写入被 bun:sqlite 计入 `.run().changes`**：一条 UPDATE/DELETE 若触发 AFTER 触发器写别的表，bun 的 `.run().changes` 把触发器侧写入也算进去（实测 1 行真实 UPDATE + FTS 触发器 → changes=9/19；node:sqlite 只算 1）。**凡带触发器/级联的表，行数用 `SELECT COUNT(*)` 单独数，别读 `.changes`**（`reclaimStaleActiveRows`/`reclaimOrphanedActiveRows` 已改 COUNT+UPDATE 同事务；`evictBucket` 早因 `ON DELETE CASCADE` 同理避开）。
 
 > history 的 external-content **FTS5 三陷阱**（COUNT 穿透、`'delete'` 腐败、VACUUM renumber rowid）是 history 专有，见 skill `history-sqlite-schema`。
+
+## wrapper／launcher／runtime：PID 相同是待证条件
+
+`Bun.spawn(...).pid`、`child_process.spawn().pid` 或 Python `pty.fork()` 返回的是它们直接启动的进程，不保证就是执行应用 JS 的 runtime。典型拓扑可能是 `Volta shim → bun run launcher → Bun runtime`；直接执行 `volta which bun` 解析出的 Bun 二进制时则可能只有一个进程。
+
+2026-08-08 的 SIGUSR2 探针同时观察到两种相反结果：
+
+- 经 PATH 中的 Volta shim 启动：外层 PID 与脚本内 `process.pid` 不同。SIGUSR2 发给外层，外层按默认动作退出且 runtime handler 无输出；发给 runtime PID，`process.on("SIGUSR2")` 正常执行、两层均存活。
+- 直接执行真实 Bun 1.3.14 二进制：启动 PID 与 `process.pid` 相同，SIGUSR2 正常进入 handler。
+
+所以结论只能写成：“在该 Volta-wrapper 启动形态下，向外层 launcher PID 投递 SIGUSR2 到不了应用 handler。”它**不能**被扩大成“Bun 1.3.14 不支持 SIGUSR2”，也不能反向证明 systemd/pm2 一定跟踪 runtime PID。
+
+### 进程能力／信号／清理探针
+
+1. 让被测脚本输出 `process.pid`、`process.ppid`、runtime 版本与可识别的 READY marker。
+2. 驱动端记录自己的 `Subprocess.pid`／`pty.fork()` PID，并抓取 `pgrep -P` 或 `/proc/<pid>/status` 形成最小进程树。
+3. 分别把信号发给外层 PID 与 runtime PID；每次都记录目标 PID、handler 输出、两层存活状态和 wait status。
+4. 若两者不同，再用解析后的真实 Bun 二进制直接运行同一脚本作为对照，保持脚本、信号与等待窗口不变。
+5. 报告结论时携带启动形态和 PID 角色；“kill 后服务仍活”同样先问是不是只杀了 launcher。
+
+`process.listenerCount(signal)` 证明不了内核投递对象，端口仍可访问也证明不了 launcher 仍活。反过来，外层 `waitpid` 已退出不证明 runtime 已退出；清理必须精确检查实际 listener/runtime PID。CLI e2e 的同源实例见 [[reference-cli-e2e-spawn-and-hook-load-gotchas]]。
 
 ## Bun.Terminal 伪终端：node-pty 损坏 + 子进程感知不到 resize（PTY 测试）
 
@@ -72,5 +93,6 @@ new Headers({ authorization: "Bearer A", Authorization: "Bearer B" })
 
 ## 通用手法
 
-- 任何「Bun 能跑 Node 挂 / 两 runtime 分歧」怀疑：写最小 `bun -e` / node 探针**两 runtime 各跑一遍**实测（放 `exp/`），别信「bun test 绿」——它单跑 Bun 掩盖 Node 分歧。见 skill `empirical-verification`、`verifying-authoritative-claims`。
+- 正常路径先采用已有事实，不为“可能有 Bun 差异”仪式化地双跑。出现 Bun/Node 观测冲突、能力结论将排除方案、或单一 runtime 结果要跨边界外推时，写最小 `bun -e` / node 对照探针；结论须绑定 runtime 版本、平台、事件循环上下文、启动命令与输入。
+- `bun test` 绿只覆盖测试 runner 提供的上下文；真实生产上下文不同是进入质疑阶段的触发信号，而不是预先否定所有测试。见 skill `empirical-verification`、`verifying-authoritative-claims`。
 - 依赖选型 bun-first：外部库须两 runtime 原生可跑，见 ADR `docs/decisions/2026-07-05-dependency-selection-bun-first.md`。

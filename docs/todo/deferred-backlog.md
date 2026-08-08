@@ -2,7 +2,28 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
+
+- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
+- **当前行为**：buffered 路径耗尽透明重试预算后直接以 `"exhausted"` 降级，不发起 B2 fresh dispatch。
+- **理想架构 / 若做需改什么**：在 `!committedAny` 分支耗尽预算、即将走向 `degradeOutcome = "exhausted"` 前，组合 semantic-content gate 与 server-tool gate，并外挂恰好一次 recovery。fresh attempt 必须重入 buffered 循环，不可挪用 direct-live evaluator/owner batch；失败 attempt 的原始帧、duration、dispatch/candidate settlement 须在切换前提交并重置。
+- **已裁决语义**：用户已拍板尊重 `max_retries=0`；buffered B2 旁路必须额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才能生效。用户明确表达“不要任何重试”时，连 B2 这一次也不得发起。
+- **为何暂缓**：direct-live 的 C9 publication 已提供可对照的生命周期合同，但 buffered re-entry、retry budget 与历史逐 attempt 簿记仍是独立结构设计，不能用 live 成功路径假装等价。
+- **触发条件**：为 buffered Anthropic 路径请求 B2 行为，或需要在 `max_retries>0` 耗尽后给尚未交付语义内容的 stream 再尝试一次。**发现方**：Task 4.0 review（reviewer，2026-07-28）；2026-08-08 更新为 live 已完成后的真实 deferred 边界。
+
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
+>
+> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
+
+## translated Anthropic B2 recovery publication（2026-08-08）
+
+- **根因 / 现状**：direct Anthropic B2 依赖 Anthropic frame evaluator、three-mode anchor reconciliation 和 `publishRecoveryBatch` 的 owner wire contract；翻译腿的 R 虽可经 evaluator/disposition 识别和 discard，但没有等价的 translated client-wire publication path。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
+- **当前行为**：当 `/v1/messages` 请求实际路由到非 Anthropic target 时，R 不会作为 direct Anthropic recovery 写入；无法被安全完成/处置时保持 fail-closed，绝不把不完整或错误格式的 R 拼进 client stream。
+- **理想架构 / 若做需改什么**：按 client format × target endpoint 建立 cell-aware recovery publication contract，复用 generation lifecycle/disposition，但由对应 renderer 生成目标 client wire；明确每种格式的 complete predicate、synthetic terminal、History terminal attribution 与 anchor/keepalive 规则。必须补真实客户端或独立 parser oracle，不能复用 Anthropic wire 断言冒充覆盖。
+- **为何暂缓**：这是跨协议 public wire/terminal 契约扩展，不是把 direct helper 接到 translate branch 的局部改动；目前 direct Anthropic 的 B2 已能正确服务目标事故路径，错误地复用其 frame/anchor 规则会制造协议损坏。
+- **触发条件**：需要 Anthropic 客户端通过 `@responses`/`@cc` 等翻译 target 获得同等 B2 能力，或为其他客户端格式实现 post-commit pre-content recovery。改动面至少包括 `cell-assembly`、相关 codec renderer、`driver`、各 handler terminal/History projection 与对应 client e2e。
+
+## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
 
 ## reverse `@messages` **非流式**三格没跑 whole-response 改写链（2026-07-28 实测重定范围）
 
@@ -27,7 +48,6 @@
 - **原点已追到（2026-07-28 订正，此前写「没追出来」）**：upstream 轨的 offset 锚在**每个 attempt 自己的 collector epoch** 上——`src/lib/upstream-stream-diagnostics.ts` 明写「the SAME base every `sseEvents[i].offsetMs` is relative to」，且 **buffered retry 会重新绑定一个新 collector**。它既不是 `entry.startedAt` 也不是 commit。**关键：这个 epoch 没有被持久化进 history 类型**，所以 UI 拿不到它——因此该轨现在显示的绝对钟点确实是错的，且**无法靠现有持久化数据修正**。
 - **若做需改什么**（原点已知后，路线变成二选一）：**要么**把 collector 的 anchor epoch **持久化**进 history（per-attempt 一个，注意 buffered retry 会重绑），UI 再按轨渲染绝对时间；**要么**承认拿不到、该轨**只显示 elapsed 或显式「绝对时间不可用」**，`offsetSource === "unavailable"` 已有先例可复用。**别再继续伪造绝对钟点。** 无论走哪条，补一条 UI 回归测试：构造 `streamOpenMs=180000, offsetMs=20000`，断言两轨各自渲染的钟点不同且各自正确。
 - **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
-
 ## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
 
 - **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。
@@ -235,7 +255,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## History V3 缺口（History V2 removal 2026-07-18 暴露/收敛）
 
-### D-2 —— 生产 History list 只显示已终结请求（in-flight 不落库）
+### D-2 —— 在线 in-flight 可见，但进程崩溃后不可恢复发现
 
 - **根因**：History V3 由**终端总线单写者**驱动——只在请求 terminal（completed/failed/aborted）时经 `subscribeModelOperationTerminals` → `enqueueModelOperation` 落一条不可变 operation record，**无 ingress/中间态写入**。这与已移除的 V2 不同：V2 请求一进来即 eager 写 `entries_v2` head 行（`status=pending`）+ 逐 attempt 增量 stage，故进行中请求与崩溃残留都在 SQLite 可发现（崩溃行经 `reclaimOrphanedActiveRows` 标 `interrupted`）。
 - **当前行为**：进行中请求仅经 in-flight 内存映射 + WebSocket 实时可见；REST `GET /history/api/entries` 合并 in-flight（在前）+ V3 持久（在后）故**在线时**列表完整，但**进程崩溃/被 SIGKILL 时进行中请求零落盘、不留可发现记录**（V2 会留 `pending`/`interrupted` 半截行）。诊断「卡住/被杀的在途请求」的能力较 V2 退化。
@@ -969,6 +989,16 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：把连接/会话生命周期做成一等结构化事件（进 observability bus + 结构化日志 + /metrics）。**承重难题＝多路复用池化 session 的 request 关联**（一条 h2 session 被多并发 request 共享，GOAWAY/PING/session-close 非 1:1 归属某 request）——候选解 A（correlation-id 穿透 + 连接级事件扇出到在途 request）/ B（两级模型读时关联）/ C（全事件上 bus + 投影分发），详见 [docs/todo/upstream-transport-observability.md](upstream-transport-observability.md) §5。
 - **为何暂缓**：子项目 1（跨端点流终止归因统一，流级、per-request、不碰关联难题）先行独立交付；本片需先攻克多路复用关联模型（最硬），范围大，用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1 落地后、需在真实数据上区分 A/B 截断归因时。详细设计草案（范围/维度/关联模型/surface）已冻结在 [upstream-transport-observability.md](upstream-transport-observability.md)。
 
+## Bun HTTP/2 `end + rstCode=0` 能否区分 clean RST 与 END_STREAM（当前任务完成后专项调查，用户保持怀疑）
+
+- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
+- **当前已证事实**：应用层在已观察样本中可见 `end`、随后 `close`、`rstCode=0`，且 Responses 协议终止事件缺失。现有 Bun `node:http2` 路径未提供足以在应用层直接裁决“正常 END_STREAM”与“clean RST 被兼容层抹平”的独立信号。因此当前规格只记录原始事实与不可判状态，不把猜测持久化为根因。
+- **用户保留意见**：用户对“无法进一步区分”保持怀疑，要求当前任务完成后仔细排查。该怀疑不是已解决结论，也不是允许当前实现猜测；它要求寻找更强 oracle。
+- **调查问题**：① Bun runtime 内部是否保留但未暴露 RST／END_STREAM 差异；② `ClientHttp2Stream` 是否存在事件顺序、内部字段、诊断通道或 native handle 可可靠观测；③ Node 对照、TLS／HTTP2 帧级代理、GHC request-id 服务端日志能否提供独立 ground truth；④ 不同 RST code、`stream.close(0)`、`stream.destroy()`、正常 `end()` 在 Bun 各版本／Node 上的可重复行为矩阵；⑤ 若 Bun 是根因，最小上游修复或本项目可维护的 runtime patch 是什么。
+- **实验纪律**：使用真 Node HTTP/2 server 与帧级 oracle，不能把 Bun server fixture 当协议真相；每个场景同时保存服务端动作、客户端事件全序、`rstCode`、session GOAWAY、raw frame 或 runtime trace。正反样本必须成对：正常 END_STREAM 与 clean RST 均能稳定复现，oracle 能区分两者后才能接受分类机制。
+- **完成判据**：二选一并有实证。A：找到可靠、低开销且在生产 runtime 可用的区分信号，补 transport 分类、回归测试和 History 字段；B：证明当前 Bun 版本在可达 API／native trace 上确实丢失该信息，形成最小上游复现、版本范围与修复路径。只得到“代码看起来无法区分”或只跑单一坏样本不算完成。
+- **与当前任务的边界**：当前任务先实现 dispatch-scoped first-terminal snapshot、GOAWAY evidence 与诚实的 `indeterminate` 分类；专项调查若找到新 oracle，再以新增事实升级分类，不回写或伪造旧记录。
+
 ## 上游传输可观测子系统 — 子项目 3：history transportTrace 字段 + ui-v4 Transport 段（2026-07-14，transport-observability 分解；2026-07-22 更新：metrics 已归子项目 1）
 
 - **根因 / 现状**：子项目 1/2 产出的传输事件目前无结构化落盘/聚合/展示宿主。history entry 无「传输因果链」字段（connect→session→stream→truncation→retry），/metrics 无传输维度（GOAWAY 速率 / PING RTT histogram / truncation A/B/success 计数 / per-origin session gauge），ui-v4 History 详情无 Transport 段。
@@ -1037,12 +1067,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：补一个走完整 dispatch-open 路径（真 `input.open()` → `recordOpened`）的 .it 测试，断言 `attempts[].timing.upstreamHeadersAt` 被写入且 `>= startedAt`。可**并入 B2 实施的 dispatch-open 回归矩阵**（B2 大量新建 pre-ready/dispatch-open 路径测试，见 upstream-silence recovery plan），不必独立造 harness。
 - **为何暂缓**：非阻断（功能正确、Q5 实测间接背书），且最经济的做法是折进 B2 的 dispatch-open 测试面。**触发条件**：B2 实施，或任何触碰 dispatch-open→timing 接线的重构。发现方：Q5 timing 埋点复审（2026-07-23）。
 
-## timing 写入 vs 同族 capture 的 seal 边界不对称 → deferred-header 放大的潜在 post-seal crash race（Q5 复审 MED-2，2026-07-23）
+## B2 fresh recovery 在 cancel/seal 后的 candidate lifecycle quiescence join 待 P4/P5 owner 接线（Task 0.6 余项，2026-07-28）
 
-- **根因 / 现状**：`setDispatchTiming`（[model-operation-record.ts:1053](../../src/lib/context/model-operation-record.ts#L1053)）首行 `assertWritable()`——recorder 已 seal 时**抛错**（`terminal already committed; recorder is sealed`）。而同族的逐帧 capture（`captureForwardedGenerationFrame` 等，[request.ts:1544](../../src/lib/context/request.ts#L1544) 等多处）一律 `if(modelOperationRecorder.sealed) return`**静默丢弃**。timing 属于同一类「completed dispatch 的晚到异步观测」（`setDispatchTiming` 自己的注释即写「其 async listener 可在 driver 标记 dispatch settled **之后**运行；timing 是该已完成 dispatch 的观测、直到 terminal sealing」），却走了抛错分支而非静默丢弃。
-- **当前行为 / 风险**：`recordOpened`（[dispatch-scheduler.ts:211](../../src/lib/pipeline/generation/dispatch-scheduler.ts#L211)）在 `await input.open()` resolve 后**无独立守卫**地同步调用。若 operation 在一个 pre-header 的 `open()` 仍挂起期间被 seal（reaper/`request_deadline`/candidate-discard/supersede），随后晚到的 header resolve `open()` → `recordOpened` → `setDispatchTiming` → `assertWritable` **抛错** → 沿 scheduler `run` 上抛 → 若此时 `p`(runRequest) 已无 live awaiter（handler 因 reap/abort 早已移交）则成**孤儿 promise rejection → unhandledRejection → main.ts → process.exit(1)**（正是 skill `debugging-server-crashes` 描述的放大链）。**Q5 实测的 deferred-header（header 到达高达 231s、上界未知）显著拉长 pre-header 窗口、放大此 race。** 默认 `request_deadline=900s > 231s` 时经 deadline 路径不可达（header 先到），但经 **candidate-discard/supersede 在 open 挂起期 seal**、或 **`request_deadline` 被配 <~230s**、或 **deferred-header >900s** 时可达。**未经实测复现，为 code-read 定性的可达 race**（诚实标注）。
-- **理想架构 / 若做需改什么**：**不能**简单把 `setDispatchTiming` 改成 `if(sealed) return`——seal 的 loud-throw 对**语义写**（payload/frame，会腐化记录）是既定正确设计（`assertWritable` 硬钉、首轮 review 确认）。正确修复须区分「best-effort 晚到观测（timing）」与「语义写」：① 在 `recordOpened` 的 timing 写处（或 `setGenerationDispatchTimingEpoch`/`setAttemptTimingEpoch` 层）加 `if(modelOperationRecorder.sealed) return` 与同族 capture 对齐（timing 本就是可丢弃观测）；**或** ② 在 scheduler `recordOpened` 调用点包 crash-safe 守卫，使 sealed-operation 的晚到 open 不把抛错传成孤儿 rejection。倾向 ①（与同族 capture 语义一致、最小面）。**须同时确认 B2 的 sink-lifetime-supervisor / late-upstream-after-seal 处理与此对齐**（B2 recovery 触及同一「seal 后晚到上游事件」territory）。
-- **为何暂缓**：非阻断（默认配置经 deadline 路径不可达；需特定 race）、且修复须谨慎设计（区分观测 vs 语义写）、并宜与 B2 的 late-upstream-after-seal 设计一并处理。**触发条件（值得做）**：B2 实施（recovery supervisor 必然处理 seal 后晚到上游事件），或观测到相关 `sealed` 抛错 incident。发现方：Q5 timing 埋点复审（2026-07-23）+ Q5 deferred-header 实测（拉长 pre-header 窗口）。
+- **根因 / 现状**：Task 0.6 已把整个 `recordOpened` 及其 timing setter 改为 sealed-safe，修掉 late deferred-header 的 post-seal 写入/抛错；但当前 [recovery-sink-supervisor.ts](../../src/lib/pipeline/generation/recovery-sink-supervisor.ts) 只包装 `ClientSink`，既不启动也不持有 primary/fresh recovery candidate lifecycle。master 漂移后 primary `exchangePromise` 已由 [driver.ts](../../src/lib/pipeline/driver.ts) 注册进 operation scope，`startGenerationFinalizerIfReady()` 会先 `await operationScope.whenOperationQuiesced()`，`candidate.cancel()` 与 scheduler cleanup 也会 await `runPromise`/`lifecycle.quiesced`。因此主线 production primary 腿今天已被 operation scope 结构性护住：`open()` 挂起期间 finalizer 不会 seal。`runPreContentRecovery()` 的 fresh recovery 尚未注册进 operation scope，且 P4/P5 之前没有拥有“本轮 primary + fresh recovery + 最终 sink settlement”的 recovery owner。
+- **当前行为 / 风险**：① 已使 late open 不再因 History timing/header 观测越过 seal 而抛错，主 crash 链已被切断；该守卫当前覆盖 mock/legacy ctx、candidate-discard/supersede，以及 P4/P5 将新增的未注册 fresh recovery 腿，不夸大为 production primary 当前可达；② 仍缺显式的跨候选 join 契约。未来 P4/P5 接入 fresh recovery 后，若 owner 在 cancel/seal 后先最终收口 sink、却未等待它启动过的所有 candidate quiesce，迟到 reject/cleanup 仍可能脱离 owner 作用域，且 terminal 与物理传输生命周期次序不再由单一 owner 保证。
+- **理想架构 / 若做需改什么**：P4/P5 的 recovery owner 启动 primary/fresh recovery 时登记 candidate completion/lifecycle 句柄；最终成功、耗尽、gate 拒绝或 cancel 后，先 cancel 必要候选并 `await` 全部 quiescence，再调用 `RecoverySinkSupervisor.settleFinal()`。不要把 candidate ownership 反向塞进纯 `ClientSink` decorator。补 mutation-positive-controlled 测试：去掉 owner 的 await 后，late reject/late cleanup 用例必须变红。
+- **为何暂缓**：P0-P3 当前没有 recovery owner，也没有 production 接线；在 sink supervisor 中伪造 candidate registry 会制造错误分层。**触发条件**：B2 P4/P5 挂载 fresh pre-content recovery 时必须同 Task 完成，不能继续后延。
 
 ## L2 strip-all 兜底可能留下 `content: []` 的 assistant 消息（2026-07-26，thinking 终端块修复期间发现）
 
@@ -1080,6 +1110,19 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：一条新的反应式 retry 腿（参考 `src/lib/request/strategies/` 既有诸腿）。要点：① **循环安全**——refusal 可能对所有模型复发，须有 attempt cap 且不与既有 buffered-retry / continuation 预算打架；② **换模型的选择**依据（配置显式指定 vs 按 catalog 降级）；③ **计费**——多烧一次真实请求，需在 History/遥测里可辨识（该 attempt 打标记，别混进正常重试统计）；④ 与抑制的**优先级**：fallback 成功则不需要抑制，失败才落到抑制兜底——即抑制从「唯一手段」降级为「最后兜底」。
 - **为何暂缓**：用户在范围选择中选了 B 档（诊断忠实化 + 分型，不含自动重试），随后又把焦点收敛到「抑制」。**不是判定它没价值——恰恰相反，它比抑制更接近真正的目标**。**触发条件（值得做）**：观测到 refusal 频次上升（当前极罕见：全部保留数据里仅 3 次，2026-06-23 / 07-13 / 07-27），或用户希望被拒的轮次能自动产出真实内容而非一句说明。
 - **做之前必须先做的实验**（当前**全部未验证**，别当事实用）：同 payload 换模型重发的**恢复率**；同 payload 同模型重发是否必然再拒（官方文档只说 "usually"）；`category` 是否能预测可恢复性（`cyber`/`bio`/`null` 三类已观测，但**无任何**行为差异证据——`bio` 那次是烧了 25,636 thinking token 之后才拒的，不是推理前拦截）。取证基线见 [exp/refusal-samples/FINDINGS.md](../../exp/refusal-samples/FINDINGS.md)。
+## pre-ready recovery 的分类 reason 未进入 attempt diagnostics（B2 Task 0.4，2026-07-23）
+
+- **根因 / 现状**：`driver.runPreContentRecovery(reason)` 将调用方的分类原因传给 `GenerationCoordinator.runRecoveryFromPreReadyFailure(reason, env)`，但 coordinator 仅用 `_reason` 满足接口、接着 `start({ role: "recovery", env })`；primary 的 pre-ready failed-open attempt 已在 scheduler/candidate 内被 settle 为 `failed`，没有 `retryNextStrategy` 或任意 metadata 字段承载后续 fresh dispatch 的触发原因。现有 `recordAttemptFailure` 只能记录 `willRetry`、`nextStrategy`、`waitMs`、`learning`，而 `CoordinatorCandidateInput` / `beginCandidate` 也没有 recovery metadata。
+- **当前行为**：fresh recovery 的 candidate role、wire 与 success/failure 会被记录，但例如 `"upstream-rst"` 的分类原因在 coordinator 边界被丢弃；History 和 telemetry 无法从单次 operation 还原为何启动该 replacement dispatch。
+- **理想架构 / 若做需改什么**：扩 `CoordinatorCandidateInput` 与 `DispatchRecordingPort.beginCandidate` 的 generation-candidate record，加入可选、结构化的 `recoveryReason`（或通用 `trigger` metadata），使 coordinator 将 reason 传入、`RequestContext` 持久化到 History V3 candidate / attempt diagnostics，并在 API 投影中完整暴露。不要挪用 `retryNextStrategy`：它描述已完成 dispatch 的 retry 结局，无法无损承载 replacement 的分类原因。
+- **为何暂缓**：本 Task 的自然 driver 落点只有 `recordAttemptFailure(nextStrategy)`，把 reason 拼接进该枚举状字段会混淆语义并丢失结构；正确方案需要扩跨 coordinator、context、History schema/projection 的公开诊断契约，超出已定 Task 0.4 的接口变化范围。**触发条件（值得做）**：B2 P4/P5 接入 handler 的 pre-content recovery 时，或下一次扩 generation candidate diagnostics 时，连同其 History/API 回归测试一并实施。发现方：Task 0.3 review，Task 0.4 代码实证（2026-07-23）。
+
+## pre-content recovery 用 afterHook 而非 preflight env dispatch（B2 Task 0.4 review，2026-07-23）
+
+- **根因 / 现状**：`driver.runRequest` 在 pre-ready 失败时把 `{coordinator, env: afterHook}` 存进 `lastPreReadyFailure`（`driver.ts:410` 附近，`afterHook` = S3 rewrite-in 之后、**S4-pre `runGenerationPreflight`/`preSend` 之前**的 env）；而 primary 实际发起用的是 `preflight`（`const preflight = await runGenerationPreflight(deps, afterHook)`，`driver.ts:401`）。`runPreContentRecovery` 用 `failure.env`（即 afterHook）重走 `outboundPrepareWire` 做 gate 判定与 recovery dispatch——**没有经过 preSend**。
+- **当前行为**：**今天字节等价、无实际影响**——三条 leg（anthropic/openai-cc/openai-responses）都明确「No preSend」（auto-truncate 已移除），故 recovery wire 与 primary wire 一致。
+- **理想架构 / 若做需改什么**：把 `rememberPreReadyFailure` 存的 env 改为 `preflight`（primary 实际 dispatch 用的那份，已 transform、无需重跑 preflight 副作用），使 recovery wire 与 primary wire 恒等；或在 recovery 路径显式对齐 preflight。这样任何 leg 未来重新引入 `preSend`（如 truncation 类前置处理）时 recovery 不会悄悄绕过它。
+- **为何暂缓**：今天无可观测差异；正确的 env 选择在 P4/P5 接 handler 时语境更清晰（届时 recovery env 的实际使用具体化）。**触发条件（值得做）**：B2 P4/P5 接线 `runPreContentRecovery`（届时一并核实/对齐 env），或任何 leg 重新引入 `preSend`。发现方：Task 0.4 review（reviewer，2026-07-23）。**姊妹 nit**：gate 探测的 `outboundPrepareWire` 非纯（`recordFeature` 双发），可控无正确性影响；若精确处理参照 `inspectRequest` 的 `withCapturingManagerAsync` 隔离写法。
 
 ## `parallel-test.ts` 的用例汇总仍系统性欠计（2026-07-28，紧随 ANSI 修复）
 
@@ -1156,10 +1199,8 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：当前零消费者 → 改了也无可观测差异，且它与本轮（B2 上游静默恢复）因果链无关；补别名本身很小，但**配套的守卫**才是真正值钱的部分，值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件（值得做）**：① monorepo 拆包推进到「用裸包名消费 token/cli」（`package-boundaries.unit.test.ts:111` 的注释已经预告了这个方向）；② 任何新 workspace 包落地时；③ 在 worktree 里出现「改了包源码但测试行为不变」的诡异症状——那正是这个逃逸的典型表征。
 - **发现方**：给用户级 skill `git-preference:isolating-from-a-shared-git-worktree` 补「委派命令树向 gate」时，评审实测出「gate 全绿 + 测试全绿 + 加载的是主树源码」这条通用逃逸（依赖解析向上逃出嵌套 worktree），随后在本仓库逐包复核得到上述不对称。**教训本身**（gate 证 cwd/树/commit，**不证解析根**）已写进该 skill 与记忆第四方向。
 
-## delivery identity 继承应从模块级导出改为 session 上的方法（2026-07-30，B2 Task 4.1′ BLOCKER 收口时提出）
+## delivery identity 继承已被 explicit allocation-port 架构取代（2026-08-06 渐进合并时关闭）
 
-- **根因 / 现状**：`inheritDownstreamDeliverySession(source, decorator, contract)` 是 `src/lib/pipeline/delivery/session.ts` 的**模块级导出**，任何模块 import 到它就能把任意 decorator 注册进 `deliveryBySink`。「谁有资格继承身份」因此不由类型系统或作用域回答，只能靠**两道后加的防线**：① 运行时 `decorator.write === source.write` 引用相等（对拼写免疫、是主防线）；② `tests/architecture/delivery-identity-inheritance.unit.test.ts` 的 allowlist（按能力入口扫 import 形态）。
-- **当前行为**：两道防线都在、且 ② 已按 `reshaping-a-bypassed-guard` 换轴到真实模块解析。但守卫的存在本身说明契约放错了位置——它在补一个「本不该可能表达」的违规。
-- **理想架构 / 若做需改什么**：改成 `session.adoptPassThroughDecorator(decorator)`（或等价的、只有持有 session 的 delivery owner 够得着的方法）。这样「谁有资格」由普通 TypeScript 作用域回答：拿不到 session 实例的模块**根本写不出**这个调用，AST 守卫连同它的拼写洞一起消失，运行时引用相等检查可作为方法内部的前置断言保留。需改：`session.ts` 导出面（删模块级导出、加方法）、`recovery-sink-supervisor.ts` 唯一调用点、架构守卫（可整条删除或降级为「模块级导出不得复活」的存在性守卫）。
-- **为何暂缓**：与 B2 上游静默恢复的因果链无关；且它与另一条更根本的重塑方向相关联——**把 reconcile 从 sink 包装下沉为 delivery 的 egress transform**（只作用于 `provenance.kind === "candidate"` 的帧），那条一旦做了，「decorator 要不要继承身份」这个问题从根上消失。两条应一起设计，不宜在特性分支上零敲碎打。**触发条件（值得做）**：① 着手 egress-transform 重塑时（本条是它的前置一小步）；② 出现第二个需要继承身份的 decorator；③ 架构守卫再次被合法写法绕过（说明拼写维度的军备竞赛该结束了）。
-- **发现方**：Task 4.1′ 的 BLOCKER（改写型 decorator 继承身份 → hedge 胜者帧绕过 reconcile）收口轮，异模型评审提出；主会话采纳为方向、押后为独立任务。**相关教训**：契约的正确形状是「让违规不可表达」，其次才是「让违规可被机器判定」，最后才是「写进注释请人自觉」——本次三层都用上了，但顺序是倒着补的。
+- **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
+- **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
+- **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。

@@ -459,6 +459,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   },
   {
+    configKey: "anthropic.precontent_recovery.enabled",
+    stateKey: "preContentRecovery",
+    sampleYamlValue: "false",
+    expectedStateValue: { enabled: false },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.preContentRecovery,
+  },
+  {
     configKey: "anthropic.protect_streaming_generation",
     stateKey: "protectStreamingGeneration",
     sampleYamlValue: "tool_use_only",
@@ -910,6 +917,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
+    configKey: "history.persistence_queue_capacity",
+    stateKey: "historyPersistenceQueueCapacity",
+    sampleYamlValue: "17",
+    expectedStateValue: 17,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
+  },
+  {
     configKey: "history.raw_capture.enabled",
     stateKey: "historyRawCaptureEnabled",
     sampleYamlValue: "true",
@@ -930,22 +944,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 1048576,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  // ── shutdown.* ─────────────────────────────────────────────────────
-  {
-    configKey: "shutdown.graceful_wait",
-    stateKey: "shutdownGracefulWait",
-    sampleYamlValue: "33",
-    expectedStateValue: 33,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-  },
-  {
-    configKey: "shutdown.abort_wait",
-    stateKey: "shutdownAbortWait",
-    sampleYamlValue: "66",
-    expectedStateValue: 66,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  },
-
   // ── hooks.* (declarative only — see applyConfigToState) ─────────────
   {
     configKey: "hooks.upstream_module",

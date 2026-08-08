@@ -36,6 +36,19 @@ function abortableWait(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+function sleepUntilElapsedOrAborted(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener("abort", done, { once: true })
+  })
+}
+
 /**
  * Scoped publisher for `system.rate_limit_state` events. Set once at
  * start.ts via `setRateLimitPublisher(bus.scope('system'))`. When unset
@@ -116,7 +129,7 @@ interface QueuedRequest<T> {
   /** Timestamp when request was enqueued */
   enqueuedAt: number
   /**
-   * Set by `rejectQueued()` (shutdown) before rejecting the caller. `processQueue` re-checks it
+   * Set by explicit queue cancellation before rejecting the caller. `processQueue` re-checks it
    * after the pre-execute sleep so an in-flight iteration that already picked this request does
    * NOT run its upstream work for a caller that was already rejected (RC4 orphan).
    */
@@ -128,6 +141,10 @@ interface QueuedRequest<T> {
 
 export interface RateLimitExecutionOptions {
   signal?: AbortSignal
+}
+
+export interface AdaptiveRateLimiterDependencies {
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 export interface RateLimitAdmissionOptions {
@@ -190,9 +207,11 @@ export class AdaptiveRateLimiter {
   private admissionNotBefore = 0
   private admissionRetryCount = 0
   private lastAdmissionTime = 0
+  private readonly sleepImpl: (ms: number, signal: AbortSignal) => Promise<void>
 
-  constructor(config: Partial<AdaptiveRateLimiterConfig> = {}) {
+  constructor(config: Partial<AdaptiveRateLimiterConfig> = {}, dependencies: AdaptiveRateLimiterDependencies = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+    this.sleepImpl = dependencies.sleep ?? sleepUntilElapsedOrAborted
   }
 
   /**
@@ -257,7 +276,7 @@ export class AdaptiveRateLimiter {
     return { kind: "complete" }
   }
 
-  /** Reject only permit waiters. The legacy execute queue remains owned by rejectQueued(). */
+  /** Reject only permit waiters. The legacy execute queue has a separate explicit cancellation primitive. */
   rejectAdmissions(reason: unknown): number {
     const pending = this.admissionQueue.splice(0)
     for (const request of pending) {
@@ -719,9 +738,9 @@ export class AdaptiveRateLimiter {
 
       this.lastRequestTime = Date.now()
 
-      // RC4: rejectQueued() may have cancelled + rejected this request during the sleep above
-      // (it drains the queue + aborts the sleep). Re-check ownership before running upstream work —
-      // otherwise we execute for a caller that already got "Server shutting down".
+      // Explicit queue cancellation may have rejected this request during the sleep above.
+      // Re-check ownership before running upstream work, or the cancelled caller would still
+      // execute upstream work after receiving its terminal error.
       if (request.cancelled) continue
 
       try {
@@ -775,9 +794,8 @@ export class AdaptiveRateLimiter {
   }
 
   /**
-   * Reject all queued requests immediately.
-   * Called during shutdown Phase 1 to drain the queue so queued requests
-   * don't waste drain time. Returns the number of rejected requests.
+   * Explicitly reject all queued requests and return the rejected count.
+   * Process shutdown deliberately does not call this: queued requests are accepted work.
    */
   rejectQueued(): number {
     const count = this.queue.length
@@ -801,20 +819,7 @@ export class AdaptiveRateLimiter {
   }
 
   private sleep(ms: number): Promise<void> {
-    const signal = this.sleepAbortController.signal
-    if (signal.aborted) return Promise.resolve()
-
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer)
-          resolve()
-        },
-        { once: true },
-      )
-    })
+    return this.sleepImpl(ms, this.sleepAbortController.signal)
   }
 
   /**

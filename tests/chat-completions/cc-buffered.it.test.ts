@@ -173,6 +173,8 @@ describe("CC buffered-retry adoption (P3 Task 2)", () => {
       totalRetries: 1,
       retriesBeforeDegrade: 0,
       continuationExhausted: 0,
+      precontentRecoverySuccess: 0,
+      precontentRecoveryExhausted: 0,
       preFirstBlockRetries: 1,
       continuationRetries: 0,
     })
@@ -222,6 +224,8 @@ describe("CC buffered-retry adoption (P3 Task 2)", () => {
       totalRetries: 2,
       retriesBeforeDegrade: 0,
       continuationExhausted: 0,
+      precontentRecoverySuccess: 0,
+      precontentRecoveryExhausted: 0,
       preFirstBlockRetries: 2,
       continuationRetries: 0,
     })

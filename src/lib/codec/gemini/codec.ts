@@ -66,7 +66,11 @@ import type {
   GenerateContentRequest,
   Part as GeminiPart,
 } from "~/types/api/gemini"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
@@ -101,6 +105,11 @@ import {
 } from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import {
+  //
+  restoreChatCompletionsChunkToolNames,
+  restoreChatCompletionsToolNames,
+} from "~/lib/openai/tool-name-sanitize"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
@@ -162,20 +171,31 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
   const createRenderer = (candidateEnv?: RequestEnvelope): CandidateResponseRenderer => {
     const ccRenderer = candidateEnv === undefined ? undefined : cc.createCandidateRenderer?.(candidateEnv)
     const geminiTranslator = createGeminiStreamTranslator(modelId)
+    const restoreCcFrame = (frame: ClientFrame, env: RequestEnvelope): ClientFrame => {
+      if (!frame.data || frame.data === "[DONE]" || !env.ctx.toolNameMapper) return frame
+      try {
+        const chunk = JSON.parse(frame.data) as unknown
+        return restoreChatCompletionsChunkToolNames(chunk, env.ctx.toolNameMapper) ? { ...frame, data: JSON.stringify(chunk) } : frame
+      } catch {
+        return frame
+      }
+    }
     return {
       renderResponse(frame, env) {
         const rendered = ccRenderer?.renderResponse(frame, env) ?? cc.renderResponse(frame, env)
         const ccFrames = Array.isArray(rendered) ? rendered : [rendered]
         const output: Array<ClientFrame> = []
         for (const ccFrame of ccFrames) {
-          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+          const restored = restoreCcFrame(ccFrame, env)
+          for (const step of geminiTranslator.renderFrame(restored as ServerSentEventMessage)) output.push(step.frame)
         }
         return output
       },
       flushResponse(env) {
         const output: Array<ClientFrame> = []
         for (const ccFrame of ccRenderer?.flushResponse(env) ?? []) {
-          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+          const restored = restoreCcFrame(ccFrame, env)
+          for (const step of geminiTranslator.renderFrame(restored as ServerSentEventMessage)) output.push(step.frame)
         }
         output.push(...geminiTranslator.flush().map((step) => step.frame))
         return output
@@ -193,8 +213,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, ctx } = parseGemini(raw, modelId)
-      requestContext = ctx
+      const { env } = parseGemini(raw, modelId, (ctx) => (requestContext = ctx))
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) as the cell-fork
       // discriminator + reverse-leg supply. The CC auto-truncate baseline is NOT known yet (parse
       // keeps the native Gemini body); S1b `translateInbound` computes the CC payload and merges
@@ -275,7 +294,8 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     },
 
     renderResponseNonStreaming(upstream, env) {
-      return cc.renderResponseNonStreaming(upstream, env)
+      const response = cc.renderResponseNonStreaming(upstream, env) as ChatCompletionResponse
+      return restoreChatCompletionsToolNames(response, env.ctx.toolNameMapper)
     },
 
     createResponseAccumulator(env): ResponseAccumulator {
@@ -303,7 +323,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
  * snapshots the raw Gemini body, resolves the model, and creates the `gemini-generate-content` ctx
  * with the Gemini-shape original request. `env.body` = the native `GenerateContentRequest`.
  */
-function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelope; ctx: RequestContext } {
+function parseGemini(raw: RawHttpRequest, modelId: string, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; ctx: RequestContext } {
   // `raw.body` is the client-NATIVE Gemini body. Defensively clone it for the history snapshot
   // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
   const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
@@ -324,7 +344,9 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    historyReservation: raw.historyReservation,
   })
+  onContext(ctx)
 
   ctx.setOriginalRequest({
     model: requestedModel,

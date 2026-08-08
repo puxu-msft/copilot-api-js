@@ -49,6 +49,8 @@ export interface CandidateRuntime<TProcessor> {
   readonly handle: CandidateHandle
   readonly role: CandidateRole
   run(): Promise<CandidateReady<TProcessor>>
+  /** Dispose a ready parent without changing its candidate verdict. */
+  disposeReadyWithSettlement(input: DispatchSettlement): Promise<void>
   cancel(reason: string): Promise<void>
   settle(input: { verdict: CandidateVerdict; reason?: string }): void
   recovery(reason: string): RecoveryCandidateRequest
@@ -57,6 +59,9 @@ export interface CandidateRuntime<TProcessor> {
 export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
+  readonly metadata?: { recoveryReason?: string }
+  /** Strategy attached to this candidate's initial physical dispatch. */
+  readonly initialStrategy?: string
   readonly env: RequestEnvelope
   /** Fork request/response state only after the canonical candidate handle exists. */
   readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
@@ -67,7 +72,11 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
 
 /** Create a single-use candidate runtime. Buffered recovery is represented only as a child-candidate request. */
 export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
-  const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+  const handle = input.recording.beginCandidate({
+    role: input.role,
+    ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
+    ...(input.metadata !== undefined && { metadata: input.metadata }),
+  })
   const candidateEnv = input.forkEnv?.(handle) ?? input.env
   const controller = new AbortController()
   const signal = combineAbortSignals(controller.signal, candidateEnv.ctx.operationSignal) ?? controller.signal
@@ -91,7 +100,12 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
       started = true
       runPromise = (async () => {
         try {
-          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal })
+          const ready = await input.scheduler.run({
+            candidate: handle,
+            env: latestEnv,
+            signal,
+            ...(input.initialStrategy !== undefined && { initialStrategy: input.initialStrategy }),
+          })
           latestEnv = ready.env
           return {
             candidate: handle,
@@ -101,7 +115,10 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             dispatchedAtMonotonic: ready.dispatchedAtMonotonic,
             upstream: ready.upstream,
             processor: input.createProcessor({ candidate: handle, dispatch: ready.dispatch, env: ready.env, upstream: ready.upstream }),
-            settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
+            settleDispatch: async (settlement) => {
+              await input.scheduler.settle(ready.dispatch, settlement)
+              input.scheduler.assertNoActiveReadyDispatch(ready.dispatch)
+            },
           }
         } catch (error) {
           if (signal.aborted) settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
@@ -110,6 +127,10 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
         }
       })()
       return runPromise
+    },
+
+    async disposeReadyWithSettlement(settlement) {
+      await input.scheduler.disposeActiveWithSettlement(settlement)
     },
 
     async cancel(reason) {

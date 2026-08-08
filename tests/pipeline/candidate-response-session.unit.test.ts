@@ -19,6 +19,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
+import { ResponseCodecRenderError } from "~/lib/pipeline/stream/response-processor"
 
 function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {
   const value = {
@@ -148,6 +149,32 @@ describe("CandidateResponseSession", () => {
       renderer: { id: "second", seen: ["b1", "b2"] },
       finish: { kind: "complete", frames: [secondFrames[2]], terminal: { id: "second", seen: ["b1", "b2"] }, clientCount: 2 },
     })
+  })
+
+  test("preserves an already typed post-render failure without nesting its cause", () => {
+    const original = new Error("original codec failure")
+    const typed = new ResponseCodecRenderError(original)
+    const session = createCandidateResponseSession({
+      candidate: "candidate:typed" as CandidateHandle,
+      dispatch: "dispatch:typed" as DispatchHandle,
+      env: env(),
+      responseRewrites: [],
+      renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+      createState: () => ({}),
+      onRenderedFrame() {
+        throw typed
+      },
+      snapshot: () => ({}),
+    })
+
+    expect(() => session.responseOpts.onRenderedFrame?.({ data: "typed" })).toThrow(typed)
+    expect(() => session.responseOpts.onRenderedFrame?.({ data: "typed" })).toThrow(original.message)
+    try {
+      session.responseOpts.onRenderedFrame?.({ data: "typed" })
+    } catch (error) {
+      expect(error).toBe(typed)
+      expect((error as ResponseCodecRenderError).cause).toBe(original)
+    }
   })
 
   test("classifies only post-render and post-transform client frames", async () => {

@@ -592,8 +592,16 @@ function requireNonEmpty(value: string, field: string): void {
   if (value.trim().length === 0) throw new Error(`[model-operation-record] ${field} must not be empty`)
 }
 
+let captureWorkObserver: (() => void) | undefined
+
+/** Test-only observer for the object visits and arena copies that constitute canonical capture work. */
+export function setCaptureWorkObserverForTests(observer: (() => void) | undefined): void {
+  captureWorkObserver = observer
+}
+
 function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object") return value
+  captureWorkObserver?.()
   const object = value as object
   if (seen.has(object)) return value
   seen.add(object)
@@ -798,9 +806,15 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   function buildSnapshot(): ModelOperationRecord {
     if (finalRecord) return finalRecord
     const dispatchSnapshots = Object.freeze(dispatches.map((dispatch) => snapshotDispatch(dispatch)))
+    const snapshotPayloads = Object.freeze([...payloads])
+    const snapshotFrames = Object.freeze([...frames])
+    if (captureWorkObserver) {
+      for (const _payload of snapshotPayloads) captureWorkObserver()
+      for (const _frame of snapshotFrames) captureWorkObserver()
+    }
     const record = {
       identity: snapshotIdentity(),
-      arena: Object.freeze({ payloads: Object.freeze([...payloads]), frames: Object.freeze([...frames]) }),
+      arena: Object.freeze({ payloads: snapshotPayloads, frames: snapshotFrames }),
       ingress,
       routing,
       transforms: Object.freeze([...transforms]),
@@ -1079,7 +1093,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     },
 
     setDispatchTiming(handle, kind, epoch, mode): void {
-      assertWritable()
+      if (sealed) return
       const dispatch = getDispatch(handle)
       // A response-header event is physically earlier than settlement, but its
       // async listener can run after the driver marks the dispatch settled. Timing
