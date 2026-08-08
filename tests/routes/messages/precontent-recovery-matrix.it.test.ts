@@ -647,6 +647,10 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(text).not.toContain("primary abort fallback")
     expect(text).not.toContain("msg_client_gone_recovery")
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-client-gone" }).entries[0]
+    expect(entry?.state).toBe("aborted")
+    expect(entry?._index?.derived?.failureReason).toBe("client disconnected")
   })
 
   test("ready-live recovery resumes the suspended heartbeat while evaluation waits, then publishes its batch without interleaving", async () => {
