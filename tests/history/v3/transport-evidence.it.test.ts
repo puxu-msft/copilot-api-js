@@ -15,6 +15,7 @@ import {
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
+import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import {
   //
   commitPreparedOperation,
@@ -25,6 +26,8 @@ import {
   prepareModelOperationWithTransportEvidence,
   recoverV3Journal,
   resetV3WriterForTests,
+  setV3TransactionBFailureInjectorForTests,
+  type TransactionBStage,
   type TransportEvidenceInput,
   visitV3Summaries,
 } from "~/lib/history/v3/store"
@@ -224,6 +227,45 @@ describe("History V3 transport evidence substrate", () => {
     getDatabase().exec("PRAGMA foreign_keys = ON")
     expect(() => hydrateTransportEvidence(getDatabase(), prepared.id)).toThrow(/missing transport evidence/i)
     expect(() => getV3Operation(prepared.id)).toThrow(/missing transport evidence/i)
+  })
+
+  test.each(
+    (["canonical", "tracks", "refs", "strict", "summary"] as const).flatMap((stage) => [
+      { stage, markerBefore: false },
+      { stage, markerBefore: true },
+    ]),
+  )("transaction B failure at $stage rolls back B, preserves A, and restores marker=$markerBefore", async ({ stage, markerBefore }) => {
+    const db = getDatabase()
+    ensureV3Schema(db)
+    await applyForwardMigrations(db)
+    if (markerBefore) db.prepare("INSERT OR REPLACE INTO history_meta(key,value) VALUES('summary_projection_ready','1')").run()
+    const bytes = new Uint8Array([101, 102])
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord(`b-fail-${stage}-${markerBefore}`), [captured(bytes, 0, 1)])
+    setV3TransactionBFailureInjectorForTests((current: TransactionBStage) => {
+      if (current === stage) throw new Error(`transaction B ${stage} failed`)
+    })
+
+    expect(() => commitPreparedOperation(db, prepared)).toThrow(new RegExp(`transaction B ${stage} failed`, "i"))
+
+    expect(db.prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_tracks WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_timeline_chunks WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_operation_evidence_refs WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT 1 FROM v3_operation_summaries WHERE operation_id=?").get(prepared.id)).toBeNull()
+    expect(db.prepare("SELECT format_version FROM v3_journal WHERE operation_id=? AND revision=?").get(prepared.id, prepared.revision)).toEqual({
+      format_version: 2,
+    })
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS n FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=?").get(prepared.id, prepared.revision) as {
+          n: number
+        }
+      ).n,
+    ).toBe(1)
+    expect(db.prepare("SELECT digest FROM v3_transport_evidence WHERE digest=?").get(prepared.transportEvidence[0].capture.digest)).toEqual({
+      digest: prepared.transportEvidence[0].capture.digest,
+    })
+    expect(db.prepare("SELECT value FROM history_meta WHERE key='summary_projection_ready'").get()).toEqual(markerBefore ? { value: "1" } : null)
   })
 
   test("recovers journal-v2 after transaction B fails, retaining evidence refs", () => {

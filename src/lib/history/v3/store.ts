@@ -214,6 +214,13 @@ let commitFailureInjectorForTests: (() => void) | null = null
 export function setV3CommitFailureInjectorForTests(fn: (() => void) | null): void {
   commitFailureInjectorForTests = fn
 }
+
+export type TransactionBStage = "canonical" | "tracks" | "refs" | "strict" | "summary"
+let transactionBFailureInjectorForTests: ((stage: TransactionBStage) => void) | null = null
+export function setV3TransactionBFailureInjectorForTests(fn: ((stage: TransactionBStage) => void) | null): void {
+  transactionBFailureInjectorForTests = fn
+}
+
 let summaryBackfillStop = false
 let summaryBackfill: Promise<void> | null = null
 let status: V3StoreStatus = {
@@ -890,8 +897,10 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
           prepared.compressedManifest,
           committedAt,
         )
+        transactionBFailureInjectorForTests?.("canonical")
         const trackStmt = db.prepare("INSERT INTO v3_tracks(operation_id,track_name,attempt_index,refs_json,track_gz) VALUES(?,?,?,?,?)")
         for (const track of prepared.tracks) trackStmt.run(prepared.id, track.name, track.attemptIndex, track.refs, track.compressed)
+        transactionBFailureInjectorForTests?.("tracks")
         const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
         for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
         insertOperationEvidenceRefs(
@@ -899,9 +908,12 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
           prepared.id,
           prepared.transportEvidence.map(({ dispatchIndex, sequence, capture }) => ({ dispatchIndex, sequence, ...capture })),
         )
+        transactionBFailureInjectorForTests?.("refs")
         hydrateManifest(db, prepared.compressedManifest)
+        transactionBFailureInjectorForTests?.("strict")
         db.prepare("UPDATE v3_operations SET summary_json=? WHERE operation_id=?").run(prepared.summaryJson, prepared.id)
         publishValidatedOperationSummary(db, prepared.id, restoreReadyMarker)
+        transactionBFailureInjectorForTests?.("summary")
         // Once the operation transaction commits, the durable manifest + CAS objects are the
         // recovery source. Keeping the self-contained journal payload after this point would
         // duplicate every semantic value forever and defeat content-addressed storage.
@@ -1761,6 +1773,7 @@ export function resetV3WriterForTests(): void {
   summaryBackfillStop = true
   summaryBackfill = null
   commitFailureInjectorForTests = null
+  transactionBFailureInjectorForTests = null
   status = {
     pendingOperations: 0,
     pendingBytes: 0,
