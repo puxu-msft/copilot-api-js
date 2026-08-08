@@ -374,7 +374,7 @@ Commit: `feat(history): add persistence admission controller`
 
 ### Task 1b / Batch 1b: Production Admission Wiring
 
-**状态：候选已验收（`94205e89`），待 fast-forward 合入 `master` 后写最终完成 SHA。**
+**状态：已完成（`d3b4ac77`，2026-08-08 fast-forward 合入 `master`；最终实现候选 `94205e89`，后续提交仅闭合文档与评审记录）。**
 
 **Files:**
 - Create: `src/lib/history/worker/http-admission.ts`

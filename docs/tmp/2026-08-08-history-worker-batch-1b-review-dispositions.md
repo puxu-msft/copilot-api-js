@@ -1,7 +1,7 @@
 # History Worker Batch 1b 评审转录与处置
 
-> 状态：全部代码、判据与文档复审已达 0 blocker／major；主线尚未集成。
-> 评审基线：`661e1792`；合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；当前候选：`94205e89`，基于 `master@44457047`。
+> 状态：全部代码、判据与文档复审已达 0 blocker／major；已于 2026-08-08 fast-forward 合入 `master@d3b4ac77`。
+> 评审基线：`661e1792`；合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；最终实现候选：`94205e89`；文档闭合与主线落地：`d3b4ac77`，基于 `master@44457047`。
 > 来源：生命周期 reviewer、overlay／判据 reviewer、lossless shutdown 合并态 reviewer 的工具回传；主会话转录并按 C 级代码裁定处置。
 
 ## 发现与处置
