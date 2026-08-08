@@ -301,6 +301,16 @@ export const persistLimits = createSerializedAsyncFn(async () => {
   }
 })
 
+/** Cancel and execute the currently scheduled debounce write. Tests use the
+ * boolean to distinguish a real scheduled write from a frozen no-op. */
+export async function drainScheduledCalibrationPersistenceForTests(): Promise<boolean> {
+  if (!persistTimer) return false
+  clearTimeout(persistTimer)
+  persistTimer = null
+  await persistLimits()
+  return true
+}
+
 /**
  * handoff（SIGUSR2）Phase 1：立即落最后一份快照，随后把 `schedulePersist` 冻结为
  * no-op（M2，防 overlap 期在途请求的 debounce 覆盖写把接管新进程新学到的校准数据整体覆盖丢失）。
