@@ -1,8 +1,25 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import path from "node:path"
 
 import { parseDiscoveryBaseline } from "../../scripts/entry-evidence-schema"
 
+const REPO_ROOT = path.resolve(import.meta.dir, "../..")
+const BASELINE_PATH = path.join(REPO_ROOT, "tests/infra/entry-test-discovery-baseline.json")
+
 describe("entry evidence discovery baseline v1", () => {
+  test("tracks the current backend discovery population", () => {
+    const baseline = parseDiscoveryBaseline(readFileSync(BASELINE_PATH, "utf8"))
+    const discovered = new Set<string>()
+    for (const suffix of ["unit", "it", "http"]) {
+      for (const candidate of new Bun.Glob(`**/*.${suffix}.test.ts`).scanSync({ cwd: path.join(REPO_ROOT, "tests"), onlyFiles: true }))
+        discovered.add(`tests/${candidate}`)
+    }
+    const files = [...discovered].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+
+    expect(baseline.files).toEqual(files)
+  })
+
   test("accepts canonical testcase and suite skip union entries", () => {
     const raw =
       JSON.stringify(
