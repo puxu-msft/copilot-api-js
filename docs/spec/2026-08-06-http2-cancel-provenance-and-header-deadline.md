@@ -15,7 +15,7 @@
 - `b1a0f6e6`：迁移全部 HTTP 调用点为独立 duration，保留 WebSocket first-event signal。
 - `88bb1039`：把 deadline primitive 下沉到 transport 叶子，避免 `upstream-fetch → fetch-utils → context` 新增 SCC；同时把通用 model-pattern matcher 归位。
 - `7cf1e896`：为 HTTP/2 post-response abort listener 建立具名幂等 cleanup，并覆盖 natural end、abort、physical close、`onStreamClosed` 与 reservation 回零。
-- `bae83f01`、`a0ad0f1a`、`da584116`：闭合仓库既有 lint gate、校准 discovery baseline 与 H2 时序测试；`0732fc76` 将 lossless shutdown 主线语义合入阶段分支。
+- `bae83f01`：应用仓库 lint 修复；`0732fc76` 将 lossless shutdown 主线语义合入阶段分支；`a0ad0f1a`、`da584116` 随后闭合 lint gate、校准 discovery baseline 与 H2 时序测试。
 - `03a84bcb`：闭合独立评审发现，whole/streaming Responses usage 复用单一 mapper，并以真实 shared-send 运行时 oracle 替代实现字符串正向断言。
 
 在该 commit 上的验收证据：
