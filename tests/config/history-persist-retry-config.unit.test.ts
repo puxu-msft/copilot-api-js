@@ -31,6 +31,7 @@ import {
 import { PATHS } from "~/lib/config/paths"
 import {
   //
+  DEFAULT_V3_PERSIST_RETRY_CONFIG,
   getV3PersistRetryConfigForTests,
   setV3PersistRetryConfig,
 } from "~/lib/history/v3"
@@ -74,6 +75,10 @@ afterEach(async () => {
 })
 
 describe("history.persist_retry config wiring", () => {
+  test("code defaults are exactly the shipped retry policy", () => {
+    expect(DEFAULT_V3_PERSIST_RETRY_CONFIG).toEqual({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000, maxTotalMs: 60_000 })
+  })
+
   test("applyConfigToState feeds persist_retry into the V3 store retry budget", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n    max_backoff_ms: 2500\n    max_total_ms: 5000\n")
     await applyConfigToState()
