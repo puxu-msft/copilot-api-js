@@ -36,9 +36,10 @@ describe("ConfigSchema → JSON Schema export", () => {
   test("known top-level keys are present in JSON Schema properties", () => {
     const json = toJsonSchema()
     const props = json.properties as Record<string, unknown>
-    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_mappings", "timeouts", "retry"]) {
+    for (const key of ["proxy", "anthropic", "history", "rate_limiter", "openai_responses", "model_mappings", "timeouts", "retry"]) {
       expect(props[key]).toBeDefined()
     }
+    expect(props.shutdown).toBeUndefined()
   })
 
   test("removed deprecated keys are NOT in JSON Schema", () => {

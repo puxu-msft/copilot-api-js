@@ -1,12 +1,9 @@
 /**
- * `guardSseIterable` interruption + lifecycle.
+ * `guardSseIterable` request-owned interruption + lifecycle.
  *
- * The shutdown signal is STABLE (created at process start, aborted once at
- * Phase 3 — see src/lib/shutdown.ts). guardSseIterable forwards it (and the
- * per-request client signal) into one local controller with explicit listener
- * cleanup. Because the signal is stable, a `.next()` that is ALREADY blocked on
- * a stalled upstream when the abort fires is still woken — the suite proves this
- * directly (the "case b" the previous design could not handle).
+ * Client, request-lifecycle and dispatch signals feed one local controller with
+ * explicit listener cleanup. A `.next()` already blocked on a stalled upstream
+ * is still woken when one of those request-owned signals aborts.
  */
 
 import {
@@ -118,7 +115,6 @@ describe("guardSseIterable — abort-source distinction", () => {
 
     await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
   })
-
 
   test("reaper abort → throws StreamReaperCancelError (④, distinct from client-abort)", async () => {
     const reaper = new AbortController()

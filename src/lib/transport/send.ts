@@ -207,47 +207,23 @@ export interface SendUpstreamHttpParams {
  * attached on opaque 400s.
  */
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
-  const {
-    endpointPath,
-    headers,
-    body,
-    stream,
-    errorLabel,
-    modelId,
-    diagnosticsTools,
-    headersCapture,
-    clientAbortSignal,
-    reaperSignal,
-    dispatchSignal,
-  } = params
+  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, reaperSignal, dispatchSignal } = params
 
-  // Fold the stable shutdown signal into the fetch signal for BOTH streaming and non-streaming
-  // requests so a Phase 3 abort interrupts the (long) header-wait (RFC RC1). The old
-  // `stream ? undefined` exclusion was WRONG for the delayed-commit pre-response window: a
-  // streaming request marked `streaming` can still be blocked in the pre-header fetch (`await p`)
-  // where the stream-body guard does NOT yet exist, so shutdown could not reach it — the request
-  // hung until Phase 4 force-close (observed 2026-07-12: Phase3 abort ineffective for 120s). The
-  // stream-body guard still folds shutdown for the streamed body post-header (both aborting on
-  // shutdown is idempotent). A shutdown-abort rewritten to a retryable 529 (below) is prevented
-  // from spawning a new attempt by the driver's attempt-boundary cancel gate (RC1+RC3 atomic).
-  // `clientAbortSignal` and `reaperSignal` (ctx.lifecycleSignal) are always folded too.
+  // Fold only request-owned cancellation sources into the fetch: response-header
+  // timeout, downstream client, request lifecycle, and dispatch ownership. Shutdown
+  // contributes no signal because the first process signal must not cancel accepted work.
   const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), clientAbortSignal, reaperSignal, dispatchSignal)
 
-  let response: Response
-  try {
-    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
-    // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
-    // has no built-in clock; timeouts come from the dispatcher's Agent.
-    response = await upstreamFetch(`${copilotBaseUrl(state)}${endpointPath}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: fetchSignal,
-      ...(params.onTrailers && { onTrailers: params.onTrailers }),
-    })
-  } catch (error) {
-    throw error
-  }
+  // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+  // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
+  // has no built-in clock; timeouts come from the dispatcher's Agent.
+  const response = await upstreamFetch(`${copilotBaseUrl(state)}${endpointPath}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: fetchSignal,
+    ...(params.onTrailers && { onTrailers: params.onTrailers }),
+  })
 
   // Capture HTTP headers for history (before error check — capture even on failure)
   if (headersCapture) {

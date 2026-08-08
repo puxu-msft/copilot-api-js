@@ -205,10 +205,6 @@ export interface ShutdownDeps {
   }
   /** Close the token runtime after every accepted operation has quiesced. */
   closeTokenRuntimeFn?: () => Promise<void>
-  /** @deprecated Test compatibility alias; invoked after drain, never during ingress stop. */
-  stopTokenRefreshFn?: () => void | Promise<void>
-  /** @deprecated Accepted for fixture compatibility; shutdown never rejects accepted queue entries. */
-  rateLimiter?: unknown
   closeAllClientsFn?: () => void
   getClientCountFn?: () => number
   /** Request context manager (for stopping stale reaper during shutdown) */
@@ -221,10 +217,6 @@ export interface ShutdownDeps {
   shutdownDiagnosticLoggingFn?: () => Promise<void>
   /** Test seam for the final completion notification barrier. */
   publishStoppedFn?: () => Promise<void>
-  /** @deprecated Test fixture compatibility; lossless drain has no shutdown deadline. */
-  gracefulWaitMs?: number
-  /** @deprecated Test fixture compatibility; lossless drain has no abort phase. */
-  abortWaitMs?: number
   /** Poll timing overrides for deterministic tests. */
   drainPollIntervalMs?: number
   drainProgressIntervalMs?: number
@@ -259,10 +251,7 @@ export interface ShutdownDrainSource {
   getActive: () => Array<RequestContext>
 }
 
-export async function drainActiveRequests(
-  tracker: ShutdownDrainSource,
-  opts?: { pollIntervalMs?: number; progressIntervalMs?: number },
-): Promise<void> {
+export async function drainActiveRequests(tracker: ShutdownDrainSource, opts?: { pollIntervalMs?: number; progressIntervalMs?: number }): Promise<void> {
   const pollInterval = opts?.pollIntervalMs ?? DRAIN_POLL_INTERVAL_MS
   const progressInterval = opts?.progressIntervalMs ?? DRAIN_PROGRESS_INTERVAL_MS
   let lastProgressLog = 0
@@ -303,7 +292,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     getActive: () => getRequestContextManager().getTrackedOperations(),
   }
   const server = deps?.server ?? serverInstance
-  const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (deps?.stopTokenRefreshFn ? async () => await deps.stopTokenRefreshFn?.() : async () => await peekTokenRuntime()?.dispose())
+  const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
   const drainModelOperationFinalizations =

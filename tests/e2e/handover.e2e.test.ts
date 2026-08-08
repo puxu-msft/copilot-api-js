@@ -56,12 +56,7 @@ import {
 const HOOK = "./tests/e2e/harness/handover-upstream-hook.ts"
 const GATED = existsSync(realGithubTokenPath())
 
-const configYaml =
-  [
-    "hooks:",
-    `  upstream_module: "${HOOK}"`,
-    "  enabled: true",
-  ].join("\n") + "\n"
+const configYaml = ["hooks:", `  upstream_module: "${HOOK}"`, "  enabled: true"].join("\n") + "\n"
 
 /** A minimal Anthropic Messages request. `stream: true` so the driver reads the mock
  *  hook's `.frames` (an SSE stream) rather than `.nonStream` (which the hook never

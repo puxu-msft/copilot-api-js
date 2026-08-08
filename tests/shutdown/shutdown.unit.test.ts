@@ -460,15 +460,17 @@ describe("drainActiveRequests", () => {
     await expect(drainActiveRequests(tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })).resolves.toBeUndefined()
   })
 
-  test("keeps polling without a shutdown deadline", async () => {
+  test("keeps polling until the accepted operation disappears", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
-    const drain = drainActiveRequests(tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
+    const originalGetActive = tracker.getActive
+    tracker.getActive = mock(() => {
+      if (tracker.getActive.mock.calls.length >= 5) tracker._clearRequests()
+      return originalGetActive()
+    }) as typeof tracker.getActive
 
-    await Bun.sleep(60)
-    expect(tracker.getActive.mock.calls.length).toBeGreaterThan(4)
+    await drainActiveRequests(tracker, { pollIntervalMs: 1, progressIntervalMs: 50_000 })
 
-    tracker._clearRequests()
-    await drain
+    expect(tracker.getActive.mock.calls.length).toBeGreaterThanOrEqual(5)
   })
 })
 
@@ -497,22 +499,18 @@ describe("Phase 1: immediate actions", () => {
   test("preserves request dependencies until accepted operations drain", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     const closeTokenRuntime = mock(async () => {})
-    const rejectQueued = mock(() => 1)
-
     const shutdown = gracefulShutdown(
       "SIGINT",
       createNoopDeps({
         tracker,
         closeTokenRuntimeFn: closeTokenRuntime,
-        rateLimiter: { rejectQueued },
-      }) as any,
+      }),
     )
 
     await Bun.sleep(20)
     const observedDuringDrain = {
       phase: getShutdownPhase(),
       closeTokenRuntimeCalls: closeTokenRuntime.mock.calls.length,
-      rejectQueuedCalls: rejectQueued.mock.calls.length,
     }
 
     tracker._clearRequests()
@@ -521,10 +519,8 @@ describe("Phase 1: immediate actions", () => {
     expect(observedDuringDrain).toEqual({
       phase: "draining",
       closeTokenRuntimeCalls: 0,
-      rejectQueuedCalls: 0,
     })
     expect(closeTokenRuntime).toHaveBeenCalledTimes(1)
-    expect(rejectQueued).not.toHaveBeenCalled()
   })
 
   test("calls contextManager.stopReaper in Phase 1", async () => {
@@ -602,7 +598,6 @@ describe("error resilience", () => {
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(getIsShuttingDown()).toBe(true)
   })
-
 })
 
 // ============================================================================

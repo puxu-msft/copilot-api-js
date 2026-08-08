@@ -14,9 +14,10 @@ ExecStart=/usr/bin/bun /opt/copilot-api/src/main.ts start
 # 交接时旧槽 drain 完 exit 0 → 不复活；仅真崩溃（非零退出）重启同色槽。
 # 定成 always 会把每次交接（正常 exit 0）当故障无限拉起，见 README。
 Restart=on-failure
-# 对齐 drain 宽限（shutdown.graceful_wait + abort_wait，默认 60+120=180s），留余量。
-# 若 config.yaml 调大过这两个值，须同步调大本项。
-TimeoutStopSec=200
+# systemd 必须配置有限 hard timeout；它不是应用级请求 deadline。样例按
+# timeouts.request_deadline=1200s 加 100s durability 余量。设 request_deadline=0
+# 时任何有限值都无法保证无损排空，应由部署脚本确认旧槽请求清零后再 stop。
+TimeoutStopSec=1300
 KillSignal=SIGTERM
 
 [Install]

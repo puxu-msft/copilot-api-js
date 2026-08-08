@@ -75,25 +75,9 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type {
-  AnthropicConfig,
-  Config,
-  EndpointScope,
-  HistoryConfig,
-  RateLimiterConfig,
-  ResponsesConfig,
-  RewriteRule,
-  SystemPromptEntry,
-} from "./schema"
+export type { AnthropicConfig, Config, EndpointScope, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, SystemPromptEntry } from "./schema"
 
-export {
-  AnthropicConfigSchema,
-  ConfigSchema,
-  HistoryConfigSchema,
-  RateLimiterConfigSchema,
-  ResponsesConfigSchema,
-  RewriteRuleSchema,
-} from "./schema"
+export { AnthropicConfigSchema, ConfigSchema, HistoryConfigSchema, RateLimiterConfigSchema, ResponsesConfigSchema, RewriteRuleSchema } from "./schema"
 
 export {
   _resetConfigValidationWarnTrackingForTests,

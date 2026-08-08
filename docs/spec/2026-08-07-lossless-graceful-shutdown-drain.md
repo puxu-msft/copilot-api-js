@@ -1,12 +1,12 @@
 # 首信号无损排空规格
 
-> 状态：已确认，待实施。
+> 状态：已实施。
 >
 > 用户裁决：2026-08-07。首个终止信号不得制造已接纳请求的失败；进程等待这些请求自行进入终态。第二个终止信号仍立即强退。
 
 ## 1. 问题
 
-当前 `src/lib/shutdown.ts` 在首个终止信号后关闭入口，等待 `shutdown.graceful_wait`，随后以进程级 `AbortSignal` 中止所有剩余 operation。该行为把仍在正常工作的长请求改写成重试型 shutdown 错误。
+修复前的 `src/lib/shutdown.ts` 在首个终止信号后关闭入口，等待 `shutdown.graceful_wait`，随后以进程级 `AbortSignal` 中止所有剩余 operation。该行为把仍在正常工作的长请求改写成重试型 shutdown 错误。
 
 2026-08-07 的 incident 同时出现三个受影响请求。用户日志与运行实例 History API 两种证据均显示：三个请求在同一秒以 `Server is shutting down` 失败；请求此前仍在接收上游 delta。运行实例的 `config.yaml` 将 `shutdown.graceful_wait` 配为 300 秒，incident 进程所运行的 `4c9c7aea` 版本会在该等待结束后执行 `shutdownAbortController.abort()`。这些证据证明错误来自现行自动 Step 3，而非客户端断开、stale reaper、请求 deadline 或 Step 1 提前拆除 h2 池。
 
