@@ -4,7 +4,7 @@
 
 ## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
 
-- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。HEAD `dd79edb3` 的 direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。
+- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
 - **当前行为**：buffered 路径耗尽透明重试预算后直接以 `"exhausted"` 降级，不发起 B2 fresh dispatch。
 - **理想架构 / 若做需改什么**：在 `!committedAny` 分支耗尽预算、即将走向 `degradeOutcome = "exhausted"` 前，组合 semantic-content gate 与 server-tool gate，并外挂恰好一次 recovery。fresh attempt 必须重入 buffered 循环，不可挪用 direct-live evaluator/owner batch；失败 attempt 的原始帧、duration、dispatch/candidate settlement 须在切换前提交并重置。
 - **已裁决语义**：用户已拍板尊重 `max_retries=0`；buffered B2 旁路必须额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才能生效。用户明确表达“不要任何重试”时，连 B2 这一次也不得发起。
@@ -15,7 +15,7 @@
 
 ## translated Anthropic B2 recovery publication（2026-08-08）
 
-- **根因 / 现状**：HEAD `dd79edb3` 的 direct Anthropic B2 依赖 Anthropic frame evaluator、three-mode anchor reconciliation 和 `publishRecoveryBatch` 的 owner wire contract；翻译腿的 R 虽可经 evaluator/disposition 识别和 discard，但没有等价的 translated client-wire publication path。
+- **根因 / 现状**：direct Anthropic B2 依赖 Anthropic frame evaluator、three-mode anchor reconciliation 和 `publishRecoveryBatch` 的 owner wire contract；翻译腿的 R 虽可经 evaluator/disposition 识别和 discard，但没有等价的 translated client-wire publication path。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
 - **当前行为**：当 `/v1/messages` 请求实际路由到非 Anthropic target 时，R 不会作为 direct Anthropic recovery 写入；无法被安全完成/处置时保持 fail-closed，绝不把不完整或错误格式的 R 拼进 client stream。
 - **理想架构 / 若做需改什么**：按 client format × target endpoint 建立 cell-aware recovery publication contract，复用 generation lifecycle/disposition，但由对应 renderer 生成目标 client wire；明确每种格式的 complete predicate、synthetic terminal、History terminal attribution 与 anchor/keepalive 规则。必须补真实客户端或独立 parser oracle，不能复用 Anthropic wire 断言冒充覆盖。
 - **为何暂缓**：这是跨协议 public wire/terminal 契约扩展，不是把 direct helper 接到 translate branch 的局部改动；目前 direct Anthropic 的 B2 已能正确服务目标事故路径，错误地复用其 frame/anchor 规则会制造协议损坏。
