@@ -53,12 +53,63 @@ function rejectsRetiredArchiveTier(c: Context): Response | undefined {
   return undefined
 }
 
+const OPERATION_KINDS: ReadonlySet<string> = new Set(["generation", "count_tokens", "embeddings", "responses_ws", "all"])
+const ENDPOINTS: ReadonlySet<string> = new Set(["anthropic-messages", "openai-chat-completions", "openai-responses", "gemini-generate-content"])
+const LIFECYCLE_STATES: ReadonlySet<string> = new Set(["pending", "executing", "streaming", "completed", "failed", "aborted", "interrupted"])
+const DIRECTIONS: ReadonlySet<string> = new Set(["older", "newer"])
+const BOOLEANS: ReadonlySet<string> = new Set(["true", "false"])
+const MAX_LIST_LIMIT = 1000
+
+/**
+ * Reject malformed `/api/entries` query parameters with a uniform 400 instead of letting them reach
+ * the read path, where an unknown enum silently matched nothing and a non-finite `limit` or `pid`
+ * became a 500 or an unbounded scan.
+ *
+ * Scope is this endpoint only (user ruling 2026-08-08): `/api/search` keeps its lenient contract of
+ * degrading unsupported facets to an empty 200. Empty values stay ignored — `?model=` is "no filter",
+ * not a malformed request — so the pre-existing empty-string behaviour is unchanged.
+ */
+function rejectsInvalidListQuery(c: Context): Response | undefined {
+  const query = c.req.query()
+  const invalid = (name: string, value: string, expectation: string): Response => c.json({ error: `Invalid ${name} '${value}'. ${expectation}` }, 400)
+
+  for (const [name, allowed] of [
+    ["operationKind", OPERATION_KINDS],
+    ["endpoint", ENDPOINTS],
+    ["state", LIFECYCLE_STATES],
+    ["direction", DIRECTIONS],
+    ["success", BOOLEANS],
+    ["mainAgentOnly", BOOLEANS],
+    ["terminalOnly", BOOLEANS],
+  ] as const) {
+    const value = query[name]
+    if (value && !allowed.has(value)) return invalid(name, value, `Expected one of: ${[...allowed].join(", ")}`)
+  }
+
+  for (const name of ["from", "to", "pid", "limit"] as const) {
+    const raw = query[name]
+    if (!raw) continue
+    const value = Number(raw)
+    if (!Number.isSafeInteger(value) || value < 0) return invalid(name, raw, "Expected a non-negative safe integer.")
+    if (name === "limit" && (value === 0 || value > MAX_LIST_LIMIT)) return invalid(name, raw, `Expected an integer between 1 and ${MAX_LIST_LIMIT}.`)
+  }
+
+  const from = query.from ? Number(query.from) : undefined
+  const to = query.to ? Number(query.to) : undefined
+  if (from !== undefined && to !== undefined && from > to) {
+    return c.json({ error: `Invalid range: from ${from} is later than to ${to}.` }, 400)
+  }
+  return undefined
+}
+
 export async function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
   const retiredTier = rejectsRetiredArchiveTier(c)
   if (retiredTier) return retiredTier
+  const invalidQuery = rejectsInvalidListQuery(c)
+  if (invalidQuery) return invalidQuery
 
   const query = c.req.query()
   const options: QueryOptions = {
