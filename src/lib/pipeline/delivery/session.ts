@@ -344,6 +344,16 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     return ownerFailure<T>({ ok: false, reason: "session-terminating", committed: false })
   }
 
+  const commitPublishedAnchorClose = (entry: DeliveryFrame): void => {
+    if (syntheticKind(entry) !== "anchor") return
+    const currentWireState = wireState
+    const index = currentWireState?.openAnchorIndex
+    const payload = parsePayload(entry.frame.data)
+    if (!currentWireState || index === undefined || payload?.type !== "content_block_stop" || payload.index !== index) return
+    currentWireState.openAnchorIndex = undefined
+    if (options.legacyAnchorMirror) options.legacyAnchorMirror.anchorClosed = true
+  }
+
   const writeCommittedBatch = async (
     specs: ReadonlyArray<WireWriteSpec>,
     operation: OwnerOperation,
@@ -367,6 +377,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (operation === "publish-recovery-batch") await deliverySessionTestHooks?.onWrite?.(entry)
         await writeToSink(sink, entry)
         applyWireFrame(entry)
+        if (operation === "publish-recovery-batch") commitPublishedAnchorClose(entry)
         const writtenAt = monotonicNow()
         lastWriteAtMonotonic = writtenAt
         if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
@@ -460,7 +471,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (unavailable) return unavailable
         let specs: ReadonlyArray<WireWriteSpec>
         try {
-          specs = build({ envelope })
+          specs = build({ envelope, openAnchorIndex: wireState?.openAnchorIndex })
           if (specs.length === 0) throw new Error("[delivery] recovery batch build produced no wire frames")
           await deliverySessionTestHooks?.onBeforeRecoveryBatchCommit?.()
         } catch (error) {

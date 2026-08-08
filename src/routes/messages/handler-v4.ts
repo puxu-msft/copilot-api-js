@@ -88,6 +88,7 @@ import {
   makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
+import { reconcileLiveFrame } from "~/lib/anthropic/live-reconcile"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
@@ -381,6 +382,98 @@ function anthropicCandidateSnapshot(driver: ReturnType<typeof createPipelineDriv
  * Evaluate a fresh direct-Anthropic candidate without giving it downstream or terminal authority.
  * Both B2 mounts call this exact collector; Task #4 becomes the sole publisher of its `complete` frames.
  */
+function isRecoveryAnchorTerminus(frame: ClientFrame): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    const type = (JSON.parse(frame.data) as { type?: unknown }).type
+    return type === "content_block_start" || type === "message_delta" || type === "message_stop" || type === "error"
+  } catch {
+    return false
+  }
+}
+
+interface StagedDirectRecoveryFrames {
+  readonly state: AnchorState
+  readonly frames: ReadonlyArray<ClientFrame>
+  readonly closesAnchor: boolean
+}
+
+function stageDirectRecoveryFrames(
+  frames: ReadonlyArray<ClientFrame>,
+  anchorState: AnchorState,
+  anchorHooks: AnchorHooks | undefined,
+  openAnchorIndex: number | undefined,
+): StagedDirectRecoveryFrames {
+  const state: AnchorState = { ...anchorState }
+  const staged: Array<ClientFrame> = []
+  let closesAnchor = false
+  let needsAnchorClose = openAnchorIndex !== undefined && !anchorState.anchorClosed
+  for (const frame of frames) {
+    const reconciled = reconcileLiveFrame(frame, state, anchorHooks)
+    if (needsAnchorClose && reconciled.some((entry) => isRecoveryAnchorTerminus(entry))) {
+      if (!anchorHooks || openAnchorIndex === undefined) throw new Error("[Anthropic:v4] open anchor lacks reconciliation hooks")
+      staged.push(anchorHooks.stopFrame(openAnchorIndex))
+      state.anchorClosed = true
+      needsAnchorClose = false
+      closesAnchor = true
+    }
+    staged.push(...reconciled)
+  }
+  if (needsAnchorClose) throw new Error("[Anthropic:v4] recovery batch ended without closing the open anchor")
+  return { state, frames: staged, closesAnchor }
+}
+
+type DirectRecoveryPublication =
+  | { readonly kind: "published"; readonly evaluation: Extract<Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>, { kind: "complete" }> }
+  | { readonly kind: "fallback" }
+  | { readonly kind: "client-gone" }
+  | { readonly kind: "wire-torn"; readonly error: Error }
+  | { readonly kind: "commit-failed"; readonly error: unknown }
+
+async function evaluateAndPublishDirectAnthropicRecovery(
+  driver: ReturnType<typeof createPipelineDriver>,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  primaryError: unknown,
+  deliverySession: DownstreamDeliverySession,
+  anchorState: AnchorState,
+  anchorHooks: AnchorHooks | undefined,
+  resumeHeartbeat: (() => void) | undefined,
+): Promise<DirectRecoveryPublication> {
+  resumeHeartbeat?.()
+  const evaluation = await evaluateDirectAnthropicRecovery(driver, upstream, env, primaryError)
+  if (evaluation.kind !== "complete") {
+    await evaluation.disposition.discard()
+    return { kind: "fallback" }
+  }
+  let staged: StagedDirectRecoveryFrames | undefined
+  let publication
+  try {
+    publication = await deliverySession.allocationPort.publishRecoveryBatch(
+      { candidateId: evaluation.candidate, dispatchId: evaluation.dispatch },
+      ({ envelope, openAnchorIndex }) => {
+        staged = stageDirectRecoveryFrames(evaluation.frames, anchorState, anchorHooks, openAnchorIndex)
+        return staged.frames.map((frame, index) => (staged?.closesAnchor && index === 0 ? envelope.anchor(frame) : envelope.real(frame)))
+      },
+    )
+  } catch (error) {
+    await evaluation.disposition.discard()
+    if (error instanceof DeliveryOwnerError && error.committed) return { kind: "wire-torn", error }
+    return { kind: "fallback" }
+  }
+  if (!publication.ok) {
+    await evaluation.disposition.discard()
+    return publication.committed ? { kind: "client-gone" } : { kind: "fallback" }
+  }
+  if (staged) Object.assign(anchorState, staged.state)
+  try {
+    await evaluation.disposition.commit()
+  } catch (error) {
+    return { kind: "commit-failed", error }
+  }
+  return { kind: "published", evaluation }
+}
+
 async function evaluateDirectAnthropicRecovery(
   driver: ReturnType<typeof createPipelineDriver>,
   upstream: UpstreamStream,
@@ -832,11 +925,31 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
             const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
             if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
             if (recovered.env.targetEndpoint === ENDPOINT.MESSAGES) {
-              const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, error)
-              // Task #3 deliberately keeps evaluator output off the real wire. Task #4 owns atomic batch
-              // publication; until then the pre-ready parent takes its existing safe terminal path.
-              await evaluation.disposition.discard()
-              consola.debug(`[Anthropic:v4] evaluated pre-ready recovery: ${evaluation.kind}`)
+              const evaluation = await evaluateAndPublishDirectAnthropicRecovery(
+                driver,
+                recovered.upstream,
+                recovered.env,
+                error,
+                sinkChain.deliverySession,
+                anchorState,
+                anchorHooks,
+                () => sinkChain.sink.resumeHeartbeat?.(),
+              )
+              if (evaluation.kind === "published") {
+                ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+                ctx?.complete(evaluation.evaluation.response)
+                return
+              }
+              if (evaluation.kind === "client-gone") {
+                ctx?.abort(resolvedName)
+                return
+              }
+              if (evaluation.kind === "wire-torn" || evaluation.kind === "commit-failed") {
+                await writeTerminalThenSettle(ctx, anthropicErrorFrame("api_error", "Recovery publication failed"), () =>
+                  ctx?.fail(resolvedName, evaluation.error),
+                )
+                return
+              }
             } else {
               // The direct evaluator's exhaustive accumulator contract excludes translate candidates.
               // Task #3 must still close this unpublishable candidate; Task #4 may define its translator-specific publish contract.
@@ -1361,6 +1474,13 @@ function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean;
   return { buffered, heartbeatSec }
 }
 
+function recoveryAnchorState(deliverySession: DownstreamDeliverySession, anchorState: AnchorState | undefined): AnchorState {
+  if (anchorState) return anchorState
+  const wireState = deliverySession.allocationPort.wireState
+  if (!wireState) throw new Error("[Anthropic:v4] recovery publication requires generation wire state")
+  return { wireState, injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+}
+
 interface PumpAnthropicStreamingV4Options {
   /** Supervisor sink shared by buffered/terminal paths; built once by the stream owner. */
   sink: ClientSink
@@ -1501,13 +1621,38 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     try {
       const recovered = await driver.runResponseRecovery(upstream, env, "stream-error-before-content")
       if (!recovered.ok) throw new Error("[Anthropic:v4] ready-state recovery unexpectedly rejected routing")
-      // The recovery child is evaluation-only. It receives a collector with no close/finalize or owner
-      // capability, so it cannot settle the shared context or publish frames to the already-open wire.
-      const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, opts.recoveryOriginalError ?? error)
-      // Task #3 deliberately does not publish this collector. Task #4 becomes the sole owner of the
-      // atomic recovery batch; until then, preserve the primary terminal's existing safe behaviour.
-      await evaluation.disposition.discard()
-      consola.debug(`[Anthropic:v4] evaluated ready-state recovery: ${evaluation.kind}`)
+      const publication = await evaluateAndPublishDirectAnthropicRecovery(
+        driver,
+        recovered.upstream,
+        recovered.env,
+        opts.recoveryOriginalError ?? error,
+        opts.deliverySession,
+        recoveryAnchorState(opts.deliverySession, anchorState),
+        anchorHooks,
+        opts.resumeRecoveryHeartbeat,
+      )
+      if (publication.kind === "published") {
+        recordForwarded()
+        env.ctx.complete(publication.evaluation.response)
+        return true
+      }
+      if (publication.kind === "client-gone") {
+        recordForwarded()
+        env.ctx.abort(model)
+        return true
+      }
+      if (publication.kind === "wire-torn" || publication.kind === "commit-failed") {
+        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
+        if (
+          settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, { usage: { input_tokens: 0, output_tokens: 0 } }, { cause: publication.error })
+        )
+          return true
+        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed")).catch(() => undefined)
+        recordForwarded()
+        env.ctx.fail(model, publication.error)
+        await sink.finalize?.()
+        return true
+      }
       return false
     } catch (recoveryError) {
       // Recovery is internal best-effort. Preserve the primary error on wire while retaining the rescue

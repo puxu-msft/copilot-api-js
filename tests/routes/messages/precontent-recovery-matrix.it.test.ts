@@ -121,7 +121,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
   })
 
-  test("pre-ready 529 exhausts primary retry budget, evaluates recovery, and retains primary History terminal", async () => {
+  test("pre-ready 529 exhausts primary retry budget then publishes the complete direct recovery as winner", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     let calls = 0
     applyFetchMock(
@@ -146,17 +146,17 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     const text = await response.text()
 
     expect(calls).toBe(2)
-    expect(text).not.toContain("msg_pre_ready_recovery")
-    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+    expect(text).toContain("msg_pre_ready_recovery")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
 
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-evaluate-only" }).entries[0]
     expect(entry?.attempts).toHaveLength(2)
-    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
-    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
   })
 
-  test("pre-ready exhausted primary retry evaluates and discards recovery while History terminal stays on primary", async () => {
+  test("non-complete direct recovery is discarded and preserves the primary terminal", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     let calls = 0
     applyFetchMock(
@@ -172,22 +172,22 @@ describe("Task 4.3b pre-content recovery matrix", () => {
               10,
             )
           })
-        return Promise.resolve(createSseResponse(completeFrames("msg_pre_ready_recovery")))
+        return Promise.resolve(createSseResponse(completeFrames("msg_truncated_recovery").slice(0, -2)))
       }),
     )
 
     const { createFullTestApp } = await import("../../helpers/test-app")
-    const response = await request(createFullTestApp(), "precontent-pre-ready-evaluate-only")
+    const response = await request(createFullTestApp(), "precontent-pre-ready-noncomplete")
     const text = await response.text()
 
     expect(calls).toBe(2)
-    expect(text).not.toContain("msg_pre_ready_recovery")
+    expect(text).not.toContain("msg_truncated_recovery")
     expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
 
     await drainV3Writer()
-    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-evaluate-only" }).entries[0]
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-noncomplete" }).entries[0]
     expect(entry?.attempts).toHaveLength(2)
-    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
+    expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "failed" })
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
@@ -324,7 +324,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(text).not.toContain("recovery throw")
   })
 
-  test("ready live stream-error evaluates one fresh dispatch without publishing candidate frames", async () => {
+  test("ready live stream-error publishes the complete direct recovery as winner", async () => {
     let calls = 0
     applyFetchMock(
       mock(() => {
@@ -346,19 +346,17 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     const text = await response.text()
 
     expect(calls).toBe(2)
+    // The primary already opened the client turn before its stream died; recovery's duplicate message_start is dropped.
+    expect(text).toContain("msg_primary")
     expect(text).not.toContain("msg_ready_recovery")
-    expect(dataFramesOfType(text, "error")).toHaveLength(1)
-    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "primary refused stream" })
+    expect(text).toContain("recovered response")
+    expect(dataFramesOfType(text, "error")).toHaveLength(0)
 
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-evaluate-only" }).entries[0]
     expect(entry?.attempts).toHaveLength(2)
-    expect(entry?._index?.derived?.failureReason).toBe("primary refused stream")
-    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
     expect(entry?.attempts?.[0]?.upstreamResponse?.success).toBe(false)
-    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
-    // Candidate frames are retained on its dispatch, but the evaluation-only leg has no terminal response verdict.
-    expect(entry?.attempts?.[1]?.upstreamResponse?.success).toBe(false)
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
   })
 
   test("unexpected handler failure never makes a fresh recovery dispatch", async () => {

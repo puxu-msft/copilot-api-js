@@ -93,7 +93,14 @@ export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | 
  * mutates `anchorClosed`; close authority and idempotency belong to the delivery owner invoked by the
  * decorator. `enveloped_ping` leaves `anchorBlockOpen` false and therefore remains byte-identical.
  */
-export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks: ReconcileHooks): Array<ClientFrame> {
+export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks: ReconcileHooks | undefined): Array<ClientFrame> {
+  if (!hooks) {
+    if (isMessageStart(frame)) {
+      if (state.messageStartForwarded) return []
+      state.messageStartForwarded = true
+    }
+    return [frame]
+  }
   if (!state.injected) {
     // No prelude was injected → passthrough (WIRE byte-equivalent). But RECORD a real message_start that
     // streams through here: the live pump can forward an upstream message_start EARLY (e.g. /responses

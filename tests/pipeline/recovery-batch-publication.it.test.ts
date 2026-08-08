@@ -35,6 +35,14 @@ const frame = (type: string, text: string): ClientFrame => ({
   event: type,
   data: JSON.stringify({ type, text }),
 })
+const anchorStart = (index: number): ClientFrame => ({
+  event: "content_block_start",
+  data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "text", text: "" } }),
+})
+const anchorStop = (index: number): ClientFrame => ({
+  event: "content_block_stop",
+  data: JSON.stringify({ type: "content_block_stop", index }),
+})
 
 function setup(sink: OwnerRawSink = { write: async () => {}, close() {} }) {
   const writes: Array<ClientFrame> = []
@@ -84,6 +92,57 @@ test("terminating session rejects recovery batch before C9 without writing", asy
 
   expect(await publish(port, RECOVERY, [frame("content_block_delta", "recovered")])).toEqual({ ok: false, reason: "client-gone", committed: false })
   expect(writes).toEqual([])
+})
+
+test("compound recovery batch closes an open anchor before writing the staged remapped recovery frame", async () => {
+  const { delivery, port, writes } = setup()
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+
+  expect(
+    ownerValue(
+      await port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [
+        envelope.anchor(anchorStop(0)),
+        envelope.real(frame("content_block_delta", "remapped recovery")),
+      ]),
+    ),
+  ).toBe("published")
+
+  expect(writes.map((entry) => JSON.parse(entry.data ?? "{}").type)).toEqual(["content_block_start", "content_block_stop", "content_block_delta"])
+  expect(delivery.allocationPort.wireState?.openAnchorIndex).toBeUndefined()
+})
+
+test("anchor stop first-write failure leaves the owner anchor open", async () => {
+  let fail = false
+  const { delivery, port } = setup({
+    async write() {
+      if (fail) throw new Error("anchor stop failed")
+    },
+    close() {},
+  })
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+  fail = true
+
+  await expect(port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [envelope.anchor(anchorStop(0))])).rejects.toMatchObject({ committed: true })
+  expect(delivery.allocationPort.wireState?.openAnchorIndex).toBe(0)
+})
+
+test("anchor stop successful before an R write failure closes the owner anchor", async () => {
+  let writes = 0
+  let failRecovery = false
+  const { delivery, port } = setup({
+    async write() {
+      writes++
+      if (failRecovery && writes === 3) throw new Error("recovery write failed")
+    },
+    close() {},
+  })
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+  failRecovery = true
+
+  await expect(
+    port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [envelope.anchor(anchorStop(0)), envelope.real(frame("content_block_delta", "partial recovery"))]),
+  ).rejects.toMatchObject({ committed: true })
+  expect(delivery.allocationPort.wireState?.openAnchorIndex).toBeUndefined()
 })
 
 test("successful recovery batch preserves order and candidate provenance while advancing the semantic gate", async () => {
