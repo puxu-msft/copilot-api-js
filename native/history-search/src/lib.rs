@@ -545,10 +545,18 @@ fn list_search_blocking(
                 resolve_contains(columns.response_model.as_ref(), needle)?,
             )),
         };
-        // `Weight::for_each_no_score` walks the raw docset, which still contains deleted
-        // documents — unlike a collector-driven search, which the searcher filters. Every
-        // `upsert_summary` deletes the previous document for that operation id, so skipping
-        // this would resurrect superseded versions.
+        // `Weight::for_each_no_score` walks the raw docset, which CAN contain deleted
+        // documents — unlike a collector-driven search, where the searcher filters them.
+        //
+        // Unproven by test, deliberately kept: probed against tantivy 0.26.1 with this
+        // writer usage (`delete_term` then `add_document` on one long-lived writer, commit
+        // per flush), every live segment reports `deletes: null` — the delete is materialized
+        // during the commit, and a segment left with no live document is dropped outright.
+        // So no reachable fixture produces a tombstone here today, and a mutation disabling
+        // this branch does not turn any test red. It stays because the previous
+        // collector-driven path got this filtering for free: if tantivy's policy ever leaves
+        // a `.del` behind, dropping it would silently resurrect superseded operations, which
+        // is a data-correctness bug the read path must not be one policy change away from.
         let alive = segment_reader.alive_bitset();
         let mut docs: Vec<DocId> = Vec::new();
         weight
