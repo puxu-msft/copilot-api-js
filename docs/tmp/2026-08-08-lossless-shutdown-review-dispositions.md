@@ -17,6 +17,8 @@
 
 ## 判据正控
 
+两份冻结 patch 已随本目录归档，未来评审者可直接复跑：[2026-08-08-lossless-shutdown-mutation-drop-generation.patch](2026-08-08-lossless-shutdown-mutation-drop-generation.patch)、[2026-08-08-lossless-shutdown-mutation-drop-lightweight.patch](2026-08-08-lossless-shutdown-mutation-drop-lightweight.patch)。复跑方式：`git apply <patch>` 注入变异 → 跑对应测试确认变红 → `git apply --reverse --check <patch>` → `git apply --reverse <patch>` 复绿。
+
 - generation tracker mutation：冻结 exact patch，将 production `getActive()` 改为仅 lightweight registry。`shutdown-messages-lossless.http` 三类 generation 用例在一个事件循环 tick 内观察到 `stopped` 而非 `draining`，确定性变红；反向 apply 后复绿。
 - lightweight tracker mutation：冻结 exact patch，将 production `getActive()` 改为仅 `RequestContextManager.getTrackedOperations()`。count_tokens 与 embeddings 用例均观察到 token／History／Telemetry／Diagnostic 在请求 terminal 前提前关闭，确定性变红；反向 apply 后复绿。
 - mutation 恢复后，源码再次机械确认 production tracker 同时包含两个 registry，目标测试复绿，`git diff --check` 通过。
@@ -58,6 +60,6 @@
 
 - **守护的不变量：** validator 的 provenance／dependency-integrity fail-closed——任一 runtime 依赖被改被删、SAX 包图或 manifest 不符时必须 rc=7 且不发布 receipt。
 - **依据：** 该文件 43 个用例几乎每条都 fork 真实 validator 跑真实 git fixture，单文件独跑约 45 秒；Bun 默认 5 秒是 wall-clock 预算，不属于该文件任何判据。
-- **现象：** 16-shard 下每轮会有 1～2 条随机越过 5 秒被判超时（实测 7.3／9.5／7.4 秒），而单文件 43/43 全绿——典型 false-red，且逐条加 timeout 是打地鼠。
+- **现象：** 16-shard 下每轮会有 1～2 条随机越过 5 秒被判超时（实测 7.3／9.5／7.4 秒），而单文件 43/43 全绿——典型 false-red，且逐条加 timeout 是打地鼠。逐用例耗时原始数据归档在 [2026-08-08-validate-entry-evidence-timings.xml](2026-08-08-validate-entry-evidence-timings.xml)（单文件独跑，最慢 4.56 秒、全文件 45.4 秒）。
 - **处置（C）：** 用 `setDefaultTimeout(30_000)` 给该文件设机制对齐的预算，断言一行未改。修后 backend 16 shards、6641 tests 全绿。
 
