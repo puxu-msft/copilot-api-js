@@ -1,6 +1,6 @@
 ---
 slug: task1b-task3-seam
-status: in-progress
+status: blocked
 base: 38ee9d8641848fc97dfbca371bc322f2d623ab70
 branch: agent-a4519c20a545ed3b6
 worktree: /home/xp/src/copilot-api-js/.worktree/agent-a4519c20a545ed3b6
@@ -37,7 +37,22 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 
 ## 已处理的失败
 
-- `tests/pipeline/generation-runtime-baseline.http.test.ts` 与 `tests/pipeline/hooks/driver-provenance.unit.test.ts` 首次联合运行失败，均由上述同一callback遮蔽根因导致，非既有失败；其余Task 1b／Task 3目标测试在同轮通过。修复后必须复跑两者并确认恢复。
+- `tests/pipeline/generation-runtime-baseline.http.test.ts` 与 `tests/pipeline/hooks/driver-provenance.unit.test.ts` 首次联合运行失败，均由上述同一callback遮蔽根因导致，非既有失败；修复后联合复跑为15 pass／0 fail，Task 3扩展组合为125 pass／0 fail。
+- `bun run test:backend` 已连续运行两次，均在开始后收到进程级 `SIGUSR2` 并以exit 1终止，未输出单个测试断言失败；该信号不来自本任务启动的4141服务器（本任务没有启动任何服务器）。因此全后端门尚未通过，需在信号来源稳定后重跑，不将其当作既有红挥手。
+
+## 验证
+
+- 正控：暂时把 direct render projection变异为回传rich `ParsedSseFrame`，`response-processor.unit` 以目标combined-seam断言 `"kind" in frame === true` 失败；恢复`projectParsedSseFrame`后7 pass／0 fail。
+- `bun run typecheck`：通过。
+- Task 1b parser／encoder／public-boundary 子集：通过；Task 3 adapter／grammar／candidate／driver 子集：125 pass／0 fail；combined seam：22 pass／0 fail；canonical deterministic performance：5 pass／0 fail。
+- target ESLint：通过，仅有第三方`baseline-browser-mapping`数据陈旧warning。
+- 全后端：blocked，见本节SIGUSR2记录。
+
+## 本轮自我批判
+
+- 内部替代方案：可把外层transform与candidate classification重构为单独的typed pipeline stage，但那会越过Task 4的owner迁移边界；本轮采用已组装opts的单一callback保持当前契约。
+- 判据判别力：rich→wire seam已通过exact mutation正控；callback遮蔽由真实live baseline与hook-provenance两条独立测试共同捕获。仍缺fresh same-value ID／public-flat与outcomes-preserved的显式combined单测，列为剩余项。
+- 第三方方案：无能替代本项目自有SSE provenance与DeliveryGrammar契约的成熟库。
 
 ## Source mapping
 
