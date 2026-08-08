@@ -154,3 +154,12 @@
 - **V14 活跃写入权收口** — ⚠️ `542007c9` 把 progress frontmatter 改为 `batch-1b-integrated-master-d3b4ac77-superseded-by-plan`，正文明确“已完成并停止更新”，八项待办全为 `[x]`；正式计划 Batch 1b 状态行成为活跃写入点。原文档 reviewer 逐条核验 C1～C6 后判 0 blocker／major。因本轮追加本日志，只记事实。｜结论：数据不足
 - **V7 闭环提交时点** — ⚠️ `git diff-tree --no-commit-id --name-only -r 542007c9` 精确列出正式 plan、Batch 1b progress、评审处置三路径；三个文件内的 `d3b4ac77` 状态锚点均由 `git show 542007c9:<path> | rg` 命中。`775b5fb5` 只更新 kickoff，把执行入口推进到 Task 2a；独立指令 reviewer 已判 kickoff 可合、0 blocker／major。记录形成时本轮收尾提交尚待 fast-forward 合入共享 `master`，最终落地由 Git ancestry 外部裁决，不据本条投证实票。｜结论：数据不足
 - **V6 权威引用＋语境复述** — ⚠️ progress 明确引用正式 plan 的 Batch 1b 状态行并停止更新；kickoff 以 `REVIEWED_PLAN_COMMIT=542007c9…`绑定同一 plan blob，同时完整复述 Task 2a 的启动门、首个 red test、crash windows 与证明边界。独立指令 reviewer 逐条核验 K1～K6 后判 kickoff 可合、0 blocker／major；本轮追加该日志，故仍不投票。｜结论：数据不足
+
+## 2026-08-08 · HTTP/2 header deadline 阶段 1 收尾（分支 tip `f0cb1f1e`，master 核验基线 `d1011fe7`）
+
+- **V1 触发链** — ❌ 负样本。用户说「完成了开始收尾」之后我才加载本 skill；在此之前我已用 `result:` 宣告过阶段 1 交付完成，却没先走六步。命中「用户点名」。｜结论：证伪
+- **V4 查-peer 配方** — ✅ 配方按路径口径跑通且给出了有判别力的答案：`git log --oneline HEAD..master -- src/lib/transport src/lib/fetch-utils.ts src/lib/models/timeout-resolver.ts docs/spec/2026-08-06-*.md` 零命中，而同期不限 path 的 `HEAD..master` 有 16 条（全是 History worker／skill 文档）。零命中在此是**正确结论**而非配方失灵——正因为它把无关的 16 条排除掉了。因本轮追加本 log，依第 11 行不投证实票。｜结论：数据不足
+- **V8 正交视角** — ✅ **计入分母**：派活前就写死两个视角与各自证据义务（判据证伪 / 接手方第一人称走查），不是先后替补。**各自都有独有且改变动作的发现**——判据视角独有：plan 注解 sha 口径错、KICKOFF 数字锚错树、记忆里的 `14475` 复现不出（实测 `14541`）；接手视角独有：**T1 的证伪方法根本不成立**（`package-boundaries.unit.test.ts` 三个检测器只匹配 import specifier，不检测同名类型复制），以及交接文档尚未进 master 导致「从 master 建树就找不到 HANDOVER」。若只派判据视角，那条 major 会漏——它只有靠「实地打开那个测试看它到底检测什么」才暴露。因本轮编辑该 log，只记客观观测。｜结论：数据不足（但分母 +1，独有发现双向成立）
+- **V9 鉴别力正控** — ⚠️ 初稿 T1–T3 写了「待执行期跑」的目标变异、T4 只写了验收判据的否命题（漏正控）。**证伪发生在评审中**：T1 那条不仅缺正控，其证伪方法本身不成立。整改后 T1 补了守卫真实边界说明、T4 补了三种具体 mutation（只等第一道 barrier／从 `errorSnapshot` 读 tag／logical terminal 当场 settle）。**教训：写「证伪方式」时必须去打开那个守卫确认它真的检测那件事，不能从测试文件名推断能力。**｜结论：数据不足
+- **V10 上游对账触发** — ✅ 触发并逐份 disposition：block-level buffered retry ADR（依据未被拆，无需重裁）、旧 `protect_streaming_generation`（用户已裁「不启用、未来删」，列为独立后续项）、2026-08-06 系列交接（其「CANCEL 主线未实施」表述已被阶段 1 部分推翻，写明以 spec 状态节为准）。检索词与范围已落盘在 HANDOVER 的对账节。｜结论：数据不足
+- **V16 property→acceptance 对账** — ⚠️ 本轮 HANDOVER 的 T1–T4 就是该表的实例：**抓到 1 处真漂移**——T4 的性质写「三条 settlement 路径都写入**最终**observation」而验收只写「三条路径都写了字段」，量词一致但**排除项不同**（没有排除「写了中间值」），三种 mutation 正落在这个缝里。证明该对账不是零命中的仪式。｜结论：数据不足

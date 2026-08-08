@@ -29,6 +29,8 @@
 
 阶段 1 保持 2026-08-08 主线确立的 lossless shutdown 契约：第一次进程信号不向已接收请求注入 shutdown abort；header deadline 只与 client/reaper/dispatch 等 request-owned lifecycle signal 分离，不复活已删除的 shutdown→request cancel/529 rewrite。
 
+**阶段 2/3 接手入口**：[docs/plan/2026-08-08-header-deadline-stage2-3/HANDOVER.md](../plan/2026-08-08-header-deadline-stage2-3/HANDOVER.md)（状态、硬事实、上游对账、带验收判据与证伪方式的待办）+ 同目录 `KICKOFF.md`（可直接复制的启动提示词）。
+
 ## 1. 问题与裁决
 
 生产 History 中大量 generation 以 `Stream closed with error code NGHTTP2_CANCEL` 失败。单看这条 Bun `node:http2` 错误无法判定谁发起了 CANCEL：peer 发 `RST_STREAM(CANCEL)` 与本地调用 `ClientHttp2Stream.close(NGHTTP2_CANCEL)` 都可能产生同一错误文本。当前 transport 将 post-header body error 与 close-before-end 都标成 `mid-body-close`；这个标签说明阶段，却不说明发起方，上层仍只能靠错误字符串、请求状态和经过时间猜测来源。

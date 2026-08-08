@@ -27,6 +27,7 @@
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
+- [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 指控「逐项绑定错位」时先逐项复核再采纳；对照若恰是它没指控的那几项就检验不了指控，先写下影响集合再从集合内取样，争议交未卷入第三方
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — 编辑脚本的 assert 在写盘之前→失败即全丢而 commit 照跑，提交信息描述了没发生的事（一天内两次）；`bash -n`／smoke 绿在未编辑文件上同样通过、区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
@@ -103,6 +104,7 @@
 - [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
+- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 交叉验证只数叶节点、别按 suite 属性求和
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段盲
