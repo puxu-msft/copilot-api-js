@@ -564,6 +564,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const candidate = chatCandidateSnapshot(driver, upstream)
   if (candidate.kind !== "chat-completions") throw new Error("[ChatCompletions:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
+  if (outcome.kind === "complete" && outcome.finish?.kind === "valid-terminal-without-boundary" && acc.finishReason === "") {
+    acc.finishReason = outcome.finish.terminal
+  }
 
   if (outcome.kind === "delivery-finished") {
     recordForwarded()

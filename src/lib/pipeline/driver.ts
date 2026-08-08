@@ -862,10 +862,11 @@ function runResponse(
   env: RequestEnvelope,
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
+  options: { readonly optsAlreadyMerged?: boolean } = {},
 ): AsyncIterable<ClientFrame> {
   const coordinated = generation?.bindings.get(upstream)?.candidate.processor
   if (coordinated) {
-    const effectiveOpts = mergeCandidateResponseOpts(coordinated.responseOpts, opts)
+    const effectiveOpts = options.optsAlreadyMerged ? (opts ?? {}) : mergeCandidateResponseOpts(coordinated.responseOpts, opts)
     return coordinated.processor.stream(upstream, effectiveOpts)
   }
   // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
@@ -886,9 +887,31 @@ function runResponse(
   return session.processor.stream(upstream, effectiveOpts)
 }
 
-function mergeCandidateResponseOpts(candidate: CandidateResponseSessionOptions | undefined, outer: RunResponseOpts | undefined): RunResponseOpts {
-  if (!candidate) return outer ?? {}
-  return { ...outer, ...candidate }
+function mergeCandidateResponseOpts<T extends RunResponseOpts>(candidate: CandidateResponseSessionOptions | undefined, outer: T | undefined): T {
+  if (!candidate) return (outer ?? {}) as T
+  const merged = { ...outer, ...candidate } as T
+  // Candidate options own protocol classification; legacy outer callbacks remain additive so
+  // existing driver-only callers retain their observer and terminal predicates.
+  if (outer?.onUpstreamFrame) {
+    merged.onUpstreamFrame = (frame) => {
+      outer.onUpstreamFrame?.(frame)
+      candidate.onUpstreamFrame?.(frame)
+    }
+  }
+  if (outer?.onFinishResolved) {
+    merged.onFinishResolved = (result) => {
+      outer.onFinishResolved?.(result)
+      candidate.onFinishResolved?.(result)
+    }
+  }
+  const bufferedOuter = outer as RunBufferedOpts | undefined
+  if (bufferedOuter?.sawMessageStop) {
+    ;(merged as RunBufferedOpts).sawMessageStop = () => bufferedOuter.sawMessageStop?.() || candidate.sawMessageStop?.() || false
+  }
+  if (bufferedOuter?.sawUpstreamError) {
+    ;(merged as RunBufferedOpts).sawUpstreamError = () => bufferedOuter.sawUpstreamError?.() || candidate.sawUpstreamError?.() || false
+  }
+  return merged
 }
 
 function currentCandidateResponseOpts(
@@ -897,7 +920,7 @@ function currentCandidateResponseOpts(
   outer: RunResponseOpts | RunBufferedOpts | undefined,
 ): RunResponseOpts | RunBufferedOpts {
   const candidate = generation?.currentSession(upstream)?.responseOpts
-  return candidate ? { ...outer, ...candidate } : (outer ?? {})
+  return mergeCandidateResponseOpts(candidate, outer)
 }
 
 async function maybeRunHedgedResponseSink(
@@ -1105,12 +1128,10 @@ async function runResponseSink(
   let finish: import("./types").ResponseFinishResult | undefined
   const responseOpts: RunResponseOpts = {
     ...effectiveOpts,
-    ...(effectiveOpts.finishResponse && {
-      onFinishResolved(result: import("./types").ResponseFinishResult) {
-        finish = result
-        effectiveOpts.onFinishResolved?.(result)
-      },
-    }),
+    onFinishResolved(result: import("./types").ResponseFinishResult) {
+      finish = result
+      effectiveOpts.onFinishResolved?.(result)
+    },
   }
   try {
     for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
@@ -1350,8 +1371,11 @@ export async function runResponseBufferedSink(
 
   try {
     for (;;) {
-      const candidateOpts = currentCandidateResponseOpts(generation, current, opts) as RunBufferedOpts
-      const notifyBufferedResolve = candidateOpts.onBufferedResolve ?? opts.onBufferedResolve
+      // Each attempt resolves the session for its current upstream exactly once. Outer caller options
+      // retain their existing priority; the driver observer wraps the final merged callback instead of
+      // re-merging the candidate later and accidentally replacing it.
+      const attemptBaseOpts = currentCandidateResponseOpts(generation, current, opts) as RunBufferedOpts
+      const notifyBufferedResolve = attemptBaseOpts.onBufferedResolve ?? opts.onBufferedResolve
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
       let retreated = false
@@ -1359,16 +1383,14 @@ export async function runResponseBufferedSink(
       let drained = false
       let finish: import("./types").ResponseFinishResult | undefined
       const responseOpts: RunBufferedOpts = {
-        ...candidateOpts,
-        ...(candidateOpts.finishResponse && {
-          onFinishResolved(result: import("./types").ResponseFinishResult) {
-            finish = result
-            candidateOpts.onFinishResolved?.(result)
-          },
-        }),
+        ...attemptBaseOpts,
+        onFinishResolved(result: import("./types").ResponseFinishResult) {
+          finish = result
+          attemptBaseOpts.onFinishResolved?.(result)
+        },
       }
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation)) {
+        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, { optsAlreadyMerged: true })) {
           if (frame.data === "[DONE]") continue
           const toWrite = frame
           if (retreated) {
@@ -1413,7 +1435,7 @@ export async function runResponseBufferedSink(
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, candidateOpts.transformBufferedFlush)
+            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, attemptBaseOpts.transformBufferedFlush)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
@@ -1423,7 +1445,7 @@ export async function runResponseBufferedSink(
               notifyBufferedResolve?.("retreated", attempt, { vendor })
               return streamErrorOutcome(res.error, env)
             }
-          } else if (candidateOpts.commitBoundaries?.(toWrite)) {
+          } else if (attemptBaseOpts.commitBoundaries?.(toWrite)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
             // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
             // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
@@ -1467,7 +1489,7 @@ export async function runResponseBufferedSink(
               buffer,
               isErrorTerminusFlush,
               { cause: "boundary", boundaryFrame: toWrite },
-              candidateOpts.transformBufferedFlush,
+              attemptBaseOpts.transformBufferedFlush,
             )
             sink.resumeHeartbeat?.()
             buffer.length = 0
@@ -1522,7 +1544,7 @@ export async function runResponseBufferedSink(
       // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
-      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.())) {
+      if (drained && (attemptBaseOpts.sawMessageStop?.() || attemptBaseOpts.sawUpstreamError?.() || attemptBaseOpts.sawContentlessRefusal?.())) {
         // Flush the buffered TAIL (everything after the last committed block boundary). On the
         // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
         // generation and this is the ONE flush — byte-identical to before (R1). On the block-level
@@ -1538,7 +1560,7 @@ export async function runResponseBufferedSink(
         // Unlike retreat/boundary flushes there is no subsequent stream that needs resume. Closing here
         // also blocks an in-flight heartbeat operation's finally-handler from re-arming during a slow flush.
         sink.close?.()
-        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
+        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, attemptBaseOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "write-error") {
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the

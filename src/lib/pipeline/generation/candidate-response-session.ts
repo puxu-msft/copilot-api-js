@@ -121,7 +121,16 @@ export function createCandidateResponseSession<State, Snapshot>(
   let sawFailure = false
   const identity = Symbol("candidateResponseSession")
   let sequence = 0
+  const recordOutcome = (outcome: DeliveryOutcome, frame?: ClientFrame): void => {
+    outcomes.push(outcome)
+    if (outcome.kind === "complete-unit" && frame) completedBoundaryFrames.add(frame)
+    if (outcome.kind === "response-terminal") {
+      sawTerminal = true
+      if (outcome.terminal.semantic === "failed") sawFailure = true
+    }
+  }
   let finish: CandidateResponseFinish | undefined
+  let finishResolved: CandidateResponseFinish | undefined
   let terminalSnapshot: Snapshot | undefined
   const captureTerminalSnapshot = (): void => {
     if (terminalSnapshot !== undefined) return
@@ -151,13 +160,8 @@ export function createCandidateResponseSession<State, Snapshot>(
     }
     const next = grammar.consume({ kind: "frame", classified })
     for (const outcome of next) {
-      outcomes.push(outcome)
-      if (outcome.kind === "complete-unit") completedBoundaryFrames.add(frame)
-      if (outcome.kind === "response-terminal") {
-        sawTerminal = true
-        if (outcome.terminal.semantic === "failed") sawFailure = true
-      }
-      if (outcome.kind === "protocol-error") sawFailure = true
+      recordOutcome(outcome, frame)
+      if (outcome.kind === "protocol-error" && isUpstreamFailure(outcome.error.semantic)) sawFailure = true
       boundary.observe(outcome, envelope)
     }
   }
@@ -190,6 +194,7 @@ export function createCandidateResponseSession<State, Snapshot>(
       return finish
     },
     onFinishResolved: (result) => {
+      finishResolved = result
       let classified: ReturnType<DeliveryProtocolAdapter["classifyFinish"]>
       try {
         classified = adapter.classifyFinish(result)
@@ -201,13 +206,18 @@ export function createCandidateResponseSession<State, Snapshot>(
       }
       const next = grammar.consume({ kind: "finish", classified })
       for (const outcome of next) {
-        outcomes.push(outcome)
-        if (outcome.kind === "response-terminal") sawTerminal = true
-        if (outcome.kind === "protocol-error") sawFailure = true
+        recordOutcome(outcome)
+        if (outcome.kind === "protocol-error" && isUpstreamFailure(outcome.error.semantic)) sawFailure = true
       }
     },
-    sawMessageStop: () => sawTerminal,
-    sawUpstreamError: () => sawFailure,
+    // A natural `complete` finish is a terminal declaration for legacy direct Responses streams
+    // whose emitted events predate output-item lifecycle framing. It is distinct from `truncated`,
+    // so Chat's missing finish_reason remains retryable.
+    sawMessageStop: () =>
+      sawTerminal
+      || finishResolved?.kind === "valid-terminal-without-boundary"
+      || (input.env.clientFormat === "openai-responses" && finishResolved?.kind === "complete"),
+    sawUpstreamError: () => sawFailure || finishResolved?.kind === "terminal-failure",
     ...(input.sawContentlessRefusal && { sawContentlessRefusal: () => input.sawContentlessRefusal?.(state) ?? false }),
     ...(adapter.deliveryMode === "unit" && { commitBoundaries: (frame: ClientFrame) => completedBoundaryFrames.has(frame) }),
     ...(input.transformBufferedFlush && { transformBufferedFlush: (frames, ctx) => input.transformBufferedFlush?.(state, frames, ctx) ?? frames }),
@@ -250,6 +260,10 @@ export function createCandidateResponseSession<State, Snapshot>(
 }
 
 /** Default candidate session for stateless/mock handlers and response-only helpers. */
+function isUpstreamFailure(semantic: import("~/lib/pipeline/delivery/protocol").ClientProtocolError["semantic"]): boolean {
+  return semantic === "terminal-failure" || semantic === "adapter-exception"
+}
+
 function defaultAdapter(env: RequestEnvelope): DeliveryProtocolAdapter {
   switch (env.clientFormat) {
     case "anthropic": {
