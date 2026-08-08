@@ -441,6 +441,62 @@ describe("History V3 transport evidence substrate", () => {
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(3)
   })
 
+  test("rejects journal recovery when the payload's embedded identity belongs to another journal row", () => {
+    const shared = captured(new Uint8Array([90]), 0, 1)
+    const first = prepareModelOperationWithTransportEvidence(terminalRecord("journal-identity-first"), [shared])
+    const second = prepareModelOperationWithTransportEvidence(terminalRecord("journal-identity-second"), [shared])
+    setV3TransactionBFailureInjectorForTests((stage) => {
+      if (stage === "canonical") throw new Error("leave transaction A pending")
+    })
+    expect(() => commitPreparedOperation(getDatabase(), first)).toThrow(/leave transaction A pending/i)
+    expect(() => commitPreparedOperation(getDatabase(), second)).toThrow(/leave transaction A pending/i)
+    setV3TransactionBFailureInjectorForTests(null)
+    // Both rows are individually well-formed and share one evidence set, so their
+    // normalized refs stay equal after the swap: refs/revision/digest checks all
+    // agree and only an owner-identity binding can reject it.
+    getDatabase()
+      .prepare(
+        `UPDATE v3_journal
+         SET payload_gz=(SELECT payload_gz FROM v3_journal WHERE operation_id=?),
+             digest=(SELECT digest FROM v3_journal WHERE operation_id=?)
+         WHERE operation_id=?`,
+      )
+      .run(second.id, second.id, first.id)
+
+    expect(recoverV3Journal()).toBe(1)
+    expect(getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(first.id)).toBeNull()
+    expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(first.id) as { error: string }).error).toMatch(
+      /journal operation identity mismatch/i,
+    )
+  })
+
+  test("garbage collection refuses a journal payload whose embedded identity belongs to another row before deleting", () => {
+    const shared = captured(new Uint8Array([91]), 0, 1)
+    const first = prepareModelOperationWithTransportEvidence(terminalRecord("gc-journal-identity-first"), [shared])
+    const second = prepareModelOperationWithTransportEvidence(terminalRecord("gc-journal-identity-second"), [shared])
+    setV3TransactionBFailureInjectorForTests((stage) => {
+      if (stage === "canonical") throw new Error("leave transaction A pending")
+    })
+    expect(() => commitPreparedOperation(getDatabase(), first)).toThrow(/leave transaction A pending/i)
+    expect(() => commitPreparedOperation(getDatabase(), second)).toThrow(/leave transaction A pending/i)
+    setV3TransactionBFailureInjectorForTests(null)
+    getDatabase()
+      .prepare(
+        `UPDATE v3_journal
+         SET payload_gz=(SELECT payload_gz FROM v3_journal WHERE operation_id=?),
+             digest=(SELECT digest FROM v3_journal WHERE operation_id=?)
+         WHERE operation_id=?`,
+      )
+      .run(second.id, second.id, first.id)
+    const orphan = captured(new Uint8Array([92]), 0, 1)
+    getDatabase()
+      .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")
+      .run(orphan.capture.digest, orphan.capture.encoding, compressBytes(orphan.bytes), orphan.capture.byteLength)
+
+    expect(() => garbageCollectTransportEvidence(getDatabase())).toThrow(/journal operation identity mismatch/i)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(2)
+  })
+
   test("garbage collection refuses normalized journal refs that diverge from the payload before deleting", () => {
     const referenced = prepareModelOperationWithTransportEvidence(terminalRecord("gc-journal-ref-mismatch"), [
       captured(new Uint8Array([64]), 0, 1),

@@ -1244,13 +1244,17 @@ export function listV3Operations(kind?: string, limit = 100): Array<ModelOperati
 
 function summaryFromRow(
   db: Database,
-  row: { operation_id: string; manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
+  row: { operation_id: string; manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
 ): EntrySummary {
   // A cached summary is never permission to publish an unvalidated canonical
-  // operation. Decode + evidence validation is the shared release gate for every
-  // consumer, including the summary fast path.
+  // operation, and it is never the published value either. The marker-absent
+  // fallback exists precisely because `summary_json` is not yet known to agree
+  // with canonical: migration 002 revokes the marker without clearing the
+  // derived column, and a protected UPDATE revokes it without repairing the row.
+  // Publishing the cached value here would hand consumers the very projection
+  // the fallback was entered to distrust, so reproject from the record that the
+  // decode + evidence gate just validated.
   const stored = storedOperationFromRow(db, row)
-  if (row.summary_json) return { ...(JSON.parse(row.summary_json) as EntrySummary), pinned: row.pinned === 1 }
   return recordToEntrySummary(stored.record, stored)
 }
 
@@ -1264,18 +1268,17 @@ export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, ki
       kind ?
         db
           .prepare(
-            "SELECT operation_id,manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+            "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
           )
           .all(kind, pageSize, offset)
       : db
           .prepare(
-            "SELECT operation_id,manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+            "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
           )
           .all(pageSize, offset)
     const page = rows as Array<{
       operation_id: string
       manifest_gz: Uint8Array
-      summary_json: string | null
       pinned: number
       ended_at: number | null
       timing_source: V3TimingSource
@@ -1551,11 +1554,22 @@ function operationRefs(db: Database, operationId: string): Array<TransportEviden
   ).map((row) => persistedEvidenceRef(row, "operation"))
 }
 
-function assertManifestOperationIdentity(manifest: ManifestEnvelope, expectedOperationId: string): void {
-  const actualOperationId = manifest.record.identity.operationId
+/**
+ * Bind a decoded envelope's self-reported operation identity to the SQL row that
+ * owns it. Every decode path — canonical manifest and journal payload alike —
+ * runs this before its record, refs or entities are used for anything, so a
+ * payload swapped onto another row's blob column fails loud instead of
+ * publishing under the wrong identity.
+ */
+function assertRecordOperationIdentity(record: { identity: { operationId: string } }, expectedOperationId: string, kind: "manifest" | "journal"): void {
+  const actualOperationId = record.identity.operationId
   if (actualOperationId !== expectedOperationId) {
-    throw new Error(`[history/v3] manifest operation identity mismatch: expected ${expectedOperationId}, got ${actualOperationId}`)
+    throw new Error(`[history/v3] ${kind} operation identity mismatch: expected ${expectedOperationId}, got ${actualOperationId}`)
   }
+}
+
+function assertManifestOperationIdentity(manifest: ManifestEnvelope, expectedOperationId: string): void {
+  assertRecordOperationIdentity(manifest.record, expectedOperationId, "manifest")
 }
 
 function validateStoredOperationDigest(db: Database, manifestBlob: Uint8Array, manifest: ManifestEnvelope, operationId: string): void {
@@ -1631,7 +1645,7 @@ function journalEvidenceRefGroups(db: Database): Array<Array<TransportEvidenceRe
     format_version: number
   }>
   return rows.map(({ operation_id, revision, payload_gz, format_version }) => {
-    const refs = decodeJournalPayload(format_version, payload_gz).refs
+    const refs = decodeJournalPayload(format_version, payload_gz, operation_id).refs
     validateTransportEvidenceRefs(refs)
     const normalized = journalRefs(db, operation_id, revision)
     validateTransportEvidenceRefs(normalized)
@@ -1774,14 +1788,23 @@ interface JournalV2Payload {
   transportEvidenceRefs: Array<TransportEvidenceRef>
 }
 
-function decodeJournalPayload(formatVersion: number, payload: Uint8Array): { record: ModelOperationRecord; refs: Array<TransportEvidenceRef> } {
+function decodeJournalPayload(
+  formatVersion: number,
+  payload: Uint8Array,
+  expectedOperationId: string,
+): { record: ModelOperationRecord; refs: Array<TransportEvidenceRef> } {
   const decoded = JSON.parse(decoder.decode(decompressBytes(payload))) as unknown
-  if (formatVersion === 1) return { record: decoded as ModelOperationRecord, refs: [] }
+  if (formatVersion === 1) {
+    const record = decoded as ModelOperationRecord
+    assertRecordOperationIdentity(record, expectedOperationId, "journal")
+    return { record, refs: [] }
+  }
   if (formatVersion !== JOURNAL_FORMAT_VERSION) throw new Error(`[history/v3] unsupported journal format version: ${formatVersion}`)
   const journal = decoded as Partial<JournalV2Payload>
   if (journal.journalFormatVersion !== JOURNAL_FORMAT_VERSION || !journal.record || !Array.isArray(journal.transportEvidenceRefs)) {
     throw new Error("[history/v3] invalid journal-v2 payload")
   }
+  assertRecordOperationIdentity(journal.record, expectedOperationId, "journal")
   return { record: journal.record, refs: journal.transportEvidenceRefs }
 }
 
@@ -1821,13 +1844,17 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
   let recovered = 0
   for (const row of rows) {
     try {
-      const { record: recoveredRecord, refs } = decodeJournalPayload(row.format_version, row.payload_gz)
+      const { record: recoveredRecord, refs } = decodeJournalPayload(row.format_version, row.payload_gz, row.operation_id)
       const persistedRefs = journalRefs(db, row.operation_id, row.revision)
       if (!refsEqual(refs, persistedRefs)) throw new Error("journal evidence refs mismatch")
       const timingOverride =
         recoveredRecord.terminal?.occurredAt === undefined ? { endedAt: row.created_at, source: "storage-commit-upper-bound" as const } : undefined
       const evidence = hydrateTransportEvidenceRefs(db, refs)
       const prepared = prepareModelOperationWithTransportEvidence(recoveredRecord, evidence, timingOverride)
+      // Adjacent defence to the decode-time identity binding: the committed row is
+      // keyed by the prepared operation's own id, so a prepare path that ever
+      // rewrote identity would publish under a key the journal row does not own.
+      if (prepared.id !== row.operation_id) throw new Error("journal operation identity mismatch")
       if (prepared.revision !== row.revision) throw new Error("journal revision mismatch")
       if (row.format_version === 1) {
         const v1Matches = legacyManifestV1Digest(recoveredRecord) === row.digest
