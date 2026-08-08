@@ -14,6 +14,7 @@ import type {
 
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
+import { StreamClientAbortError } from "~/lib/stream"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -89,6 +90,40 @@ describe("generation recorder v4 driver integration", () => {
     const renderedNode = record.arena.frames.find((node) => node.provenance === "derived" && node.transformId === "render:openai-cc")
     expect(upstreamNode?.value).toEqual({ data: upstreamFrame.data, type: "message" })
     expect(renderedNode).toMatchObject({ provenance: "derived", derivedFrom: upstreamNode?.handle, origin: { stage: "render", track: "client" } })
+  })
+
+  test("evaluation collector maps a real client-abort upstream iterator to settled-abort and discards the candidate cleanly", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      transport: makeTransport(async () => ({
+        headers: new Headers(),
+        frames: {
+          async *[Symbol.asyncIterator]() {
+            throw new StreamClientAbortError()
+          },
+        },
+      })),
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected routing rejection")
+    const identity = driver.getCandidateResponseIdentity(request.upstream)
+    if (!identity) throw new Error("missing evaluation candidate identity")
+
+    const outcome = await driver.runResponseSink(request.upstream, request.env, makeArraySink().sink, { responseMode: "evaluate" })
+    expect(outcome).toEqual({ kind: "settled-abort" })
+    await driver.discardConsumedCandidateResponse(request.upstream)
+
+    const snapshot = ctx.modelOperationSnapshot
+    expect(snapshot.terminal?.winnerCandidate).toBeUndefined()
+    expect(snapshot.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)?.verdict).toBe("failed")
+    expect(snapshot.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("failed")
   })
 
   test("commits an evaluation candidate through the driver as the terminal winner only after its caller promotes it", async () => {

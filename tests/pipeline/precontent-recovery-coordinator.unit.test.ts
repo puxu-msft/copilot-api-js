@@ -163,4 +163,20 @@ describe("pre-content recovery coordinator", () => {
 
     expect(budget.snapshot()).toMatchObject({ activeCandidates: 1, totalCandidates: 2 })
   })
+
+  test("recovery admission exhaustion releases the failed primary reservation and does not poison the next generation", async () => {
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const first = createGenerationCoordinator({ env: envelope("first-primary"), createCandidate: candidateFactory(recordingPort().port), generationBudget: budget })
+
+    await expect(first.runPrimary()).rejects.toThrow("primary pre-ready failure")
+    expect(budget.snapshot()).toEqual({ activeCandidates: 0, totalCandidates: 1, activeDispatches: 0, totalDispatches: 0 })
+    await expect(first.runRecoveryFromPreReadyFailure("upstream-rst", envelope("first-recovery"))).rejects.toThrow("total candidate budget exhausted")
+    expect(budget.snapshot()).toEqual({ activeCandidates: 0, totalCandidates: 1, activeDispatches: 0, totalDispatches: 0 })
+
+    const nextBudget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const next = createGenerationCoordinator({ env: envelope("next-primary"), createCandidate: candidateFactory(recordingPort().port), generationBudget: nextBudget })
+    await expect(next.runPrimary()).rejects.toThrow("primary pre-ready failure")
+    await expect(next.runRecoveryFromPreReadyFailure("upstream-rst", envelope("next-recovery"))).resolves.toMatchObject({ role: "recovery" })
+    expect(nextBudget.snapshot()).toMatchObject({ activeCandidates: 1, totalCandidates: 2 })
+  })
 })
