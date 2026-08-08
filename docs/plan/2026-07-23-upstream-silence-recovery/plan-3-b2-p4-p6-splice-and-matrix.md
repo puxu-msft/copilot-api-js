@@ -4,7 +4,7 @@
 >
 > **实际偏离（已验证且非范围缩减）：** 没有采用早期的逐帧 splice 门面，而是 evaluator → `stageDirectRecoveryBatch` → owner `publishRecoveryBatch` → disposition 的两阶段 publication；这保证 C9 前可 fallback、C9 后不把部分 R 降级回 P。buffered B2 与 translated publication 没有假装已实现，仍 fail-closed，前者在 backlog 中保留。真实 `@anthropic-ai/sdk` 离线 oracle、三 keepalive mode、abort provenance、clean EOF 与 History terminal projection 已进入 Task 5 覆盖。
 >
-> **范围裁定（用户硬约束 never-false-kill）：** B2 排除 `timeout(header-wait)`、`reaper-cancel` 等 abort provenance；只对确定性 HTTP/网络上游死亡且未交付真实语义内容启动。实现／测试资产与 C5 mutation evidence 已完成，backend gate 已通过；final merged-state、code、verifier 与 doc reviews 仍进行中，不能据此把全计划标记完成。可复现命令与 mutation 判据见 [Task 4.3b 实施报告](task-4.3b-implementation-report.md)。
+> **范围裁定（用户硬约束 never-false-kill）：** B2 排除 `timeout(header-wait)`、`reaper-cancel` 等 abort provenance；只对确定性 HTTP/网络上游死亡且未交付真实语义内容启动。实现／测试资产与 C5 mutation evidence 已完成，backend gate 已通过；final merged-state、code、verifier 与 doc reviews 均已完成且无 blocker／major，不能据此把全计划标记完成。可复现命令与 mutation 判据见 [Task 4.3b 实施报告](task-4.3b-implementation-report.md)。
 
 ## 背景：挂载点精确定位（代码实证）
 
@@ -288,7 +288,7 @@ test("History: the failed pre-ready attempt is recorded with nextStrategy='preco
 
 ## Task 4.5：协议级回归矩阵（三模式 × 5 种失败形态）
 
-**实施状态：实现／测试资产、C5 mutation evidence 与 backend gate 已完成；final merged-state、code、verifier 与 doc reviews 进行中。** `tests/routes/messages/precontent-recovery-matrix.it.test.ts` 以真实 handler 覆盖 pre-ready/ready-live、three-mode、non-complete R、owner C9 failure、abort producer、budget、History 与 ready-live clean EOF；C4 dual-read cases 分别在 empty-text R success 与 fallback 下对账 V2 entry 和 terminal-bus canonical V3 record。`tests/e2e-client/precontent-recovery.it.test.ts` 用离线 mock upstream + in-process proxy 驱动真实 `@anthropic-ai/sdk` `.messages.stream(...).finalMessage()`，并覆盖 clean EOF recovery。mutation、恢复门和精确命令已移入 [Task 4.3b 实施报告](task-4.3b-implementation-report.md)，本 plan 不重复长表。以下是原始矩阵设计步骤，保留为覆盖意图。
+**实施状态：实现／测试资产、C5 mutation evidence 与 backend gate 已完成；final merged-state、code、verifier 与 doc reviews 均已完成且无 blocker／major。** `tests/routes/messages/precontent-recovery-matrix.it.test.ts` 以真实 handler 覆盖 pre-ready/ready-live、three-mode、non-complete R、owner C9 failure、abort producer、budget、History 与 ready-live clean EOF；C4 dual-read cases 分别在 empty-text R success 与 fallback 下对账 V2 entry 和 terminal-bus canonical V3 record。`tests/e2e-client/precontent-recovery.it.test.ts` 用离线 mock upstream + in-process proxy 驱动真实 `@anthropic-ai/sdk` `.messages.stream(...).finalMessage()`，并覆盖 clean EOF recovery。mutation、恢复门和精确命令已移入 [Task 4.3b 实施报告](task-4.3b-implementation-report.md)，本 plan 不重复长表。以下是原始矩阵设计步骤，保留为覆盖意图。
 
 **这是 FINDINGS 明确要求的"必须新建"第 4 件机件**——覆盖 primary failure / recovery failure / abort / header-timeout / budget exhaustion，跨三种 keepalive mode。
 
@@ -313,7 +313,7 @@ test("generation-budget exhaustion: repeated pre-content failures across MULTIPL
 
 - [x] **Step 2: 跑，失败（mutation 已实际执行）：**
   - **预测**：ping/enveloped_ping/empty_text 三模式的"recovery 成功"场景，删除 Task 4.1 的 splice 分支判断会让 empty_text 场景出现"客户端收到两个 message_start"或"index 冲突"的可观测失败——**这个预测可能不咬**（若 `reconcileLiveFrame` 的既有防护已经足够健壮，删除 splice 分支可能只是退化成"透传"而非"崩溃"）；执行期必须真跑一次删除 Task 4.1 实现后的红色状态确认，若不咬，说明测试断言粒度不够，需要加严（比如显式断言 index 序列而非只断言最终内容正确）。
-- [x] **Step 3-5**：随 Task 4.1-4.4 的实现逐步补齐；direct-live matrix 已绿，C5 mutation evidence 与 backend gate 已完成，final merged-state、code、verifier 与 doc reviews 仍进行中。
+- [x] **Step 3-5**：随 Task 4.1-4.4 的实现逐步补齐；direct-live matrix 已绿，C5 mutation evidence 与 backend gate 已完成，final merged-state、code、verifier 与 doc reviews 均已完成且无 blocker／major。
 - [x] **提交** → matrix 与 SDK coverage 已分阶段提交，具体谱系、C4 dual-read 与 mutation coverage 见 [tracked implementation report](task-4.3b-implementation-report.md)。
 
 ---
@@ -329,11 +329,11 @@ test("generation-budget exhaustion: repeated pre-content failures across MULTIPL
 | 4.5 协议与 SDK资产 | ✅ | handler matrix、SDK、three-mode wire、abort/budget、History、clean EOF 与 C5 mutation evidence 已覆盖；Task 5 coverage review 为 0 major，clean EOF verifier 已通过。 |
 | buffered B2 | ⏳ backlog | 不在 live owner batch 中旁路，保持现有 buffered retry 语义与 `max_retries=0` 裁决。 |
 | translated B2 publication | ⏳ deferred | evaluator 可识别/处置 translate candidate，但没有将 translated R 写入 direct Anthropic recovery wire；保持 fail-closed。 |
-| Task 5 交付门 | 🔄 | backend gate 已通过；final merged-state、code、verifier 与 doc reviews 仍进行中。 |
+| Task 5 交付门 | ✅ | backend gate、typecheck、final code／verifier／doc／merged-state reviews 均通过；最新 master 二次整合复评 0 blocker／0 major，本地 fast-forward 已完成。 |
 
 ## 验收 Oracle（本阶段整体）
 
-- backend gate 已通过；运行命令、退出码、脚本汇总非精确口径与首轮 History performance 波动均由 [tracked implementation report](task-4.3b-implementation-report.md) 单独记录。该 gate 不替代仍在进行的 final merged-state、code、verifier 与 doc reviews。
+- backend gate 已通过；运行命令、退出码、脚本汇总非精确口径与首轮 History performance 波动均由 [tracked implementation report](task-4.3b-implementation-report.md) 单独记录。final merged-state、code、verifier 与 doc reviews 已独立完成。
 - `tests/e2e-client/precontent-recovery.it.test.ts`：真 SDK oracle，以 `.finalMessage()`、internal call count 与最终文本验证完整 turn；SDK parser acceptance 不替代 wire order/index oracle。
 - History terminal 与 three-mode wire contract 均由独立 handler/context oracle 覆盖。
 - 可复现命令、mutation red/restore 判据与 clean EOF 证据统一见 [Task 4.3b 实施报告](task-4.3b-implementation-report.md)。

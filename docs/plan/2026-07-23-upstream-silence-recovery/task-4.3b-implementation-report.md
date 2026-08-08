@@ -1,6 +1,6 @@
 # Task 4.3b direct Anthropic B2 实施报告
 
-状态：**实现与测试资产已完成；最新 master 合并态的三项独立评审发现已修复，等待复评与最终 backend gate。** 实现基线始于 `dd79edb3`（其父 `84a84bf5` 完成 evaluator discriminant guard，`aa2620db` 修复 ready-live clean EOF），后续关键验证提交为 `328ea295`、`9d4ccfc1`、`7e6d06f6`；交付状态以本文件所在 commit 为准。本报告只覆盖 `/v1/messages` 的 direct Anthropic live B2；buffered B2 与 translated publication 仍未实现、保持 fail-closed，见 [deferred backlog](../../todo/deferred-backlog.md)。
+状态：**direct Anthropic live B2 已实现、评审、验证并本地集成至 `master@04d7a144`；未 push。** 实现基线始于 `dd79edb3`（其父 `84a84bf5` 完成 evaluator discriminant guard，`aa2620db` 修复 ready-live clean EOF），C5 验证提交至 `7e6d06f6`，合并态补漏提交为 `a6eeebc1`，二次吸收最新 master 的整合提交为 `04d7a144`。本报告只覆盖 `/v1/messages` 的 direct Anthropic live B2；buffered B2 与 translated publication 仍未实现、保持 fail-closed，见 [deferred backlog](../../todo/deferred-backlog.md)。
 
 ## 已实现合同
 
@@ -20,7 +20,7 @@
 | backend recovery hardening | `25a0fad0`、`fd7c7a09`、`1cacbea9`、`84a84bf5` |
 | C4 History V2/V3 integrated oracle 与 initial R strategy | `dd79edb3` |
 | C5 mutation evidence 与 post-C9 fallback oracle | `328ea295`、`9d4ccfc1`、`7e6d06f6` |
-| backend gate／final review status | 验证运行基线 `7e6d06f6`；docs-only updates 由本文件所在 commit 表示 |
+| 合并态补漏与最终集成 | `a6eeebc1`（补漏）→ `04d7a144`（吸收 `master@16b2b7fe` 并本地 fast-forward） |
 
 ## 可复现验证
 
@@ -35,7 +35,9 @@ bun run typecheck
 
 focused matrix、SDK 与 context oracle 在实现期均以退出码 0 验证。`dd79edb3` 后重新运行 `bun run typecheck`、matrix＋coordinator focused suites（54 pass，0 fail）、C4 dual-read oracle（2 pass，0 fail）与受影响文件 eslint。clean EOF SDK case `ready-live clean EOF before semantic content recovers one coherent SDK message` 连续运行 10 次均退出码 0。
 
-交付前在 `7e6d06f6` 上第二次执行 `bun run test:backend`，退出 0、汇总显示 6276 pass／0 fail；项目已知 `parallel-test.ts` 汇总会漂移，因此该数字不作为精确测试计数，结论只使用退出码与 0 fail。第一次同门在该验证序列中显示 6561 pass／1 fail，失败为 History capture-performance ratio 8.816；该单测随后连续 10 次通过，第二次全 backend 亦为 0 fail。`bun run typecheck` 同样退出 0。Task 5 coverage review 为 0 major，clean EOF verifier 已通过；这些不替代仍在进行的 merged-state、code、verifier 与 doc final reviews。
+交付前在 `7e6d06f6` 上第二次执行 `bun run test:backend`，退出 0、汇总显示 6276 pass／0 fail；项目已知 `parallel-test.ts` 汇总会漂移，因此该数字不作为精确测试计数，结论只使用退出码与 0 fail。第一次同门在该验证序列中显示 6561 pass／1 fail，失败为 History capture-performance ratio 8.816；该单测随后连续 10 次通过，第二次全 backend 亦为 0 fail。Task 5 coverage review、clean EOF verifier、code／doc／merged-state reviews 均已通过。
+
+最新 master 集成链又执行了两道全 backend gate：`a6eeebc1` 合并态为 5705 pass／0 fail；二次吸收 `master@16b2b7fe` 后的 `04d7a144` 为 6039 pass／0 fail，且 typecheck 退出 0。共享 master 在 feature 63 路径与 15 条 peer dirty／untracked 路径碰撞集为 0 后，`git merge --ff-only` 到 `04d7a144`；随后在 master 上 typecheck 与 63 条关键测试通过。所有提交均为本地提交，未 push。
 
 ## 2026-08-08 最新 master 合并态审计补漏
 
@@ -45,7 +47,7 @@ focused matrix、SDK 与 context oracle 在实现期均以退出码 0 验证。`
 - primary 已成功写出真实 `content_block_start`、delta 尚未到时，旧 gate 仍为 false，clean EOF 会发 R 并制造两个并列 open block。现由 delivery owner 在任一非 synthetic Anthropic real block start 或 client-format real content frame 成功写出后关闭 B2 gate；text/tool 两种真实 handler 红绿样本均锁住 `calls===1`。
 - isolated fixture 只清 History Worker registry pointer，不 shutdown 所有的 runtime。现新增 async owning reset，先等待 `runtime.shutdown()`，只在仍指向同一 runtime 时清 pointer；fixture 串行 await 该 reset，guard 将 injector setter明确路由到 owning reset。
 
-focused 验证：open-block 2 pass/0 fail；History lifecycle 31 pass/0 fail；timeout config 13 pass/0 fail；recovery delivery 12 pass/0 fail；typecheck exit 0。最终复评、backend 与 commit anchor在下方状态更新后补记。
+focused 验证：open-block 2 pass／0 fail；History lifecycle 31 pass／0 fail；timeout config 最终 16 pass／0 fail；recovery delivery 12 pass／0 fail；Chat Completions 配置隔离 14 pass／0 fail；typecheck exit 0。复评新增的 per-model bounded-wait 告警与 DESIGN 当前默认值两项也已修复；同一 reviewer 最终给出 0 blocker／0 major。
 
 ## Mutation controls
 
@@ -73,4 +75,4 @@ C4 的独立双读 oracle 不属于 mutation：`canonical terminal record and V2
 - buffered B2：`runResponseBufferedSink` 的 `committedAny === false` exhausted 路径不发 B2，并继续尊重 `max_retries=0` 表示不重试的裁决。
 - translated publication：不得复用 direct Anthropic 的 wire／anchor 规则；需要 cell-aware renderer、terminal contract 与各客户端 oracle。
 - 真实 GHC 大上下文 fresh-retry 成功率仍未实测。离线测试证明代理控制流与协议，不证明事故请求必能恢复。
-- backend gate 已通过；final merged-state、code、verifier 与 doc reviews 仍进行中，因此本报告不构成整个 Task 5 或上游静默特性的完成声明。
+- direct Anthropic live B2 的 Task 5、final code／verifier／doc／merged-state reviews、backend gate 与本地 master 集成均已完成。这里的“完成”不扩张到上列 buffered／translated／真实 GHC 效力边界。
