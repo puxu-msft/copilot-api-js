@@ -38,16 +38,15 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 ## 已处理的失败
 
 - `tests/pipeline/generation-runtime-baseline.http.test.ts` 与 `tests/pipeline/hooks/driver-provenance.unit.test.ts` 首次联合运行失败，均由上述同一callback遮蔽根因导致，非既有失败；修复后联合复跑为15 pass／0 fail，Task 3扩展组合为125 pass／0 fail。
-- `bun run test:backend` 已连续运行两次，均在开始后收到进程级 `SIGUSR2` 并以exit 1终止，未输出单个测试断言失败；该信号不来自本任务启动的4141服务器（本任务没有启动任何服务器）。因此全后端门尚未通过，需在信号来源稳定后重跑，不将其当作既有红挥手。
+- `bun run test:backend` 全后端门尚未通过，原因是7个已枚举测试失败与crashed shard；SIGUSR2日志已在后续Phase1证据中降级为进程内测试行为，不能作为exit 1归因。
 
 ## SIGUSR2 Phase 1 证据（2026-08-08）
 
-- 原两次backend输出没有完整落盘路径；本轮用只读wrapper重跑，完整日志为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.log`，事件时间线为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.events`，子进程树／信号掩码快照为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.children`。wrapper `2918764`、runner `2918774`同属PGID `2918764`；wrapper未收到SIGUSR2 trap，runner记录exit 1。快照显示launcher→Bun runner→isolated child；不能仅凭现有快照断言具体child是信号目标。
-- 该重现首行再次出现`[shutdown] Received SIGUSR2`，因此观察到SIGUSR2的backend运行数为3／3；但本次exit 1的直接原因并非信号：16 shards、4672 tests、4665 pass、7 fail、2 crashed shards。最后崩溃分片隔离时仍在跑`tests/shutdown/shutdown-mid-stream.http.test.ts`等45文件，首个稳定失败是`tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts`。
-- 单跑该文件稳定失败：它期望passthrough `FrameAction`无`provenance`字段，但Task1b正确加入`provenance:"preserve"`；这是需由实施合约决定的真实断言漂移，当前按指令不修。单独shutdown相关6文件为84 pass／0 fail，仍会输出SIGUSR2但由其unit测试有意调用`handleShutdownSignal("SIGUSR2")`，不向OS进程发送该信号。
-- 全仓审计：生产唯一SIGUSR2发送点是`src/lib/restart/takeover.ts:46`的`process.kill(pid,"SIGUSR2")`；只有明确调用方才会激活。`scripts/parallel-test.ts`仅`Bun.spawn`分片，未发送或监听信号；测试中`setupShutdownHandlers`只在`shutdown-sigusr2.unit`与独立fixture使用。全仓还存在e2e handover／server harness精确kill，但不在本backend suffix集合的直接入口。
-- 单一假设（未证实）：并行backend的某一共享进程测试加载了SIGUSR2 handler，外部同PGID／会话来源向runner或其child发送SIGUSR2；但现有证据同时显示独立的7个测试失败足以解释exit 1，不能把exit归咎于信号。
-- 下一步仅做诊断：运行分片时按child PID安装外部signal trace或以`strace -f -e signal`（工具可用时）锁定接收者；在此之前不修改实现或测试。
+- wrapper重现日志：`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.log`、事件时间线：`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.events`、进程树：`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.children`。wrapper `2918764`、runner `2918774`同属PGID `2918764`，wrapper trap未触发；只证明日志不来自wrapper，不足以指定child。
+- `strace` 缺失：`/bin/bash: strace: command not found`，故不能取得 syscall sender→receiver。替代的`BUN_OPTIONS=--preload` tracer覆盖129个 Bun child，记录PID／PGID但没有`received-SIGUSR2`；同时对`shutdown-sigusr2.unit`单跑验证，该测试直接调用`handleShutdownSignal("SIGUSR2")`即可产生相同日志、无需OS signal。因此backend首行SIGUSR2降级为**进程内测试行为**，sender→receiver无可证实事实，也不解释exit 1。
+- 唯一生产发送点为`src/lib/restart/takeover.ts:46`的`process.kill(pid,"SIGUSR2")`；`scripts/parallel-test.ts`只分片spawn。backend运行3／3出现该日志，但一轮明确为16 shards、4672 tests、4665 pass、7 fail、2 crashed shards，exit由失败／crash解释。
+- 单跑7项分类：①`error-frame-canonical-rewrite.unit`稳定红，Task1b `preserveFrame`返回`provenance:"preserve"`而旧deep-equal遗漏该字段，属契约迁移候选；已有fresh／preserve policy及combined seam为正控，未改。②two-racer两项稳定红：sink改raw encoded write后仍无ping／abort错误变stream-error，属真实整合回归。③Anthropic v4与三个rewrite golden稳定红：History upstream-original content重复拼接，属真实History capture回归。④UDS单跑24 pass／0 fail，backend超时／child exit143为并发污染或环境候选。⑤SCC ratchet稳定红，新循环从Task37未改的`buffered-merge-reducer.ts`开始；基线worktree缺undici，无法AB归因。
+- 下一单一假设：rich parser frame的History capture在同一请求重复记录upstream事件，致Anthropic accumulation重复；先审计capture调用次数和tracks，不修复。
 
 ## 验证
 
