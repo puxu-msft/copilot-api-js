@@ -65,6 +65,7 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；后者可能是 prune orphan，见 [node_modules](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 的隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④命令可能跑错树⑤不同基线 merge 会夹带无关祖先；树向 gate → skill `proving-where-a-command-ran`，集成单元/ancestry/恢复 → skill `git-preference:isolating-from-a-shared-git-worktree`
+- [隔离 worktree 会话合不了主线，只能交付到「可 fast-forward」](worktree-isolated-session-cannot-merge-shared-master.md) — master 被主检出占用 + 护栏拒 `-C` 共享树且无放行前缀；判据=`merge-base --is-ancestor master HEAD`，最后一条命令交用户
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
