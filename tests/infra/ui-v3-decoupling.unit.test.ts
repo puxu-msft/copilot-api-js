@@ -1,4 +1,3 @@
-import { ESLint } from "eslint"
 import { Glob } from "bun"
 import {
   //
@@ -6,6 +5,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import { ESLint } from "eslint"
 
 // 旧 Vue 前端 `ui/` 已于 2026-07-28 从主编译链整体断开（退役 ui-v4 的一步）：
 // 不是 workspace 成员、不在根 tsconfig 里、不被 root eslint 扫、后端档位脚本也不聚合它。
@@ -38,7 +38,10 @@ function uiSourceFiles(): Array<string> {
 
 /** 归一化一条 workspace 模式：bun 认 `ui`/`ui/`/`./ui`/`ui/**`/`./ui/**` 全是同一个声明。 */
 function normalizeWorkspacePattern(pattern: string): string {
-  return pattern.replace(/^\.\//, "").replace(/\/\*\*$/, "").replace(/\/$/, "")
+  return pattern
+    .replace(/^\.\//, "")
+    .replace(/\/\*\*$/, "")
+    .replace(/\/$/, "")
 }
 
 describe("legacy Vue ui/ stays detached from the main chain", () => {
@@ -72,26 +75,19 @@ describe("legacy Vue ui/ stays detached from the main chain", () => {
     expect(offenders, `root tsconfig include pulls in ui/: ${offenders.join(", ")}`).toEqual([])
   })
 
-  test(
-    "root eslint ignores every file under ui/",
-    async () => {
-      const eslint = new ESLint({ cwd: REPO_ROOT })
-      // 用 ESLint 自己的解析结果当 oracle，而不是对配置文件做字符串匹配 —— 后者会被
-      // 任何等价改写（换 glob 写法、挪进别的 config 块、改用 files 反向限定）骗过。
-      const linted: Array<string> = []
-      for (const file of uiSourceFiles()) {
-        if (!(await eslint.isPathIgnored(`${REPO_ROOT}${file}`))) linted.push(file)
-      }
-      expect(linted, `root eslint still lints ${linted.length} file(s) under ui/:\n${linted.slice(0, 10).join("\n")}`).toEqual([])
-      // 正样本对照：证明 isPathIgnored 不是对什么都返回 true。
-      expect(await eslint.isPathIgnored(`${REPO_ROOT}src/server.ts`)).toBe(false)
-      expect(await eslint.isPathIgnored(`${REPO_ROOT}ui-v4/src/main.tsx`)).toBe(false)
-    },
-    // Loading the complete typed flat config and asking ESLint about every ui/ source file is
-    // intentionally an integration oracle. Under 16-way suite load it can exceed Bun's generic
-    // 5 s unit timeout even though the same exhaustive check is correct and terminates normally.
-    15_000,
-  )
+  test("root eslint ignores every file under ui/", async () => {
+    const eslint = new ESLint({ cwd: REPO_ROOT })
+    // 用 ESLint 自己的解析结果当 oracle，而不是对配置文件做字符串匹配 —— 后者会被
+    // 任何等价改写（换 glob 写法、挪进别的 config 块、改用 files 反向限定）骗过。
+    const linted: Array<string> = []
+    for (const file of uiSourceFiles()) {
+      if (!(await eslint.isPathIgnored(`${REPO_ROOT}${file}`))) linted.push(file)
+    }
+    expect(linted, `root eslint still lints ${linted.length} file(s) under ui/:\n${linted.slice(0, 10).join("\n")}`).toEqual([])
+    // 正样本对照：证明 isPathIgnored 不是对什么都返回 true。
+    expect(await eslint.isPathIgnored(`${REPO_ROOT}src/server.ts`)).toBe(false)
+    expect(await eslint.isPathIgnored(`${REPO_ROOT}ui-v4/src/main.tsx`)).toBe(false)
+  }, 15_000) // 5 s unit timeout even though the same exhaustive check is correct and terminates normally. // intentionally an integration oracle. Under 16-way suite load it can exceed Bun's generic // Loading the complete typed flat config and asking ESLint about every ui/ source file is
 
   test("root ui scripts invoke ui/ directly, never through the workspace filter", async () => {
     const pkg = await readJson("package.json")

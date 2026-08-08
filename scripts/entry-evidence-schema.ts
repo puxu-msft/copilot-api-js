@@ -31,7 +31,7 @@ const TESTCASE_KEYS = ["kind", "file", "classname", "name", "ordinal", "count", 
 const SUITE_KEYS = ["kind", "file", "suite_name", "count", "reason"]
 const REASONS = new Set<SkipReason>(["native-unavailable", "todo", "whole-suite-skip", "reviewed-environment"])
 const SUITE_REASONS = new Set<Exclude<SkipReason, "todo">>(["native-unavailable", "whole-suite-skip", "reviewed-environment"])
-const SEPARATOR = String.fromCharCode(0)
+const SEPARATOR = String.fromCodePoint(0)
 
 function fail(message: string): never {
   throw new Error(`discovery baseline: ${message}`)
@@ -47,7 +47,7 @@ function requireExactKeys(value: Record<string, unknown>, keys: Array<string>, m
 }
 
 function requireFile(value: unknown, message: string): string {
-  if (typeof value !== "string" || value.startsWith("./") || value.includes("..") || !/^tests\/.*\.(unit|it|http)\.test\.ts$/.test(value)) fail(message)
+  if (typeof value !== "string" || value.startsWith("./") || value.includes("..") || !/^tests\/.*\.(?:unit|it|http)\.test\.ts$/.test(value)) fail(message)
   return value
 }
 
@@ -83,8 +83,8 @@ function parseSkip(value: unknown): TestcaseSkip | SuiteSkip {
 }
 
 function skipSortKey(skip: TestcaseSkip | SuiteSkip): string {
-  return skip.kind === "testcase"
-    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join(SEPARATOR)
+  return skip.kind === "testcase" ?
+      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join(SEPARATOR)
     : [skip.kind, skip.file, skip.suite_name].join(SEPARATOR)
 }
 
@@ -105,8 +105,8 @@ export function parseDiscoveryBaseline(raw: string): DiscoveryBaseline {
   if (new Set(files).size !== files.length || files.some((file, index) => index > 0 && compareStrings(files[index - 1], file) >= 0))
     fail("files are not unique bytewise sorted")
   if (!Array.isArray(baseline.allowed_skipped)) fail("allowed_skipped must be an array")
-  const allowed_skipped = baseline.allowed_skipped.map(parseSkip)
-  const keys = allowed_skipped.map(skipSortKey)
+  const allowed_skipped = baseline.allowed_skipped.map((entry) => parseSkip(entry))
+  const keys = allowed_skipped.map((entry) => skipSortKey(entry))
   if (new Set(keys).size !== keys.length || keys.some((key, index) => index > 0 && compareStrings(keys[index - 1], key) >= 0))
     fail("allowed_skipped are not unique bytewise sorted")
   const parsed: DiscoveryBaseline = {

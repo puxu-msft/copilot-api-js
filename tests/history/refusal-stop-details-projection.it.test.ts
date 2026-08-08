@@ -8,7 +8,11 @@ import {
 } from "bun:test"
 
 import type { RequestContext } from "~/lib/context/request"
-import type { PartialResponseInfo, ResponseData } from "~/lib/context/request"
+import type {
+  //
+  PartialResponseInfo,
+  ResponseData,
+} from "~/lib/context/request"
 import type { HistoryEntry } from "~/lib/history/types"
 
 import { createRequestContext } from "~/lib/context/request"
@@ -32,12 +36,9 @@ import {
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
 
-const NULL_CATEGORY_BYTES =
-  '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
-const BIO_CATEGORY_BYTES =
-  '{"type":"refusal","category":"bio","explanation":"API integrators: you can reduce refusals..."}'
-const CYBER_CATEGORY_BYTES =
-  '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
+const NULL_CATEGORY_BYTES = '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
+const BIO_CATEGORY_BYTES = '{"type":"refusal","category":"bio","explanation":"API integrators: you can reduce refusals..."}'
+const CYBER_CATEGORY_BYTES = '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
 
 function rawStopDetails(bytes: string): unknown {
   return JSON.parse(bytes)

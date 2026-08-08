@@ -975,9 +975,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     applyFetchMock(
       mock(() => {
         calls += 1
-        return Promise.resolve(
-          createSseResponse([messageStartFrame({ id: `msg_ready_open_${_name}`, model: MODEL, inputTokens: 5 }), blockStart()]),
-        )
+        return Promise.resolve(createSseResponse([messageStartFrame({ id: `msg_ready_open_${_name}`, model: MODEL, inputTokens: 5 }), blockStart()]))
       }),
     )
 

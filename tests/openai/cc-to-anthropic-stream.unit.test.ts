@@ -12,14 +12,14 @@
  *      load-bearing byte-critical proof.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { createCcToAnthropicStreamTranslator } from "~/lib/openai/translate/cc-to-anthropic-stream"
 
@@ -45,7 +45,16 @@ function data(frame: ServerSentEventMessage): Record<string, unknown> {
 }
 
 /** The Anthropic stream event names the @anthropic-ai/sdk SSEDecoder dispatches on. */
-const SDK_STREAM_EVENTS = new Set(["message_start", "message_delta", "message_stop", "content_block_start", "content_block_delta", "content_block_stop", "ping", "error"])
+const SDK_STREAM_EVENTS = new Set([
+  "message_start",
+  "message_delta",
+  "message_stop",
+  "content_block_start",
+  "content_block_delta",
+  "content_block_stop",
+  "ping",
+  "error",
+])
 
 /**
  * N1 invariant: EVERY synthesized frame carries an `event:` line equal to its JSON `type` and that
@@ -117,8 +126,19 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
   if (!message) throw new Error("SDK oracle: no message_start survived the decoder (N1 event-line drop)")
   // Finalize tool_use inputs from the accumulated json.
   message.content = blocks.filter(Boolean).map((b) => {
-    if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b._json ? JSON.parse(String(b._json)) : {} } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
-    if (b.type === "thinking") return { type: "thinking", thinking: b.thinking ?? "", signature: b.signature ?? "" } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
+    if (b.type === "tool_use")
+      return {
+        type: "tool_use",
+        id: b.id,
+        name: b.name,
+        input: b._json ? JSON.parse(String(b._json)) : {},
+      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
+    if (b.type === "thinking")
+      return {
+        type: "thinking",
+        thinking: b.thinking ?? "",
+        signature: b.signature ?? "",
+      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
     return { type: "text", text: b.text ?? "", citations: null } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
   })
   return message
@@ -132,11 +152,19 @@ function textDelta(text: string): ServerSentEventMessage {
 }
 /** A tool_call start (name + id) at CC tool index `idx`, on choices[choiceIdx]. */
 function toolStart(idx: number, id: string, name: string, choiceIdx = 0): ServerSentEventMessage {
-  return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: choiceIdx, delta: { tool_calls: [{ index: idx, id, type: "function", function: { name, arguments: "" } }] }, finish_reason: null }] })
+  return ccChunk({
+    id: "msg_x",
+    model: "claude-x",
+    choices: [{ index: choiceIdx, delta: { tool_calls: [{ index: idx, id, type: "function", function: { name, arguments: "" } }] }, finish_reason: null }],
+  })
 }
 /** A tool_call args chunk at CC tool index `idx`. */
 function toolArgs(idx: number, args: string, choiceIdx = 0): ServerSentEventMessage {
-  return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: choiceIdx, delta: { tool_calls: [{ index: idx, function: { arguments: args } }] }, finish_reason: null }] })
+  return ccChunk({
+    id: "msg_x",
+    model: "claude-x",
+    choices: [{ index: choiceIdx, delta: { tool_calls: [{ index: idx, function: { arguments: args } }] }, finish_reason: null }],
+  })
 }
 /** A reasoning delta on choices[0] (GHC plaintext-reasoning extension). */
 function reasoningDelta(text: string, field: "reasoning" | "reasoning_content" = "reasoning"): ServerSentEventMessage {
@@ -202,7 +230,12 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
   }
 
   test("reasoning deltas render a thinking block at index 0 (thinking-first), text follows at index 1", () => {
-    const frames = renderAll([reasoningDelta("internal "), reasoningDelta("thoughts"), textDelta("visible"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const frames = renderAll([
+      reasoningDelta("internal "),
+      reasoningDelta("thoughts"),
+      textDelta("visible"),
+      finish("stop", { prompt_tokens: 5, completion_tokens: 2 }),
+    ])
     assertEventLineInvariant(frames)
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     // thinking at 0 (arrived first), text at 1.
@@ -212,17 +245,24 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
   })
 
   test("thinking_delta carries the reasoning text; a signature_delta with the SENTINEL precedes the block stop", () => {
-    const frames = renderAll([reasoningDelta("step 1 "), reasoningDelta("step 2"), textDelta("answer"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const frames = renderAll([
+      reasoningDelta("step 1 "),
+      reasoningDelta("step 2"),
+      textDelta("answer"),
+      finish("stop", { prompt_tokens: 5, completion_tokens: 2 }),
+    ])
     const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
     expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("step 1 step 2")
 
     // The signature_delta must come BEFORE the thinking block's content_block_stop (index 0).
-    const seq = frames.map((f) => {
-      const d = data(f)
-      if (d.type === "content_block_delta" && (d.delta as { type: string }).type === "signature_delta") return `sig@${d.index}`
-      if (d.type === "content_block_stop") return `stop@${d.index}`
-      return null
-    }).filter(Boolean)
+    const seq = frames
+      .map((f) => {
+        const d = data(f)
+        if (d.type === "content_block_delta" && (d.delta as { type: string }).type === "signature_delta") return `sig@${d.index}`
+        if (d.type === "content_block_stop") return `stop@${d.index}`
+        return null
+      })
+      .filter(Boolean)
     expect(seq.indexOf("sig@0")).toBeGreaterThanOrEqual(0)
     expect(seq.indexOf("sig@0")).toBeLessThan(seq.indexOf("stop@0"))
 
@@ -232,7 +272,12 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
 
   test("reasoning_encrypted_content is embedded in the signature (base64url) for cross-turn round-trip", async () => {
     const encrypted = "OPAQUE-encrypted-blob-xyz=="
-    const frames = renderAll([reasoningEncrypted(encrypted), reasoningDelta("summary text"), textDelta("answer"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const frames = renderAll([
+      reasoningEncrypted(encrypted),
+      reasoningDelta("summary text"),
+      textDelta("answer"),
+      finish("stop", { prompt_tokens: 5, completion_tokens: 2 }),
+    ])
     const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
     const signature = (data(sig).delta as { signature: string }).signature
     expect(signature.startsWith(PREFIX)).toBe(true)
@@ -242,20 +287,34 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
   })
 
   test("reasoning_content field (alt GHC spelling) is also forwarded", () => {
-    const frames = renderAll([reasoningDelta("via reasoning_content", "reasoning_content"), textDelta("x"), finish("stop", { prompt_tokens: 1, completion_tokens: 1 })])
+    const frames = renderAll([
+      reasoningDelta("via reasoning_content", "reasoning_content"),
+      textDelta("x"),
+      finish("stop", { prompt_tokens: 1, completion_tokens: 1 }),
+    ])
     const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
     expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("via reasoning_content")
   })
 
   test("reasoning-then-tool (no text): thinking at 0, tool at 1", () => {
-    const frames = renderAll([reasoningDelta("planning"), toolStart(0, "toolu_a", "Read"), toolArgs(0, "{}"), finish("tool_calls", { prompt_tokens: 3, completion_tokens: 1 })])
+    const frames = renderAll([
+      reasoningDelta("planning"),
+      toolStart(0, "toolu_a", "Read"),
+      toolArgs(0, "{}"),
+      finish("tool_calls", { prompt_tokens: 3, completion_tokens: 1 }),
+    ])
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => (data(f).content_block as { type: string }).type)).toEqual(["thinking", "tool_use"])
     expect(starts.map((f) => data(f).index)).toEqual([0, 1])
   })
 
   test("SDK ORACLE: a reasoning+text stream accumulates a well-formed thinking block via the REAL @anthropic-ai/sdk (accept, not reject)", async () => {
-    const frames = renderAll([reasoningDelta("Let me reason. "), reasoningDelta("Done."), textDelta("The answer is 42."), finish("stop", { prompt_tokens: 5, completion_tokens: 3 })])
+    const frames = renderAll([
+      reasoningDelta("Let me reason. "),
+      reasoningDelta("Done."),
+      textDelta("The answer is 42."),
+      finish("stop", { prompt_tokens: 5, completion_tokens: 3 }),
+    ])
     const msg = await sdkAccumulate(frames)
     // The real SDK decoder ACCEPTED the sentinel-signed thinking block (did not throw/drop it).
     expect(msg.content.map((b) => b.type)).toEqual(["thinking", "text"])
@@ -376,4 +435,3 @@ describe("cc-to-anthropic-stream — INDEPENDENT Anthropic SDK oracle (frames su
     expect((msg.content[0] as { type: "text"; text: string }).text).toBe("")
   })
 })
-

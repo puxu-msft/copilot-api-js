@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test"
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
 import { createGeminiStreamTranslator } from "~/lib/gemini/convert-stream"
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 function frame(data: unknown): ServerSentEventMessage {
   return { data: JSON.stringify(data) } as ServerSentEventMessage

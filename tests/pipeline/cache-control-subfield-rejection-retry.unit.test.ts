@@ -1,13 +1,21 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 
 import {
+  //
   getUnsupportedCacheControlSubfields,
   markAnthropicUnsupportedCacheControlSubfield,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
 import {
+  //
   createCacheControlSubfieldRejectionStrategy,
   parseRejectedCacheControlSubfields,
 } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
@@ -64,7 +72,11 @@ describe("解析与重试", () => {
     const strat = createCacheControlSubfieldRejectionStrategy<{ model: string }>()
     const err = ccError("system.1.cache_control.ephemeral.scope: Extra inputs are not permitted")
     expect(strat.canHandle(err)).toBe(true)
-    const action = await strat.handle(err, { model: "claude-opus-4-8" }, { attempt: 0, maxRetries: 3, originalPayload: { model: "claude-opus-4-8" }, model: undefined })
+    const action = await strat.handle(
+      err,
+      { model: "claude-opus-4-8" },
+      { attempt: 0, maxRetries: 3, originalPayload: { model: "claude-opus-4-8" }, model: undefined },
+    )
     expect(action.action).toBe("retry")
     if (action.action === "retry") {
       expect(action.prepareHints?.excludeCacheControlSubfields).toEqual(["scope"])

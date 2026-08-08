@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { AdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import { HTTPError } from "~/lib/error"

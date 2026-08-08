@@ -375,9 +375,10 @@ describe("state unit: only language/system builtins", () => {
     const stateTs = path.join(FOUNDATION_SRC, "state.ts")
     const expected = realpathSync(path.join(FOUNDATION_SRC, "state-defaults.ts"))
     expect(resolveSpecifier(stateTs, "./state-defaults"), "无扩展名形态").toBe(expected)
-    expect(resolveSpecifier(stateTs, "./state-defaults.js"), "`./x.js` → `x.ts` 是 moduleResolution: Bundler 的合法写法，typecheck 通过，守卫就不能报 unresolvable").toBe(
-      expected,
-    )
+    expect(
+      resolveSpecifier(stateTs, "./state-defaults.js"),
+      "`./x.js` → `x.ts` 是 moduleResolution: Bundler 的合法写法，typecheck 通过，守卫就不能报 unresolvable",
+    ).toBe(expected)
     expect(resolveSpecifier(stateTs, "./does-not-exist")).toBeUndefined()
   })
 
@@ -587,7 +588,10 @@ describe("package import boundaries", () => {
  */
 describe("delivery owner close and legacy anchor mirrors have single authorities", () => {
   test("non-owner production sinks cannot spell an anchor write, including extracted-frame witnesses", () => {
-    const tryLegacyAnchorWrite = async (sink: import("~/lib/pipeline/types").ClientSink, anchorHooks: import("~/lib/pipeline/types").AnchorHooks): Promise<void> => {
+    const tryLegacyAnchorWrite = async (
+      sink: import("~/lib/pipeline/types").ClientSink,
+      anchorHooks: import("~/lib/pipeline/types").AnchorHooks,
+    ): Promise<void> => {
       const legacyStop = anchorHooks.stopFrame(0)
       // @ts-expect-error ClientSink deliberately withholds the owner-only anchor write capability.
       await sink.writeAnchor?.(legacyStop)

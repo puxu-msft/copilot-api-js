@@ -48,8 +48,16 @@ function types(frames: Array<ServerSentEventMessage>): Array<string> {
 }
 
 // ─── the three real upstream stop_details, verbatim ───
-const NULL_CATEGORY = { type: "refusal", category: null, explanation: "API integrators: you can reduce refusals for your users by configuring a fallback model" }
-const BIO_CATEGORY = { type: "refusal", category: "bio", explanation: "API integrators: you can reduce refusals for your users by configuring a fallback model" }
+const NULL_CATEGORY = {
+  type: "refusal",
+  category: null,
+  explanation: "API integrators: you can reduce refusals for your users by configuring a fallback model",
+}
+const BIO_CATEGORY = {
+  type: "refusal",
+  category: "bio",
+  explanation: "API integrators: you can reduce refusals for your users by configuring a fallback model",
+}
 const CYBER_CATEGORY = { type: "refusal", category: "cyber", explanation: "This request triggered restrictions on violative cyber content" }
 
 const messageStart = { type: "message_start", message: { content: [], role: "assistant" } }

@@ -1,13 +1,22 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { readFileSync, writeFileSync } from "node:fs"
+import {
+  //
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import path from "node:path"
 
-import { bytewiseSort, discoverRuntimePackageClosure, packageIdentity } from "./entry-evidence-runtime-closure"
+import {
+  //
+  bytewiseSort,
+  discoverRuntimePackageClosure,
+  packageIdentity,
+} from "./entry-evidence-runtime-closure"
 
 const ROOT = path.resolve(import.meta.dir, "..")
 const outputArgument = process.argv.slice(2)
-if (outputArgument.length !== 0 && (outputArgument.length !== 2 || outputArgument[0] !== "--out" || !path.isAbsolute(outputArgument[1]))) process.exit(2)
+if (outputArgument.length > 0 && (outputArgument.length !== 2 || outputArgument[0] !== "--out" || !path.isAbsolute(outputArgument[1]))) process.exit(2)
 const OUTPUT = outputArgument.length === 0 ? path.join(ROOT, "scripts/entry-evidence-runtime-dependencies.json") : outputArgument[1]
 
 function sha256(file: string): string {

@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
+import {
+  //
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs"
 import path from "node:path"
 
 import type { DiscoveryBaseline } from "./entry-evidence-schema"
@@ -9,7 +16,7 @@ import type { JUnitIdentities } from "./parallel-test-artifacts"
 let writeReceiptAtomically!: (receiptPath: string, body: string) => void
 let parseDiscoveryBaseline!: (raw: string) => DiscoveryBaseline
 let parseJUnit!: (raw: string, tree: string) => JUnitIdentities
-let bytewiseSort!: (values: string[]) => string[]
+let bytewiseSort!: (values: Array<string>) => Array<string>
 let discoverRuntimePackageClosure!: typeof import("./entry-evidence-runtime-closure").discoverRuntimePackageClosure
 let packageIdentity!: typeof import("./entry-evidence-runtime-closure").packageIdentity
 let runtimeImportSpecifiers!: typeof import("./entry-evidence-runtime-closure").runtimeImportSpecifiers
@@ -91,11 +98,11 @@ interface RuntimeDependencyPackage {
   name: string
   version: string
   integrity: string
-  files: RuntimeDependencyFile[]
+  files: Array<RuntimeDependencyFile>
 }
 interface RuntimeDependencyIntegrityManifest {
   schema_version: 1
-  packages: RuntimeDependencyPackage[]
+  packages: Array<RuntimeDependencyPackage>
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -149,22 +156,22 @@ function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrity
     const parsed = JSON.parse(raw) as Record<string, unknown>
     if (!exactKeys(parsed, ["schema_version", "packages"]) || parsed.schema_version !== 1 || !Array.isArray(parsed.packages) || parsed.packages.length === 0)
       return undefined
-    const packages: RuntimeDependencyPackage[] = []
+    const packages: Array<RuntimeDependencyPackage> = []
     for (const packageEntry of parsed.packages) {
       if (!packageEntry || typeof packageEntry !== "object" || Array.isArray(packageEntry)) return undefined
       const value = packageEntry as Record<string, unknown>
       if (!exactKeys(value, ["name", "version", "integrity", "files"]) || typeof value.name !== "string" || value.name.length === 0) return undefined
       if (typeof value.version !== "string" || typeof value.integrity !== "string" || !Array.isArray(value.files) || value.files.length === 0) return undefined
-      const files: RuntimeDependencyFile[] = []
+      const files: Array<RuntimeDependencyFile> = []
       for (const fileEntry of value.files) {
         if (!fileEntry || typeof fileEntry !== "object" || Array.isArray(fileEntry)) return undefined
         const file = fileEntry as Record<string, unknown>
         if (
-          !exactKeys(file, ["path", "sha256"]) ||
-          typeof file.path !== "string" ||
-          !/^[^/][^\\]*$/.test(file.path) ||
-          file.path.includes("..") ||
-          !isSha(file.sha256, 64)
+          !exactKeys(file, ["path", "sha256"])
+          || typeof file.path !== "string"
+          || !/^[^/][^\\]*$/.test(file.path)
+          || file.path.includes("..")
+          || !isSha(file.sha256, 64)
         )
           return undefined
         files.push({ path: file.path, sha256: file.sha256 })
@@ -201,7 +208,7 @@ function lockfileMatches(canonicalTree: string, manifest: RuntimeDependencyInteg
 async function packageClosureMatches(importer: string, manifest: RuntimeDependencyIntegrityManifest): Promise<boolean> {
   const closure = await discoverRuntimePackageClosure("saxes", importer)
   if (closure === undefined) return false
-  const observed = new Map<string, string[]>()
+  const observed = new Map<string, Array<string>>()
   for (const file of closure) observed.set(file.packageName, [...(observed.get(file.packageName) ?? []), file.relativePath])
   const observedPackageNames = bytewiseSort([...observed.keys()])
   const manifestPackageNames = manifest.packages.map((entry) => entry.name)
@@ -210,11 +217,11 @@ async function packageClosureMatches(importer: string, manifest: RuntimeDependen
     const packageFiles = closure.filter((file) => file.packageName === packageEntry.name)
     const identity = packageFiles.length === 0 ? undefined : packageIdentity(packageFiles[0].resolvedPath)
     if (
-      identity === undefined ||
-      identity.name !== packageEntry.name ||
-      identity.version !== packageEntry.version ||
-      packageFiles.some((file) => file.packageRoot !== identity.root) ||
-      JSON.stringify(bytewiseSort(observed.get(packageEntry.name) ?? [])) !== JSON.stringify(packageEntry.files.map((file) => file.path))
+      identity === undefined
+      || identity.name !== packageEntry.name
+      || identity.version !== packageEntry.version
+      || packageFiles.some((file) => file.packageRoot !== identity.root)
+      || JSON.stringify(bytewiseSort(observed.get(packageEntry.name) ?? [])) !== JSON.stringify(packageEntry.files.map((file) => file.path))
     )
       return false
     return packageFiles.every((file) => {
@@ -234,11 +241,11 @@ async function runtimeClosureMatchesEntry(tree: string, entrySha: string): Promi
   const validatorPath = path.join(canonicalTree, "scripts", "validate-entry-evidence.ts")
   const manifestPath = path.join(canonicalTree, DEPENDENCY_INTEGRITY_MANIFEST_PATH)
   if (
-    path.resolve(import.meta.path) !== validatorPath ||
-    !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath) ||
-    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "package.json")) ||
-    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "bun.lock")) ||
-    !matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)
+    path.resolve(import.meta.path) !== validatorPath
+    || !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath)
+    || !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "package.json"))
+    || !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "bun.lock"))
+    || !matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)
   )
     return false
   const rawManifest = readUtf8(manifestPath)
@@ -259,9 +266,9 @@ async function runtimeClosureMatchesEntry(tree: string, entrySha: string): Promi
         const child = resolveRelativeRuntimeImport(runtimeFile, specifier, canonicalTree)
         if (child === undefined || !(await visitLocal(child))) return false
       } else if (
-        specifier !== "saxes" ||
-        runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts") ||
-        !(await packageClosureMatches(runtimeFile, dependencyManifest))
+        specifier !== "saxes"
+        || runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts")
+        || !(await packageClosureMatches(runtimeFile, dependencyManifest))
       ) {
         return false
       }
@@ -305,33 +312,33 @@ function identityKey(identity: Record<string, unknown>): string | undefined {
   const testcaseKeys = ["kind", "file", "classname", "name", "ordinal", "count"]
   const suiteKeys = ["kind", "file", "suite_name", "count"]
   if (
-    identity.kind === "testcase" &&
-    exactKeys(identity, testcaseKeys) &&
-    typeof identity.file === "string" &&
-    typeof identity.classname === "string" &&
-    typeof identity.name === "string" &&
-    Number.isSafeInteger(identity.ordinal) &&
-    (identity.ordinal as number) > 0 &&
-    Number.isSafeInteger(identity.count) &&
-    (identity.count as number) > 0
+    identity.kind === "testcase"
+    && exactKeys(identity, testcaseKeys)
+    && typeof identity.file === "string"
+    && typeof identity.classname === "string"
+    && typeof identity.name === "string"
+    && Number.isSafeInteger(identity.ordinal)
+    && (identity.ordinal as number) > 0
+    && Number.isSafeInteger(identity.count)
+    && (identity.count as number) > 0
   )
     return ["testcase", identity.file, identity.classname, identity.name, identity.ordinal, identity.count].join("\0")
   if (
-    identity.kind === "suite" &&
-    exactKeys(identity, suiteKeys) &&
-    typeof identity.file === "string" &&
-    typeof identity.suite_name === "string" &&
-    Number.isSafeInteger(identity.count) &&
-    (identity.count as number) > 0
+    identity.kind === "suite"
+    && exactKeys(identity, suiteKeys)
+    && typeof identity.file === "string"
+    && typeof identity.suite_name === "string"
+    && Number.isSafeInteger(identity.count)
+    && (identity.count as number) > 0
   )
     return ["suite", identity.file, identity.suite_name, identity.count].join("\0")
   return undefined
 }
-function identityMultiset(identities: unknown[]): string[] | undefined {
+function identityMultiset(identities: Array<unknown>): Array<string> | undefined {
   const keys = identities.map((identity) =>
     identity && typeof identity === "object" && !Array.isArray(identity) ? identityKey(identity as Record<string, unknown>) : undefined,
   )
-  return keys.some((key) => key === undefined) ? undefined : (keys as string[]).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  return keys.includes(undefined) ? undefined : (keys as Array<string>).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
 }
 function exactKeys(value: Record<string, unknown>, keys: Array<string>): boolean {
   const actual = Object.keys(value)
@@ -452,25 +459,27 @@ function parseAggregateRows(raw: string): Array<{ ordinal: number; path: string;
     return undefined
   }
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    !exactKeys(value as Record<string, unknown>, ["runs"]) ||
-    !Array.isArray((value as Record<string, unknown>).runs)
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || !exactKeys(value as Record<string, unknown>, ["runs"])
+    || !Array.isArray((value as Record<string, unknown>).runs)
   )
     return undefined
-  const rows = (value as { runs: unknown[] }).runs.map((row) => {
+  const rows = (value as { runs: Array<unknown> }).runs.map((row) => {
     if (!row || typeof row !== "object" || Array.isArray(row) || !exactKeys(row as Record<string, unknown>, ["ordinal", "path", "sha256"])) return undefined
     const entry = row as Record<string, unknown>
-    return Number.isSafeInteger(entry.ordinal) &&
-      (entry.ordinal as number) > 0 &&
-      typeof entry.path === "string" &&
-      path.isAbsolute(entry.path) &&
-      isSha(entry.sha256, 64)
-      ? { ordinal: entry.ordinal as number, path: entry.path, sha256: entry.sha256 }
+    return (
+        Number.isSafeInteger(entry.ordinal)
+          && (entry.ordinal as number) > 0
+          && typeof entry.path === "string"
+          && path.isAbsolute(entry.path)
+          && isSha(entry.sha256, 64)
+      ) ?
+        { ordinal: entry.ordinal as number, path: entry.path, sha256: entry.sha256 }
       : undefined
   })
-  return rows.some((row) => row === undefined) ? undefined : (rows as Array<{ ordinal: number; path: string; sha256: string }>)
+  return rows.includes(undefined) ? undefined : (rows as Array<{ ordinal: number; path: string; sha256: string }>)
 }
 
 function uniqueAggregateRows(rows: Array<{ ordinal: number; path: string; sha256: string }>): boolean {
@@ -485,19 +494,19 @@ function sameAggregateRows(
   const actualKeys = actual.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   const expectedKeys = expected.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   return (
-    actual.length === 15 &&
-    expected.length === 15 &&
-    uniqueAggregateRows(actual) &&
-    uniqueAggregateRows(expected) &&
-    JSON.stringify(actualKeys) === JSON.stringify(expectedKeys)
+    actual.length === 15
+    && expected.length === 15
+    && uniqueAggregateRows(actual)
+    && uniqueAggregateRows(expected)
+    && JSON.stringify(actualKeys) === JSON.stringify(expectedKeys)
   )
 }
 
-function sameBytewiseStrings(left: string[], right: string[]): boolean {
+function sameBytewiseStrings(left: Array<string>, right: Array<string>): boolean {
   return left.length === right.length && left.every((value, index) => Buffer.from(value).compare(Buffer.from(right[index])) === 0)
 }
 
-function parseDiskManifest(raw: string): string[] | undefined {
+function parseDiskManifest(raw: string): Array<string> | undefined {
   let value: unknown
   try {
     value = JSON.parse(raw)
@@ -505,15 +514,15 @@ function parseDiskManifest(raw: string): string[] | undefined {
     return undefined
   }
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    !exactKeys(value as Record<string, unknown>, ["files"]) ||
-    !Array.isArray((value as Record<string, unknown>).files)
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || !exactKeys(value as Record<string, unknown>, ["files"])
+    || !Array.isArray((value as Record<string, unknown>).files)
   )
     return undefined
-  const files = (value as { files: unknown[] }).files
-  return files.every((file) => typeof file === "string") ? (files as string[]) : undefined
+  const files = (value as { files: Array<unknown> }).files
+  return files.every((file) => typeof file === "string") ? files : undefined
 }
 
 function parseRunArtifacts(
@@ -530,20 +539,20 @@ function parseRunArtifacts(
   const runtime = run.runtime_identity
   const skipped = run.skipped_multiset
   if (
-    typeof artifactDir !== "string" ||
-    !path.isAbsolute(artifactDir) ||
-    canonicalInside(artifactDir, tree) ||
-    !Array.isArray(junit) ||
-    junit.length === 0 ||
-    !runtime ||
-    !skipped
+    typeof artifactDir !== "string"
+    || !path.isAbsolute(artifactDir)
+    || canonicalInside(artifactDir, tree)
+    || !Array.isArray(junit)
+    || junit.length === 0
+    || !runtime
+    || !skipped
   )
     fail(7, "JUnit file identity mismatch", 6)
   const asArtifact = (value: unknown): { path: string; sha256: string } | undefined => {
     if (!value || typeof value !== "object" || !exactKeys(value as Record<string, unknown>, ["path", "sha256"])) return undefined
     const artifact = value as Record<string, unknown>
-    return typeof artifact.path === "string" && typeof artifact.sha256 === "string" && isSha(artifact.sha256, 64)
-      ? { path: artifact.path, sha256: artifact.sha256 }
+    return typeof artifact.path === "string" && typeof artifact.sha256 === "string" && isSha(artifact.sha256, 64) ?
+        { path: artifact.path, sha256: artifact.sha256 }
       : undefined
   }
   const junitArtifacts = junit.map(asArtifact)
@@ -554,24 +563,24 @@ function parseRunArtifacts(
   const paths = resolvedJunit.map((artifact) => artifact.path)
   const names = paths.map((file) => path.basename(file))
   if (
-    new Set(paths).size !== paths.length ||
-    !names.every((name) => /^shard-\d{2}\.xml$/.test(name)) ||
-    names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0) ||
-    resolvedJunit.some(
+    new Set(paths).size !== paths.length
+    || !names.every((name) => /^shard-\d{2}\.xml$/.test(name))
+    || names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0)
+    || resolvedJunit.some(
       (artifact) => !directArtifactChild(artifact.path, artifactDir) || !existsSync(artifact.path) || !hashMatches(artifact.path, artifact.sha256),
-    ) ||
-    path.basename(runtimeArtifact.path) !== "runtime-identity.json" ||
-    !directArtifactChild(runtimeArtifact.path, artifactDir) ||
-    !existsSync(runtimeArtifact.path) ||
-    !hashMatches(runtimeArtifact.path, runtimeArtifact.sha256)
+    )
+    || path.basename(runtimeArtifact.path) !== "runtime-identity.json"
+    || !directArtifactChild(runtimeArtifact.path, artifactDir)
+    || !existsSync(runtimeArtifact.path)
+    || !hashMatches(runtimeArtifact.path, runtimeArtifact.sha256)
   )
     fail(7, "JUnit file identity mismatch", 6)
   if (
-    !skippedArtifact ||
-    path.basename(skippedArtifact.path) !== "skipped-multiset.json" ||
-    !directArtifactChild(skippedArtifact.path, artifactDir) ||
-    !existsSync(skippedArtifact.path) ||
-    !hashMatches(skippedArtifact.path, skippedArtifact.sha256)
+    !skippedArtifact
+    || path.basename(skippedArtifact.path) !== "skipped-multiset.json"
+    || !directArtifactChild(skippedArtifact.path, artifactDir)
+    || !existsSync(skippedArtifact.path)
+    || !hashMatches(skippedArtifact.path, skippedArtifact.sha256)
   )
     fail(8, "skipped identity multiset mismatch", 6)
   let actualJunit: Array<string>
@@ -624,8 +633,8 @@ const manifestRaw = readUtf8(pointer.manifestPath)
 if (manifestRaw === undefined) fail(5, "evidence manifest hash mismatch", 4)
 const runs = parseManifest(manifestRaw)
 if (
-  runs.length !== 15 ||
-  !runs
+  runs.length !== 15
+  || !runs
     .map((run) => run.ordinal)
     .sort((left, right) => left - right)
     .every((ordinal, index) => ordinal === index + 1)
@@ -655,7 +664,7 @@ if (typeof manifest.canonical_command !== "string" || manifest.canonical_command
   fail(9, "canonical command mismatch", 7)
 if (typeof manifest.evidence_timing !== "string" || manifest.evidence_timing !== "closeout") fail(9, "evidence timing mismatch", 7)
 if (typeof manifest.measured_sha !== "string" || manifest.measured_sha !== options.entrySha) fail(9, "measured SHA mismatch", 7)
-if (typeof manifest.claims_current_head !== "boolean" || manifest.claims_current_head !== true) fail(9, "current-head claim mismatch", 7)
+if (typeof manifest.claims_current_head !== "boolean" || !manifest.claims_current_head) fail(9, "current-head claim mismatch", 7)
 const baselineBytes = gitBytes(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
 const baselineRaw = baselineBytes === undefined ? undefined : decodeUtf8(baselineBytes)
 if (baselineRaw === undefined) fail(11, "discovery baseline hash mismatch", 7)
@@ -671,7 +680,7 @@ for (const run of manifest.runs as Array<Record<string, unknown>>) {
   const log = readFileSync(run.log_path as string, "utf8")
   if (typeof run.artifact_dir !== "string" || logField(log, "artifact_dir") !== run.artifact_dir) fail(9, "artifact directory mismatch", 7)
   const artifacts = parseRunArtifacts(run, options.tree)
-  let junit: JUnitIdentities[]
+  let junit: Array<JUnitIdentities>
   try {
     junit = artifacts.junit.map((artifact) => {
       const raw = readUtf8(artifact.path)
@@ -700,39 +709,39 @@ for (const run of manifest.runs as Array<Record<string, unknown>>) {
     fail(8, "skipped identity multiset mismatch", 6)
   }
   if (
-    !runtime ||
-    typeof runtime !== "object" ||
-    Array.isArray(runtime) ||
-    !exactKeys(runtime as Record<string, unknown>, ["files"]) ||
-    !Array.isArray((runtime as Record<string, unknown>).files) ||
-    !((runtime as Record<string, unknown>).files as unknown[]).every((file) => typeof file === "string") ||
-    JSON.stringify((runtime as { files: string[] }).files) !== JSON.stringify(files)
+    !runtime
+    || typeof runtime !== "object"
+    || Array.isArray(runtime)
+    || !exactKeys(runtime as Record<string, unknown>, ["files"])
+    || !Array.isArray((runtime as Record<string, unknown>).files)
+    || !((runtime as Record<string, unknown>).files as Array<unknown>).every((file) => typeof file === "string")
+    || JSON.stringify((runtime as { files: Array<string> }).files) !== JSON.stringify(files)
   )
     fail(7, "JUnit file identity mismatch", 6)
   if (
-    !skipped ||
-    typeof skipped !== "object" ||
-    Array.isArray(skipped) ||
-    !exactKeys(skipped as Record<string, unknown>, ["executed", "skipped", "skipped_identities"]) ||
-    !Number.isSafeInteger((skipped as Record<string, unknown>).executed) ||
-    !Number.isSafeInteger((skipped as Record<string, unknown>).skipped) ||
-    !Array.isArray((skipped as Record<string, unknown>).skipped_identities)
+    !skipped
+    || typeof skipped !== "object"
+    || Array.isArray(skipped)
+    || !exactKeys(skipped as Record<string, unknown>, ["executed", "skipped", "skipped_identities"])
+    || !Number.isSafeInteger((skipped as Record<string, unknown>).executed)
+    || !Number.isSafeInteger((skipped as Record<string, unknown>).skipped)
+    || !Array.isArray((skipped as Record<string, unknown>).skipped_identities)
   )
     fail(8, "skipped identity multiset mismatch", 6)
-  const skippedValue = skipped as { executed: number; skipped: number; skipped_identities: unknown[] }
+  const skippedValue = skipped as { executed: number; skipped: number; skipped_identities: Array<unknown> }
   const actualExecuted = junit.reduce((sum, item) => sum + item.executed, 0)
   const actualSkipped = junit.reduce((sum, item) => sum + item.skipped, 0)
   const actualIdentities = junit.flatMap((item) => item.skippedIdentities)
   const expectedIdentities = baseline.allowed_skipped.map(({ reason: _reason, ...identity }) => identity)
   if (
-    actualExecuted !== skippedValue.executed ||
-    actualSkipped !== skippedValue.skipped ||
-    actualExecuted !== run.executed ||
-    actualSkipped !== run.skipped ||
-    identityMultiset(actualIdentities) === undefined ||
-    JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(skippedValue.skipped_identities)) ||
-    JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(expectedIdentities)) ||
-    actualExecuted < baseline.minimum_executed
+    actualExecuted !== skippedValue.executed
+    || actualSkipped !== skippedValue.skipped
+    || actualExecuted !== run.executed
+    || actualSkipped !== run.skipped
+    || identityMultiset(actualIdentities) === undefined
+    || JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(skippedValue.skipped_identities))
+    || JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(expectedIdentities))
+    || actualExecuted < baseline.minimum_executed
   )
     fail(8, "skipped identity multiset mismatch", 6)
   if (logField(log, "canonical_command") !== manifest.canonical_command) fail(9, "canonical command mismatch", 7)
@@ -745,11 +754,11 @@ function topLevelArtifact(label: string, artifact: unknown): { path: string; sha
   if (!artifact || typeof artifact !== "object" || !exactKeys(artifact as Record<string, unknown>, ["path", "sha256"])) fail(10, `${label} hash mismatch`, 7)
   const value = artifact as Record<string, unknown>
   if (
-    typeof value.path !== "string" ||
-    !path.isAbsolute(value.path) ||
-    !isSha(value.sha256, 64) ||
-    !existsSync(value.path) ||
-    !hashMatches(value.path, value.sha256)
+    typeof value.path !== "string"
+    || !path.isAbsolute(value.path)
+    || !isSha(value.sha256, 64)
+    || !existsSync(value.path)
+    || !hashMatches(value.path, value.sha256)
   )
     fail(10, `${label} hash mismatch`, 7)
   return { path: value.path, sha256: value.sha256 }
@@ -772,13 +781,13 @@ const expectedSkippedRows = (manifest.runs as Array<Record<string, unknown>>).ma
   ...(run.skipped_multiset as { path: string; sha256: string }),
 }))
 if (
-  diskFilesRaw === undefined ||
-  parseDiskManifest(diskFilesRaw) === undefined ||
-  !sameBytewiseStrings(parseDiskManifest(diskFilesRaw)!, baseline.files) ||
-  runtimeRows === undefined ||
-  skippedRows === undefined ||
-  !sameAggregateRows(runtimeRows, expectedRuntimeRows) ||
-  !sameAggregateRows(skippedRows, expectedSkippedRows)
+  diskFilesRaw === undefined
+  || parseDiskManifest(diskFilesRaw) === undefined
+  || !sameBytewiseStrings(parseDiskManifest(diskFilesRaw)!, baseline.files)
+  || runtimeRows === undefined
+  || skippedRows === undefined
+  || !sameAggregateRows(runtimeRows, expectedRuntimeRows)
+  || !sameAggregateRows(skippedRows, expectedSkippedRows)
 )
   fail(10, "aggregate artifact mismatch", 7)
 const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"

@@ -1,4 +1,8 @@
-import { SaxesParser, type SaxesTagNS } from "saxes"
+import {
+  //
+  SaxesParser,
+  type SaxesTagNS,
+} from "saxes"
 
 export interface TestcaseSkippedIdentity {
   kind: "testcase"
@@ -25,7 +29,7 @@ export interface JUnitIdentities {
   skippedIdentities: Array<SkippedIdentity>
 }
 
-const IDENTITY_SEPARATOR = String.fromCharCode(0)
+const IDENTITY_SEPARATOR = String.fromCodePoint(0)
 
 type OpenSuite = { kind: "suite"; file?: string; name?: string; skipped: number; testcaseCount: number; selfClosing: boolean }
 type OpenTestcase = { kind: "testcase"; file: string; classname: string; name: string; ordinal: number; skipped: boolean }
@@ -41,8 +45,8 @@ function testcaseKey(file: string, classname: string, name: string, ordinal?: nu
 }
 
 function skippedIdentityKey(identity: SkippedIdentity): string {
-  return identity.kind === "testcase"
-    ? testcaseKey(identity.file, identity.classname, identity.name, identity.ordinal)
+  return identity.kind === "testcase" ?
+      testcaseKey(identity.file, identity.classname, identity.name, identity.ordinal)
     : ["suite", identity.file, identity.suite_name].join(IDENTITY_SEPARATOR)
 }
 
@@ -50,7 +54,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   const files = new Set<string>()
   const ordinals = new Map<string, number>()
   const skipped = new Map<string, SkippedIdentity>()
-  const elements: OpenElement[] = []
+  const elements: Array<OpenElement> = []
   let executed = 0
   let skippedCount = 0
   const parser = new SaxesParser({ xmlns: true })
@@ -122,12 +126,12 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     }
     // Bun represents a fully skipped file as a self-closing testsuite with no testcase rows.
     if (
-      element.kind === "suite" &&
-      element.selfClosing &&
-      element.file !== undefined &&
-      element.name !== undefined &&
-      element.testcaseCount === 0 &&
-      element.skipped > 0
+      element.kind === "suite"
+      && element.selfClosing
+      && element.file !== undefined
+      && element.name !== undefined
+      && element.testcaseCount === 0
+      && element.skipped > 0
     ) {
       const identity: SuiteSkippedIdentity = { kind: "suite", file: element.file, suite_name: element.name, count: element.skipped }
       skipped.set(skippedIdentityKey(identity), identity)
@@ -139,7 +143,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     throw error
   })
   parser.write(xml).close()
-  if (elements.length !== 0) throw new Error("JUnit document ended with unclosed elements")
+  if (elements.length > 0) throw new Error("JUnit document ended with unclosed elements")
   return {
     files: [...files].sort(),
     executed,

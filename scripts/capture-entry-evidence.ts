@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
-import { createHash, randomUUID } from "node:crypto"
+import { Glob } from "bun"
 import {
+  //
+  createHash,
+  randomUUID,
+} from "node:crypto"
+import {
+  //
   closeSync,
   constants,
   existsSync,
@@ -17,10 +23,17 @@ import {
 } from "node:fs"
 import path from "node:path"
 
-import { Glob } from "bun"
-
-import { parseDiscoveryBaseline, type SuiteSkip, type TestcaseSkip } from "./entry-evidence-schema"
-import { parseJUnit, type SkippedIdentity } from "./parallel-test-artifacts"
+import {
+  //
+  parseDiscoveryBaseline,
+  type SuiteSkip,
+  type TestcaseSkip,
+} from "./entry-evidence-schema"
+import {
+  //
+  parseJUnit,
+  type SkippedIdentity,
+} from "./parallel-test-artifacts"
 
 interface Options {
   tree: string
@@ -65,7 +78,7 @@ function parseOptions(argv: Array<string>): Options {
     if (!flag?.startsWith("--") || value === undefined || values.has(flag)) fail(2, "CLI arguments are invalid")
     values.set(flag, value)
   }
-  if (values.size !== 5 || [...values.keys()].some((flag) => !["--tree", "--entry-sha", "--out", "--runs", "--discovery-baseline"].includes(flag)))
+  if (values.size !== 5 || [...values.keys()].some((flag) => !["--discovery-baseline", "--entry-sha", "--out", "--runs", "--tree"].includes(flag)))
     fail(2, "CLI arguments are invalid")
   const tree = values.get("--tree")!
   const entrySha = values.get("--entry-sha")!
@@ -85,7 +98,7 @@ function git(tree: string, args: Array<string>): string {
 
 function canonicalPathWithExistingAncestor(value: string): string | undefined {
   let candidate = path.resolve(value)
-  const unresolvedSegments: string[] = []
+  const unresolvedSegments: Array<string> = []
   while (!existsSync(candidate)) {
     const parent = path.dirname(candidate)
     if (parent === candidate) return undefined
@@ -144,14 +157,14 @@ function formatIdentity(identity: TestcaseSkip | SuiteSkip | SkippedIdentity): s
 }
 
 function baselineSkipKey(skip: TestcaseSkip | SuiteSkip): string {
-  return skip.kind === "testcase"
-    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+  return skip.kind === "testcase" ?
+      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
     : [skip.kind, skip.file, skip.suite_name].join("\0")
 }
 
 function runtimeSkipKey(skip: SkippedIdentity): string {
-  return skip.kind === "testcase"
-    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+  return skip.kind === "testcase" ?
+      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
     : [skip.kind, skip.file, skip.suite_name].join("\0")
 }
 

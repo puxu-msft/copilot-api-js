@@ -42,6 +42,16 @@ export default tseslint.config(
     prettier: prettierConfig,
   }),
   {
+    files: ["contrib/pm2/ecosystem.config.cjs", "hooks/strip-todowrite.ts", "tests/diagnostics/fixtures/sonic-boom-flush-contract.mjs"],
+    languageOptions: {
+      parserOptions: {
+        projectService: {
+          allowDefaultProject: ["contrib/pm2/ecosystem.config.cjs", "hooks/strip-todowrite.ts", "tests/diagnostics/fixtures/sonic-boom-flush-contract.mjs"],
+        },
+      },
+    },
+  },
+  {
     files: ["**/*.json", "**/*.jsonc", "**/package.json", "**/package-lock.json"],
     rules: disableTypescriptRulesForJson,
   },
