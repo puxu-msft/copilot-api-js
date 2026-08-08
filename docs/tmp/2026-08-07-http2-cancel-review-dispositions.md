@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前两轮 18/18 findings 已采纳；第三轮重写待评审
+- 状态：前四轮累计 27/27 个独立 findings 已采纳；第五轮重写待评审（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
@@ -26,3 +26,12 @@
 | R16 | C | terminal fallback在quiescence前读旧snapshot | 采纳 | logical terminal只seal/存pending；finalizer await operation quiescence后才settle未settled final attempt并读取provider。新增tracked child后到evidence回归与反向mutation。 |
 | R17 | C | header-timeout路径不可能有post-response listener，1/1计数会false-red | 采纳 | 分开pre/post-response listener oracle：pre-header timeout的post listener=0/0；natural end和post-header external abort才各1/1。 |
 | R18 | C | local CANCEL测试接受local或ambiguous会漏“已有local就跳stream append” | 采纳 | 先探针确认Bun raw echo存在，再强断production保存local+stream两侧并严格归ambiguous；增加条件跳过stream append mutation。 |
+| R19 | C | Promise `settlements===1` 看不到内部双finalize | 采纳 | 最终修法：header deadline抽成`{signal,complete():boolean}`幂等primitive；FakeClock断言首个true/后续false、timer归零，mutation删幂等门必红。 |
+| R20 | C | helper重命名漏 `tests/infra/fetch-utils.it.test.ts` | 采纳 | Task2补该文件到Files、迁移、命令和精确pathspec，保持WS first-event语义断言。 |
+| R21 | C | operation quiescence不保证dispatch lifecycle quiescence | 采纳 | runtime provider扩为`{getObservation,quiesced}`；finalizer先等operation barrier，再等final dispatch barrier，production race test用真实cleanup。 |
+| R22 | C | `snapshotForRecorder`丢Symbol termination tag | 采纳 | pending terminal分存runtime raw error与持久化snapshot；finalizer用raw error读tag，commit仍写snapshot。 |
+| R23 | C | 阶段2 review越界要求阶段3 settlement | 采纳 | 阶段2只验live accessor在quiescence后稳定；三settlement路径移回阶段3门。 |
+| R24 | C | 目录pathspec/漏foundation stream等会漏改或卷并发WIP | 采纳 | 所有git add展开精确文件；Task4补foundation/stream、error/forward、post-commit-error及对应tests。 |
+| R25 | C | Tasks4–7/9–11缺首跑red，Task9测试落点不明 | 采纳 | 每Task重排为完整测试→首跑red→实现→绿门→mutation；Task9指定generation-finalization/candidate-runtime；Task10/11新test先red。 |
+| R26 | C | code8测试归属/执行遗漏 | 采纳 | code8保真固定归Task4 foundation单测；Task5红/绿命令同时运行该文件，阶段2总门覆盖。 |
+| R27 | C | Task3 H2测试修改未提交 | 采纳 | Task3新增独立`test: cover HTTP2 header deadline lifecycle`提交，再review与状态文档提交。 |
