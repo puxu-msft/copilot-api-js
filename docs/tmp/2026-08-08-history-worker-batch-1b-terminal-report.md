@@ -1,7 +1,7 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：收尾候选，待本报告与临时证据清单独立复审、共享 `master` fast-forward及安装位置复验。
-> 核验基线：候选 `0ecbca65de2b72c6ed5967f688fef8295b874b6a`；共享 `master@d47492a6`；日期 2026-08-08。
+> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）；本报告与临时证据清单的最后一笔闭环提交待终审后补入。
+> 核验基线：`master@d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
 ## 交付内容
@@ -24,18 +24,24 @@
 
 ## Git、发布与工作树状态
 
-- 本报告起草基线`0ecbca65`相对共享`master@d47492a6`领先15笔本地提交（含四笔与master的合并）；本报告与临时清单的闭环提交会在其上另增一笔。`git diff --check master..HEAD`无输出，候选工作树在起草本报告前除收尾文档外无未提交代码。
-- 尚未执行最终fast-forward；共享`master`仍为`d47492a6`。任何“已集成最终收尾”的结论必须由`git merge-base --is-ancestor <final> master`外部裁决。
-- **碰撞集已在`0ecbca65`重算为0**（2026-08-08）。候选净路径13条（`git diff --name-only master..HEAD`）：其中10条在共享检出中存在，逐条比对共享工作区文件与`master`同路径内容的md5，10对全部相等，故共享检出对这些路径无未提交改动；另3条（`src/lib/history/persist-retry-config.ts`、本报告、临时清单）在共享检出中不存在且无未追踪文件占位。共享主树的三处无关WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）均不在这13条内，fast-forward不会触及它们。**本会话的worktree隔离护栏拒绝对共享检出执行git写操作，故第3步必须由用户在共享checkout亲自执行。**
+- **fast-forward 已由用户执行并落地**：`master` 现为 `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`，与候选分支 HEAD `d1011fe7` **完全相同**（无额外提交、无 merge commit）；`git merge-base --is-ancestor d1011fe7 master` 成立，`22c8e08b` 亦在 `master` 祖先中。
+- 本报告与临时清单的最后一笔闭环提交将在 `d1011fe7` 之上另增一笔，需再次 fast-forward。
+- **安装位置复验（从共享 checkout `/home/xp/src/copilot-api-js` 实跑，`pwd -P` 已确认）**：
+  - reviewed-plan blob 门：`22c8e08b` 与 `master` 两侧 `docs/plan/2026-08-07-history-persistence-worker.md` 的 blob 同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`，PASS。
+  - `bun run typecheck`：通过。
+  - 11 文件目标集：**89 pass／0 fail**、287 expect、3.57s。
+  - 候选 13 条净路径：共享检出工作区文件与 `master` 同路径内容逐条 md5 相等 → 无未提交残留。
+  - 三处无关 WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）与 `master` 版本均不相同 → WIP 完整保留，fast-forward 未触及。
+- 本会话的 worktree 隔离护栏拒绝对共享检出执行 git 写操作与 `git status`，故 fast-forward 由用户执行；工作区洁净度改用「工作区文件内容 vs `master` blob 内容」逐条 md5 比对取证。**该替代方法的诚实边界**：它覆盖内容差异与文件缺失，但**不覆盖** file mode 变化、regular file↔symlink 类型变化、以及「已 staged 但工作区内容又被改回」这类只在 index 层可见的状态；也**不枚举**候选路径以外的未追踪文件。因此它回答的是「这13条路径的内容是否与 `master` 一致」，不是 `git status` 的全部语义。上表最后一条复验命令保留了真正的 `git status`，供在共享检出直接复跑。
 - 未推送、未创建PR、未发布任何ref或artifact。
 - 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。取证需求结束且收尾提交确认在`master`祖先后，可由用户决定清理本分支／worktree。
-- 共享主树观测到`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP；碰撞集已按上条在`0ecbca65`基线上重算，未沿用旧快照。若fast-forward前共享`master`再次前进，须按同一方法重算后再执行。
+- 碰撞集在 fast-forward 前于 `0ecbca65` 基线重算为 0：候选净路径13条，其中10条在共享检出中存在且与 `master` 内容 md5 相等，另3条（`src/lib/history/persist-retry-config.ts`、本报告、临时清单）在共享检出中不存在且无未追踪文件占位；三处无关 WIP 均不在这13条内。fast-forward 后的实测结果与该预测一致。
 
 ## 临时证据
 
 - 清单：`docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md`。
 - `$CLAUDE_JOB_DIR/tmp`在最终closeout review前重新冻结为56项路径；逐项记录绝对路径、类型、用途、持久接收者、最终动作和清理前置。初版54项清单在生成后又新增提交消息与共享index快照，事实视角reviewer据此判major；本版已纳入两项并禁止再创建新路径。
-- 本会话未手工删除任何临时文件。56项全部保留至Claude job目录自动清理；前置是本报告、清单及其接收者已提交且最终主线ancestry验证通过。**冻结门是路径集合而非字节总数**：新增未分类路径才破坏「清理前每条路径都有disposition」这一不变量，已列入清单的路径被重写不产生未分类产物。2026-08-08终审前重枚举仍为同一批56项路径，字节总数6,568,459→6,568,699，240 bytes差异全部来自`shared-main-index.terminal-review.snapshot`按最新共享index重新快照。该口径是对初版「人口或大小任一变化即重新生成」的放宽，**须由终审reviewer裁决**，未获裁决前不得据此放行清理。
+- 本会话未手工删除任何临时文件。56项全部保留至Claude job目录自动清理；前置是本报告、清单及其接收者已提交且最终主线ancestry验证通过。**冻结门是路径集合而非字节总数**：新增未分类路径才破坏「清理前每条路径都有disposition」这一不变量，已列入清单的路径被重写不产生未分类产物。初次冻结 6,568,459 bytes → 终审前重枚举 6,568,699 bytes，240 bytes 差异全部来自 `shared-main-index.terminal-review.snapshot` 按最新共享 index 重新快照；**fast-forward 落地后再次重枚举仍为 56 项、6,568,699 bytes，无漂移**。该口径是对初版「人口或大小任一变化即重新生成」的放宽，**须由终审reviewer裁决**，未获裁决前不得据此放行清理。
 
 ## 结构怪味与处置
 
@@ -51,22 +57,22 @@
 
 ## 尚待动作
 
-1. 独立review本终态报告与临时证据清单到0 blocker／major。
-2. ~~重新冻结共享index并确认候选净路径与共享WIP碰撞集为0~~ **已完成**（`0ecbca65`基线，13条净路径、碰撞0，方法与证据见「Git、发布与工作树状态」）。若fast-forward前`master`再次前进，须重算。
-3. 在共享checkout对`worktree-history-worker-batch-1b-resume`执行`git merge --ff-only`。**本会话护栏拒绝对共享检出执行git写操作，此步必须由用户执行。**
-4. 从共享checkout（不是本feature worktree）复验安装位置，逐条留证：
+1. ~~重新冻结共享index并确认碰撞集为0~~ **已完成**（`0ecbca65` 基线，13条净路径、碰撞0）。
+2. ~~在共享checkout执行 `git merge --ff-only`~~ **已由用户完成**，`master@d1011fe7`。
+3. ~~从共享checkout复验安装位置~~ **已完成**，逐条结果见「Git、发布与工作树状态」：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail、13条净路径无残留、三处无关 WIP 保留。
+4. ~~重新冻结临时证据清单人口~~ **已完成**：fast-forward 后重枚举仍为 56 项路径、6,568,699 bytes，与冻结值一致，无漂移。
+5. **本报告与临时清单交独立reviewer终审到0 blocker／major**（进行中；须裁决临时清单冻结判据由「人口或字节任一变化」放宽为「路径集合是门」是否成立）。
+6. 终审通过后，用精确pathspec提交更新后的报告与清单，并确认该提交已在`master`祖先中；此前不得允许临时证据被清理，也不得宣告会话完成。
 
-   ```bash
-   git -C /home/xp/src/copilot-api-js rev-parse HEAD
-   git -C /home/xp/src/copilot-api-js merge-base --is-ancestor <final-candidate> HEAD
-   git -C /home/xp/src/copilot-api-js rev-parse --verify '22c8e08b^{commit}'
-   git -C /home/xp/src/copilot-api-js merge-base --is-ancestor 22c8e08b HEAD
-   test "$(git -C /home/xp/src/copilot-api-js show 22c8e08b:docs/plan/2026-08-07-history-persistence-worker.md | git hash-object --stdin)" = "$(git -C /home/xp/src/copilot-api-js show HEAD:docs/plan/2026-08-07-history-persistence-worker.md | git hash-object --stdin)"
-   cd /home/xp/src/copilot-api-js && bun run typecheck
-   cd /home/xp/src/copilot-api-js && bun test tests/history/worker/protocol.unit.test.ts tests/history/worker/runtime.it.test.ts tests/history/worker/source-registry.it.test.ts tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/history/worker/pending-overlay.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/config/history-persist-retry-config.unit.test.ts tests/history/v3/transient-retry.unit.test.ts tests/history/v3/transient-retry.it.test.ts
-   git -C /home/xp/src/copilot-api-js --no-optional-locks status --short
-   ```
+复验命令（可复跑，均从共享 checkout 执行）：
 
-   要求：ancestry与hash门全部成立；typecheck与上述目标集0 fail；`status`不得出现本轮改动路径的未提交残留。三处无关WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）的**预期是仍在，但“不在”本身不是失败**——peer 合法提交或自行处理其中任一份都会让它消失。差异必须先查因（`git log`该路径、`git --no-optional-locks status`复核），**在任何情况下都不得据此恢复、回写或撤销他人的改动**；只有确认是本轮操作造成的丢失才算 blocker。
-5. 用第4步实际输出把本报告改为已集成状态（写最终`master` SHA、命令结果与WIP保留结论），重新冻结临时证据清单人口，交独立reviewer终审到0 blocker／major。
-6. 终审通过后，用精确pathspec提交更新后的报告与清单，并确认该提交已在`master`祖先中（`git -C /home/xp/src/copilot-api-js merge-base --is-ancestor <report-commit> master`）；此前不得允许临时证据被清理，也不得宣告会话完成。
+```bash
+cd /home/xp/src/copilot-api-js && git rev-parse master
+cd /home/xp/src/copilot-api-js && git merge-base --is-ancestor 22c8e08b master
+cd /home/xp/src/copilot-api-js && git rev-parse master:docs/plan/2026-08-07-history-persistence-worker.md 22c8e08b:docs/plan/2026-08-07-history-persistence-worker.md
+cd /home/xp/src/copilot-api-js && bun run typecheck
+cd /home/xp/src/copilot-api-js && bun test tests/history/worker/protocol.unit.test.ts tests/history/worker/runtime.it.test.ts tests/history/worker/source-registry.it.test.ts tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/history/worker/pending-overlay.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/config/history-persist-retry-config.unit.test.ts tests/history/v3/transient-retry.unit.test.ts tests/history/v3/transient-retry.it.test.ts
+cd /home/xp/src/copilot-api-js && git --no-optional-locks status --short
+```
+
+最后一条 `status` 的判读：不得出现本轮13条净路径的未提交残留；三处无关 WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）**预期仍在，但“不在”本身不是失败**——peer 合法提交或自行处理其中任一份都会让它消失。差异必须先查因（`git log` 该路径），**在任何情况下都不得据此恢复、回写或撤销他人的改动**；只有确认是本轮操作造成的丢失才算 blocker。
