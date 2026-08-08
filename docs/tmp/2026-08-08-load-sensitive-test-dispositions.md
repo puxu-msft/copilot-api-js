@@ -459,6 +459,66 @@ PROBE windows: new(abort→resolve) = 0 ms ; legacy(start→resolve, includes se
 
 **诚实边界**：本条**从未在 `run-02.log` 里红过**，上面也没有「它会红」的断言——只有「旧帧余量 3.5x、新帧余量在毫秒分辨率下不可测」这两个实测数字，以及本会话在其它文件上观测到的 4–6x 争用放大。旧写法在更重争用下是否真的会红，**未验证**。
 
+> **注释精度更正（协调方指出，随第 6 条一并提交）**：新注释原写「BEFORE the abort, nothing may settle this race」，但 `Promise.race([racePromise, Promise.resolve(STILL_PENDING)])` 实际只证明「**在一个微任务 tick 内**没有 settle」——需要 2 个以上微任务才 settle 的路径会从探针底下溜过去。已改写为受证据支持的表述（「未在一个微任务 tick 内 settle；abort 就在下一行发出，那个 tick 就是全部窗口」），并显式标注该探针的边界。**写下的命题比证明的强**，与前面撤回「鉴别力为零」是同一类错误。
+
+## 6. `tests/streaming/stream-shutdown-race.it.test.ts` — `raceIteratorNext resolves STREAM_ABORTED when signal fires during stall`
+
+**它守的不变量**：与第 5 条同一条底层性质，但**用例意图不同**——这条在 `describe("shutdown signal interrupts stalled stream (the core bug fix)")` 之下，doc 注释 `:630-638` 明写它复现的是 bug 报告里的确切场景（上游收了 2 个事件后停发但连接不断，`await iterator.next()` 永久阻塞），断言注释写的是 "not hang **until TCP timeout**"。
+
+**依据来源**：用例 `:640-658`；因果判据 `:654` `expect(result).toBe(STREAM_ABORTED)`；**另有一条第 5 条所没有的** `:657` `expect(elapsed).toBeGreaterThanOrEqual(40) // Sanity: waited for the setTimeout`。
+
+**逐条判定（重新判过，没有套用第 5 条）：**
+
+- **`:656` 的 `< 200` 不是冗余**，理由与第 5 条同：轮询式 abort 实现照样返回 `STREAM_ABORTED`，`:654` 不蕴含及时性。
+- **但这条用例的结构与第 5 条并不相同**：它有 `:657` 的 `>= 40` 下界。该下界是单侧的（争用只会让 elapsed 变大），**且它在守一件第 5 条无人守的事**——「实现没有在 abort 到来之前就自行 resolve」。事实上第 5 条那个把 `elapsed=0` 判绿的 Mutation B（已中止快路径误触发），在**这条**用例上会被 `>= 40` 抓住。**所以第 5 条「旧判据对 Mutation B 假绿」的结论不能搬到这里**，这也是「同文件不等于同结构」的实例。
+- 于是处置不能照抄第 5 条：若只把 `setTimeout(50)` 改成显式 abort，`>= 40` 就失去意义而必须删掉——那会**丢掉**它守的那段「0→50ms 之间不得自行 resolve」的窗口，属于净减弱。第 5 条的单个微任务探针只覆盖「创建后那一个 tick」，**覆盖不了整段 50ms 窗口**。
+
+**处置（保留原窗口 + 把间接推断换成直接观测 + 修上界取帧）**：
+
+1. 保留一段**真实的 50ms stall**，但把「stall 期间不得 resolve」从 `elapsed >= 40` 的**间接推断**换成**直接观测**：stall 前后各放一次微任务 pending 探针。第二次探针（睡满 50ms 之后）**直接断言**了 `>= 40` 原本只能间接暗示的性质，而且是单侧安全的——睡得更久只会让「仍 pending」更成立。
+2. abort 改为显式调用，上界的计时窗口起点挪到 `abort()` 前一行（窗口内不含任何定时器）。
+3. 上界 `200` → `1_000`，降为 outlier 兜底，理由与第 5 条相同（须小于 5s 默认预算才可能被求值）。
+
+**净效果同样是严格增强**：`>= 40` 覆盖的窗口被一条更强的直接断言取代，`< 200` 的取帧被修正，`:654` 的因果判据一字未动。
+
+### 验收证据
+
+**方向二：错误状态仍被拦住（三次 mutation，全部针对本条用例实跑，没有引用第 5 条的结果）**
+
+| mutation | 打在哪 | 结果 | 红在哪条 |
+|---|---|---|---|
+| **C** 中途自行 resolve（spurious mid-stall） | `stream.ts:251` 后插入一个 20ms 后 resolve 的 racer | 0 pass / 1 fail | **第二个** pending 探针 `:655` |
+| **B** 已中止快路径对活信号误触发 | `stream.ts:248` `abortSignal?.aborted` → `abortSignal` | 0 pass / 1 fail | **第一个** pending 探针 `:653` |
+| **A** abort 惰性处理（3s） | `stream.ts:272` `resolve(...)` → `setTimeout(resolve(...), 3_000)` | 0 pass / 1 fail | outlier 上界，`Expected: < 1000 / Received: 3007`，落在断言上不是超时 |
+
+C 与 B 分别打红**不同**的探针，正说明两个探针各自覆盖不同窗口、不是重复。
+
+**「没有丢掉 `>= 40` 的覆盖」——这条是实测的，不是推断的**
+
+把改前的用例体逐字放回并跑（临时块，跑完即撤），在 C 与 B 两个 mutation 下分别读旧三条断言的真值：
+
+```
+（B 快路径误触发）REVERSE CONTROL legacy elapsed = 0  verdict = {"result":true,"upperBound":true,"lowerBound":false}
+（C 中途自行 resolve）REVERSE CONTROL legacy elapsed = 24 verdict = {"result":true,"upperBound":true,"lowerBound":false}
+```
+
+两次都是 `lowerBound: false` —— 即**旧的 `>= 40` 确实抓住了这两类退化**（而 `result` 与 `upperBound` 都被骗过）。新写法在同样两个 mutation 下分别红在第一、第二个探针。**所以覆盖是被接住了，不是被丢掉了。**
+
+> 这也是与第 5 条的**实测差异**：同一个 Mutation B，第 5 条的旧写法**全绿**（`elapsed = 0` 通过了它仅有的上界），第 6 条的旧写法**变红**（被 `>= 40` 抓住）。两条在同一文件、看起来同型，实际鉴别力结构不同——**「同文件不等于同结构」这句话在本条上有了具体证据**，而不是一句谨慎的姿态。
+
+三个 patch 均 `git apply --reverse --check` 后反向恢复；`git status --short -- packages/ src/` 为空。**全程未用整文件 `git checkout`。**
+
+**方向一：正确状态不被误拒**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改后，全文件） | **25 pass / 0 fail，0.87s** |
+| 64 spinner 争用（全文件） | **25 pass / 0 fail，3.39s** |
+
+**诚实边界**：本条同样**从未红过**，没有「它会红」的断言。旧上界的余量与第 5 条同源（窗口里含那个 50ms 定时器，实测 57ms/200ms ≈ 3.5x）；新上界的窗口内无定时器。旧写法在更重争用下是否真会红，**未验证**。
+
+
+
 
 
 - 没有退役（删除/skip）任何一条用例——四条全部保留，用户裁决按目标而非字面执行。
