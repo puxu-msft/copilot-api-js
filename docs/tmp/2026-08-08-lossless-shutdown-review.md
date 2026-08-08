@@ -35,16 +35,19 @@
 
 ## 最终验证快照
 
-验证树：`worktree-fix-shutdown-review-findings`，已合入 `master@d59a622c`，执行日期 2026-08-08。
+验证树：`worktree-fix-shutdown-review-findings`，已合入 `master@d47492a6`（含 peer 的 header-deadline 与全仓 lint 修复批次），执行日期 2026-08-08。
 
-- `bun run test:backend`：16 shards，6641 tests，6641 pass，0 fail；7267 executed，30 skipped。
-- `bun run test:fast`：16 shards，3180 tests，3180 pass，0 fail；5211 executed，1 skipped。
+- `bun run test:backend`：16 shards，6384 tests，6384 pass，0 fail；7287 executed，30 skipped。
+- 本任务自有测试（`tests/shutdown/`、`lightweight-model-operation.unit`、`supervisor-lossless-handoff.unit`）：12 文件 98 pass，0 fail。
 - `bun run typecheck`：通过。
-- 改动 backend TypeScript 定向 ESLint：通过（`validate-entry-evidence.unit.test.ts` 剩余告警为 master 既有 lint 债，新增行零错误）。
+- `bun run lint:all`：**通过**（见下节，先前的红已随 peer lint 批次合入而消解）。
 - 架构与 discovery guards：34/34 通过。
-- `bun run test:pty`：19 pass，0 fail。
-- 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过。
+- `bun run test:pty`：19 pass，0 fail（合入 master 前的最后一次执行）。
+- 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过（同上）。
 - `git diff --check`：通过。
+
+> 合入 master 前在 `master@d59a622c` 基线上的快照为 backend 6641 pass、fast 3180 pass，均 0 fail；用例总数下降来自 peer 的 `da584116 test: stabilize header deadline acceptance gates` 等改动，非本任务删减。
+
 
 ## 三路复评结论
 
@@ -55,4 +58,4 @@
 
 ## 全仓 lint 状态
 
-`bun run lint:all` 在当前 `master@44457047` 上仍失败：120 个文件、637 errors、5 warnings。绝大部分来自 entry-evidence／header-deadline 工作流在另一个并发分支 `worktree-nghttp2-header-deadline` 已提交但尚未合并的 140 文件变更；该分支同时含 response-header deadline 功能，不能安全 cherry-pick 或夹带进本 shutdown 整改。当前任务所有改动 TypeScript 已定向 ESLint 通过。此项是当前 master 的独立未合并工作，不作为本任务已绿结论；最终交付必须明确保留这项事实。
+**已消解（2026-08-08 收尾时复测）。** 先前 `bun run lint:all` 在 `master@44457047` 上失败（120 文件、637 errors、5 warnings），根源是并发分支 `worktree-nghttp2-header-deadline` 已提交但未合并的 140 文件变更。该分支随后经 `0732fc76`（把 shutdown 基线并入）、`a0ad0f1a`（close repository lint gates）、`bae83f01`（apply repository lint fixes）合入 master。本分支合入 `master@d47492a6` 后 `bun run lint:all` 退出码 0，仅剩一条与代码无关的 `baseline-browser-mapping` 数据过期提示。本任务全程未 cherry-pick 该 peer 分支，此项作为外部阻塞记录到此闭合。

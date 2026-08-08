@@ -44,7 +44,7 @@
 1. **更好的内部替代方案：** 长期更优的是统一 accepted-operation registry，而不是在 shutdown 再追加 producer spread；它能让第三类旁路无需修改 shutdown。但当前只有两类 producer，且统一会重塑 manager 所有权与 test bootstrap，故按“不静默丢弃”记入 backlog，不在 review 整改中夹带架构重写。
 2. **判据判别力：** 当前 generation 与 lightweight omission mutation 分别证明两类 registry 缺失会红；真实长流、token refresh、recovery 与 bypass HTTP 测试覆盖客户端／History／资源顺序。未做 process-global abort、529 与 upstream WS early-teardown exact mutation，因此 skill 明确不声称这些已被同一门完整覆盖。
 3. **成熟第三方方案：** 进程内 accepted-operation ownership 没有可直接替代项目 registry 的成熟库；systemd 与 PM2 已分别复用其原生 lifecycle/restart 能力，不自研 supervisor。引入通用 graceful-shutdown 库反而无法表达 canonical terminal／History durability 边界。
-4. **未采纳方案：** 不把并发 `worktree-nghttp2-header-deadline` 的 140 文件 lint／header-deadline 提交链 cherry-pick 进本任务；它包含独立功能并正在另一 worktree 完成。当前 master 的 `lint:all` 红如实保留，所有本轮改动 TypeScript 走定向 ESLint，全 backend／fast／typecheck／架构／PTY／旧 Vue 门均独立通过。
+4. **未采纳方案：** 不把并发 `worktree-nghttp2-header-deadline` 的 140 文件 lint／header-deadline 提交链 cherry-pick 进本任务；它包含独立功能并正在另一 worktree 完成。当时 master 的 `lint:all` 红如实保留，所有本轮改动 TypeScript 走定向 ESLint，全 backend／fast／typecheck／架构／PTY／旧 Vue 门均独立通过。**收尾复测（2026-08-08）：** 该 peer 分支已自行合入 master（`0732fc76`／`a0ad0f1a`／`bae83f01`），本分支合入 `master@d47492a6` 后 `bun run lint:all` 通过——不 cherry-pick 的判断成立，阻塞由其自身合并消解。
 
 ## 复评状态
 
