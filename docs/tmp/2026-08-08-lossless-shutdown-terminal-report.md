@@ -33,7 +33,7 @@
 | `a6be256a` | entry evidence validator 文件级超时预算 |
 | `6adf2e56`／`93de46b9`／`51d705cf`／`5405056b`／`e5ad10ea`／`73928cef`／`2c248536` | 收尾：证据归档、plan 终态化、skill 复跑协议、记忆条目、临时清单、两轮收尾评审处置 |
 
-**`04e6ecb1`～`4c555ef9` 已在 master**（由 peer 的 `0732fc76` 带入）。**`77d6d479` 起的整改仍只在本分支**。
+**`04e6ecb1`～`4c555ef9` 先随 peer 的 `0732fc76` 进入 master；`77d6d479` 起的整改由 `ad8128ad` 合入 master。** 本表所列全部提交现均在 master 上——`git merge-base --is-ancestor 954a1bff master` 退出 0。唯一例外是本次收尾在合并之后追加的文档更新，见第 9 节。
 
 ## 3. 验证（均在本分支最终状态执行）
 
