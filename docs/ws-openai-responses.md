@@ -150,7 +150,6 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 
 | signal | 来源 | 作用 |
 |--------|------|------|
-| `shutdownSignal` | `getShutdownSignal()` | Phase 3 abort |
 | `clientAbortSignal` | 客户端断开 | 及时释放 |
 | `reaperSignal` | `ctx.lifecycleSignal`（stale-request reaper） | reap 取消 in-flight WS + 释放连接（**独立 provenance**——外层 `guardSseIterable` 据此把 reaper-cancel → `stream-error` → 给活客户端发 error 帧，缺陷④） |
 | `fetchSignal` | `createResponseHeaderTimeoutSignal()` | 首帧超时；首帧后由 stream idle timeout 接管 |

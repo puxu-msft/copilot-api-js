@@ -12,7 +12,6 @@ import {
   //
   StreamClientAbortError,
   StreamIdleTimeoutError,
-  StreamShutdownError,
 } from "~/lib/stream"
 
 /** Minimal RequestContext stub recording abort()/fail() calls. */
@@ -39,17 +38,6 @@ describe("settleStreamingFailure — unified terminal-settle decision", () => {
     expect(isClientAbort).toBe(true)
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ kind: "abort", model: "m", partial })
-  })
-
-  test("shutdown → fail() (NOT abort) and returns false", () => {
-    const { reqCtx, calls } = makeReqCtxStub()
-    const err = new StreamShutdownError()
-
-    const isClientAbort = settleStreamingFailure({ reqCtx, error: err, model: "m" })
-
-    expect(isClientAbort).toBe(false)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ kind: "fail", model: "m", error: err })
   })
 
   test("idle-timeout / generic errors → fail() and returns false", () => {
