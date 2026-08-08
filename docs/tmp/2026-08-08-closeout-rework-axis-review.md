@@ -36,3 +36,31 @@
 - Major：4
 - Minor：未按本轮要求展开；A6 的 `.md` 后缀与 A7 长度已在逐项回执标明。
 - 主观建议：无。
+
+# 复审轮（`4f3a10ed`）
+
+## 评审范围与证据
+
+- 范围：`git diff 98be376f..4f3a10ed` 的四份改动，重点复核上一轮 4 条 major 的闭环及整改新增缺陷。
+- 已读取／执行：最终 `.claude/skills/session-closeout/SKILL.md:45-73`、最终 ff-only memory、MEMORY 钩子、完整整改 diff；全仓 grep “长期价值／持久化裁决／候选／返工”等重复判据。上一轮 Git `2.43.0` 三组探针继续适用，相关命令行为未再改写。
+
+## 总体 verdict
+
+**修复 major 后可进入下一阶段。Blocker：0。**
+
+## 事实性发现
+
+[major] `.claude/skills/session-closeout/SKILL.md:47,61,73` — “裁决权单归 §3b”尚不可执行，且 §4 又重新立了裁决 — §3b 的行 schema 强制要求“绝对路径、类型、清理前置条件”，非文件候选没有绝对路径，也没有可清理对象，无法按第 61 行“作为新增行送回 §3b”；第 73 行随后又在 §4 用两个代理判“死路值不值得写”，正是声称已经消除的第二套持久化裁决。修复建议：把通用 disposition schema（候选标识／来源、长期价值、接收载体或替代证据、最终动作）抽成唯一小节；§3b 的 tmp 文件行在其上追加路径／类型／清理字段，§4 的非文件行引用同一通用 schema；删除 §4 的本地“值不值得写”门，或明确它只产生 provisional 证据、最终仍由统一 disposition 裁决。
+
+[major] `.claude/skills/session-closeout/SKILL.md:63-69` — 五类候选仍漏掉“本轮实际取得、未来无法从仓库静态重建的正向观察／能力边界”，会产生 false-negative — 例如首次探针直接确认某 runtime／外部 API 支持一种行为，既没有被否路线、错误因果或解析，也不是标定值或 mutation；若不保存探针条件、结果与能力边界，后来人仍会重跑调查。修复建议：增加受限第 6 类“本轮实际运行且支撑实施／裁决的外部或运行态探针结果”，只收无法由已提交代码、规范或 canonical artifact 廉价重建者；记录对象／版本／环境、命令、观察与不证明什么，避免扩大成全量知识扫描。
+
+[major] `docs/memory/methodology-ff-only-refusal-is-not-a-conflict.md:8-16,34`、`docs/memory/MEMORY.md:35` — `git ls-files -u` 为空仍不能推出“只剩分叉／脏路径” — Git `2.43.0` 临时仓库制造冲突后把文件 `git add` 为已解决、但不提交 merge；此时 `git ls-files -u` 为 0，`git merge --ff-only other` 仍 rc=128：`fatal: You have not concluded your merge (MERGE_HEAD exists)`，前后仍为 0。这是第三种前置状态。并且 divergent 与 dirty-path 的 stderr 不同，前者才是 `Not possible to fast-forward`，后者是 `local changes ... would be overwritten`，当前正文把一个具体报错与两因混写。修复建议：先检查完整 `git status`／in-progress operation state，再查 unmerged entries；若有前置状态，只报告并确认归属，不能命令“先解决”（共享树可能属于别人）；状态干净后按实际 stderr 分流：fast-forward impossible→拓扑分叉，would be overwritten→重叠 dirty path。随后重跑，因为前置状态与分叉可以同时存在。
+
+## 复审结论
+
+- 上轮 major 1／2：方向已采纳，但因非文件候选无法填写 §3b 的文件专用 schema，且 §4 第 73 行再次裁决“值不值得写”，尚未闭合。
+- 上轮 major 3：无界全量扫描已闭合；两个代理中“实际执行过”可由 transcript／操作记录观察，“文档或报错是否会引导”仍需语义判断，但 provisional + §1 独立评审足以避免作者自判。新增 false-negative 见本轮第 2 条。
+- 上轮 major 4：原反例已正确吸收，但二分仍不完备；resolved-but-uncommitted merge 是确定反例，且“先解决前置状态”在共享树中越过归属边界。
+- 结构怪味：`.claude/skills/session-closeout/SKILL.md:47,61,73`，类型为“通用 disposition 与文件专用 schema 混层，导致声明单源但实际双判”；处置为本轮修，因为它直接使非文件候选流程不可执行。
+- Blocker：0。Major：3。总体 verdict：**修复 major 后可进入下一阶段**。
+- 修复路由建议：instruction text 交 `gpt-souls:instruction-smith` 整改；Git 命令行为继续用临时仓库正反探针复核。
