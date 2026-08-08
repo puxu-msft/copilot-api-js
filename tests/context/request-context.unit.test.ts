@@ -425,7 +425,9 @@ describe("createRequestContext - attempt lifecycle", () => {
     const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
     const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
 
-    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", error: new Error("primary failed") })
+    const primaryError = new Error("primary failed")
+    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", error: primaryError })
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === primaryDispatch)?.error).toMatchObject({ message: "primary failed" })
     ctx.settleGenerationCandidate(primary, { verdict: "failed", reason: "primary failed" })
     ctx.selectGenerationWinner(recovery, recoveryDispatch)
     ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
@@ -462,6 +464,22 @@ describe("createRequestContext - attempt lifecycle", () => {
     const entry = ctx.toHistoryEntry()
     expect(ctx.currentAttempt?.strategy).toBe("legacy-last")
     expect(entry._index?.derived?.currentStrategy).toBe("legacy-last")
+  })
+
+  test("records a failed response error on the generation dispatch", () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate })
+
+    ctx.setAttemptResponse({
+      success: false,
+      model: "test",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      content: null,
+      error: "response failure",
+    })
+
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === dispatch)?.error).toBe("response failure")
   })
 
   test("records response failure supersession on the current dispatch and terminal snapshot", async () => {
@@ -1229,6 +1247,7 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     expect(entry._index?.derived?.failureReason).toBe("HTTP 400: body")
     expect(last?.upstreamResponse?.status).toBe(400)
     expect(last?.upstreamResponse?.rawBody).toBe("body")
+    expect(ctx.modelOperationSnapshot.dispatches[0]?.error).toBe("HTTP 400: body")
     // Model normalized (claude-sonnet-4-5 → claude-sonnet-4.5).
     expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
 

@@ -762,10 +762,13 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown, hasError = false): void {
+  function settleGenerationAttempt(
+    attempt: GenerationAttemptCapture,
+    settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown },
+  ): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
-    if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
+    if (settlement.verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -779,7 +782,7 @@ export function createRequestContext(opts: {
     if (response?.status !== undefined) responseStatus = response.status
     else if (attemptError?.status !== undefined) responseStatus = attemptError.status
     modelOperationRecorder.settleDispatch(attempt.handle, {
-      verdict,
+      verdict: settlement.verdict,
       ...(hasUpstreamResponse && {
         upstreamResponse: {
           ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
@@ -792,8 +795,8 @@ export function createRequestContext(opts: {
           ...(responseMetadata(response, attemptError) === undefined ? {} : { metadata: responseMetadata(response, attemptError) }),
         },
       }),
-      ...(reason !== undefined && { reason }),
-      ...(hasError && { error: snapshotForRecorder(error) }),
+      ...(settlement.reason !== undefined && { reason: settlement.reason }),
+      ...(("error" in settlement) && { error: snapshotForRecorder(settlement.error) }),
     })
     attempt.settled = true
   }
@@ -861,7 +864,11 @@ export function createRequestContext(opts: {
     if (modelOperationRecorder.sealed || pendingGenerationTerminal !== undefined) return
     const currentAttempt = terminalGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
-      settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
+      settleGenerationAttempt(currentAttempt, {
+        verdict: outcome === "completed" ? "committed" : "failed",
+        reason: `terminal:${outcome}`,
+        ...((outcome === "failed" || outcome === "aborted") && error !== undefined && { error }),
+      })
     pendingGenerationTerminal = {
       outcome,
       ...(error !== undefined && { error: snapshotForRecorder(error) }),
@@ -1547,12 +1554,16 @@ export function createRequestContext(opts: {
 
     settleGenerationDispatch(dispatch, input) {
       const attempt = selectGenerationAttempt(dispatch)
-      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error, "error" in input)
+      settleGenerationAttempt(attempt, {
+        verdict: input.verdict,
+        ...(("reason" in input) && { reason: input.reason }),
+        ...(("error" in input) && { error: input.error }),
+      })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
       const previous = currentGenerationAttempt()
-      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+      if (previous && !previous.settled) settleGenerationAttempt(previous, { verdict: "discarded", reason: "superseded by next attempt" })
       ctx.beginGenerationDispatch({ candidate: ensurePrimaryGenerationCandidate(), ...attemptOpts })
     },
 
@@ -1663,12 +1674,11 @@ export function createRequestContext(opts: {
             }
           }
           recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", responseMetadata(response))
-          settleGenerationAttempt(
-            generationAttempt,
-            response.success ? "committed" : "failed",
-            response.success ? undefined : response.error,
-            response.success ? undefined : (attempt.error?.raw ?? response.error),
-          )
+          settleGenerationAttempt(generationAttempt, {
+            verdict: response.success ? "committed" : "failed",
+            ...(response.success ? {} : { reason: response.error }),
+            ...(response.success ? {} : { error: attempt.error?.raw ?? response.error }),
+          })
         }
       }
     },
@@ -2271,7 +2281,11 @@ export function createRequestContext(opts: {
         let reason = "failed"
         if (args.nextStrategy !== undefined) reason = `retry:${args.nextStrategy}`
         else if (args.willRetry) reason = "retry"
-        settleGenerationAttempt(generationAttempt, args.willRetry ? "discarded" : "failed", reason, a?.error)
+        settleGenerationAttempt(generationAttempt, {
+          verdict: args.willRetry ? "discarded" : "failed",
+          reason,
+          ...(a?.error !== undefined && { error: a.error }),
+        })
       }
       publisher?.publish({
         kind: "request.attempt_failed",
