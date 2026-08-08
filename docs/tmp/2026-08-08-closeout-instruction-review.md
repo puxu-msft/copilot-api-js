@@ -116,3 +116,13 @@
 | B. Step 9 必填项仍写 `fresh` | B | 改为 `verification commands and outcomes, each labelled freshly produced or reused under the project's rules and anchored to its commit`。形态是 `62-docs-and-handover` 的「改了内容没改指向它的东西」：我改了 Step 7 正文与 Step 9 末句，漏了同段的必填清单。首版修补时我一度写成「fresh …, each labelled … or reused」，自相矛盾，通读时改掉。 |
 
 清理门按评审判定**未满足，未执行任何删除**；job tmp 仍为 12 个文件原样保留。
+
+
+## 第三轮复评
+
+- **基线**：项目 `afbf6fd559e93ca1affdace41d80f9cdda304001`；全局 skill `a1eeb402eaf4bd1bcd386fc57778980c3d2833af`。
+- **执行证据**：`render_skill.py --check` exit 0；`python tests/test_skill.py` 为 7 tests OK；检索 authoritative source 与渲染文本，已无 `fresh verification` 残留；job tmp 仍为已评审的同一 12 个路径。
+- **Major A：闭合。** 全局 Step 2 与 Step 5、项目 §3b、archive 清理门及修复方向均明确：任一 disposition 新增、删除或修改都会使旧 verdict 失效，更新后的完整 manifest 必须重新独立评审至 0 blocker／0 major。contract 仍用同一 `review_temp_manifest → clean_temp` stage 表达门，正文负责规定 manifest 变化时必须重入该 stage，二者不冲突，四处没有弱化为“只补行、不复审”。
+- **Major B：闭合。** Step 9 必填项现为 `verification commands and outcomes, each labelled freshly produced or reused ...`，与 Step 7 及 completion gate 一致；仅剩的 `fresh run`／`freshly produced` 都用于区分“新跑”与“复用”，不再无条件要求 fresh verification。
+- **总体 verdict**：**0 blocker／0 major；未发现整改引入的新 blocker／major。**
+- **清理门**：满足。`/home/xp/src/copilot-api-js/.claude/worktrees/history-persist-retry-defaults/docs/archive/2026-08-08-history-v3-persist-retry-closeout.md` 连同本批指令文本已达到 0 blocker／0 major；当前复扫仍为 archive 列出的 12 个精确路径，可按逐项前置执行删除并在删除后复扫。若删除前 manifest 内容或路径集合再变化，本 verdict 立即失效，须按新规则重新送评。
