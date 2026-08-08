@@ -33,10 +33,12 @@ import {
   DONE_FRAME,
   MESSAGE_STOP_FRAME,
   blockStopFrame,
+  jsonDeltaFrame,
   messageDeltaFrame,
   messageStartFrame,
   textBlockStartFrame,
   textDeltaFrame,
+  toolBlockStartFrame,
 } from "../../helpers/anthropic-frames"
 import { mockModel } from "../../helpers/factories"
 import { FakeClock } from "../../helpers/fake-clock"
@@ -247,6 +249,47 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `precontent-pre-ready-${_kind}` }).entries[0]
     expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
+  test("pre-ready unrepairable recovery tool input is discarded locally and preserves the primary terminal", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0, toolRepairMalformedInput: ["tags", "jsonrepair"] })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary tool fallback" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(
+          createSseResponse([
+            messageStartFrame({ id: "msg_recovery_unrepairable", model: MODEL, inputTokens: 5 }),
+            toolBlockStartFrame(0, "toolu_recovery_unrepairable", "TodoWrite"),
+            jsonDeltaFrame(0, '{"todos":1,,,}'),
+            blockStopFrame(0),
+            messageDeltaFrame({ stopReason: "tool_use", outputTokens: 1 }),
+            MESSAGE_STOP_FRAME,
+            DONE_FRAME,
+          ]),
+        )
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), "precontent-pre-ready-unrepairable")).text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("msg_recovery_unrepairable")
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-unrepairable" }).entries[0]
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
