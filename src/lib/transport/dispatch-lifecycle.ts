@@ -44,12 +44,12 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
   void quiesced.catch(() => {})
   let onExternalAbort = (): void => {}
 
-  const complete = (error?: unknown): void => {
+  const complete = (error?: unknown, failed = false): void => {
     if (settled) return
     settled = true
     externalSignal?.removeEventListener("abort", onExternalAbort)
-    if (error === undefined) resolveQuiesced()
-    else rejectQuiesced(error)
+    if (failed) rejectQuiesced(error)
+    else resolveQuiesced()
   }
 
   const cancel = (reason?: string): void => {
@@ -64,7 +64,7 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
         try {
           await iterator.return()
         } catch (error) {
-          complete(error)
+          complete(error, true)
           throw error
         }
       }

@@ -128,8 +128,8 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
 
   const recordSettlement = (dispatch: DispatchHandle, settlement: DispatchSettlement): void => {
     if (settled.has(dispatch)) return
-    settled.add(dispatch)
     input.recording.settleDispatch(dispatch, settlement)
+    settled.add(dispatch)
   }
 
   const distinctErrors = (errors: ReadonlyArray<unknown>): Array<unknown> => {
@@ -166,18 +166,26 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         cleanupErrors.push(error)
       }
       const uniqueCleanupErrors = distinctErrors(cleanupErrors)
+      const hasCleanupFailure = uniqueCleanupErrors.length > 0
       const settlementErrors = distinctErrors([...(settlement.error === undefined ? [] : [settlement.error]), ...uniqueCleanupErrors])
-      const cleanupFailure = uniqueCleanupErrors.length === 0 ? undefined : uniqueCleanupErrors.length === 1 ? uniqueCleanupErrors[0] : new AggregateError(uniqueCleanupErrors, "Dispatch cleanup failed")
+      let recordingFailed = false
+      let recordingFailure: unknown
       try {
         recordSettlement(dispatch, {
           ...settlement,
-          ...(cleanupFailure !== undefined && { verdict: "failed" as const }),
+          ...(hasCleanupFailure && { verdict: "failed" as const }),
           ...(settlementErrors.length === 1 ? { error: settlementErrors[0] } : settlementErrors.length > 1 ? { error: new AggregateError(settlementErrors, "Dispatch settlement errors") } : {}),
         })
+      } catch (error) {
+        recordingFailed = true
+        recordingFailure = error
       } finally {
         active.delete(dispatch)
       }
-      if (cleanupFailure !== undefined) throw cleanupFailure
+      const propagationErrors = distinctErrors([...uniqueCleanupErrors, ...(recordingFailed ? [recordingFailure] : [])])
+      if (propagationErrors.length === 1) throw propagationErrors[0]
+      if (propagationErrors.length > 1) throw new AggregateError(propagationErrors, "Dispatch cleanup and settlement failed")
+      if (recordingFailed) throw recordingFailure
     })()
     cleanup.set(dispatch, task)
     return task

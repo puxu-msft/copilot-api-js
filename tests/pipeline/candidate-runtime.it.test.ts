@@ -44,9 +44,10 @@ interface DispatchRow {
   settlementError?: unknown
 }
 
-function recordingPort() {
+function recordingPort(options?: { throwSettlementOnce?: unknown }) {
   let candidateSequence = 0
   let dispatchSequence = 0
+  let settlementThrowPending = options?.throwSettlementOnce !== undefined
   const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; verdict?: CandidateVerdict; reason?: string }>()
   const dispatches = new Map<DispatchHandle, DispatchRow>()
   const port: DispatchRecordingPort = {
@@ -70,6 +71,10 @@ function recordingPort() {
       dispatches.get(handle)!.openedKind = response.kind
     },
     settleDispatch(handle, input) {
+      if (settlementThrowPending) {
+        settlementThrowPending = false
+        throw options?.throwSettlementOnce
+      }
       const row = dispatches.get(handle)!
       row.verdict = input.verdict
       row.settlementReason = input.reason
@@ -239,6 +244,38 @@ describe("P6-T1 candidate dispatch runtime", () => {
     expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "cleanup-rejection" })
     expect((recording.dispatches.get(ready.dispatch)?.settlementError as AggregateError).errors).toEqual([upstreamError, cancelError, disposeError, quiesceError])
     expect(recording.candidates.get(candidate.handle)?.verdict).toBeUndefined()
+  })
+
+  test("cleanup recording failure preserves errors and allows one terminal settlement retry", async () => {
+    const cleanupError = new Error("cleanup failed")
+    const recordingError = new Error("recording failed")
+    const recording = recordingPort({ throwSettlementOnce: recordingError })
+    const quiesced = Promise.reject(cleanupError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        throw cleanupError
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("recording-failure"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "recording-failure"),
+    })
+
+    const ready = await candidate.run()
+    const rejection = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "recording-failure" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors[0]).toBeInstanceOf(AggregateError)
+    expect(((rejection as AggregateError).errors[0] as AggregateError).errors).toEqual([cleanupError, recordingError])
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "retry-after-recording-failure" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "retry-after-recording-failure" })
   })
 
   test("429 admission replay creates a fresh dispatch in the same candidate", async () => {

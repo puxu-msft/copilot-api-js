@@ -80,6 +80,62 @@ describe("physical dispatch lifecycle", () => {
     await expect(quiescedResult).resolves.toBe(cleanupError)
   })
 
+  test.each([
+    undefined,
+    null,
+    "cleanup string",
+    Number.NaN,
+  ])("preserves unknown cleanup rejection %#", async (cleanupError) => {
+    const lifecycle = createDispatchLifecycle()
+    let returnCalls = 0
+    lifecycle.ownFrames({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => new Promise<IteratorResult<string>>(() => {}),
+          return: async () => {
+            returnCalls++
+            throw cleanupError
+          },
+        }
+      },
+    })
+    const quiesced = lifecycle.quiesced.then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    const disposal = lifecycle.dispose("unknown cleanup")
+    const disposalOutcome = await disposal.then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(disposalOutcome).toEqual({ state: "rejected", error: cleanupError })
+    expect(await quiesced).toEqual({ state: "rejected", error: cleanupError })
+    expect(returnCalls).toBe(1)
+  })
+
+  test("deduplicates repeated primitive cleanup failures", async () => {
+    const lifecycle = createDispatchLifecycle()
+    lifecycle.ownFrames({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => new Promise<IteratorResult<string>>(() => {}),
+          return: async () => {
+            throw Number.NaN
+          },
+        }
+      },
+    })
+    const disposal = lifecycle.dispose("same primitive")
+    const outcome = await disposal.then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(outcome).toEqual({ state: "rejected", error: Number.NaN })
+  })
+
   test("external abort catches internal disposal while public quiesced preserves the cleanup error", async () => {
     const cleanupError = new Error("external iterator return failed")
     const external = new AbortController()
