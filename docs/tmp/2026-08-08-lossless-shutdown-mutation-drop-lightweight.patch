@@ -1,0 +1,12 @@
+diff --git a/src/lib/shutdown.ts b/src/lib/shutdown.ts
+--- a/src/lib/shutdown.ts
++++ b/src/lib/shutdown.ts
+@@ -289,7 +289,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
+   const tracker: ShutdownDrainSource = deps?.tracker ?? {
+     // Drain waits on the OPERATION/finalization registry, not the visible logical-settle registry.
+     // A settled request remains here through orphan settle-before work (fetch/backoff/response pump),
+     // delivery notification, immutable canonical seal, and terminal publish. Phase 2/3 remain bounded;
+     // the explicit finalization barrier below surfaces seal rejection before History closes.
+-    getActive: () => [...getRequestContextManager().getTrackedOperations(), ...listInFlightLightweightModelOperations()],
++    getActive: () => [...getRequestContextManager().getTrackedOperations()],
+   }

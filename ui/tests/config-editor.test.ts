@@ -284,6 +284,17 @@ describe("useConfigEditor", () => {
 })
 
 describe("config editor helpers", () => {
+  test("serializeEditableConfig drops retired shutdown timing fields from runtime input", () => {
+    const legacy = {
+      proxy: "http://127.0.0.1:7890",
+      shutdown: { graceful_wait: 30, abort_wait: 90 },
+    } as unknown as EditableConfig
+
+    expect(serializeEditableConfig(legacy)).toEqual({
+      proxy: "http://127.0.0.1:7890",
+    })
+  })
+
   test("serializeEditableConfig normalizes empty reminder rule arrays to false", () => {
     expect(
       serializeEditableConfig({
