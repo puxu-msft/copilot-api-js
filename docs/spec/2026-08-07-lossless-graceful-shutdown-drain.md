@@ -26,7 +26,7 @@
 
 ### 2.2 已接纳请求
 
-`RequestContextManager.getTrackedOperations()` 是“已接纳”的机械边界。一个 context 从创建起进入 registry，直到 operation body quiesce、delivery finalize、immutable canonical terminal 发布完毕后才离开。
+`RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成“已接纳”的机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize、immutable canonical terminal 发布完毕后才离开；不建 `RequestContext` 的 count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 完成后注销。
 
 首信号之后，registry 中的 operation 必须保留完成工作所需的全部能力：
 
@@ -59,7 +59,7 @@ shutdown 不再拥有请求终止 deadline。首信号之后停止 stale reaper�
 
 ### 2.5 请求排空后的资源收敛
 
-operation registry 清零后，shutdown 按以下顺序收敛资源：
+generation 与 lightweight 两个 in-flight registry 均清零后，shutdown 按以下顺序收敛资源：
 
 1. Join generation finalizer registry，暴露排空期间记录的 canonical terminal 发布失败。正常 finalizer 工作已包含在 operation registry 内。
 2. 释放 token runtime。
@@ -119,8 +119,8 @@ operation registry 清零后，shutdown 按以下顺序收敛资源：
 - 首信号后，已在 rate limiter 中等待的 context 可以获得 permit 并完成。
 - 首信号后，已接纳但尚未打开 transport 的 context 可以新建上游 WS 或 HTTP/2 connection 并完成。
 - 首信号后，已接纳 context 可以执行 token validity check／refresh 和策略 retry。
-- operation registry 清零前，token runtime、上游 transport、History、Telemetry 和 Diagnostic 均未关闭。
-- operation registry 清零后，资源按 §2.5 顺序关闭并发布唯一终态。
+- generation 与 lightweight 两个 in-flight registry 均清零前，token runtime、上游 transport、History、Telemetry 和 Diagnostic 均未关闭。
+- 两个 registry 均清零后，资源按 §2.5 顺序关闭并发布唯一终态。
 - 新 ingress 在首信号后收到 503。
 - 第二信号在 draining、finalizing、notifying 和 failed 状态立即以对应信号退出码强退。
 

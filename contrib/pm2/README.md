@@ -12,7 +12,7 @@ pm2 start contrib/pm2/ecosystem.config.cjs --only copilot-api-blue   # 首次只
 pm2 save             # 可选：让 pm2 开机自启时恢复此进程列表
 ```
 
-`wait_ready: true` + `listen_timeout` 让 `pm2 start`/`pm2 restart` 阻塞到应用调用 `process.send('ready')`（`notifyReady()` 的 pm2 腿）才认为启动成功。`kill_timeout` 是 pm2 的强退上限，不是应用级请求 deadline。bundled `timeouts.request_deadline=0`，因此任何有限 `kill_timeout` 都无法严格保证无损排空；零停机换代时应先确认旧槽 `activeRequests.count=0`，再执行 `pm2 delete`。样例保留 1300 秒作为防永久挂死的运维上限，不把它描述成无损保证。
+`wait_ready: true` + `listen_timeout` 让 `pm2 start`/`pm2 restart` 阻塞到应用调用 `process.send('ready')`（`notifyReady()` 的 pm2 腿）才认为启动成功。`kill_timeout` 是 pm2 的强退上限，不是应用级请求 deadline。bundled `timeouts.request_deadline=0`，因此任何有限 `kill_timeout` 都无法严格保证无损排空；零停机换代时应先确认旧槽 `activeRequests.count=0`，再执行 `pm2 delete`。样例保留 1300 秒作为防永久挂死的运维上限，并用 `stop_exit_codes:[0]` 明确 clean handoff exit 不触发 autorestart。
 
 ## 为何不用 `pm2 reload`
 

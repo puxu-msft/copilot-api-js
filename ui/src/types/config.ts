@@ -17,10 +17,6 @@ export interface ConfigYamlResponse {
     stale_request_max_age?: number
   }
   model_refresh_interval?: number
-  shutdown?: {
-    graceful_wait?: number
-    abort_wait?: number
-  }
   history?: {
     success_limit?: number
     failure_limit?: number
@@ -64,10 +60,6 @@ export interface EditableConfig {
     stale_request_max_age?: number | null
   } | null
   model_refresh_interval?: number | null
-  shutdown?: {
-    graceful_wait?: number | null
-    abort_wait?: number | null
-  } | null
   history?: {
     success_limit?: number | null
     failure_limit?: number | null
