@@ -195,6 +195,61 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
+  test.each([
+    [
+      "upstream H2 error",
+      "msg_recovery_h2_fallback",
+      () =>
+        createSseResponse([
+          messageStartFrame({ id: "msg_recovery_h2_fallback", model: MODEL, inputTokens: 5 }),
+          `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "recovery H2 failure" } })}\n\n`,
+        ]),
+    ],
+    ["clean EOF truncation", "msg_recovery_truncated_fallback", () => createSseResponse(completeFrames("msg_recovery_truncated_fallback").slice(0, -2))],
+    [
+      "contentless refusal",
+      "msg_recovery_refusal_fallback",
+      () =>
+        createSseResponse([
+          messageStartFrame({ id: "msg_recovery_refusal_fallback", model: MODEL, inputTokens: 5 }),
+          messageDeltaFrame({ stopReason: "refusal", outputTokens: 0 }),
+          MESSAGE_STOP_FRAME,
+          DONE_FRAME,
+        ]),
+    ],
+  ])("pre-ready recovery %s is discarded once and retains the primary terminal", async (_kind, recoveryId, recoveryResponse) => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary recovery fallback" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(recoveryResponse())
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), `precontent-pre-ready-${_kind}`)
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain(recoveryId)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `precontent-pre-ready-${_kind}` }).entries[0]
+    expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
   test("pre-C9 recovery publication rejection discards R and retains the primary terminal", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     setDeliverySessionTestHooksForTests({
