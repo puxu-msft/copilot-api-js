@@ -118,7 +118,7 @@
 - [合成/改写帧 forwarded 轨完整性（landed master 2026-07-20）](project-synthetic-frame-forwarded-track-completeness-spec.md)
 - [Responses 三件（buffered-merge landed master / Codex tier-1 硬化 / runtime-split）](project-responses-buffered-merge-landed.md)
 - [transport 配置三轴归位 2c19c7cf + h2 池按容量选路 N=1 36cf45bf](project-transport-config-three-axis-reorg.md)
-- [上游静默 commit 时机 spec（plan 已定稿+两轮对抗审，实施中）](project-upstream-silence-commit-timing-spec.md)
+- [上游静默 commit 时机与 direct live B2（已本地集成；buffered／translated 待续）](project-upstream-silence-commit-timing-spec.md)
 - [对称四点 hook 架构 v3 2a77bf7c（v2 118a9c33 已被其取代）](project-symmetric-four-point-hooks.md)
 - [请求生命周期 cancel/settle/quiesce + 首包时序埋点 f982e0e3（均 landed）](project-request-lifecycle-cancel-settle-quiesce.md)
 - [AskUserQuestion 顶层 question 键抢救（landed）](methodology-plan-verify-interface-location-and-wiring-channel.md)
