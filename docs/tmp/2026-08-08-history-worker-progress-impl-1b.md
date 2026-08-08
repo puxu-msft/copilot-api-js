@@ -50,6 +50,7 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - 结构怪味：`tests/helpers/isolated-fixture.ts` 与 bespoke shutdown fixture 曾重复承担 admission reset，且后置 reset 与 `initHistory()` 重接线顺序相反（职责错位／双源 reset）。本轮已修到共享 `resetTestRuntime()` 基座；未留 backlog，因为所有复用者都会踩且修复已被现有配对测试覆盖。
 - 首次接力后全 backend 为 6681 pass／5 fail。`summary-query-performance` 的真实失败是前序 pending/recent overlay 让 `totalRequests=768≠512`，不是 wall-clock 阈值；该自管 DB fixture 现显式清两个 overlay。三个 shutdown HTTP／durability失败来自 bespoke fixture 的文件首测未先 `resetTestRuntime()`，以及磁盘 DB fixture 未在 `initHistory()` 前重建 admission。
 - Responses WS 的最后一个超时经起始／卡点 snapshot 探针定位：起始 `reserved=0`，卡点 `reserved=1/unacked=0` 且 context manager 无 active operation，说明 terminal publication subscriber 被清空。根因是 `useIsolatedRuntime()` 在 `resetTestRuntime()` 已通过 `initHistory()` 重接 production subscriber 后，又从后置 RESETTERS 调 `resetModelOperationTerminalBusForTests()` 把 subscriber 清掉。现 terminal bus 与 admission 均在 `resetTestRuntime()` 的 `initHistory()` 前重置，并从后置 RESETTERS 移除；WS 正常请求→shutdown 配对 2 pass／0 fail，整文件 14 pass／0 fail，fixture+completeness 8 pass／0 fail，typecheck 绿。临时诊断 probe 已全部撤销。
+- 隔离修复后全 backend 为 5630 pass／0 fail（16 shards，7282 executed，30 skipped，78.22s；`bun run test:backend`，当前提交 `1c54119f`）。两项 exact-patch 正控均命中目标机制并精确恢复：①移除 Chat Completions `withHistoryAdmission` 后 architecture test 报该 owner 0≠1（2 pass／1 fail）；②移除 shutdown Step 1 `stopAdmission` 后 ordering test 缺 `admission-stopped`（1 pass／1 fail）。恢复后合并目标集 5 pass／0 fail，两个生产文件无 diff。
 
 ## 在途意图
 
