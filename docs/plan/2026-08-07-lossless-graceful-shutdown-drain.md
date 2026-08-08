@@ -1,13 +1,12 @@
 # 首信号无损排空实施计划
 
-> **状态：已执行完毕，但整改部分尚未合回 master（2026-08-08）。** 四个任务与评审整改全部落地，三路独立评审 0 blocker／0 major。
+> **状态：已执行完毕并已合入 master（2026-08-08）。** 四个任务与评审整改全部落地，五轮独立评审的发现全部处置并复评闭合。
 >
-> **当前合并状态——接手前先跑这两条确认：**
-> - Task 1–4（`04e6ecb1`／`d254d8ae`／`c6a5f72c`／`4c555ef9`）**已在 master**，由 peer 的 `0732fc76` 带入。
-> - **评审整改（`77d6d479` 起至分支 HEAD）仍只在 `worktree-fix-shutdown-review-findings` 分支上，待合并。** 判定命令：`git branch -a --contains 954a1bff` 只输出该分支即为未合并；`git show master:src/lib/shutdown.ts | grep -n getActive` 若仍是 `getActive: () => getRequestContextManager().getTrackedOperations()`（单 registry），说明 count_tokens／embeddings 的 lightweight registry 与 History reservation 泄漏修复尚未生效于 master。
-> - 本分支已把 master 合入自身（`85642352` 合入 `d47492a6`），故合回 master 无冲突（`git merge-tree --write-tree master HEAD` 退出 0）。
+> **合并事实——可复跑验证：**
+> - Task 1–4（`04e6ecb1`／`d254d8ae`／`c6a5f72c`／`4c555ef9`）先随 peer 的 `0732fc76` 进入 master。
+> - **评审整改（`77d6d479` 起至分支 HEAD）由 `ad8128ad`（`Merge branch 'worktree-fix-shutdown-review-findings'`）合入 master。** 判定命令：`git branch -a --contains 954a1bff` 应同时列出 `master`；`git show master:src/lib/shutdown.ts | grep -n 'getActive: ()'` 应看到 `[...getRequestContextManager().getTrackedOperations(), ...listInFlightLightweightModelOperations()]` 这一并集形态（若仍是单 registry，说明看的是合并前的快照）。
 >
-> 终态记录见本文末「实施结果」与 [docs/tmp/2026-08-08-lossless-shutdown-review.md](../tmp/2026-08-08-lossless-shutdown-review.md)。下方任务描述保留原始执行指令形态，仅作历史留档，**不要再按它派活**。
+> 终态记录见本文末「实施结果」与 [docs/tmp/2026-08-08-lossless-shutdown-terminal-report.md](../tmp/2026-08-08-lossless-shutdown-terminal-report.md)。下方任务描述保留原始执行指令形态，仅作历史留档，**不要再按它派活**。
 >
 > **执行者要求（历史）：** 按任务顺序执行；每个任务使用 TDD，先红后绿；每个任务独立提交。实现时使用 `superpowers:test-driven-development`，收尾前使用 `superpowers:verification-before-completion`。
 
@@ -356,6 +355,6 @@ git log --oneline --decorate -5
 - Task 3：提交 `c6a5f72c`，删除两个 shutdown deadline 配置、state 字段与阶段类型。
 - Task 4：live docs、instruction skill 与 supervisor 样例已同步，提交 `4c555ef9` 及其之前的 Task 4 提交序列。
 - Review 整改：`77d6d479` 补齐 count_tokens／embeddings lightweight in-flight registry、真实 `/v1/messages` 长流／token refresh／pre-content recovery shutdown 交叉测试、systemd／PM2 handoff、旧 Vue 配置表面与 entry-evidence discovery baseline；`f1cb3cc5` 落评审处置记录；`954a1bff` 修复合并态发现的 lightweight pre-terminal capture 未释放 History reservation；`a6be256a` 给 entry evidence validator 设文件级超时预算。
-- 最终验证（整改分支，**已把 `master@d47492a6` 合入本分支**，本分支尚未合回 master，2026-08-08）：`bun run test:backend` 为 16 shards、`executed=7287`、`skipped=30`、`fail=0`、退出码 0。**计数口径提醒：** parallel runner 打印的 `N tests · N pass` 字段在同一棵树上跨运行不稳定（同树观测到 5334／6384／7287 三个值），只有 `executed`／`skipped`／`fail`／退出码／shard 数稳定，故基线只锚这些字段。本任务自有测试集（12 个 backend 档文件，见下）连跑两次均为 `Ran 100 tests across 12 files`、退出码 0；`tests/shutdown/shutdown-signals.pty.test.ts` 属 pty 档、不在此集内，另经 `bun run test:pty` 19 pass。root `bun run typecheck`、`bun run lint:all` 均通过；架构与 discovery guards 为 17 文件、178 pass、0 fail（`bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts`）。先前记录的 `lint:all` 红来自尚未合并的并发分支 `worktree-nghttp2-header-deadline`，其对应改动经 `0732fc76`（把 shutdown 基线 `44457047` 与 peer lint 提交 `bae83f01` 一并带入 master）、`a0ad0f1a`、`bae83f01` 进入 master 后此项转绿。完整评审记录见 [docs/tmp/2026-08-08-lossless-shutdown-review.md](../tmp/2026-08-08-lossless-shutdown-review.md)，逐条处置与正控 patch 见 [docs/tmp/2026-08-08-lossless-shutdown-review-dispositions.md](../tmp/2026-08-08-lossless-shutdown-review-dispositions.md)。
+- 最终验证（整改分支，已合入 `master@475bed45`，随后整支经 `ad8128ad` 合入 master，2026-08-08）：`bun run test:backend` 为 16 shards、`executed=7295`、`skipped=31`、`fail=0`、退出码 0。**计数口径提醒：** parallel runner 打印的 `N tests · N pass` 字段在同一棵树上跨运行不稳定（同树观测到 5334／6384／7287 三个值），只有 `executed`／`skipped`／`fail`／退出码／shard 数稳定，故基线只锚这些字段。本任务自有测试集（12 个 backend 档文件，见下）连跑两次均为 `Ran 100 tests across 12 files`、退出码 0；`tests/shutdown/shutdown-signals.pty.test.ts` 属 pty 档、不在此集内，另经 `bun run test:pty` 19 pass。root `bun run typecheck`、`bun run lint:all` 均通过；架构与 discovery guards 为 17 文件、178 pass、0 fail（`bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts`）。先前记录的 `lint:all` 红来自尚未合并的并发分支 `worktree-nghttp2-header-deadline`，其对应改动经 `0732fc76`（把 shutdown 基线 `44457047` 与 peer lint 提交 `bae83f01` 一并带入 master）、`a0ad0f1a`、`bae83f01` 进入 master 后此项转绿。完整评审记录见 [docs/tmp/2026-08-08-lossless-shutdown-review.md](../tmp/2026-08-08-lossless-shutdown-review.md)，逐条处置与正控 patch 见 [docs/tmp/2026-08-08-lossless-shutdown-review-dispositions.md](../tmp/2026-08-08-lossless-shutdown-review-dispositions.md)。
 
   自有测试集的精确文件清单（12 个，均属 backend 档）：`tests/shutdown/{drain-waits-operation.unit,rate-limiter-lossless-drain.it,rate-limiter-reject-race.unit,rate-limiter-shutdown.unit,rate-limiter.unit,shutdown-abort-flow.unit,shutdown-h2-pool-drain.it,shutdown-messages-lossless.http,shutdown.unit}.test.ts`、`tests/context/lightweight-model-operation.unit.test.ts`、`tests/infra/supervisor-lossless-handoff.unit.test.ts`、`tests/history/model-operation-bypass.http.test.ts`。
