@@ -37,23 +37,25 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 2. 已完成第一个 TDD 子单元并提交为 `7300cd5d`：新增 operation/journal normalized refs schema 与生产 A/B writer，新增 same-digest 双 sequence 正控；红测为 `no such table: v3_operation_evidence_refs`，修复后相关集合 `15 pass / 0 fail`。
 3. 已完成 journal recovery 精确 ref 对账并提交为 `9c1dcc6b`：对 persisted normalized refs 与实际 journal envelope refs 做有序六元组精确比对。红测在删除 sequence=2 后仍恢复（`Expected: 0; Received: 1`）；加入 mismatch 拒绝后为 `13 pass / 0 fail`。
 4. 已完成 strict primitive 第一语义单元：`hydrateManifest` 统一执行 manifest refs↔normalized operation refs 有序六元组精确对账、evidence bytes hash/length/encoding 校验，以及按 manifest v1/v2/v3 domain 重算当前 manifest bytes 的 operation digest。红控：normalized refs 漏／多／字段替换共3格均“未抛而红”；stored digest与可解码manifest bytes改写共2格均“未抛而红”。修复后 strict＋legacy＋readonly＋summary compatibility 集合 `41 pass / 0 fail`，typecheck与target lint通过。
-5. 下一子单元以测试先行落实20格DML final-state invalidation；随后完成 A/B recovery、ready snapshot、healthy narrow path。每个语义commit更新本文件；最终运行Task 9定向、typecheck、target lint与适用backend验证，完成独立评审前不得宣告完成。
+5. 已完成20格矩阵的 Operation #1～#9 checkpoint：新增表驱动 final-state 测试覆盖 trusted B insert、direct new-key insert、plain existing-key INSERT、10个受保护列 UPDATE、FK ON/OFF identity rename、pinned overlay、DELETE、FK ON/OFF existing-key REPLACE。首轮 direct INSERT／protected UPDATE／identity rename／REPLACE按目标红；实现后矩阵与既有 summary／evidence migration 集合 `48 pass / 0 fail`，typecheck与target lint通过。
+6. 可信 B 改为同事务两阶段：canonical先以 `summary_json=NULL` 插入pending并撤marker→tracks／normalized refs→共享strict hydrate→写summary→显式publish ready；仅当事务前marker为1时恢复。Operation trigger policy集中在 `summary-schema.ts`，由001新库路径与新增002迁移共用；不再复制policy SQL。
+7. 下一子单元以测试先行落实 Evidence #10～#20；随后完成 A/B recovery、ready snapshot、healthy narrow path。每个语义commit更新本文件；最终运行Task 9定向、typecheck、target lint与适用backend验证，完成独立评审前不得宣告完成。
 
 ## 结构怪味审计
 
-- `src/lib/history/v3/store.ts:229-333`：schema DDL 同时存在于 current-floor 与 migration owner 两处，属镜像 schema 风险。本轮只在两处同步补 normalized refs，因为当前 migration 架构要求两条创建路径；后续 strict primitive 与 invalidation 不再继续把 policy 塞进 schema 字符串，应集中到 `summary-schema.ts`／专用 helper。
+- `src/lib/history/v3/store.ts:229-333`：schema DDL 同时存在于 current-floor 与 migration owner 两处，属镜像 schema 风险。normalized refs仍需在两条创建路径同步；Operation invalidation policy已集中到`summary-schema.ts`并由001／002共用，Evidence policy继续进入同一共享SQL，禁止回到两份手写trigger。
 - `src/lib/history/v3/store.ts:1589-1649`：journal payload 与 normalized refs 是同一事实的两份存储，属有意冗余。已在 recovery 加 ordered six-tuple equality gate；保留原因是 journal envelope 是 A recovery replay 源，normalized rows 为 indexed integrity/GC 根，不能降级为任一方单独真相。
 - `src/lib/history/queries.ts:214-281`：marker 判断与查询分散，属计划明确要求修复的 TOCTOU 风险。本轮未修，留给 `withValidatedSummarySnapshot` 子单元，验收是 marker/query race 正负控与 healthy narrow plan 不退化。
 
 ## 接手注意
 
-- 下一步先为20格DML final-state invalidation写红测：summary承重字段被canonical mutation后不得ready，并先定位migration/summary trigger接缝再改代码。
+- 下一步实现 Evidence #10～#20；必须保留 #16 FK ON referenced DELETE 的ABORT全状态不变、#17 FK OFF COMMIT＋poison＋撤marker、#20 REPLACE在FK ON/OFF和recursive_triggers ON/OFF均COMMIT且由INSERT-side trigger fail-closed。
 - 不要把 FK ON referenced evidence DELETE 的 ABORT 测试改成 poison；终稿 #16 明确所有 trigger side effects 回滚。对 missing evidence 的历史 corruption 测试必须显式 `PRAGMA foreign_keys = OFF`，因为 FK ON 正常防止直接 DELETE。
 - 不要以 `git commit --amend` 修正此前 commit 的进度文字；已用本次 progress-only commit 保留线性历史。
 
 ## 在途意图
 
-- 四个 substrate checkpoint 与 strict primitive 已接入当前树；下一变更从20格DML invalidation红测开始。
+- 四个substrate checkpoint、strict primitive与Operation #1～#9已接入当前树；下一变更从Evidence #10～#20红测开始。
 - 范围严格排除 Task10 terminal bus、RequestContext、GOAWAY leases 与 production activation；也不实现 native UDF、authority/signing/tamper resistance 或范围 B 双轨。
 
 ## 已作废的路子

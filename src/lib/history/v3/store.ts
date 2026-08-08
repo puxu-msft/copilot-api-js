@@ -30,6 +30,7 @@ import {
   backfillExistingSummaryRows,
   getSummaryProjectionReadiness,
   markSummaryProjectionPoisoned,
+  publishValidatedOperationSummary,
   tryMarkSummaryProjectionReady,
 } from "./summary-store"
 
@@ -872,10 +873,11 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
       transactionA()
       const committedAt = Date.now()
       const transactionB = db.transaction(() => {
+        const restoreReadyMarker = getSummaryProjectionReadiness(db).ready
         for (const object of prepared.objects) insertObject(db, object)
         for (const node of prepared.sequenceNodes) insertSequenceNode(db, node)
         db.prepare(
-          "INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,ended_at,timing_source,manifest_gz,summary_json,committed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,ended_at,timing_source,manifest_gz,summary_json,committed_at) VALUES(?,?,?,?,?,?,?,?,?,NULL,?)",
         ).run(
           prepared.id,
           prepared.revision,
@@ -886,7 +888,6 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
           prepared.endedAt ?? null,
           prepared.timingSource,
           prepared.compressedManifest,
-          prepared.summaryJson,
           committedAt,
         )
         const trackStmt = db.prepare("INSERT INTO v3_tracks(operation_id,track_name,attempt_index,refs_json,track_gz) VALUES(?,?,?,?,?)")
@@ -898,6 +899,9 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
           prepared.id,
           prepared.transportEvidence.map(({ dispatchIndex, sequence, capture }) => ({ dispatchIndex, sequence, ...capture })),
         )
+        hydrateManifest(db, prepared.compressedManifest)
+        db.prepare("UPDATE v3_operations SET summary_json=? WHERE operation_id=?").run(prepared.summaryJson, prepared.id)
+        publishValidatedOperationSummary(db, prepared.id, restoreReadyMarker)
         // Once the operation transaction commits, the durable manifest + CAS objects are the
         // recovery source. Keeping the self-contained journal payload after this point would
         // duplicate every semantic value forever and defeat content-addressed storage.

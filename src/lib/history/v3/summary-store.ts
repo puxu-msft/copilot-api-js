@@ -21,9 +21,11 @@ import {
   historicalProjectionValues,
   projectionColumns,
   projectionEquality,
+  SUMMARY_PROJECTION_READY_KEY,
+  validatedReadyAssignments,
 } from "./summary-schema"
 
-export const SUMMARY_PROJECTION_READY_KEY = "summary_projection_ready"
+export { SUMMARY_PROJECTION_READY_KEY } from "./summary-schema"
 
 interface SummaryWhere {
   sql: string
@@ -521,6 +523,20 @@ export function backfillExistingSummaryRows(db: Database, limit: number, cursor?
   const last = rows.at(-1)
   if (!last) return { inserted: result.changes, cursor: null }
   return { inserted: result.changes, cursor: { createdAt: last.created_at, operationId: last.operation_id } }
+}
+
+export function publishValidatedOperationSummary(db: Database, operationId: string, restoreReadyMarker: boolean): void {
+  const table = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_operation_summaries'").get()
+  if (!table) return
+  const result = db
+    .prepare(
+      `UPDATE v3_operation_summaries
+       SET ${validatedReadyAssignments},projection_status='ready',projection_error=NULL
+       WHERE operation_id=?`,
+    )
+    .run(operationId)
+  if (result.changes !== 1) throw new Error(`[history/v3] missing summary projection for validated operation: ${operationId}`)
+  if (restoreReadyMarker) setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
 }
 
 export function markSummaryProjectionPoisoned(db: Database, operationId: string, reason: string): void {

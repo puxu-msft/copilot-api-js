@@ -11,7 +11,11 @@ import type { MigrationFn } from "umzug"
 
 import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
-import { SUMMARY_PROJECTION_MIGRATION_SQL } from "~/lib/history/v3/summary-schema"
+import {
+  //
+  SUMMARY_PROJECTION_MIGRATION_SQL,
+  SUMMARY_PROJECTION_TRIGGER_SQL,
+} from "~/lib/history/v3/summary-schema"
 
 /**
  * A single forward schema migration.
@@ -98,5 +102,8 @@ export const MIGRATIONS: Array<HistoryMigration> = [
     );
     CREATE INDEX IF NOT EXISTS idx_v3_journal_evidence_refs_digest ON v3_journal_evidence_refs(digest);`)
     db.prepare("UPDATE v3_meta SET value='6' WHERE key='schema_version'").run()
+  }),
+  sqlMigration("002-summary-integrity-invalidation", (db) => {
+    db.exec(SUMMARY_PROJECTION_TRIGGER_SQL)
   }),
 ]

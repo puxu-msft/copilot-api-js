@@ -43,7 +43,11 @@ afterEach(() => {
 
 describe("History V3 transport evidence schema migration", () => {
   test("registers the transport-evidence migration after the existing summary migration", () => {
-    expect(MIGRATIONS.map(({ name }) => name)).toEqual(["001-operation-summary-projection", "001-transport-evidence-schema"])
+    expect(MIGRATIONS.map(({ name }) => name)).toEqual([
+      "001-operation-summary-projection",
+      "001-transport-evidence-schema",
+      "002-summary-integrity-invalidation",
+    ])
   })
 
   test("upgrades a real schema-5 journal row to schema 6 without rewriting its payload", async () => {
