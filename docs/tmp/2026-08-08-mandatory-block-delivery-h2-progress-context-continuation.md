@@ -15,7 +15,7 @@ continuity: 须连续；旧会话明确命中两次 context-window 400，已按 
 ## 已恢复的提交与 WIP
 
 - 冻结主实施树：`mandatory-block-delivery-h2-implementation`，接续基线 `993a64a9`。
-- Task 37 分支：`agent-a4519c20a545ed3b6`，相对共同基线 `38ee9d86` 有 11 个提交；已用三方 merge `--no-commit` 应用到本树，零冲突，尚未提交。
+- Task 37 分支：`agent-a4519c20a545ed3b6`，相对共同基线 `38ee9d86` 有11个提交；已用三方 merge零冲突集成，并连同本轮门禁修复提交为 `bd6afab5`，等待独立评审。
 - Task 9 接力分支：`agent-a76fa535d0dc7246e`，相对 `993a64a9` 有 4 个提交；本树尚未合入，仍只读。
 - 旧会话与上述两个源 worktree 在接力时均为 clean；没有未提交 WIP 需要复制。
 
@@ -25,7 +25,7 @@ continuity: 须连续；旧会话明确命中两次 context-window 400，已按 
 - H2／proxy pollution／SCC 修复门：`47 pass / 0 fail`。
 - `bun run typecheck`：通过。
 - target ESLint：通过；仅输出 `baseline-browser-mapping` 数据陈旧提示，无 lint finding。
-- `bun run test:backend`：在当前未提交合并态运行，`16 shards / 5664 tests / 5664 pass / 0 fail`，用时 `45.14s`。命令口径为 unit＋it＋http；测试数不与此前不同失败运行横比。
+- `bun run test:backend`：在随后提交为 `bd6afab5` 的合并态运行，`16 shards / 5664 tests / 5664 pass / 0 fail`，用时 `45.14s`。命令口径为 unit＋it＋http；测试数不与此前不同失败运行横比。
 - 实现门已闭合；独立代码评审仍未执行，因此 Task 37 尚不能标 complete，也不能据此解锁后续 Task 1／4。
 
 ## 三个 backend 失败的守护不变量与处置
@@ -50,7 +50,7 @@ continuity: 须连续；旧会话明确命中两次 context-window 400，已按 
 
 ## 在途意图
 
-- 当前 merge 尚未提交；所有 staged 文件来自 Task 37 分支，接续修复将与本文件一起进入该 merge 的最终验证范围。
+- Task 37合并态已提交为 `bd6afab5`；后续若评审要求整改，每个修复commit继续同步本文件，直至评审闭合。
 - Task 9 不与当前 merge 并行写，避免 mutation／测试与 Task 37 合并态互相污染。
 
 ## 已作废的路子
