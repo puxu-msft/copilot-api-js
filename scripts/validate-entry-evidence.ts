@@ -115,13 +115,17 @@ function existingRuntimePath(base: string): string | undefined {
     const file = `${base}${candidate}`
     try {
       if (statSync(file).isFile()) return file
-    } catch {}
+    } catch {
+      // This candidate does not exist or is not stat-able; continue probing runtime extensions.
+    }
   }
   for (const candidate of RUNTIME_EXTENSION_CANDIDATES) {
     const file = path.join(base, `index${candidate}`)
     try {
       if (statSync(file).isFile()) return file
-    } catch {}
+    } catch {
+      // This candidate does not exist or is not stat-able; continue probing runtime extensions.
+    }
   }
   return undefined
 }
@@ -196,8 +200,9 @@ function lockfileMatches(canonicalTree: string, manifest: RuntimeDependencyInteg
     const lock = Bun.JSONC.parse(lockRaw) as { packages?: Record<string, unknown> }
     const saxes = manifest.packages.find((entry) => entry.name === "saxes")
     if (saxes === undefined || packageJson.dependencies?.saxes !== saxes.version || lock.packages === undefined) return false
+    const lockPackages = lock.packages
     return manifest.packages.every((entry) => {
-      const locked = lock.packages![entry.name]
+      const locked = lockPackages[entry.name]
       return Array.isArray(locked) && locked.length === 4 && locked[0] === `${entry.name}@${entry.version}` && locked[3] === entry.integrity
     })
   } catch {
@@ -354,7 +359,7 @@ function gitBytes(tree: string, args: Array<string>): Uint8Array | undefined {
 }
 function decodeUtf8(bytes: Uint8Array): string | undefined {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    return new TextDecoder(undefined, { fatal: true }).decode(bytes)
   } catch {
     return undefined
   }
@@ -378,21 +383,27 @@ function canonicalInside(candidate: string, tree: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
+function requireMapValue<K, V>(map: ReadonlyMap<K, V>, key: K): V {
+  const value = map.get(key)
+  if (value === undefined) cliFail()
+  return value
+}
+
 function parseOptions(argv: Array<string>): Options {
   const values = new Map<string, string>()
   for (let index = 0; index < argv.length; index += 2) {
-    const flag = argv[index]
-    const value = argv[index + 1]
-    if (!flag?.startsWith("--") || value === undefined || values.has(flag)) cliFail()
+    const flag = argv.at(index)
+    const value = argv.at(index + 1)
+    if (flag === undefined || !flag.startsWith("--") || value === undefined || values.has(flag)) cliFail()
     values.set(flag, value)
   }
   const expected = ["--entry-sha", "--pointer-sha", "--tree", "--handover", "--receipt-out"]
   if (values.size !== expected.length || [...values.keys()].some((flag) => !expected.includes(flag))) cliFail()
-  const entrySha = values.get("--entry-sha")!
-  const pointerSha = values.get("--pointer-sha")!
-  const tree = values.get("--tree")!
-  const handover = values.get("--handover")!
-  const receiptOut = values.get("--receipt-out")!
+  const entrySha = requireMapValue(values, "--entry-sha")
+  const pointerSha = requireMapValue(values, "--pointer-sha")
+  const tree = requireMapValue(values, "--tree")
+  const handover = requireMapValue(values, "--handover")
+  const receiptOut = requireMapValue(values, "--receipt-out")
   if (!isSha(entrySha, 40) || !isSha(pointerSha, 40) || !path.isAbsolute(tree) || !path.isAbsolute(receiptOut) || handover !== HANDOVER_PATH) cliFail()
   return { entrySha, pointerSha, tree, handover, receiptOut }
 }
@@ -491,8 +502,8 @@ function sameAggregateRows(
   expected: Array<{ ordinal: number; path: string; sha256: string }>,
 ): boolean {
   const key = (row: { ordinal: number; path: string; sha256: string }) => `${row.ordinal}\0${row.path}\0${row.sha256}`
-  const actualKeys = actual.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
-  const expectedKeys = expected.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  const actualKeys = actual.map((row) => key(row)).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  const expectedKeys = expected.map((row) => key(row)).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   return (
     actual.length === 15
     && expected.length === 15
@@ -555,7 +566,7 @@ function parseRunArtifacts(
         { path: artifact.path, sha256: artifact.sha256 }
       : undefined
   }
-  const junitArtifacts = junit.map(asArtifact)
+  const junitArtifacts = junit.map((artifact) => asArtifact(artifact))
   const runtimeArtifact = asArtifact(runtime)
   const skippedArtifact = asArtifact(skipped)
   if (junitArtifacts.some((artifact) => !artifact) || !runtimeArtifact) fail(7, "JUnit file identity mismatch", 6)
@@ -665,8 +676,10 @@ if (typeof manifest.canonical_command !== "string" || manifest.canonical_command
 if (typeof manifest.evidence_timing !== "string" || manifest.evidence_timing !== "closeout") fail(9, "evidence timing mismatch", 7)
 if (typeof manifest.measured_sha !== "string" || manifest.measured_sha !== options.entrySha) fail(9, "measured SHA mismatch", 7)
 if (typeof manifest.claims_current_head !== "boolean" || !manifest.claims_current_head) fail(9, "current-head claim mismatch", 7)
-const baselineBytes = gitBytes(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
-const baselineRaw = baselineBytes === undefined ? undefined : decodeUtf8(baselineBytes)
+const baselineBytesValue = gitBytes(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
+if (baselineBytesValue === undefined) fail(11, "discovery baseline hash mismatch", 7)
+const baselineBytes = baselineBytesValue
+const baselineRaw = decodeUtf8(baselineBytes)
 if (baselineRaw === undefined) fail(11, "discovery baseline hash mismatch", 7)
 let baseline
 try {
@@ -674,7 +687,7 @@ try {
 } catch {
   fail(11, "discovery baseline hash mismatch", 7)
 }
-if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
+if (createHash("sha256").update(baselineBytes).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
 for (const run of manifest.runs as Array<Record<string, unknown>>) {
   if (!exactKeys(run, RUN_KEYS)) fail(7, "JUnit file identity mismatch", 6)
   const log = readFileSync(run.log_path as string, "utf8")
@@ -770,6 +783,7 @@ const skippedAggregate = topLevelArtifact("skipped multiset", manifest.skipped_m
 const diskFilesRaw = readUtf8(diskManifest.path)
 const runtimeAggregateRaw = readUtf8(runtimeAggregate.path)
 const skippedAggregateRaw = readUtf8(skippedAggregate.path)
+const diskFiles = diskFilesRaw === undefined ? undefined : parseDiskManifest(diskFilesRaw)
 const runtimeRows = runtimeAggregateRaw === undefined ? undefined : parseAggregateRows(runtimeAggregateRaw)
 const skippedRows = skippedAggregateRaw === undefined ? undefined : parseAggregateRows(skippedAggregateRaw)
 const expectedRuntimeRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({
@@ -781,9 +795,8 @@ const expectedSkippedRows = (manifest.runs as Array<Record<string, unknown>>).ma
   ...(run.skipped_multiset as { path: string; sha256: string }),
 }))
 if (
-  diskFilesRaw === undefined
-  || parseDiskManifest(diskFilesRaw) === undefined
-  || !sameBytewiseStrings(parseDiskManifest(diskFilesRaw)!, baseline.files)
+  diskFiles === undefined
+  || !sameBytewiseStrings(diskFiles, baseline.files)
   || runtimeRows === undefined
   || skippedRows === undefined
   || !sameAggregateRows(runtimeRows, expectedRuntimeRows)
@@ -794,7 +807,7 @@ const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"
 if (manifest.discovery_baseline_path !== entryBaselinePath) fail(11, "discovery baseline path differs from entry", 7)
 const runnerBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/parallel-test.ts`])
 if (runnerBlob === undefined) fail(11, "discovery baseline hash mismatch", 7)
-if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
+if (createHash("sha256").update(baselineBytes).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
 if (baseline.runner_git_blob !== runnerBlob || manifest.discovery_runner_git_blob !== runnerBlob) fail(11, "discovery runner blob mismatch", 7)
 const validatorBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/validate-entry-evidence.ts`])
 if (validatorBlob === undefined) fail(11, "validator provenance mismatch", 7)

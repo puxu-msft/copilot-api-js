@@ -40,6 +40,11 @@ function toRepoRelative(file: string, repoRoot: string): string {
   return file.startsWith(prefix) ? file.slice(prefix.length) : file
 }
 
+function attributeValue(attributes: SaxesTagNS["attributes"], name: string): string | undefined {
+  if (!Object.hasOwn(attributes, name)) return undefined
+  return (attributes as Record<string, { value: string } | undefined>)[name]?.value
+}
+
 function testcaseKey(file: string, classname: string, name: string, ordinal?: number): string {
   return ["testcase", file, classname, name, ordinal].filter((part) => part !== undefined).join(IDENTITY_SEPARATOR)
 }
@@ -62,15 +67,15 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   parser.on("opentag", (tag: SaxesTagNS) => {
     const { attributes, local: name } = tag
     if (name === "testsuite") {
-      const rawFile = attributes.file?.value
+      const rawFile = attributeValue(attributes, "file")
       const file = rawFile === undefined ? undefined : toRepoRelative(rawFile, repoRoot)
       if (file !== undefined) files.add(file)
-      const skippedAttribute = attributes.skipped?.value
+      const skippedAttribute = attributeValue(attributes, "skipped")
       const skippedValue = skippedAttribute === undefined ? 0 : Number(skippedAttribute)
       elements.push({
         kind: "suite",
         file,
-        name: attributes.name?.value,
+        name: attributeValue(attributes, "name"),
         skipped: Number.isSafeInteger(skippedValue) && skippedValue > 0 ? skippedValue : 0,
         testcaseCount: 0,
         selfClosing: tag.isSelfClosing,
@@ -78,9 +83,9 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
       return
     }
     if (name === "testcase") {
-      const rawFile = attributes.file?.value
-      const rawClassname = attributes.classname?.value
-      const rawName = attributes.name?.value
+      const rawFile = attributeValue(attributes, "file")
+      const rawClassname = attributeValue(attributes, "classname")
+      const rawName = attributeValue(attributes, "name")
       if (rawFile === undefined || rawClassname === undefined || rawName === undefined) {
         elements.push({ kind: "other" })
         return

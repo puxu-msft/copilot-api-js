@@ -269,8 +269,14 @@ function invoke(f: ReturnType<typeof fixture>): ReturnType<typeof Bun.spawnSync>
   )
 }
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCodePoint(27)}\\[[0-9;]*m`, "g")
+
+function stripAnsi(value: string): string {
+  return value.replaceAll(ANSI_ESCAPE_PATTERN, "")
+}
+
 function error(result: ReturnType<typeof Bun.spawnSync>): string {
-  return new TextDecoder().decode(result.stderr).replaceAll(/\x1b\[[0-9;]*m/g, "")
+  return stripAnsi(new TextDecoder().decode(result.stderr))
 }
 
 function receiptExpected(f: ReturnType<typeof fixture>, receiptRaw = readFileSync(f.receipt, "utf8")): EntryEvidenceReceiptV1Expected {
@@ -403,7 +409,7 @@ function expectEv(id: string, result: { exitCode: number; stderr?: Uint8Array },
   const row = PLAN_MUTATIONS.get(id)
   if (!row || executions.some((entry) => entry.id === id)) throw new Error(`unknown or duplicate execution: ${id}`)
   expect(result.exitCode).toBe(row.expectedExit)
-  expect(new TextDecoder().decode(result.stderr ?? new Uint8Array()).replaceAll(/\x1b\[[0-9;]*m/g, "")).toBe(row.expectedStderr)
+  expect(stripAnsi(new TextDecoder().decode(result.stderr ?? new Uint8Array()))).toBe(row.expectedStderr)
   executions.push({ id, condition: row.condition })
 }
 function reconcileExecuted(planRows: ReadonlyMap<string, PlanMutationRow>, executions: ReadonlyArray<{ id: string; condition: string }>): Array<string> {
@@ -902,13 +908,10 @@ describe("entry evidence validator C7-C9", () => {
             f,
             () => {
               const parser = path.join(f.tree, "scripts/parallel-test-artifacts.ts")
-              writeFileSync(
-                parser,
-                readFileSync(parser, "utf8").replace(
-                  'import { SaxesParser, type SaxesTagNS } from "saxes"',
-                  'import { SaxesParser, type SaxesTagNS } from "saxes"\nimport "xmlchars"',
-                ),
-              )
+              const source = readFileSync(parser, "utf8")
+              const marker = 'from "saxes"'
+              if (!source.includes(marker)) throw new Error("Saxes import mutation marker is missing")
+              writeFileSync(parser, source.replace(marker, `${marker}\nimport "xmlchars"`))
             },
             "unexpected helper bare import",
           ),

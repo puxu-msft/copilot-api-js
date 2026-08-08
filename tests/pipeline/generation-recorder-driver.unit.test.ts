@@ -105,7 +105,7 @@ describe("generation recorder v4 driver integration", () => {
         headers: new Headers(),
         frames: {
           async *[Symbol.asyncIterator]() {
-            throw new StreamClientAbortError()
+            yield await Promise.reject(new StreamClientAbortError())
           },
         },
       })),

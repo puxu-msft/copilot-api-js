@@ -20,7 +20,7 @@ import {
   stripSystemText,
 } from "~/lib/pipeline/hooks/client-rewrite"
 
-const TODO = /The TodoWrite tool hasn't been used recently\.( Consider using it\.)?/
+const TODO = /The TodoWrite tool hasn't been used recently\.(?: Consider using it\.)?/
 const REMINDER = "The TodoWrite tool hasn't been used recently. Consider using it."
 
 /** Minimal env stub: clientFormat + body + immutable `with`. */

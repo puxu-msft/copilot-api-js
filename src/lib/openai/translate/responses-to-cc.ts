@@ -57,7 +57,7 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
     }
 
     if (item.type === "reasoning") {
-      for (const s of item.summary) if (s.type === "summary_text" && s.text) reasoningParts.push(s.text)
+      for (const summary of item.summary) if (summary.text) reasoningParts.push(summary.text)
       if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) reasoningEncrypted = item.encrypted_content
     }
 
@@ -106,15 +106,16 @@ function mapIncompleteFinishReason(incompleteDetails?: { reason: string } | null
 }
 
 function mapUsage(usage: ResponsesUsage) {
+  const inputDetails = usage.input_tokens_details
   return {
     prompt_tokens: usage.input_tokens,
     completion_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
-    ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens !== null && usage.input_tokens_details?.cache_write_tokens !== undefined) && {
+    ...((inputDetails?.cached_tokens !== undefined || inputDetails?.cache_write_tokens !== undefined) && {
       prompt_tokens_details: {
-        ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+        ...(inputDetails.cached_tokens !== undefined && { cached_tokens: inputDetails.cached_tokens }),
         // GHC extension: forward cache_write so the client sees it (spec §7).
-        ...(usage.input_tokens_details?.cache_write_tokens !== null && usage.input_tokens_details?.cache_write_tokens !== undefined && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+        ...(inputDetails.cache_write_tokens !== undefined && { cache_write_tokens: inputDetails.cache_write_tokens }),
       },
     }),
     ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {

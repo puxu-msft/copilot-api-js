@@ -167,7 +167,10 @@ const compilerOptions = ((): ts.CompilerOptions => {
   const configPath = path.join(repoRoot, "tsconfig.json")
   const raw = ts.readConfigFile(configPath, ts.sys.readFile)
   const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
-  if (converted.errors.length > 0) throw new Error(`tsconfig.json compilerOptions failed to parse: ${converted.errors.map((e) => e.messageText).join("; ")}`)
+  if (converted.errors.length > 0)
+    throw new Error(
+      `tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, "\n")).join("; ")}`,
+    )
   return converted.options
 })()
 

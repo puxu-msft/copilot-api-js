@@ -80,7 +80,7 @@ export function translateAnthropicResponseToCC(response: AnthropicResponse, onDe
         logprobs: null,
       },
     ],
-    ...(response.usage && { usage: mapUsage(response.usage) }),
+    usage: mapUsage(response.usage),
   }
 }
 
@@ -199,7 +199,7 @@ export function mapUsage(usage: AnthropicUsageLike): ChatCompletionUsage {
   const cacheRead = usage.cache_read_input_tokens
   const cacheCreation = usage.cache_creation_input_tokens
   const promptDetails =
-    cacheRead !== null && cacheRead !== undefined || cacheCreation !== null && cacheCreation !== undefined ?
+    (cacheRead !== null && cacheRead !== undefined) || (cacheCreation !== null && cacheCreation !== undefined) ?
       {
         ...(cacheRead !== null && cacheRead !== undefined && { cached_tokens: cacheRead }),
         ...(cacheCreation !== null && cacheCreation !== undefined && { cache_write_tokens: cacheCreation }),

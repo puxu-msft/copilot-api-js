@@ -240,7 +240,7 @@ export function createAnthropicToResponsesStreamTranslator(
           // ONLY) on message_start (stream-accumulator.ts:211); the terminal message_delta.usage typically
           // carries just output_tokens. Seed terminalUsage HERE so the message_delta spread-merge preserves
           // the input/cache legs — otherwise mapUsage sees totalInput=undefined → NaN → client usage `null`.
-          if (msg.usage) terminalUsage = msg.usage
+          terminalUsage = msg.usage
           break
         }
 

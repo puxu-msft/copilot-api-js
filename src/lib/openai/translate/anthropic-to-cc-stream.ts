@@ -188,10 +188,10 @@ export function createAnthropicToCcStreamTranslator(modelId: string, onDegradati
           const msg = event.message
           if (msg.id && !messageId) messageId = msg.id
           if (msg.model) model = msg.model
-          inputTokens = msg.usage.input_tokens ?? 0
-          outputTokens = msg.usage.output_tokens ?? 0
-          if (msg.usage.cache_read_input_tokens !== null && msg.usage.cache_read_input_tokens !== undefined) cacheReadTokens = msg.usage.cache_read_input_tokens
-          if (msg.usage.cache_creation_input_tokens !== null && msg.usage.cache_creation_input_tokens !== undefined) cacheCreationTokens = msg.usage.cache_creation_input_tokens
+          inputTokens = msg.usage.input_tokens
+          outputTokens = msg.usage.output_tokens
+          if (msg.usage.cache_read_input_tokens !== null) cacheReadTokens = msg.usage.cache_read_input_tokens
+          if (msg.usage.cache_creation_input_tokens !== null) cacheCreationTokens = msg.usage.cache_creation_input_tokens
           // No CC chunk — the role delta is emitted lazily on the first content/tool frame.
           break
         }
@@ -259,7 +259,8 @@ export function createAnthropicToCcStreamTranslator(modelId: string, onDegradati
             if (usage.output_tokens !== undefined) outputTokens = usage.output_tokens
             if (usage.input_tokens !== null && usage.input_tokens !== undefined) inputTokens = usage.input_tokens
             if (usage.cache_read_input_tokens !== null && usage.cache_read_input_tokens !== undefined) cacheReadTokens = usage.cache_read_input_tokens
-            if (usage.cache_creation_input_tokens !== null && usage.cache_creation_input_tokens !== undefined) cacheCreationTokens = usage.cache_creation_input_tokens
+            if (usage.cache_creation_input_tokens !== null && usage.cache_creation_input_tokens !== undefined)
+              cacheCreationTokens = usage.cache_creation_input_tokens
           }
           // Map the stop_reason via the SHARED helper (tool_use→tool_calls, max_tokens→length, refusal→content_filter).
           finishReason = mapStopReason(stopReason ?? null, sawToolUse)
@@ -272,8 +273,8 @@ export function createAnthropicToCcStreamTranslator(modelId: string, onDegradati
           }
           // INLINE finish + usage chunks (the CC leg needs no deferred flush). Role chunk first (empty stream case).
           ensureRoleChunk(out)
-          out.push(chunkFrame({}, { finishReason }))
           out.push(
+            chunkFrame({}, { finishReason }),
             chunkFrame(undefined, {
               emptyChoices: true,
               usage: mapUsage({

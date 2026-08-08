@@ -216,6 +216,7 @@ function buildReasoningChunk(state: StreamTranslatorState, fields: { reasoning?:
 
 function buildUsageChunk(state: StreamTranslatorState, response: ResponsesResponse): ChatCompletionChunk {
   const usage = response.usage
+  const inputDetails = usage?.input_tokens_details
   return {
     id: state.responseId,
     object: "chat.completion.chunk",
@@ -227,11 +228,11 @@ function buildUsageChunk(state: StreamTranslatorState, response: ResponsesRespon
         prompt_tokens: usage.input_tokens,
         completion_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,
-        ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens !== null && usage.input_tokens_details?.cache_write_tokens !== undefined) && {
+        ...((inputDetails?.cached_tokens !== undefined || inputDetails?.cache_write_tokens !== undefined) && {
           prompt_tokens_details: {
-            ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+            ...(inputDetails.cached_tokens !== undefined && { cached_tokens: inputDetails.cached_tokens }),
             // GHC extension: forward cache_write so the client sees it (spec §7).
-            ...(usage.input_tokens_details?.cache_write_tokens !== null && usage.input_tokens_details?.cache_write_tokens !== undefined && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+            ...(inputDetails.cache_write_tokens !== undefined && { cache_write_tokens: inputDetails.cache_write_tokens }),
           },
         }),
         ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {

@@ -28,7 +28,8 @@ const write = (data) => {
   queuedBytes += Buffer.byteLength(data)
   destination.write(data)
 }
-const flush = () => new Promise((resolve, reject) => destination.flush((error) => (error ? reject(error instanceof Error ? error : new Error(String(error))) : resolve())))
+const flush = () =>
+  new Promise((resolve, reject) => destination.flush((error) => (error ? reject(error instanceof Error ? error : new Error(String(error))) : resolve())))
 const fileBytes = () => fs.statSync(destination.file).size
 
 const head = "x".repeat(20_000)

@@ -121,6 +121,8 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
   })
 
   let lastUpstreamTrack: OperationTrackInput | undefined
+  // Recovery intentionally targets the deprecated transition adapter until the P4-P8 migration removes this projection path.
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   let committedAttempt: ReturnType<typeof recorder.beginAttempt> | undefined
   for (const [index, projected] of (entry.attempts ?? []).entries()) {
     const effectiveBody = projected.effectiveSource?.body
@@ -139,6 +141,8 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
           mediaType: "application/json",
         })
       )
+    // Recovery intentionally targets the deprecated transition adapter until the P4-P8 migration removes this projection path.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     const handle = recorder.beginAttempt({
       strategy: projected.strategy,
       ...(projected.transport === "http" || projected.transport === "upstream-ws" || projected.transport === "upstream-ws-fallback" ?
