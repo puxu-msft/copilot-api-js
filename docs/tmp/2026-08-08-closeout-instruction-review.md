@@ -36,3 +36,27 @@
 - **更好的内部替代方案：** 继续使用项目现有 exact patch + `git apply`，无需新增证明基础设施；把现有原语写成无歧义、逐 patch 的命令即可。
 - **判据判别力：** 正确基线要能 apply-check，目标 omission 必须让指定测试因目标机制变红，reverse 后必须复绿；三段缺一都不能声称 patch 可复跑。
 - **成熟第三方方案：** 不需要引入第三方库；Git 原生 patch/check/reverse 能完整表达该流程，问题在指令接线而非工具能力。
+
+
+## 未卷入第三方复评：M1（固定 commit `2c248536`）
+
+- **结论：FIXED。** `.claude/skills/process-lifecycle-shutdown/SKILL.md:142-154` 已闭合原 M1；0 blocker／0 major。
+- `:150` 明列前置 `git apply --check <patch>`；失败时要求停止、按当前源码重新构造 exact patch，并禁止修改旧 patch 去凑。
+- `:144-147` 逐 patch 给出目标命令；`git ls-tree 2c248536` 确认 `tests/shutdown/shutdown-messages-lossless.http.test.ts` 与 `tests/history/model-operation-bypass.http.test.ts` 均存在。
+- `:142` 明定任何一步非零即停止；`:153-154` 要求 reverse-check／恢复、同一测试复绿，并确认 `git diff -- src/lib/shutdown.ts` 为空。
+
+
+## 未卷入第三方复评：M2（固定 commit `2c248536`）
+
+- **结论：FIXED。** `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md:3,8,15-18` 与 `docs/memory/MEMORY.md:90` 均不再把污染后置。
+- frontmatter 明写“两侧并行查”，正文写成“两个并列的嫌疑”及“两条假设并行推进，不要按顺序排除”，索引同步为“与污染并列查、可同时成立”。
+- 正文 `:8` 以 driver 实例明确两者叠加：fixture 留下全局 timer，同时 retry oracle 不应观测全局 timer；只修任一侧都留坑。
+- `:17` 明确指向 skill `debugging-test-pollution` 与 `methodology-full-suite-red-classify-before-pollution-playbook` 逐失败分类；这保留污染诊断入口，也不再与既有 playbook 冲突。
+
+
+## 未卷入第三方复评：M3（固定 commit `2c248536`）
+
+- **结论：FIXED。** `docs/tmp/2026-08-08-validate-entry-evidence-shard-timeouts.md:9-24` 的两段摘录与当前仍可达的 `/home/xp/.claude/jobs/149c3057/tmp/backend-timeout-final.log:159-161`、`final-backend-after-review.log:162-164` 逐字一致：用例名分别对应 7369.01ms 与 7355.61ms。
+- 归档文件 `:3,27-31` 写清 `bun run test:backend`／底层 runner、16 shards、两个用例名、单文件 43/43、45.395 秒及最慢 4.561754 秒；后四项亦与 timing XML `:2-4,21` 一致。
+- memory `:11` 与处置记录 `:63` 均已删除无来源的第三个精确数字；处置记录明确写“未交叉验证、不作为证据引用”，memory 则只引用两次有来源数字，并由 `:26` 链到明确同一边界的归档文件。
+- `git grep` 在固定 commit 全仓检索 `7.3／9.5／7.4` 及等价斜线形态无命中；未发现残留。三条 major 均闭合，**总体 verdict：可定稿；0 blocker／0 major**。
