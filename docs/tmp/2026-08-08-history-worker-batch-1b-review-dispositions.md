@@ -1,6 +1,6 @@
 # History Worker Batch 1b 评审转录与处置
 
-> 状态：全部代码与判据复审已达 0 blocker／major；主线尚未集成。
+> 状态：全部代码与判据复审已达 0 blocker／major；D1／D2 文档 major 已整改、待原 reviewer 复审；主线尚未集成。
 > 评审基线：`661e1792`；合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；当前候选：`94205e89`，基于 `master@44457047`。
 > 来源：生命周期 reviewer、overlay／判据 reviewer、lossless shutdown 合并态 reviewer 的工具回传；主会话转录并按 C 级代码裁定处置。
 
@@ -18,6 +18,8 @@
 | B2 | regression | 同步`getHistorySummaries({search})`的overlay分支只做结构filter，没有按normalized inbound messages做全文过滤，model／system／error会误匹配。 | **采纳（C）**。in-flight与pending／ack-recent都先保留完整entry，再复用`extractInboundSearchText`过滤；message正样本与model／system／error负样本均通过。 |
 | B3 | regression | backend discovery baseline仍列两份已删除shutdown测试，且漏列Batch 1b新增的8个tracked测试。 | **采纳（C）**。按物理unit／it／http人口机械同步8增2删，保持runner blob与当时的executed floor不变；schema守卫5 pass／0 fail。 |
 | B4 | false-red gate | lossless shutdown合法收敛测试人口后，两次完整backend均为7255 executed，而冻结floor 7258让正确状态无法通过后继evidence producer。 | **采纳（C），复审通过**。两组16份JUnit均为7285 testcase－30 skipped＝7255 executed；同一集合对7256返回非零、对7255返回零；`94205e89`只校准floor，不改文件人口、skip身份或runner blob。原reviewer判可合、0 blocker／major。 |
+| D1 | major | DESIGN同一架构行前段正确写在线overlay，末段却称生产History list只显示终态，与代码和D-2权威backlog冲突。 | **采纳（C）**。按`docs/todo/deferred-backlog.md`正文的权威口径改为：在线REST／WebSocket可见in-flight，真实缺口是进程崩溃或SIGKILL时在途operation不落盘、不可恢复发现；同轮全仓审计并同步修正`DESIGN.md`另一处复述、`history.md`两处活口径及backlog的陈旧标题，历史计划／归档保留当时结论。 |
+| D2 | major | 进度文档的接力历史仍以当前时态写“尚待复验”，与下文已闭合证据和只剩master集成的清单冲突。 | **采纳（C）**。改为“接力当时尚待复验”，明确旧证据未直接继承，并指向下文当前worktree的复验与最终闭合记录。 |
 
 ## 整改验证
 

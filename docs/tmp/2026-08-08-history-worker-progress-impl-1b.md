@@ -18,7 +18,7 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - 已提交单元按 patch-id 等价重放：`8f05e565` → `f8b9c19e`，`31da037d` → `17c05e59`；新分支先快进到本地 `master@90e777bc`，未移动或改写 `master`。
 - 旧 tracked WIP 冻结 patch：`/home/xp/.claude/jobs/0ff74836/tmp/history-worker-batch-1b-wip.patch`，SHA-256 `018da448e8f2c9dc5250ab86d055ad000c670dc82b40a90aa0bb6c199726ce15`。47 个文件由 `git apply --3way` 恢复；`src/lib/context/activity-summary.ts` 与 master 同期 attempt-snapshot 改动重叠，已手工保留双方语义。
 - 6 个旧未追踪文件逐文件 no-clobber 复制并核对 SHA-256：`recent-terminal.ts`、`terminal-publication.ts`、`http-admission.ts`、`legacy-terminal-sink.ts`、`status.ts`、`history-terminal-publication.ts`。旧树没有被清理、恢复或写入。
-- 尚待复验：旧会话最后已观测 direct-driver fixture 集 12 pass／0 fail、typecheck 绿，但 `shutdown-mid-stream.http.test.ts` 仍失败；性能阈值 25 轮输出尚未在 transcript 中闭合。上述通过性结论不得直接继承，须在本 worktree 重新运行。
+- 接力当时尚待复验：旧会话最后已观测 direct-driver fixture 集 12 pass／0 fail、typecheck 绿，但 `shutdown-mid-stream.http.test.ts` 仍失败；性能阈值 25 轮输出未在旧 transcript 中闭合。这些旧通过性结论当时未被直接继承；本 worktree 的重新运行、根因修复与最终闭合证据见下文“实现与接力后验证”。
 
 ## 剩余项
 
