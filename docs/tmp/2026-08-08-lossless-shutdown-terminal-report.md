@@ -97,7 +97,7 @@
 ## 6. 文档与证据落点
 
 - 冻结规格：`docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md`（状态：已实施）。
-- 实施计划：`docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`，已转终态记录，状态头含「整改待合并」判定命令。
+- 实施计划：`docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`，已转终态记录，状态头给出「整改已合入 master」的正向判定命令。
 - live docs：`docs/DESIGN.md`、`docs/lifecycle.md` 已反映两个 registry 的并集边界与资源关闭顺序。
 - 操作性知识：skill `process-lifecycle-shutdown`（含证据边界与正控复跑协议）。
 - 评审与证据：`docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`、两份变异 patch、`-timings.xml`、`-shard-timeouts.md`、三份收尾评审报告（`-closeout-instruction-review.md`、`-closeout-docs-review.md`、`-closeout-final-review.md`）。
