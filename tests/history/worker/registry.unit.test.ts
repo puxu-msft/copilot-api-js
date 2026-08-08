@@ -5,6 +5,8 @@ import {
   test,
 } from "bun:test"
 
+import type { HistoryPersistenceRuntime } from "~/lib/history/worker/runtime"
+
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
 import {
@@ -13,6 +15,7 @@ import {
   getHistoryPersistenceRuntime,
   peekHistoryAdmissionController,
   peekHistoryPersistenceRuntime,
+  resetHistoryPersistenceRuntimeForTests,
   setHistoryAdmissionControllerForTests,
   setHistoryPersistenceRuntimeForTests,
 } from "~/lib/history/worker/registry"
@@ -23,9 +26,9 @@ import {
   setHistoryConfig,
 } from "~/lib/state"
 
-afterEach(() => {
+afterEach(async () => {
   setHistoryAdmissionControllerForTests(undefined)
-  setHistoryPersistenceRuntimeForTests(undefined)
+  await resetHistoryPersistenceRuntimeForTests()
   resetConfigManagedState()
 })
 
@@ -34,6 +37,28 @@ test("importing the registry is lazy and does not create the runtime until reque
   const runtime = getHistoryPersistenceRuntime()
   expect(peekHistoryPersistenceRuntime()).toBe(runtime)
   expect(runtime.snapshot().ready).toBe(false)
+})
+
+test("reset awaits owned runtime shutdown before clearing the registry", async () => {
+  let releaseShutdown!: () => void
+  const shutdownGate = new Promise<void>((resolve) => (releaseShutdown = resolve))
+  let shutdownStarted = false
+  const runtime = {
+    shutdown: async () => {
+      shutdownStarted = true
+      await shutdownGate
+    },
+  } as unknown as HistoryPersistenceRuntime
+  setHistoryPersistenceRuntimeForTests(runtime)
+
+  const reset = resetHistoryPersistenceRuntimeForTests()
+  await Promise.resolve()
+  expect(shutdownStarted).toBeTrue()
+  expect(peekHistoryPersistenceRuntime()).toBe(runtime)
+
+  releaseShutdown()
+  await reset
+  expect(peekHistoryPersistenceRuntime()).toBeUndefined()
 })
 
 test("admission registry is independently lazy and uses the configured default capacity", () => {

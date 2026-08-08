@@ -16,7 +16,7 @@
 
 ## Global Constraints（每阶段隐含包含，逐字来自 spec/CLAUDE.md）
 
-- **🔴 never-false-kill-legit-thinking（用户 2026-07-23 定，硬约束 `[hard]`，凌驾其他取舍）**：**绝不误杀合法长思考。** 合法 heavy-thinking（deferred-header）时长**无上界**（Q5 实测 header 到达 47-231s、原则上更长），且在 20s commit 时刻与真挂起 **信号同形不可区分**（spec §3 实测）。推论：**① B2 只在上游确定性死亡时重发**（RST/transport-close/clean-EOF——此时连接已死、重发不放弃任何在进行的思考）；**绝不**对 `timeout(header-wait)`/`reaper-cancel` 重发（连接可能仍活、上游可能在合法思考，re-dispatch 会从头重算 = 误杀）。**② 任何 wall-clock 计时器都不得在「连接仍活、上游可能在思考」时终止请求**——挂起请求本就会被 GHC 网关自己在 126-206s `rstCode=0`（确定性失败）终止、届时 B2 救援即可；故不需要、也不允许用计时器去猜 A/B。这**收紧了早前 Q6 的「300s 逃生舱」**：B3 fail-fast 默认不得捕获可能的合法思考（见 plan-4 修订）。
+- **🔴 never-false-kill-legit-thinking（用户 2026-07-23 定，硬约束 `[hard]`，凌驾其他取舍）**：**绝不误杀合法长思考。** 合法 heavy-thinking（deferred-header）时长**无上界**（Q5 实测 header 到达 47-231s、原则上更长），且在 20s commit 时刻与真挂起 **信号同形不可区分**（spec §3 实测）。推论：**① B2 只在上游确定性死亡时重发**（RST/transport-close/clean-EOF——此时连接已死、重发不放弃任何在进行的思考）；**绝不**对 `timeout(header-wait)`/`reaper-cancel` 重发（连接可能仍活、上游可能在合法思考，re-dispatch 会从头重算 = 误杀）。**② 任何 wall-clock 计时器都不得在「连接仍活、上游可能在思考」时终止请求**——挂起请求本就会被 GHC 网关自己在 126-206s `rstCode=0`（确定性失败）终止、届时 B2 救援即可；故不需要、也不允许用计时器去猜 A/B。这**收紧了早前 Q6 的「300s 逃生舱」**：B3 fail-fast 默认不得捕获可能的合法思考（见 plan-4 修订）。**2026-08-08 合并态审计补漏：**此前这条裁决只约束了 B2/B3 接线，bundled `config.yaml` 却仍用 `response_header=600`、`stream_idle=600`、`stale_request_max_age=1200`、`request_deadline=1200` 终止活请求；现已全部改为 `0`，并加配置守卫，运维仍可显式设非零值主动选择有界等待。
 - **无向后兼容负担**：`streamCommitAfterSec` 默认值改动、B2/B3 新配置键，允许一次性迁移、不留双轨包袱。
 - **server-tool 双执行 gate 硬性复用**：B2 fresh dispatch 前必调 `classifyServerExecutionRisk`（`src/lib/pipeline/generation/hedge-policy.ts:153`），触发条件 = 「未向客户端交付真实语义内容 **且** `classifyServerExecutionRisk(finalWire).kind === "none"`」。**禁止**用 `allowServerTools:true` 绕过（那是 hedge 的宽松开关，B2 是默认行为，安全等级不同）。
 - **三 keepalive 模式 wire contract 必须分支处理**（实测表见 FINDINGS.md）：`ping`（默认）无需 remap；`enveloped_ping` 只需 dedup message_start；`empty_text` 才需 close-anchor + index remap。**anchor remap 不是 B2 的通用前提**。
@@ -63,7 +63,7 @@ B1 与 B2-P0 可并行启动（无共享文件）；B2-P1→P6 必须串行（�
 | 符号 | 类型/签名（草案，供落地参考——不改公共 API/跨模块协议，细化已接受的架构合同） | 归属阶段 |
 |---|---|---|
 | `PreReadyFailureHandle` | driver 内部持有的「commit 后、ready 之前失败」的可追踪句柄（非 `CandidateHandle`——见 B2-P1 的门控问题） | B2-P1 |
-| `SemanticContentGate` | `hasDeliveredSemanticContent(session): boolean`——统一判据，pre-ready 恒 false；ready 态读 **delivery-level 信号** `hasEmittedRealClientContent`（首个非-synthetic `isClientContentFrame`／Anthropic `content_block_delta` 写出时不可逆翻转，复用 `request-timing.ts:137`），**非** `boundary.result`（那只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容——对抗审 CRITICAL）；live/buffered 共用同一 delivery 信号 | B2-P2 |
+| `SemanticContentGate` | `hasDeliveredSemanticContent(session): boolean`——统一判据，pre-ready 恒 false；ready 态读 **delivery-level 信号** `hasEmittedRealClientContent`。任一非-synthetic Anthropic `content_block_start` 或 client-format `isClientContentFrame` 成功写出即不可逆翻转：前者防止 primary 已开真实 block、delta 尚未到时 fresh R 再开冲突 block，后者防止 delta 已发、stop 未到时重放内容。**非** `boundary.result`（它只在 `content_block_stop` 翻转）；live/buffered 共用同一 delivery 信号。 | B2-P2 |
 | `RecoverySinkSupervisor` | 持有 sink 的最终 `close()`/`finalize()` 时机；splice 执行器与首次失败路径都不得直接调用 | B2-P3 |
 | `coordinator.runRecoveryFromPreReadyFailure(reason, env)` | 新方法，服务 pre-ready 挂载点（无 parent 候选） | B2-P4 |
 | `driver.runPreContentRecovery(reason)` | 新方法，驱动上者，配合 driver 闭包记的 pending primary 失败状态 | B2-P4 |

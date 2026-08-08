@@ -20,6 +20,7 @@ import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import {
   //
+  asResponseCodecRenderError,
   createResponseProcessor,
   type ResponseProcessor,
 } from "~/lib/pipeline/stream/response-processor"
@@ -39,7 +40,7 @@ export interface CandidateResponseSessionOptions extends RunResponseOpts {
   /** A terminal upstream DECISION that carries no `message_stop`: a contentless refusal. */
   readonly sawContentlessRefusal?: () => boolean
   readonly commitBoundaries?: (frame: ClientFrame) => boolean
-  readonly transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: import("~/lib/pipeline/types").BufferedFlushContext) => readonly ClientFrame[]
+  readonly transformBufferedFlush?: (frames: ReadonlyArray<ClientFrame>, ctx: import("~/lib/pipeline/types").BufferedFlushContext) => ReadonlyArray<ClientFrame>
   readonly stopAfterFrame?: (frame: ClientFrame) => boolean
   readonly onBufferedResolve?: (outcome: import("~/lib/pipeline/types").ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
 }
@@ -76,9 +77,9 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly commitBoundaries?: (state: State, frame: ClientFrame) => boolean
   readonly transformBufferedFlush?: (
     state: State,
-    frames: readonly ClientFrame[],
+    frames: ReadonlyArray<ClientFrame>,
     ctx: import("~/lib/pipeline/types").BufferedFlushContext,
-  ) => readonly ClientFrame[]
+  ) => ReadonlyArray<ClientFrame>
   readonly stopAfterFrame?: (state: State, frame: ClientFrame) => boolean
   readonly onBufferedResolve?: (
     state: State,
@@ -113,32 +114,36 @@ export function createCandidateResponseSession<State, Snapshot>(
   }
 
   const postRender = (frame: ClientFrame): ClientFrame | undefined => {
-    // The legacy mutating client.outbound hook belongs before classification and is therefore
-    // candidate-local. P7-T2d still has to replace its delivery-side contract with observe-only.
-    const hook = getUpstreamHook()?.client?.outbound
-    const hooked = hook ? hook(frame, input.env) : frame
-    if (hooked === undefined) return undefined
-    const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
-    if (transformed === undefined) return undefined
-    if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
-      const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
-      if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
-        input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
-      } else {
-        input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
+    try {
+      // The legacy mutating client.outbound hook belongs before classification and is therefore
+      // candidate-local. P7-T2d still has to replace its delivery-side contract with observe-only.
+      const hook = getUpstreamHook()?.client?.outbound
+      const hooked = hook ? hook(frame, input.env) : frame
+      if (hooked === undefined) return undefined
+      const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
+      if (transformed === undefined) return undefined
+      if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
+        const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
+        if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
+          input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
+        } else {
+          input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
+        }
       }
+      const syntheticKind = readSyntheticKind(transformed)
+      boundary.observe({
+        frame: transformed,
+        sequence: sequence++,
+        observedAtMonotonic: performance.now(),
+        provenance:
+          syntheticKind === undefined ?
+            { kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) }
+          : { kind: "synthetic", syntheticKind },
+      })
+      return transformed
+    } catch (error) {
+      throw asResponseCodecRenderError(error)
     }
-    const syntheticKind = readSyntheticKind(transformed)
-    boundary.observe({
-      frame: transformed,
-      sequence: sequence++,
-      observedAtMonotonic: performance.now(),
-      provenance:
-        syntheticKind === undefined ?
-          { kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) }
-        : { kind: "synthetic", syntheticKind },
-    })
-    return transformed
   }
 
   const responseOpts: CandidateResponseSessionOptions = {

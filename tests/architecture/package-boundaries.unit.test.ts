@@ -618,6 +618,17 @@ describe("delivery owner close and legacy anchor mirrors have single authorities
 
 describe("stream-error outcomes are minted in exactly one place", () => {
   test('no object literal with `kind: "stream-error"` outside `streamErrorOutcome`', async () => {
+    // Positive control for the local-variable production shape: the AST owner must climb past
+    // `const outcome`, whose name is not the helper name, to the enclosing function declaration.
+    const ownerProbe = parseSource("mint-owner.ts", 'function streamErrorOutcome() { const outcome = { kind: "stream-error" as const }; return outcome }')
+    let outcomeLiteral: ts.ObjectLiteralExpression | undefined
+    const findOutcomeLiteral = (node: ts.Node): void => {
+      if (ts.isObjectLiteralExpression(node)) outcomeLiteral = node
+      ts.forEachChild(node, findOutcomeLiteral)
+    }
+    findOutcomeLiteral(ownerProbe)
+    expect(outcomeLiteral).toBeDefined()
+    expect(enclosingFunctionName(outcomeLiteral!)).toBe(MINT_HELPER)
     const srcRoot = path.join(repoRoot, "src")
     const files = await sourceFiles(srcRoot)
     const offenders: Array<string> = []
@@ -724,12 +735,15 @@ function resolvesToStreamError(name: ts.Identifier, sourceFile: ts.SourceFile): 
   return found
 }
 
-/** Name of the nearest enclosing function/method declaration, for attributing a node. */
+/** Name of the nearest enclosing callable declaration, for attributing a node. */
 function enclosingFunctionName(node: ts.Node): string | undefined {
   for (let cursor: ts.Node | undefined = node.parent; cursor; cursor = cursor.parent) {
     if (ts.isFunctionDeclaration(cursor) && cursor.name) return cursor.name.text
     if (ts.isMethodDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
-    if (ts.isVariableDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
+    if (ts.isVariableDeclaration(cursor) && ts.isIdentifier(cursor.name)) {
+      const value = unwrapTypeAssertions(cursor.initializer ?? cursor.name)
+      if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) return cursor.name.text
+    }
   }
   return undefined
 }

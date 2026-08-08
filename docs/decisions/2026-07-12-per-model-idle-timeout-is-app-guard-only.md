@@ -1,6 +1,6 @@
 # ADR: per-model idle timeout 是 app-guard-only —— 无需 transport backstop 耦合
 
-- **状态**：Accepted
+- **状态**：Accepted（架构边界继续有效；2026-08-08 起 bundled 正超时默认已被 later decision `never-false-kill-legit-thinking` 取代，见下）
 - **日期**：2026-07-12
 - **相关**：[spec/2026-07-12-per-model-idle-timeout.md](../spec/2026-07-12-per-model-idle-timeout.md) §7、[plan/2026-07-12-per-model-idle-timeout.md](../plan/2026-07-12-per-model-idle-timeout.md) Phase 4b、DESIGN.md「活的架构现状」`streamIdleTimeout`/`streamIdleTimeoutOverrides` 行、`src/lib/models/timeout-resolver.ts`、实测 `exp/ws-upstream-keepalive/REPORT.md`（2026-07-12 归因更正节）
 
@@ -15,6 +15,10 @@ per-model idle timeout 特性（`timeouts.stream_idle_overrides` / `response_hea
 ## 定夺
 
 **per-model idle timeout 是纯 app-guard 特性，不与 undici / transport dispatcher 耦合。全局 undici `bodyTimeout`/`headersTimeout` 保持 `scaleTimeout(scalar)` 不动。**
+
+### 2026-08-08 后续裁决对默认值的覆盖
+
+本 ADR 决定的是“若启用 per-model timeout，它属于哪一层”，不授予任何正 wall-clock 值安全终止合法思考的判别力。后续 upstream-silence 计划的用户冻结不变量 `never-false-kill-legit-thinking` 明确：合法思考无可证明的 wall-clock 上界，任何仍活连接上的 timeout 都可能误杀。因此 bundled `response_header`、`stream_idle`、`stale_request_max_age`、`request_deadline` 及内置 per-model override 均改为 `0`；运维仍可显式配置正值，resolver、hot reload 与本 ADR 的 app-guard-only 边界继续保留。旧 spec 中“gpt-5.5 内置 600s”与“其余模型正标量”只作为历史决策记录，不再描述当前默认值。
 
 ### 三条传输路由事实（核验依据）
 

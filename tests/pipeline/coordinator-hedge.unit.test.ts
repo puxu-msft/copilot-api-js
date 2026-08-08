@@ -21,9 +21,20 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
+import { tagTransportError } from "~/lib/error/transport-reason"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
-import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
+import {
+  //
+  createGenerationCoordinator,
+  hedgeFailureSource,
+  type HedgeRaceFailure,
+} from "~/lib/pipeline/generation/coordinator"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
+import {
+  //
+  classifyPreContentRecoveryFailure,
+  shouldAttemptPreContentRecovery,
+} from "~/routes/messages/precontent-recovery-gate"
 
 function env(): RequestEnvelope {
   return {
@@ -60,7 +71,13 @@ function upstream(label: string, gate?: Promise<void>): UpstreamStream {
   return { headers: new Headers(), frames }
 }
 
-function runtime(role: CandidateRole, label: string, candidateNumber: number, gate?: Promise<void>) {
+function runtime(
+  role: CandidateRole,
+  label: string,
+  candidateNumber: number,
+  gate?: Promise<void>,
+  onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined,
+) {
   const candidate = `candidate:${candidateNumber}` as CandidateHandle
   const dispatch = `dispatch:${candidateNumber}` as DispatchHandle
   let cancelled = false
@@ -73,6 +90,7 @@ function runtime(role: CandidateRole, label: string, candidateNumber: number, ga
     responseRewrites: [],
     renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
     createState: () => undefined,
+    ...(onRenderedFrame && { onRenderedFrame: (_state, frame) => onRenderedFrame(frame) }),
     snapshot: () => ({ label }),
   })
   const ready = {
@@ -89,6 +107,7 @@ function runtime(role: CandidateRole, label: string, candidateNumber: number, ga
     handle: candidate,
     role,
     run: async () => ready,
+    async disposeReadyWithSettlement() {},
     async cancel() {
       cancelled = true
     },
@@ -118,6 +137,23 @@ async function collect(stream: AsyncIterable<ClientFrame>): Promise<Array<Client
 }
 
 describe("generation coordinator hedge race", () => {
+  test.each([
+    ["primary transport then hedge codec", ["upstream-transport", "codec-render"]],
+    ["hedge codec then primary transport", ["codec-render", "upstream-transport"]],
+    ["same-tick candidate order", ["codec-render", "upstream-transport"]],
+  ])("mixed hedge failures (%s) fail closed as codec-render", (_name, sources) => {
+    const failures = sources.map((source, index) => ({ error: new Error(`failure ${index}`), source })) as Array<HedgeRaceFailure>
+    expect(hedgeFailureSource(failures)).toBe("codec-render")
+  })
+
+  test("all transport hedge failures remain upstream-transport", () => {
+    const failures: Array<HedgeRaceFailure> = [
+      { error: new Error("primary transport"), source: "upstream-transport" },
+      { error: new Error("hedge transport"), source: "upstream-transport" },
+    ]
+    expect(hedgeFailureSource(failures)).toBe("upstream-transport")
+  })
+
   test("secondary first complete block wins, cancels primary, and winner processor continues", async () => {
     let releasePrimary!: () => void
     const primaryGate = new Promise<void>((resolve) => (releasePrimary = resolve))
@@ -203,7 +239,48 @@ describe("generation coordinator hedge race", () => {
 
     expect(failure).toBeInstanceOf(AggregateError)
     expect((failure as AggregateError).errors).toHaveLength(2)
+    expect((failure as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: (failure as AggregateError).errors[0], source: "upstream-transport" },
+      { error: (failure as AggregateError).errors[1], source: "upstream-transport" },
+    ])
     await expect(coordinator.raceReadyCandidates([first, second])).rejects.toThrow(/already started/i)
+  })
+
+  test("all transport hedge aggregate retains every tagged member for downstream taxonomy", async () => {
+    const primary = runtime("primary", "primary", 1)
+    const secondary = runtime("hedge", "secondary", 2)
+    const taggedErrors = [
+      tagTransportError(new Error("primary refused"), "refused-stream"),
+      tagTransportError(new Error("hedge pre-response close"), "pre-response-close"),
+    ]
+    for (const [candidate, error] of [
+      [primary, taggedErrors[0]],
+      [secondary, taggedErrors[1]],
+    ] as const) {
+      candidate.ready.upstream.frames = {
+        // eslint-disable-next-line require-yield -- fault injection: fail before any frame
+        async *[Symbol.asyncIterator]() {
+          throw error
+        },
+      }
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : secondary.runtime),
+    })
+    const first = await coordinator.runPrimary()
+    const second = await coordinator.runHedge()
+
+    const failure = await coordinator.raceReadyCandidates([first, second]).catch((error: unknown) => error)
+
+    expect((failure as AggregateError).errors).toEqual(taggedErrors)
+    expect((failure as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: taggedErrors[0], source: "upstream-transport" },
+      { error: taggedErrors[1], source: "upstream-transport" },
+    ])
+    const recoveryFailure = classifyPreContentRecoveryFailure({ error: failure, clientAborted: false })
+    expect(recoveryFailure).toEqual({ kind: "network-error" })
+    expect(shouldAttemptPreContentRecovery({ failure: recoveryFailure, session: { hasEmittedRealClientContent: false }, config: { enabled: true } })).toBe(true)
   })
 
   test("terminal and failed candidates release shared generation capacity", async () => {

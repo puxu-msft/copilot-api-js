@@ -37,6 +37,8 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { ResponseCodecRenderError } from "~/lib/pipeline/stream/response-processor"
+import { StreamClientAbortError } from "~/lib/stream"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
 
@@ -72,7 +74,7 @@ const RST = (): Error => new Error("Stream closed with error code NGHTTP2_CANCEL
 
 // ── mock codec / driver ──────────────────────────────────────────────────────
 
-function makeCodec(): FormatCodec {
+function makeCodec(renderResponse: FormatCodec["renderResponse"] = (frame) => frame): FormatCodec {
   return {
     format: "anthropic",
     parse: () => {
@@ -80,7 +82,7 @@ function makeCodec(): FormatCodec {
     },
     translateOut: (env) => env,
     prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
-    renderResponse: (frame) => frame, // identity (Anthropic bypass-direct)
+    renderResponse, // identity by default (Anthropic bypass-direct)
     renderResponseNonStreaming: (u) => u,
     formatError: () => ({ event: "error", data: "{}" }) as ClientFrame,
     createResponseAccumulator: () => ({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" }),
@@ -105,7 +107,7 @@ function makeEnv(): RequestEnvelope {
 }
 
 /** A driver whose retry `transport.send` returns the given upstreams in sequence. */
-function makeDriver(retryUpstreams: Array<UpstreamStream>) {
+function makeDriver(retryUpstreams: Array<UpstreamStream>, renderResponse: FormatCodec["renderResponse"] = (frame) => frame) {
   let sendCount = 0
   const transport: Transport = {
     send: () => {
@@ -114,7 +116,7 @@ function makeDriver(retryUpstreams: Array<UpstreamStream>) {
       return Promise.resolve(u)
     },
   }
-  const deps: DriverDeps = { codec: makeCodec(), transport, strategies: [], maxRetries: 3, maxLearningRetries: 32 }
+  const deps: DriverDeps = { codec: makeCodec(renderResponse), transport, strategies: [], maxRetries: 3, maxLearningRetries: 32 }
   return { driver: createPipelineDriver(deps), sendCount: () => sendCount }
 }
 
@@ -147,6 +149,147 @@ function sinkTypes(frames: Array<ClientFrame>): Array<string> {
 }
 
 describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
+  test.each([
+    ["render network-shaped", "render", new Error("Stream closed with error code NGHTTP2_CANCEL")],
+    ["render client-abort-shaped", "render", new StreamClientAbortError()],
+    ["upstream callback network-shaped", "callback", new Error("Stream closed with error code NGHTTP2_CANCEL")],
+  ])("codec processing failure (%s) bypasses retry and preserves codec-render provenance", async (_name, producer, processingError) => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const renderResponse =
+      producer === "render" ?
+        () => {
+          throw processingError
+        }
+      : (frame: UpstreamFrame) => frame
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))], renderResponse)
+    const { sink } = makeArraySink()
+    const opts: RunBufferedOpts = {
+      ...makeStopTracker(),
+      retryCap: 1,
+      ...(producer === "callback" && {
+        onUpstreamFrame() {
+          throw processingError
+        },
+      }),
+    }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean([{ data: "render-me" }])), env, sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: processingError })
+    expect(sendCount()).toBe(0)
+  })
+
+  test("buffer transform preserves an already typed codec error without nesting", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const original = new Error("buffer transform original")
+    const typed = new ResponseCodecRenderError(original)
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("transform-failure"))), env, makeArraySink().sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      transformBufferedFlush() {
+        throw typed
+      },
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: original })
+    if (outcome.kind === "stream-error") expect(outcome.error).toBe(original)
+    expect(sendCount()).toBe(0)
+  })
+
+  test.each([
+    ["anchor message-start predicate", "isMessageStart"],
+    ["anchor block-start predicate", "isContentBlockStart"],
+    ["anchor remap", "remap"],
+  ])("anchor callback failure (%s) is codec-render rather than downstream-sink", async (_name, callback) => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const callbackError = new Error(`anchor ${callback} failed`)
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const anchor = {
+      isMessageStart: () => {
+        if (callback === "isMessageStart") throw callbackError
+        return false
+      },
+      isContentBlockStart: () => {
+        if (callback === "isContentBlockStart") throw callbackError
+        return callback === "remap"
+      },
+      startFrame: () => ({ data: "start" }),
+      stopFrame: () => ({ data: "stop" }),
+      deltaFrame: () => ({ data: "delta" }),
+      remap: (frame: ClientFrame) => {
+        if (callback === "remap") throw callbackError
+        return frame
+      },
+    } satisfies RunBufferedOpts["anchor"]
+    const anchorState = { wireState: {} as never, injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("anchor-callback"))), env, makeArraySink().sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      anchor,
+      anchorState,
+      ...(callback === "remap" && {
+        wireAllocationPort: {
+          wireState: { allocator: { anchorsOpened: () => 1 } },
+          closeOpenAnchor: async () => ({ ok: true, value: "none" }),
+        } as unknown as RunBufferedOpts["wireAllocationPort"],
+      }),
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
+  })
+
+  test.each([
+    ["commit boundary", "commitBoundaries"],
+    ["terminal predicate", "sawMessageStop"],
+  ])("buffered control callback failure (%s) is codec-render rather than transport", async (_name, callback) => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const callbackError = new Error(`network-shaped ${callback} failure`)
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const opts: RunBufferedOpts = {
+      ...makeStopTracker(),
+      retryCap: 1,
+      ...(callback === "commitBoundaries" && {
+        commitBoundaries() {
+          throw callbackError
+        },
+      }),
+      ...(callback === "sawMessageStop" && {
+        sawMessageStop() {
+          throw callbackError
+        },
+      }),
+    }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("callback-failure"))), env, makeArraySink().sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
+  })
+
+  test("buffer sink write rejection remains downstream-sink after codec callbacks", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const sinkError = new Error("network-shaped sink failure")
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const sink = { write: async () => Promise.reject(sinkError) }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("sink-failure"))), env, sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink", error: sinkError })
+    expect(sendCount()).toBe(0)
+  })
+
   test("transport-close RST → re-exchange; client receives ONLY the final complete generation", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({}) // simulate runRequest's first exchange (attempt 0)
@@ -235,6 +378,23 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sendCount()).toBe(0) // retreat forfeits retry — the retry upstream is never consumed
     // The WHOLE generation reached the client (retreat flushes the buffered prefix + writes the rest live).
     expect(sinkTypes(frames)).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+  })
+
+  test("retreated live sink rejection is downstream-sink", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const first = upstream(framesClean(completeFrames("msg_retreat_write")))
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const { sink } = makeArraySink({ rejectAtFrame: 1 })
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      bufferCapBytes: 30,
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
+    expect(sendCount()).toBe(0)
   })
 
   test("buffer cap exceeded THEN the stream RSTs → stream-error, NO retry (frames already forwarded)", async () => {
