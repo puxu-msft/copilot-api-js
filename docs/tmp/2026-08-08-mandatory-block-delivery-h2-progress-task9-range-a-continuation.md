@@ -1,12 +1,13 @@
 ---
 slug: task9-range-a-continuation
-status: in-progress
+status: superseded
+authority: docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md
 base: 993a64a93c137c15eb12f7aea8ec0806cbb46769
 branch: worktree-continuation
 worktree: /home/xp/src/copilot-api-js/.claude/worktrees/continuation
-plan: /home/xp/src/copilot-api-js/.worktree/mandatory-block-delivery-h2-implementation/.superpowers/sdd/task-9-summary-integrity-architecture.md
+plan: .superpowers/sdd/task-9-summary-integrity-architecture.md
 agent-id: agent-a76fa535d0dc7246e
-continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript 已被平台回收。
+continuity: 已由 context-window 终态接力进度文件取代；本文件停止更新。
 ---
 
 # Task 9 History V3 storage substrate 范围 A 接力进度
