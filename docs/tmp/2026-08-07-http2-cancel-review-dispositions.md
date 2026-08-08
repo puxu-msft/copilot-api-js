@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前八轮累计 38/38 个独立 findings 已采纳；第九轮局部复评待完成（重复上报已合并进原 ID）
+- 状态：前九轮累计 39/39 个独立 findings 已采纳；第十轮局部复评待完成（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
@@ -46,3 +46,4 @@
 | R36 | C | merge复验错误重跑预期FAIL的Task3红门 | 采纳 | merge后先跑Step4绿门观察实际失败，修冲突后重跑Step4–5；不以Step2红门作为交付复验。 |
 | R37 | C | Task6新增physical selector接线漏upstream-fetch/http2-client pathspec | 采纳 | Task6 Files与精确git add补两文件；actual transport由onPhysicalTransport显式报告，undici/favor:false不创建悬空barrier。 |
 | R38 | C | frozen ResponseOutcome字段缺production断言 | 采纳 | late peer→ambiguous测试同时断言最终stream-error.transportTermination深冻结且evidence完整；删除附值mutation必须红。 |
+| R39 | C | Gemini已有完整outcome却仍只传early raw error给diagnostics | 采纳 | Task10纳入Gemini direct/reverse两处，改传`logUpstreamStreamOutcomeError(outcome,ctx)`；Gemini HTTP测试断late outcome优先且与canonical一致，精确pathspec包含。 |

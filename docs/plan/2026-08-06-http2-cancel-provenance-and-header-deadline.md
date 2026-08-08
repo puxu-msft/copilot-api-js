@@ -872,10 +872,12 @@ git commit -m "feat: persist dispatch transport termination"
 - Modify: `src/lib/history/v3/projection.ts:267-348`
 - Modify: `src/lib/upstream-stream-diagnostics.ts:98-176`
 - Modify: `src/lib/upstream-diagnostics.ts:181-258`
+- Modify: `src/routes/gemini/handler-v4.ts:456-464,659-667`
 - Create: `tests/history/v3/transport-termination-projection.unit.test.ts`
 - Test: `tests/history/v3/recovery-projection.unit.test.ts`
 - Test: `tests/infra/upstream-diagnostics.unit.test.ts`
 - Test: `tests/infra/upstream-stream-diagnostics.unit.test.ts`
+- Test: `tests/gemini/gemini-v4.http.test.ts`
 
 **Interfaces:**
 - Adds: `HistoryEntry.attempts[].transportTermination?: TransportTerminationObservation`
@@ -888,10 +890,11 @@ git commit -m "feat: persist dispatch transport termination"
 - ambiguous observation保留local+peer双方evidence和顺序。
 - old record字段absent，投影仍成功且字段undefined。
 - normal committed dispatch不产生termination。
+- Gemini direct与reverse streaming的真实driver outcome携带late physical observation时，console diagnostics与canonical attempt字段一致；构造只有early error tag、outcome有final ambiguous observation的case，必须记录outcome值。
 
 - [ ] **Step 2：运行projection/diagnostics新测试确认红**
 
-Run: `bun test tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts --timeout 30000`
+Run: `bun test tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts tests/gemini/gemini-v4.http.test.ts --timeout 30000`
 
 Expected: FAIL，`transportTermination`字段/formatter尚不存在；旧record/normal completion既有测试保持绿。
 
@@ -915,18 +918,18 @@ absence时保持旧行，不追加误导字段。unknown/ambiguous绝不渲染�
 
 - [ ] **Step 5：接通 frozen outcome→diagnostics**
 
-阶段2已将`ResponseOutcome`的`stream-error`分支扩为可选`transportTermination`，并在双transport barrier后由driver冻结。`logUpstreamStreamOutcomeError(outcome,ctx)`优先读取`outcome.transportTermination`，其次`getTransportTerminationObservation(outcome.error)`；不再要求handler另传live accessor。现有Messages、Responses HTTP/WS、Chat callers已经传整个outcome，只需共享类型/函数测试；Gemini直接调用`logUpstreamStreamError(error,ctx)`的legacy路径继续只读error tag。`logUpstreamStreamTruncation`的clean EOF缺终态保持absent。
+阶段2已将`ResponseOutcome`的`stream-error`分支扩为可选`transportTermination`，并在双transport barrier后由driver冻结。`logUpstreamStreamOutcomeError(outcome,ctx)`优先读取`outcome.transportTermination`，其次`getTransportTerminationObservation(outcome.error)`；不再要求handler另传live accessor。Messages、Responses HTTP/WS、Chat callers已传整个outcome。Gemini direct/reverse streaming两处也从`logUpstreamStreamError(outcome.error,ctx)`改为`logUpstreamStreamOutcomeError(outcome,ctx)`，防止late physical evidence丢失。`logUpstreamStreamTruncation`的clean EOF缺终态保持absent。
 
 - [ ] **Step 6：运行投影/日志 tests与 mutation**
 
-Run: `bun test tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts --timeout 30000`
+Run: `bun test tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts tests/gemini/gemini-v4.http.test.ts --timeout 30000`
 
 Mutation：删projection字段，round-trip红；把ambiguous/unknown formatter写成peer，formatter test红；丢第二条evidence或cause wrapping tag，ambiguous/local cause test红。
 
 - [ ] **Step 7：提交 Task 10**
 
 ```bash
-git add -- src/lib/history/types.ts src/lib/history/v3/projection.ts src/lib/upstream-diagnostics.ts src/lib/upstream-stream-diagnostics.ts tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts
+git add -- src/lib/history/types.ts src/lib/history/v3/projection.ts src/lib/upstream-diagnostics.ts src/lib/upstream-stream-diagnostics.ts src/routes/gemini/handler-v4.ts tests/history/v3/transport-termination-projection.unit.test.ts tests/history/v3/recovery-projection.unit.test.ts tests/infra/upstream-diagnostics.unit.test.ts tests/infra/upstream-stream-diagnostics.unit.test.ts tests/gemini/gemini-v4.http.test.ts
 git commit -m "feat: expose transport termination diagnostics"
 ```
 
