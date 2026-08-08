@@ -110,6 +110,24 @@ describe("History V3 transport evidence substrate", () => {
     ])
   })
 
+  test("writes normalized operation refs from the same ordered manifest source, retaining a shared digest at both sequences", () => {
+    const bytes = new Uint8Array([19, 20])
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("normalized-operation-refs"), [captured(bytes, 0, 1), captured(bytes, 0, 2)])
+
+    commitPreparedOperation(getDatabase(), prepared)
+
+    expect(
+      getDatabase()
+        .prepare(
+          "SELECT dispatch_index,sequence,digest,byte_length,encoding FROM v3_operation_evidence_refs WHERE operation_id=? ORDER BY dispatch_index,sequence",
+        )
+        .all(prepared.id),
+    ).toEqual([
+      { dispatch_index: 0, sequence: 1, digest: prepared.transportEvidence[0].capture.digest, byte_length: 2, encoding: "binary" },
+      { dispatch_index: 0, sequence: 2, digest: prepared.transportEvidence[1].capture.digest, byte_length: 2, encoding: "binary" },
+    ])
+  })
+
   test("shares one evidence entity across operations without merging either operation's event sequence", () => {
     const bytes = new Uint8Array([7, 8, 9])
     const first = prepareModelOperationWithTransportEvidence(terminalRecord("evidence-shared-a"), [captured(bytes, 0, 3), captured(bytes, 1, 1)])
@@ -142,7 +160,9 @@ describe("History V3 transport evidence substrate", () => {
       .prepare("UPDATE v3_transport_evidence SET encoding='binary',evidence_gz=? WHERE digest=?")
       .run(new Uint8Array([1]), digest)
     expect(() => hydrateTransportEvidence(getDatabase(), prepared.id)).toThrow()
+    getDatabase().exec("PRAGMA foreign_keys = OFF")
     getDatabase().prepare("DELETE FROM v3_transport_evidence WHERE digest=?").run(digest)
+    getDatabase().exec("PRAGMA foreign_keys = ON")
     expect(() => hydrateTransportEvidence(getDatabase(), prepared.id)).toThrow(/missing transport evidence/i)
     expect(() => getV3Operation(prepared.id)).toThrow(/missing transport evidence/i)
   })
@@ -223,7 +243,9 @@ describe("History V3 transport evidence substrate", () => {
     const bytes = new Uint8Array([41])
     const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("gc-missing-root"), [captured(bytes, 0, 1)])
     commitPreparedOperation(getDatabase(), prepared)
+    getDatabase().exec("PRAGMA foreign_keys = OFF")
     getDatabase().prepare("DELETE FROM v3_transport_evidence WHERE digest=?").run(prepared.transportEvidence[0].capture.digest)
+    getDatabase().exec("PRAGMA foreign_keys = ON")
     const orphan = captured(new Uint8Array([42]), 0, 1)
     getDatabase()
       .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")

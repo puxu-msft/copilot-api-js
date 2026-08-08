@@ -25,9 +25,10 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 
 ## 剩余项
 
-1. 候选 `e43d08ec..9f9b0d7b` 的净 patch 已通过 `git apply --check` 后应用；已跑的 substrate 定向集合为 `26 pass / 0 fail`，待本树精确提交形成可验证基线。
-2. 以测试先行落实范围 A：normalized refs、strict primitive、20 格 DML final state、A/B recovery、ready snapshot、healthy narrow path。
-3. 对每个语义 commit 更新本文件；最终运行 Task 9 定向、typecheck、target lint 与适用 backend 验证，完成独立评审前不得宣告完成。
+1. 候选 `e43d08ec..9f9b0d7b` 的净 patch 已通过 `git apply --check` 后应用并提交为 `c0db13ef`；导入的 substrate 定向集合为 `26 pass / 0 fail`。
+2. 已完成第一个 TDD 子单元：新增 operation/journal normalized refs schema 与生产 A/B writer，新增 same-digest 双 sequence 正控；红测为 `no such table: v3_operation_evidence_refs`，修复后相关集合 `15 pass / 0 fail`。待提交该子单元。
+3. 继续以测试先行落实 strict primitive、20 格 DML final state、A/B recovery、ready snapshot、healthy narrow path。
+4. 对每个语义 commit 更新本文件；最终运行 Task 9 定向、typecheck、target lint 与适用 backend 验证，完成独立评审前不得宣告完成。
 
 ## 在途意图
 

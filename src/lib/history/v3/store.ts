@@ -305,6 +305,28 @@ CREATE TABLE IF NOT EXISTS v3_journal (
   format_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(operation_id, revision)
 );
+CREATE TABLE IF NOT EXISTS v3_operation_evidence_refs (
+  operation_id TEXT NOT NULL REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
+  dispatch_index INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  digest TEXT NOT NULL REFERENCES v3_transport_evidence(digest),
+  byte_length INTEGER NOT NULL,
+  encoding TEXT NOT NULL,
+  PRIMARY KEY(operation_id, dispatch_index, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_v3_operation_evidence_refs_digest ON v3_operation_evidence_refs(digest);
+CREATE TABLE IF NOT EXISTS v3_journal_evidence_refs (
+  operation_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  dispatch_index INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  digest TEXT NOT NULL REFERENCES v3_transport_evidence(digest),
+  byte_length INTEGER NOT NULL,
+  encoding TEXT NOT NULL,
+  PRIMARY KEY(operation_id, revision, dispatch_index, sequence),
+  FOREIGN KEY(operation_id, revision) REFERENCES v3_journal(operation_id, revision) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_v3_journal_evidence_refs_digest ON v3_journal_evidence_refs(digest);
 CREATE TABLE IF NOT EXISTS v3_summary_backlog (
   operation_id TEXT PRIMARY KEY,
   reason TEXT NOT NULL,
@@ -790,6 +812,13 @@ function insertTransportEvidence(db: Database, evidence: PreparedTransportEviden
   )
 }
 
+function insertOperationEvidenceRefs(db: Database, operationId: string, refs: ReadonlyArray<TransportEvidenceRef>): void {
+  const statement = db.prepare(
+    "INSERT INTO v3_operation_evidence_refs(operation_id,dispatch_index,sequence,digest,byte_length,encoding) VALUES(?,?,?,?,?,?)",
+  )
+  for (const ref of refs) statement.run(operationId, ref.dispatchIndex, ref.sequence, ref.digest, ref.byteLength, ref.encoding)
+}
+
 export function commitPreparedOperation(db: Database, prepared: PreparedOperation): "inserted" | "idempotent" {
   ensureV3Schema(db)
   const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as
@@ -825,6 +854,13 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         db.prepare(
           "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error,format_version) VALUES(?,?,?,?,?,?,NULL,NULL,?)",
         ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now(), JOURNAL_FORMAT_VERSION)
+        const journalRefStatement = db.prepare(
+          "INSERT INTO v3_journal_evidence_refs(operation_id,revision,dispatch_index,sequence,digest,byte_length,encoding) VALUES(?,?,?,?,?,?,?)",
+        )
+        for (const evidence of prepared.transportEvidence) {
+          const { capture } = evidence
+          journalRefStatement.run(prepared.id, prepared.revision, evidence.dispatchIndex, evidence.sequence, capture.digest, capture.byteLength, capture.encoding)
+        }
       })
       transactionA()
       const committedAt = Date.now()
@@ -850,6 +886,11 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         for (const track of prepared.tracks) trackStmt.run(prepared.id, track.name, track.attemptIndex, track.refs, track.compressed)
         const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
         for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
+        insertOperationEvidenceRefs(
+          db,
+          prepared.id,
+          prepared.transportEvidence.map(({ dispatchIndex, sequence, capture }) => ({ dispatchIndex, sequence, ...capture })),
+        )
         // Once the operation transaction commits, the durable manifest + CAS objects are the
         // recovery source. Keeping the self-contained journal payload after this point would
         // duplicate every semantic value forever and defeat content-addressed storage.

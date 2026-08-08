@@ -75,6 +75,28 @@ export const MIGRATIONS: Array<HistoryMigration> = [
     )`)
     const journalColumns = new Set((db.prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name))
     if (!journalColumns.has("format_version")) db.exec("ALTER TABLE v3_journal ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1")
+    db.exec(`CREATE TABLE IF NOT EXISTS v3_operation_evidence_refs (
+      operation_id TEXT NOT NULL REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
+      dispatch_index INTEGER NOT NULL,
+      sequence INTEGER NOT NULL,
+      digest TEXT NOT NULL REFERENCES v3_transport_evidence(digest),
+      byte_length INTEGER NOT NULL,
+      encoding TEXT NOT NULL,
+      PRIMARY KEY(operation_id, dispatch_index, sequence)
+    );
+    CREATE INDEX IF NOT EXISTS idx_v3_operation_evidence_refs_digest ON v3_operation_evidence_refs(digest);
+    CREATE TABLE IF NOT EXISTS v3_journal_evidence_refs (
+      operation_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      dispatch_index INTEGER NOT NULL,
+      sequence INTEGER NOT NULL,
+      digest TEXT NOT NULL REFERENCES v3_transport_evidence(digest),
+      byte_length INTEGER NOT NULL,
+      encoding TEXT NOT NULL,
+      PRIMARY KEY(operation_id, revision, dispatch_index, sequence),
+      FOREIGN KEY(operation_id, revision) REFERENCES v3_journal(operation_id, revision) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_v3_journal_evidence_refs_digest ON v3_journal_evidence_refs(digest);`)
     db.prepare("UPDATE v3_meta SET value='6' WHERE key='schema_version'").run()
   }),
 ]

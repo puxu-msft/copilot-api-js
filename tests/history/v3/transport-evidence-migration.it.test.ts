@@ -50,6 +50,8 @@ describe("History V3 transport evidence schema migration", () => {
     const db = getDatabase()
     ensureV3Schema(db)
     db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version','5')").run()
+    db.exec("DROP TABLE v3_journal_evidence_refs")
+    db.exec("DROP TABLE v3_operation_evidence_refs")
     db.exec("DROP TABLE v3_transport_evidence")
     // Recreate the schema-5 journal exactly: no format_version column.
     db.exec("ALTER TABLE v3_journal RENAME TO v3_journal_v6")
@@ -86,6 +88,8 @@ describe("History V3 transport evidence schema migration", () => {
     const db = getDatabase()
     db.exec(V3_SCHEMA_SQL)
     db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version','5')").run()
+    db.exec("DROP TABLE v3_journal_evidence_refs")
+    db.exec("DROP TABLE v3_operation_evidence_refs")
     db.exec("DROP TABLE v3_transport_evidence")
     db.exec(`CREATE TRIGGER reject_schema_version BEFORE UPDATE OF value ON v3_meta
       WHEN OLD.key='schema_version' BEGIN SELECT RAISE(ABORT, 'schema version blocked'); END;`)
