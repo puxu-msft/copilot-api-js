@@ -63,7 +63,7 @@ function makeDriver(): ReturnType<typeof createPipelineDriver> {
 
 /** Minimal env — runResponse only touches `env.ctx.setSseEvents`. */
 function makeEnv(): RequestEnvelope {
-  return { ctx: { setSseEvents: () => undefined } } as unknown as RequestEnvelope
+  return { clientFormat: "anthropic", ctx: { setSseEvents: () => undefined } } as unknown as RequestEnvelope
 }
 
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
@@ -118,6 +118,15 @@ describe("owns-sink two-racer integration (heartbeat SOFT vs upstream-idle HARD)
 
     // Pings are proxy→client frames: they appear in the forwarded track.
     expect(forwarded.filter((f) => f.type === "ping").length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("decoder probe observes an encoded ping written by the sink", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { streamStartMs: clock.now })
+
+    await sink.write(PING)
+
+    expect(written).toEqual([PING])
   })
 
   test("client-abort → settled-abort, zero terminal bytes written to the dead stream", async () => {
