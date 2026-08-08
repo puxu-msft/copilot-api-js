@@ -1,6 +1,6 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）；本报告与临时证据清单的最后一笔闭环提交待终审后补入。
+> 状态：**已集成主线**（`master@d1011fe7`，2026-08-08 由用户在共享 checkout 执行 `git merge --ff-only` 落地）。终审已完成（0 blocker／2 major，两条均已采纳整改）；本报告、清单与终审报告的闭环提交待再次 fast-forward 进 `master`。
 > 核验基线：`master@d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
@@ -33,15 +33,17 @@
   - 候选 13 条净路径：共享检出工作区文件与 `master` 同路径内容逐条 md5 相等 → 无未提交残留。
   - 三处无关 WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）与 `master` 版本均不相同 → WIP 完整保留，fast-forward 未触及。
 - 本会话的 worktree 隔离护栏拒绝对共享检出执行 git 写操作与 `git status`，故 fast-forward 由用户执行；工作区洁净度改用「工作区文件内容 vs `master` blob 内容」逐条 md5 比对取证。**该替代方法的诚实边界**：它覆盖内容差异与文件缺失，但**不覆盖** file mode 变化、regular file↔symlink 类型变化、以及「已 staged 但工作区内容又被改回」这类只在 index 层可见的状态；也**不枚举**候选路径以外的未追踪文件。因此它回答的是「这13条路径的内容是否与 `master` 一致」，不是 `git status` 的全部语义。上表最后一条复验命令保留了真正的 `git status`，供在共享检出直接复跑。
-- 未推送、未创建PR、未发布任何ref或artifact。
+- 未推送、未创建PR、未发布任何ref或artifact。**该结论的取证范围限于本仓库与 GitHub 可观测表面**（终审 reviewer 独立复核：`git branch -r --contains HEAD`、`git tag --points-at HEAD`、联网 `git ls-remote --heads --tags origin` 对 `922b741b` 与分支名筛选均零命中；`gh pr list --state all --head worktree-history-worker-batch-1b-resume` 返回 `[]`）。Git 无法穷尽所有外部系统，故不宣称超出该范围的绝对否定。
 - 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。取证需求结束且收尾提交确认在`master`祖先后，可由用户决定清理本分支／worktree。
 - 碰撞集在 fast-forward 前于 `0ecbca65` 基线重算为 0：候选净路径13条，其中10条在共享检出中存在且与 `master` 内容 md5 相等，另3条（`src/lib/history/persist-retry-config.ts`、本报告、临时清单）在共享检出中不存在且无未追踪文件占位；三处无关 WIP 均不在这13条内。fast-forward 后的实测结果与该预测一致。
 
 ## 临时证据
 
-- 清单：`docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md`。
+- 清单：`docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md`。终审报告：`docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`。
 - `$CLAUDE_JOB_DIR/tmp`在最终closeout review前重新冻结为56项路径；逐项记录绝对路径、类型、用途、持久接收者、最终动作和清理前置。初版54项清单在生成后又新增提交消息与共享index快照，事实视角reviewer据此判major；本版已纳入两项并禁止再创建新路径。
-- 本会话未手工删除任何临时文件。56项全部保留至Claude job目录自动清理；前置是本报告、清单及其接收者已提交且最终主线ancestry验证通过。**冻结门是路径集合而非字节总数**：新增未分类路径才破坏「清理前每条路径都有disposition」这一不变量，已列入清单的路径被重写不产生未分类产物。初次冻结 6,568,459 bytes → 终审前重枚举 6,568,699 bytes，240 bytes 差异全部来自 `shared-main-index.terminal-review.snapshot` 按最新共享 index 重新快照；**fast-forward 落地后再次重枚举仍为 56 项、6,568,699 bytes，无漂移**。该口径是对初版「人口或大小任一变化即重新生成」的放宽，**须由终审reviewer裁决**，未获裁决前不得据此放行清理。
+- **临时证据的安全性不依赖清理时机，而依赖「长期价值已先行落进已提交的持久接收者」。** 56项每一项的接收者见清单逐行：测试／构建／mutation 原始输出 → 已提交的 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 证据摘要；提交消息输入 → 对应的本地 Git commit；三方对账副本 → 已提交的 `tests/infra/entry-test-discovery-baseline.json` 与 B3/B4 处置记录；本轮评审结论 → 本报告与终审报告本身。**因此 Claude job 目录的自动清理在任何时刻发生都不会删除唯一副本。**
+- **诚实边界（终审 reviewer 判 major 并修正）**：harness 的 job 自动清理是**本会话不可控的生命周期事件**，它不读取 Git ancestry，因此**任何「清理必须晚于某个 Git 门」的说法都没有执行接缝、不成立**。此前本报告把「确认收尾提交在 `master` 祖先」写成清理前置，是把不可控事件写成受控门——已改正。`master` ancestry 的正确职责只有一个：作为「可宣告集成完成、可清理本 branch／worktree」的门。若将来确需强制 temp cleanup 晚于某事件，需要一个可显式 hold job 生命周期并经过验证的外部机制，本轮产物没有这种机制。
+- 本会话未手工删除任何临时文件（避免通配符误删与跨会话误伤），56项全部保留。冻结门与逐路径复核条件见清单头部，已按终审 D1 裁决补齐附加条件。初次冻结 6,568,459 bytes → 终审前重枚举 6,568,699 bytes → fast-forward 落地后重枚举仍为 56 项、6,568,699 bytes；240 bytes 差异全部来自 `shared-main-index.terminal-review.snapshot` 按最新共享 index 重新快照，已逐路径复核其类型、用途、receiver 与最终动作均未变。
 
 ## 结构怪味与处置
 
@@ -61,10 +63,17 @@
 2. ~~在共享checkout执行 `git merge --ff-only`~~ **已由用户完成**，`master@d1011fe7`。
 3. ~~从共享checkout复验安装位置~~ **已完成**，逐条结果见「Git、发布与工作树状态」：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail、13条净路径无残留、三处无关 WIP 保留。
 4. ~~重新冻结临时证据清单人口~~ **已完成**：fast-forward 后重枚举仍为 56 项路径、6,568,699 bytes，与冻结值一致，无漂移。
-5. **本报告与临时清单交独立reviewer终审到0 blocker／major**（进行中；须裁决临时清单冻结判据由「人口或字节任一变化」放宽为「路径集合是门」是否成立）。
-6. 终审通过后，用精确pathspec提交更新后的报告与清单，并确认该提交已在`master`祖先中；此前不得允许临时证据被清理，也不得宣告会话完成。
+5. ~~本报告与临时清单交独立reviewer终审~~ **已完成**：未卷入的跨模型 reviewer 在候选 `922b741b` 上判 **0 blocker／2 major**，报告落盘于 `docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`。两条 major 均已采纳整改（见下「终审处置」）。
+6. 提交整改后的报告、清单与终审报告，并 fast-forward 进 `master`。**这是「可宣告集成完成、可清理本 branch／worktree」的门，不是临时证据清理的门**——后者不可控且已被设计成何时发生都无害。
 
-复验命令（可复跑，均从共享 checkout 执行）：
+## 终审处置
+
+- **[major] D1 冻结门放宽（裁决：成立但需附加条件）** —— **已采纳**。原文只要求「说明字节来源」，守不住真正的不变量。reviewer 构造的 false-green 反例成立：`history-worker-batch-1b-wip.patch` 路径不变却被覆写为含未提交新修复时，旧措辞会放行，而 job cleanup 会删掉唯一 WIP 副本。已在清单头部改为两层判据：路径人口／路径名变化 → 整表重生成；路径集合不变而内容变化 → **逐条变化路径做语义复核**（type／用途／长期价值／receiver／最终动作），patch、原始证据、恢复副本、报告草稿不得凭同路径放行。同时保留 reviewer 认定的 false-red 事实：本轮 240 bytes 同路径重拍语义未变，旧门要求整表重审确属过严。
+- **[major] D2 清理前置链存在断口（裁决：成立）** —— **已采纳**。Git 顺序门约束不了 harness 的 job 自动清理：终审通过后、收尾提交进入 `master` 祖先前，session 正常结束／崩溃／平台回收都会触发清理，而「不得允许」没有执行接缝。已把可控门与不可控事件分开：所有长期价值在冻结时即已进入**已提交**的持久接收者，故清理何时发生都不删唯一副本；`master` ancestry 只保留为集成完成门。**不再声称 Git 门能禁止 harness 清理。**
+
+## 复验命令
+
+均从共享 checkout 执行，可复跑：
 
 ```bash
 cd /home/xp/src/copilot-api-js && git rev-parse master
