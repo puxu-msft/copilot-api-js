@@ -137,13 +137,31 @@ Semantic mapper接收具名segment boundary update；不得靠模型名变化、
 type SegmentBoundaryUpdate =
   | Readonly<{
       type: "fallback-boundary"
+      authorityPhase: "pre-commit"
       fallbackId: string
       from: ModelIdentity
       to: ModelIdentity
-      partialOutputKept: boolean
+      partialOutputKept: false
+    }>
+  | Readonly<{
+      type: "fallback-boundary"
+      authorityPhase: "pre-commit"
+      fallbackId: string
+      from: ModelIdentity
+      to: ModelIdentity
+      partialOutputKept: true
+    }>
+  | Readonly<{
+      type: "fallback-boundary"
+      authorityPhase: "post-commit"
+      fallbackId: string
+      from: ModelIdentity
+      to: ModelIdentity
+      partialOutputKept: true
     }>
   | Readonly<{
       type: "continuation-boundary"
+      authorityPhase: "post-commit"
       continuationId: string
       source: ModelIdentity
       partialOutputKept: true
@@ -151,8 +169,11 @@ type SegmentBoundaryUpdate =
 ```
 
 - boundary到达前已declare的item标为对应ID的`pre`；之后新item标为同ID的`post`。已有item的source/provenance永不改写。fallback与continuation是不同kind，不共用ID命名空间。
-- pre-commit fallback可以声明`partialOutputKept:false`：旧candidate尚无外部写入，driver将其discard并从immutable baseline启动后代，不建立authority transfer。post-commit fallback已有不可撤回客户端字节，只允许`partialOutputKept:true`并走authority transfer；收到false须fail-closed，不能声称撤回已写内容。continuation恒为true。
-- 当前仍streaming的item在post-commit boundary时终结为带同一fallbackId／continuationId的partial snapshot；不得与后续segment合并。visible partial按客户端协议既有恢复契约保留或抑制，具体disposition必须记录；opaque state仍归原source identity。
+- `authorityPhase`由driver据当前delivery authority派生，不接受客户端／上游wire自报。boundary处理必须在与authority commit／transfer相同的临界区内复核phase；陈旧或矛盾值不得按原分类执行，driver须据锁内事实重新构造合法update，无法重构则fail-closed。
+- pre-commit fallback + `partialOutputKept:false`：旧candidate尚无外部写入，driver将其discard并从immutable baseline启动后代，不建立authority transfer。
+- pre-commit fallback + `partialOutputKept:true`分两种且不允许第三种行为：①旧segment存在可发客户端wire effect时，旧candidate先建立epoch 0 active authority，按客户端协议flush并ACK retained partial与closing lifecycle，再原子transfer给fallback candidate epoch 1；纯semantic observation不算可发内容。flush／ACK失败则不transfer，旧authority记录真实delivery failure后terminal。②旧segment没有任何可发客户端wire effect时，保留为空是空操作：旧candidate discard，fallback candidate到首次写出时直接建立epoch 0，不产生transferred ancestor或`wirePartialDelivery`。具名normalized observation归属fallback candidate／新segment，先为proposed，在该candidate因首写、contentless terminal或preflight reject建立epoch 0时随其余observation晋级actual；不得留在已discarded旧candidate上。
+- post-commit fallback已有不可撤回客户端字节，只允许`partialOutputKept:true`并走authority transfer；该phase不存在false类型分支，解码到等价非法组合须fail-closed。continuation只存在post-commit true分支。
+- 当前仍streaming的item在需要保留的boundary时终结为带同一fallbackId／continuationId的partial snapshot；不得与后续segment合并。visible partial按客户端协议既有恢复契约保留或抑制，具体disposition必须记录；opaque state仍归原source identity。
 - fallback boundary冻结新的target route/policy；continuation boundary从同一ingress snapshot按其实际route解析后代policy，即使source identity相同也创建新candidate／ledger segment。旧segment不被新emitter重新解释。
 - 同一kind／ID只能声明一次；嵌套／多跳边界按到达顺序形成segments，不使用单个全局“当前fallback／continuation”布尔值，也不靠模型名变化猜边界。
 - 回送历史时，每个item独立执行`carrierAction(sourceIdentity,targetIdentity,carrierKind)`；segment boundary只是audit边界，不替代per-item provenance。
@@ -650,6 +671,7 @@ type TransferredAuthorityEntry = AuthorityIdentity &
     | Readonly<{
         outcome: "transferred"
         cause: "fallback"
+        boundaryAuthorityPhase: "pre-commit" | "post-commit"
         toCandidateId: string
         segmentTerminal: Extract<ResponseTerminal, { kind: "incomplete"; provenance: "fallback" }>
         delivery: Readonly<{
@@ -662,6 +684,7 @@ type TransferredAuthorityEntry = AuthorityIdentity &
     | Readonly<{
         outcome: "transferred"
         cause: "continuation"
+        boundaryAuthorityPhase: "post-commit"
         toCandidateId: string
         segmentTerminal: Extract<ResponseTerminal, { kind: "incomplete"; provenance: "continuation" }>
         delivery: Readonly<{
@@ -747,7 +770,7 @@ type SemanticBridgeHistoryV2 = SemanticBridgeHistoryV2Base &
 
 - `actual`只含authority lineage的`authority-committed`或`sink-emitted` observation；discarded／shadow只可位于`candidateDiagnostics.state:"captured"|"pruned"`的`candidates[].proposed`。preflight fail-closed与contentless success也须建立并终结唯一authority，因此真实拒绝／终态不会因缺普通内容帧而停在proposed。`actual`存在空数组表示该v2 producer已捕获且没有actual observation；整个`semanticBridgeV2`缺失才表示旧记录／未捕获，不得外推为“没有退化”。
 - `authorityLineage`为空只允许表示in-flight请求尚未建立delivery authority；terminal variant由非空tuple在类型上保证terminal leaf存在。epoch从0严格递增：in-flight非空时最后一项是唯一active，此前全为transferred；terminal时最后一项是唯一terminal，此前全为transferred。每个transferred entry的下一项必须以其candidate为predecessor，且`toCandidateId`等于下一项candidate；`cause`与其`segmentTerminal.provenance`同为fallback或continuation。整体response terminal的唯一owner是terminal leaf的`terminal`字段，不再另存顶层副本。
-- 每个transferred ancestor在不可裁剪lineage中保存segment incomplete terminal、`partialDelivery:true`与`closingEffects:"acknowledged"`；因此即使candidate diagnostics被裁剪，History仍能区分“祖先部分写出后转移”与“从未获权”。terminal leaf保存最终`ResponseTerminal`和terminal wire acknowledged／failed摘要；failed分支的`committed:false|true`区分失败前未写任何外部字节与已发生partial delivery。active leaf保存not-started／writing状态。`wirePartialDelivery`只在lineage含transferred ancestor，或terminal leaf为`terminalWire:"failed",committed:true`时投影；完整成功的`terminalWire:"acknowledged",committed:true`不构成partial delivery。
+- 每个transferred ancestor在不可裁剪lineage中保存boundary到达时的authority phase、segment incomplete terminal、`partialDelivery:true`与`closingEffects:"acknowledged"`；因此即使candidate diagnostics被裁剪，History仍能区分pre-commit retain后建立写权、post-commit转移与从未获权。continuation的phase恒为post-commit。terminal leaf保存最终`ResponseTerminal`和terminal wire acknowledged／failed摘要；failed分支的`committed:false|true`区分失败前未写任何外部字节与已发生partial delivery。active leaf保存not-started／writing状态。`wirePartialDelivery`只在lineage含transferred ancestor，或terminal leaf为`terminalWire:"failed",committed:true`时投影；完整成功的`terminalWire:"acknowledged",committed:true`不构成partial delivery。
 - `config.snapshotId`是ingress配置快照identity；route-dependent`PairTranslationPolicy`逐candidate解析，因为fallback可改变target identity。不可省略的`authorityLineage[].policy`保留每个实际writer epoch使用的完整policy。
 - `candidateDiagnostics`不可省略：`not-captured`表示producer未收集明细；`captured`要求`total === candidates.length`；`pruned`要求`total > retained`且`retained === candidates.length`。空`captured`数组精确表示已收集且确无candidate明细。旧History记录没有`semanticBridgeV2`时按unknown capability处理，不回填虚构默认。`lifecycle`、`config`、`authorityLineage`、`actual`与`candidateDiagnostics`在v2记录中均不可省略。
 - opaque hash固定为`SHA-256("semantic-bridge-opaque-v2\0" || kind || "\0" || rawOpaqueUtf8Bytes)`的lowercase hex；hash用于同请求内关联与诊断，不承诺跨版本内容寻址。History不存raw opaque正文。
@@ -812,7 +835,7 @@ Live GHC只采fixture、校准机制解释，不作merge correctness gate。
 
 ### C2：配置快照与candidate lineage
 
-在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、初始authority commit、pre-commit retry／fallback discard、post-commit fallback／continuation authority transfer、hedge loser discard和partial segment测试；用确定性探针停在transfer临界动作前后，断言任一时刻恰有一个active writer。仍不改变production translator。
+在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、初始authority commit、pre-commit retry／fallback discard／fallback retain、post-commit fallback／continuation authority transfer、hedge loser discard和partial segment测试；用确定性探针停在transfer临界动作前后，断言任一时刻恰有一个active writer。pre-commit retain分别覆盖有wire effect、空segment和flush失败三支，并核对normalized observation最终进入新authority actual。仍不改变production translator。
 
 ### C3：typed observation与History公共契约
 
@@ -869,7 +892,8 @@ shadow只写request-local比较器；任何客户端、日志、History、指标
 | Scenario A/B四腿 | codec/driver prepare-wire on/off双控 |
 | 前向请求三点seam | `translateOut`／`prepareWire`／retry baseline首次dispatch+retry正控；逐点恢复旧路径mutation |
 | delivery authority唯一性 | 初始commit／preflight reject／contentless success／post-commit transfer确定性中点探针 + History lineage |
-| commit后observation不漏 | authority epoch前后流式observation + semantic/wire effect双控 |
+| pre-commit fallback retain | 有wire effect→epoch 0 flush+ACK→epoch 1 transfer；空segment→新candidate epoch 0且无transfer；flush失败→旧authority terminal；三支正控+逐支mutation |
+| commit前后observation不漏 | authority epoch前后流式observation；空segment retain observation归属新candidate并晋级；semantic/wire effect双控 |
 | source-signed/unsigned/redacted诊断 | pure mapper + History V3 store/API |
 | structured-output/context-management | capability table unit + HTTP request golden |
 | carrier canonical与provenance | property +混合v2/v1/external history |
