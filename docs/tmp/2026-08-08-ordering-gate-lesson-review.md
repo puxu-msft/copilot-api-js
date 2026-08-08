@@ -56,3 +56,28 @@
 2. **外部 gate 出路仍太容易走。** “必须实测验证”方向正确，但缺少负控、正控、入口全集与失效／陈旧值对照；未来仍可用一个无判别力的 happy-path 探针自称生效。
 3. **三处表述彼此一致，且旧二分法无残留。** grep 只在本评审报告的历史 finding 中保留旧措辞，这是 durable review record，不是活判据；memory 正文、`MEMORY.md` 钩子、verification-log 已同步。新缺陷是三处一致复述了同一个“读取存在性即够”的弱判据。
 4. **A1 三要素仍齐全但判据未硬化完成。** 具体形态在 `:8,18-22`，本轮实例在 `:12,19-20`，可执行动作在 `:24`；然而动作尚不能拒绝“旁路读取／陈旧读取／fail-open／入口绕过”，故本轮仍有 major。
+
+
+## 复审轮二（`5edcc54f`）
+
+### 复审范围、证据与 verdict
+
+- 复审范围：`324c4419..5edcc54f` 的 4 个文件；重点核对四种 false-green、合法因果事件的 false-red、三处语义一致性及 A1 三要素。
+- 已执行：读取完整 diff 与 `5edcc54f` 的 memory 全文；以两组关键词扫描 `docs/memory`、`session-closeout` 与评审记录中的旧／新表述；核对 commit `5edcc54fa241adbc6a59e53efc23431caae4ad21`。
+- 总体 verdict：**修复 major 后可定稿**。
+- Blocker：**0**。Major：**1**。
+
+### 事实性发现
+
+[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md:12-15,19,38`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/memory/MEMORY.md:34`；`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/.claude/skills/session-closeout/verification-log.md:168` — 四种 false-green 已被控制依赖与四项验收关掉，但四条被写成所有门都须同时满足的条件，仍会 false-red 合法的 happens-before／capability 门。
+证据：若 Y 的权威 owner 只在完成后发出不可伪造的 permit／event，X 仅由消费该 permit 触发且无替代入口，那么 Y→X 已由因果能力编码；X 无须在放行时再读“Y 本身的真相源”。同理，若 `Y-has-occurred` 单调不回退，读取与放行无需原子也不会产生 TOCTOU。正文 `:15,19` 承认因果事件合法，却又以 `:12` 的直接权威谓词和 `:14` 的原子性为无条件前提；`MEMORY.md:34` 与 verification-log `:168` 更省略了因果事件条款，字面上必判红上述正确设计。
+修复建议：把判据分成两种闭合形状，而不是四条全局合取。**状态门**须读权威且在放行点仍有效的 Y，fail-closed，并以原子 check-and-act、lease／generation token、锁或 Y 单调性消除竞态；**因果／capability 门**须证明 permit／event 只能由 Y 成立产生、不可伪造／不可从旁路产生、每个 X 入口都必须消费它。两类都保留负控、正控、入口全集和各自失效对照。
+三处同步修订：索引钩子与 verification-log 必须明确“状态门或因果／capability 门”两种合法闭合形状，不能只保留“权威新鲜谓词＋原子”的状态门摘要。
+推荐修复方：`gpt-souls:instruction-smith`，修后继续由本评审者复核。
+
+### 复核问题逐项结论
+
+1. **四种蒙混已实质关掉。** 旁路日志读取不满足“放行控制依赖”；陈旧读取违反有效性；fail-open 违反 Y 不满足／不可读时阻断；入口绕过违反每入口与入口全集。机械判旁路日志时，沿每个 X 入口的数据／控制流检查 Y 的结果是否支配放行动作即可，单纯 observer 读取不能通过。
+2. **仍有 false-red。** 对 live mutable-state gate，权威／有效／竞态消除要求正确；但把直接读 Y 与原子 check-and-act 强加给因果 capability 或单调历史谓词并不必要。正文虽提因果事件，四条的全局合取和两个摘要仍与它冲突。
+3. **旧“直接执行者不读即假门”与“存在性读取即够”的活判据均无残留。** 历史 finding 里的旧句是 durable review record，可保留。三处对状态门表述一致，但索引与 verification-log 遗漏正文的因果事件合法路径，存在上述实质不一致。
+4. **A1 三要素齐全，可执行性仍差一个分型。** 具体形态在 `:10-19,32-36`，本轮实例在 `:21,33-34`，动作与验收在 `:23-30,38`；拿到 state gate 可判，但拿到合法 capability gate 会被互相冲突的 `:12-15` 判据卡住，故尚未完成硬化。
