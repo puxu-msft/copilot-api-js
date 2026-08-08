@@ -167,6 +167,7 @@ let snapshot: StateSnapshot
 
 beforeAll(async () => {
   await bootstrapTestRuntime()
+  await resetTestRuntime()
 })
 
 beforeEach(() => {

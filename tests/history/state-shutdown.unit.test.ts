@@ -42,7 +42,12 @@ import {
 } from "~/lib/history/state"
 import { getV3StoredOperation } from "~/lib/history/v3/store"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
-import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
+import {
+  //
+  getHistoryAdmissionController,
+  setHistoryAdmissionControllerForTests,
+} from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
 
 import { historyTerminalPublication } from "../helpers/history-terminal-publication"
@@ -80,6 +85,8 @@ describe("shutdownHistory (post-V2-removal surgery)", () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-v3-shutdown-"))
       dbPath = path.join(dir, "history-v3.db")
       setStateForTests({ historyDbPath: dbPath })
+      resetHistoryAdmissionLifecycleForTests()
+      setHistoryAdmissionControllerForTests(undefined)
       await initHistory(true)
     })
 
