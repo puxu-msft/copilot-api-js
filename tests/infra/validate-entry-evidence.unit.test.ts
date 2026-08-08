@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { type EntryEvidenceReceiptV1Expected, validateEntryEvidenceReceiptV1 } from "../../scripts/entry-evidence-receipt"
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
@@ -10,6 +10,13 @@ const HANDOVER = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
 const BASELINE = "tests/infra/entry-test-discovery-baseline.json"
 const DEPENDENCY_INTEGRITY_MANIFEST = "scripts/entry-evidence-runtime-dependencies.json"
 const SAX_RUNTIME_FILES = ["saxes/saxes.js", "xmlchars/xml/1.0/ed5.js", "xmlchars/xml/1.1/ed2.js", "xmlchars/xmlns/1.0/ed3.js"]
+
+// Nearly every case here forks the real validator against a freshly built git
+// fixture; the file alone already runs ~45s. Bun's 5s per-test default is a
+// wall-clock budget, not one of this file's provenance invariants — under the
+// 16-shard runner it turns healthy cases red at whichever one happens to be
+// slowest that run. Budget the file for its actual mechanism instead.
+setDefaultTimeout(30_000)
 
 function resolvedPackageRoot(name: string): string {
   let directory = path.dirname(Bun.resolveSync(name, path.join(REPO_ROOT, "scripts/parallel-test-artifacts.ts")))
