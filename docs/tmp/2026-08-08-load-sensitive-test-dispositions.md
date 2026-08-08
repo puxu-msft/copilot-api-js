@@ -256,6 +256,111 @@ mutation 打在**生产代码**上：**取消跨 operation 的 CAS 去重**—�
 
 这是注释层的 doc-vs-code 漂移，不影响断言正确性（无论哪层吸收，「不崩溃且 guard 被走到」都成立），但会误导下一个读者。**不在本轮静默改**——它是对生产行为的事实性更正（「防御纵深两层」这个描述本身需要复核），登记在「未处置」节交裁决。
 
+> **裁决结果（协调方，本轮内）**：修，且必须写成**两层防御纵深**（不得把单层叙述换成另一个单层叙述），并把 Mutation A / B 各自打红了哪条断言写进注释——那是这段注释唯一不会再腐烂的部分。另需 `rg` 扫全仓的同一单层复述一并更正。已作为独立 commit 执行，见文末「注释更正」节。
+
+---
+
+## 4. `tests/pipeline/delivery-lifecycle-baseline.http.test.ts` — 418 post-commit 腿（**B 类**）
+
+**它守的不变量**：非重试型的 **post-commit** 上游失败（HTTP 418）必须在已经吐给客户端的合成 scaffold 之上**收支平衡**——补 `content_block_stop` 关掉开着的 block，再发 `event: error` 终结；**并且终态之后，推进假时钟也不得再追加任何心跳帧**。逐字节期望 wire 是**手写**的（file header `:1-8` 明写 "Expected SSE is hand-authored, not decoded/rebuilt by production helpers"），所以它是一条独立 oracle，不会跟着生产 helper 一起错。
+
+**依据来源**：
+- 断言现场 `tests/pipeline/delivery-lifecycle-baseline.http.test.ts:156-186`。核心三段：`:171` 整串 wire 逐字节相等；`:177` canonical client 帧的 `detail` 序列恰为 `["keepalive","synthetic-message-start","anchor","keepalive","anchor","synthetic"]`；`:183-185` 推进 20s 假时间后帧集合**不变**。
+- 用例名本身即不变量陈述：`... balances scaffold close → terminal, then fake time cannot append heartbeat`。
+- 失败原文：`run-02.log:1854-1856` —— `(fail) ... [6434.26ms]` / `^ this test timed out after 5000ms.`
+
+**先做「只是慢 vs 真的挂住」的分型**
+
+这一条尤其需要分型：它用 `FakeClock` 驱动时间，**本身不做任何真实等待**，还夹着 `await drain()`（连推 120 个微任务）与真实 HTTP 入口 `createFullTestApp().request(...)`；如果某个 promise 在调度抖动下永不 resolve，表现就会是「挂住」而不是「慢」。
+
+| 探针 | 观测 |
+|---|---|
+| 隔离 + **收紧**预算 `bun test --timeout 1000 <file>` | **2 pass / 0 fail**，文件 1295ms → 最慢用例 **< 1000ms**，稳定 |
+| 48 spinner 争用 + 宽预算 `--timeout 120000` | **2 pass / 0 fail**，文件 **8.24s** —— 完成，未卡住 |
+| 64 spinner 争用 + 宽预算 | **2 pass / 0 fail**，文件 **7.12s** —— 完成，未卡住 |
+
+结论：**「变慢但完成」，不是「卡在某一步不动」**。放大倍数约 6x，是四条里最高的——与它的构成相符：真实 Hono 应用装配 + 完整 route→driver→sink 管线 + 两次 120 步微任务 drain，全部是纯 CPU 且**没有**任何可以「等」出来的真实 I/O，因此 CPU 饥饿几乎按比例吃掉全部耗时。**判为 B 类成立。**
+
+**处置**：**断言一个字不动**（逐字节 wire、`detail` 序列、终态后帧集合不变，全部保留），只加文件级 `setDefaultTimeout(30_000)` + 注释。
+
+取值 `30_000` 的算术：规则 1 给 1.0s × 10 = 10s；规则 2 给两个候选——分片下观测 6.434s × 3 = 19.3s，以及本会话 64/48 spinner 下单用例约 7s × 3 = 21s；取最大者 21s，向上到档位 **30s**，相当于隔离最慢的 30x、已观测最坏的 3.6x。
+
+**同族复查（同一把尺子扫全文件）**：全文件**没有**任何 wall-clock 断言——时间全部由 `FakeClock` 驱动，`clock.advance(n)` 是逻辑时间不是墙钟。无 wall-clock 判据需处置。
+
+但记一笔**邻近形态的潜在敏感点（本轮未红，不处置）**：`:181`/`:184`/`:207`/`:209` 的 `clock.liveTimerDelaysMs.every((delay) => delay > 2_000)`，判据挂在「安装期间注册的定时器集合」这个**准全局量**上，与 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `tests/pipeline/driver.unit.test.ts` 是同族。**严重度低于那一例**：那一例断言集合**为空**，而这里有 `> 2_000` 的过滤，`fake-clock.ts:52-53` 的 docstring 正说明该过滤就是用来「把泄漏的短周期心跳和无关的长周期运行时定时器区分开」的。残余风险只剩「无关代码在窗口内注册了 ≤2000ms 的定时器」。**不改**：收紧或改写既有 guard 属于 guard 重塑，须独立裁决，且本轮它没红、也不在用户裁决的范围内。登记在「未处置」节。
+
+**这一条现在由谁守**：仍然由它自己守——`:171` 逐字节 wire 相等、`:177` `detail` 序列、`:185` 终态后帧集合不变，全部未改。
+
+### 验收证据
+
+**方向一：正确状态不被误拒**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改前） | 2 pass / 0 fail，1.54s |
+| 隔离单跑（改后） | **2 pass / 0 fail，1193ms** |
+| 隔离 + **收紧**到 `--timeout 1000` | **2 pass / 0 fail** —— 反向证明最慢用例真的 < 1s |
+| 48 spinner 争用（宽预算） | **2 pass / 0 fail，8.24s** |
+| 64 spinner 争用（宽预算） | **2 pass / 0 fail，7.12s** |
+
+**方向二：错误状态仍被拦住（mutation）**
+
+**先记三次「mutation 没生效」的失败尝试**——这一条的过程比结论更重要，三次都打在「终态后不得再追加心跳」这个子命题上：
+
+| # | mutation | 结果 |
+|---|---|---|
+| 1 | `client-sink.ts:394` `freezeHeartbeat` 变 no-op | **2 pass / 0 fail** |
+| 2 | `client-sink.ts:375` `close` 保留 `stopped = true` 但不 `clearTimeout` | **2 pass / 0 fail** |
+| 3 | `close` **完全**变 no-op（既不置 `stopped` 也不 disarm 定时器） | **2 pass / 0 fail** |
+
+三次都不红，按 [[methodology-verify-the-mutation-actually-applied]] 不能停在「测试很稳」——于是**插探针直接观测**（临时在用例里 `console.log(clock.liveTimerDelaysMs)`，跑完即撤）：
+
+```
+PROBE after-terminal liveTimerDelaysMs = [] frames = 6
+PROBE after-20s    liveTimerDelaysMs = [] frames = 6
+```
+
+**根因：该数组在那一刻是空的**，而 `[].every(...)` 恒为 `true`。也就是 `:181`/`:184`（以及 client-abort 用例的 `:207`/`:209`）的
+`expect(clock.liveTimerDelaysMs.every((delay) => delay > 2_000)).toBe(true)`
+在本用例里是**空真（vacuously true）**，鉴别力为零——它既不是被我改坏的，也不是本轮引入的，是既有状态。这条发现登记在「未处置」节交独立裁决（放宽/收紧既有 guard 不由实施者自判）。
+
+**注意这不改变第 4 条的 B 类定性**：该用例真正承重的 oracle 是逐字节 wire 与 `detail` 序列，它们与耗时无关且**确实咬得住**（见下）。
+
+**Mutation（有效的那次）—— 终态不再关闭 anchor block**
+
+- 冻结件：`/tmp/mut-item4-no-terminal-anchor-close.patch`，`src/routes/messages/handler-v4.ts:1504` 后加一行
+  `if (mode === "terminal") return undefined`（`closeAnchorViaOwner` 在终态直接返回，不再发 stop 帧）。
+- 结果：**1 pass / 1 fail**，红在 `:182` 的逐字节 wire 比较，diff 精确指出少了：
+  ```
+  - event: content_block_stop
+  - data: {"type":"content_block_stop","index":0}
+  ```
+  **失败落在目标机制上**（「balances scaffold close → terminal」的 close 那一半），不是超时。
+- 恢复：`git apply --reverse --check` + `git apply --reverse`；`git status --short -- src/` 为空。**全程未用整文件 `git checkout`。**
+
+恢复后重跑 **2 pass / 0 fail**，`bun run typecheck` 绿，`eslint` 该文件无问题。
+
+---
+
+## 未处置清单（登记，不在本轮改，交独立裁决）
+
+按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something`：删除或放宽既有 guard、以及重塑判据，合并前必须交独立 reviewer 或用户裁决，不得由实施者自判放行。以下四条都属此类，本轮**只记录不动手**。
+
+1. **`store-performance.it.test.ts:166` `liveRatio >= 10` 对「去重丢失」几乎没有鉴别力。** 实测：破坏跨 operation CAS 去重时 `physicalRatio` 掉到 9.10（红），`liveRatio` 只掉到 10.54（**仍绿**）。两条断言量的是不同的东西，都该留；但若将来只保留 `liveRatio`，这条 guard 就是假绿。证据见本文第 2 节。
+2. **`store-performance.it.test.ts:100-105` `timedCommit` 单次采样。** 同文件的 `timedPrepare` 取 5 次中位数，`timedCommit` 只取单次，`commitRatio < 5` 因此比 `prepareRatio < 3` 更易受争用方差影响。**不改的理由是机械的**：同一 record 重复 commit 会命中 CAS 去重，第 2–5 次样本天然更快，照搬中位数写法会改变被测量的量；要正确修必须为每个样本造不同 `operationId`。
+3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 是空真断言。** 探针实测该数组在断言点为 `[]`，`[].every()` 恒 `true`。同族背景见 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md`（`driver.unit.test.ts` 那一例的解药是换成直接观测目标机制的 oracle）。这里的正确修法多半是：改为断言「终态后 forwarded 轨帧集合不变」（`:185` 已经在做）并**删掉**这条空真断言，或换一个真能观测到心跳定时器的 oracle。
+4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
+
+## 本轮**没有**做的事（显式声明）
+
+- 没有退役（删除/skip）任何一条用例——四条全部保留，用户裁决按目标而非字面执行。
+- 没有放宽任何断言的**阈值或内容**：`10x` 比值、逐字节 wire、`detail` 序列、`exitCode`、stderr 正则，全部逐字未改。改的只有 per-test / 文件级**预算**，以及第 1 条那条被证明冗余且错帧的 wall-clock 上界。
+- 没有碰上述 4 个测试文件与本文档之外的任何文件（第 3 条的注释更正另见下节，是协调方明确追加授权的）。
+- 没有跑 T0.0f 的 15 连跑；faithful 的分片复现留给该门本身。
+- 没有 push。四个 commit 都在本地隔离 worktree 分支 `worktree-agent-a915058689631f211` 上。
+
+
+
 
 
 
