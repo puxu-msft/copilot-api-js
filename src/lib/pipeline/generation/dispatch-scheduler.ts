@@ -138,6 +138,18 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     return unique
   }
 
+  const diagnosticError = (errors: ReadonlyArray<unknown>): Pick<DispatchSettlement, "error"> | Record<never, never> => {
+    if (errors.length === 0) return {}
+    if (errors.length === 1) return { error: errors[0] }
+    return { error: new AggregateError(errors, "Dispatch settlement errors") }
+  }
+
+  const throwFailures = (errors: ReadonlyArray<unknown>, message: string): void => {
+    if (errors.length === 0) return
+    if (errors.length === 1) throw errors[0]
+    throw new AggregateError(errors, message)
+  }
+
   const disposeDispatch = (
     dispatch: DispatchHandle,
     lifecycle: UpstreamDispatchLifecycle,
@@ -166,15 +178,14 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         cleanupErrors.push(error)
       }
       const uniqueCleanupErrors = distinctErrors(cleanupErrors)
-      const hasCleanupFailure = uniqueCleanupErrors.length > 0
-      const settlementErrors = distinctErrors([...(settlement.error === undefined ? [] : [settlement.error]), ...uniqueCleanupErrors])
+      const settlementErrors = distinctErrors([...(("error" in settlement) ? [settlement.error] : []), ...uniqueCleanupErrors])
       let recordingFailed = false
       let recordingFailure: unknown
       try {
         recordSettlement(dispatch, {
           ...settlement,
-          ...(hasCleanupFailure && { verdict: "failed" as const }),
-          ...(settlementErrors.length === 1 ? { error: settlementErrors[0] } : settlementErrors.length > 1 ? { error: new AggregateError(settlementErrors, "Dispatch settlement errors") } : {}),
+          ...(uniqueCleanupErrors.length > 0 && { verdict: "failed" as const }),
+          ...diagnosticError(settlementErrors),
         })
       } catch (error) {
         recordingFailed = true
@@ -182,10 +193,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
       } finally {
         active.delete(dispatch)
       }
-      const propagationErrors = distinctErrors([...uniqueCleanupErrors, ...(recordingFailed ? [recordingFailure] : [])])
-      if (propagationErrors.length === 1) throw propagationErrors[0]
-      if (propagationErrors.length > 1) throw new AggregateError(propagationErrors, "Dispatch cleanup and settlement failed")
-      if (recordingFailed) throw recordingFailure
+      throwFailures(distinctErrors([...uniqueCleanupErrors, ...(recordingFailed ? [recordingFailure] : [])]), "Dispatch cleanup and settlement failed")
     })()
     cleanup.set(dispatch, task)
     return task
@@ -365,25 +373,35 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     async settle(dispatch, settlement) {
       if (settled.has(dispatch)) return
       const owned = active.get(dispatch)
-      let quiesceError: unknown
+      const quiescenceErrors: Array<unknown> = []
       if (owned) {
         try {
           await owned.lifecycle.quiesced
         } catch (error) {
-          quiesceError = error
+          quiescenceErrors.push(error)
         } finally {
           active.delete(dispatch)
         }
       }
-      if (quiesceError !== undefined) {
+      const uniqueQuiescenceErrors = distinctErrors(quiescenceErrors)
+      if (uniqueQuiescenceErrors.length === 0) {
+        recordSettlement(dispatch, settlement)
+        return
+      }
+      let recordingFailed = false
+      let recordingFailure: unknown
+      try {
         recordSettlement(dispatch, {
+          ...settlement,
           verdict: "failed",
           reason: "settlement-quiesce-failed",
-          ...(settlement.error === undefined && { error: quiesceError }),
+          ...diagnosticError(distinctErrors([...(("error" in settlement) ? [settlement.error] : []), ...uniqueQuiescenceErrors])),
         })
-        throw asError(quiesceError)
+      } catch (error) {
+        recordingFailed = true
+        recordingFailure = error
       }
-      recordSettlement(dispatch, settlement)
+      throwFailures(distinctErrors([...uniqueQuiescenceErrors, ...(recordingFailed ? [recordingFailure] : [])]), "Dispatch quiescence and settlement failed")
     },
   }
 

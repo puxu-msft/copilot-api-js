@@ -278,6 +278,91 @@ describe("P6-T1 candidate dispatch runtime", () => {
     await expect(ready.settleDispatch({ verdict: "failed", reason: "after-undefined-cleanup" })).resolves.toBeUndefined()
   })
 
+  test("consumed undefined quiescence failure records failed and releases the active dispatch", async () => {
+    const recording = recordingPort()
+    const quiesced = Promise.reject(undefined)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-undefined-quiescence"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-undefined-quiescence"),
+    })
+
+    const ready = await candidate.run()
+    const outcome = await ready.settleDispatch({ verdict: "committed", reason: "consumed-undefined-quiescence" }).then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(outcome).toEqual({ state: "rejected", error: undefined })
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed", settlementError: undefined })
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-consumed-undefined" })).resolves.toBeUndefined()
+  })
+
+  test("consumed quiescence preserves upstream diagnostics while propagating the original error", async () => {
+    const recording = recordingPort()
+    const upstreamError = new Error("upstream error")
+    const quiesceError = new Error("consumed quiescence failed")
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-quiescence-diagnostics"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-quiescence-diagnostics"),
+    })
+
+    const ready = await candidate.run()
+    await expect(ready.settleDispatch({ verdict: "committed", reason: "consumed-quiescence-diagnostics", error: upstreamError })).rejects.toBe(quiesceError)
+    const row = recording.dispatches.get(ready.dispatch)
+    expect(row).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed" })
+    expect((row?.settlementError as AggregateError).errors).toEqual([upstreamError, quiesceError])
+  })
+
+  test("consumed quiescence plus recording failure releases active ownership before retry", async () => {
+    const quiesceError = new Error("consumed quiescence failed")
+    const recordingError = new Error("consumed recording failed")
+    const recording = recordingPort({ throwSettlementOnce: recordingError })
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-recording-failure"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-recording-failure"),
+    })
+
+    const ready = await candidate.run()
+    const failure = await ready.settleDispatch({ verdict: "committed", reason: "consumed-recording-failure" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).errors).toEqual([quiesceError, recordingError])
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-consumed-recording-failure" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "after-consumed-recording-failure" })
+  })
+
   test("cleanup recording failure preserves errors and allows one terminal settlement retry", async () => {
     const cleanupError = new Error("cleanup failed")
     const recordingError = new Error("recording failed")
