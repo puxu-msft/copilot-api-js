@@ -375,6 +375,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
     ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    historyReservation: raw.historyReservation,
   })
 
   ctx.setOriginalRequest({

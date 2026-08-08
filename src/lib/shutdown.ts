@@ -47,6 +47,11 @@ import {
   shutdownHistory,
   stopHistoryBackgroundWork,
 } from "./history"
+import {
+  //
+  drainHistoryAdmission,
+  stopHistoryAdmission,
+} from "./history/worker/http-admission"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { notifyStopping } from "./restart/notify"
@@ -304,6 +309,10 @@ export interface ShutdownDeps {
   contextManager?: { stopReaper: () => void }
   /** Generation observability finalization barrier. Production uses the request manager registry. */
   drainModelOperationFinalizationsFn?: () => Promise<void>
+  /** Stop pre-context History admission and reject queued operations in Step 1. */
+  stopHistoryAdmissionFn?: (error: Error) => void
+  /** Wait for admitted History operations to reach terminal persistence outcomes. */
+  drainHistoryAdmissionFn?: () => Promise<void>
   /** Persistence seams used by lifecycle tests. Production uses the real stores. */
   shutdownHistoryFn?: () => Promise<void>
   shutdownRequestTelemetryFn?: () => Promise<void>
@@ -431,6 +440,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
   const drainModelOperationFinalizations =
     deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
+  const stopAdmission = deps?.stopHistoryAdmissionFn ?? stopHistoryAdmission
+  const drainAdmission = deps?.drainHistoryAdmissionFn ?? drainHistoryAdmission
   const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
   const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? (async () => await peekTelemetryRuntime()?.dispose())
   const closeDiagnostics = deps?.shutdownDiagnosticLoggingFn ?? shutdownStructuredFileSink
@@ -465,6 +476,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // ── Step 1: Stop accepting new requests ───────────────────────────────
   _isShuttingDown = true
+  stopAdmission(new Error(`History admission stopped by ${signal}`))
   // NOTE: do NOT recreate shutdownAbortController here. It is created eagerly at
   // module load and reused for the whole process lifetime, so requests that
   // began (and possibly blocked on a stalled upstream) BEFORE this point already
@@ -551,7 +563,16 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
-        await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+        await finalize({
+          closeWsClients,
+          getWsClientCount,
+          drainModelOperationFinalizations,
+          drainHistoryAdmission: drainAdmission,
+          closeHistory,
+          closeTelemetry,
+          closeDiagnostics,
+          publishStopped,
+        })
         return
       }
     } catch (error) {
@@ -577,7 +598,16 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
-        await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+        await finalize({
+          closeWsClients,
+          getWsClientCount,
+          drainModelOperationFinalizations,
+          drainHistoryAdmission: drainAdmission,
+          closeHistory,
+          closeTelemetry,
+          closeDiagnostics,
+          publishStopped,
+        })
         return
       }
     } catch (error) {
@@ -622,13 +652,23 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+  await finalize({
+    closeWsClients,
+    getWsClientCount,
+    drainModelOperationFinalizations,
+    drainHistoryAdmission: drainAdmission,
+    closeHistory,
+    closeTelemetry,
+    closeDiagnostics,
+    publishStopped,
+  })
 }
 
 interface FinalizeDeps {
   closeWsClients: () => void
   getWsClientCount: () => number
   drainModelOperationFinalizations: () => Promise<void>
+  drainHistoryAdmission: () => Promise<void>
   closeHistory: () => Promise<void>
   closeTelemetry: () => Promise<void>
   closeDiagnostics: () => Promise<void>
@@ -651,6 +691,13 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   } catch (error) {
     failures.push(error)
     consola.error("Generation finalization shutdown barrier failed:", error)
+  }
+
+  try {
+    await deps.drainHistoryAdmission()
+  } catch (error) {
+    failures.push(error)
+    consola.error("History admission shutdown barrier failed:", error)
   }
 
   // Drain in-flight async finalizes, then close History (I4). This runs after

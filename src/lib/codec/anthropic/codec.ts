@@ -432,6 +432,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    historyReservation: raw.historyReservation,
   })
 
   ctx.setOriginalRequest({

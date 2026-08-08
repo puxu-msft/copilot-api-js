@@ -30,6 +30,7 @@ import {
   getUpstreamWsManager,
   resetUpstreamWsManagerForTests,
 } from "~/lib/openai/upstream-ws"
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import {
   //
   _resetShutdownState,
@@ -55,6 +56,7 @@ import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
 })
 
 /** Shared fast-timing overrides to avoid real 20s/120s waits */
@@ -74,6 +76,8 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
     drainModelOperationFinalizationsFn: mock(async () => {}),
+    stopHistoryAdmissionFn: mock(() => {}),
+    drainHistoryAdmissionFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     shutdownDiagnosticLoggingFn: mock(async () => {}),

@@ -186,8 +186,8 @@ beforeEach(() => {
 afterEach(async () => {
   restoreFetch()
   restoreStateForTests(snapshot)
-  // Always reset shutdown state even if a test failed mid-shutdown — leaving
-  // _isShuttingDown=true would poison every later test in the suite.
+  // Always reset shutdown and History admission state even if a test failed
+  // mid-shutdown — resetTestRuntime rebuilds both before rewiring History.
   await resetTestRuntime()
   // Give any pending shutdown timers one tick to settle.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))

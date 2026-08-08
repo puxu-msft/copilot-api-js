@@ -37,6 +37,7 @@ import type {
   PreprocessInfo,
   SseEventRecord,
 } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
@@ -131,6 +132,7 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -640,6 +642,10 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     return handleWarmupRequest(c, payload, state.warmupPolicy) as Response
   }
 
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleMessagesV4Admitted(c, payload, historyReservation))
+}
+
+async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, historyReservation: HistoryReservation): Promise<Response> {
   // Resolve the model HERE (before processAnthropicSystem' config reload) and pass
   // it to parse as `preResolved`, matching the legacy handler's order (read model
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
@@ -676,7 +682,15 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     dedupedToolCallCount: pre.dedupedToolCallCount,
   }
 
-  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo, ...(routeOverride && { routeOverride }) })
+  return runMessagesDriver(c, {
+    wireBody,
+    clientRaw,
+    resolvedName,
+    selectedModel,
+    preprocessInfo,
+    historyReservation,
+    ...(routeOverride && { routeOverride }),
+  })
 }
 
 // ============================================================================
@@ -689,6 +703,7 @@ interface RunMessagesDriverArgs {
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
+  historyReservation: HistoryReservation
   /** The client's explicit `@cc/@responses/@messages` leg pin, threaded to the driver via `preResolved`. */
   routeOverride?: RouteOverride
 }
@@ -744,6 +759,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     path: c.req.path,
     query: resolveInboundQuery(c.req.url),
     preResolved: { name: resolvedName, model: args.selectedModel, ...(args.routeOverride && { routeOverride: args.routeOverride }) },
+    historyReservation: args.historyReservation,
     clientAbortSignal: clientAbort.signal,
   })
 

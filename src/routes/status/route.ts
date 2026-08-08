@@ -30,6 +30,7 @@ import {
   countV3Operations,
   getV3StoreStatus,
 } from "~/lib/history/v3/store"
+import { getHistoryPersistenceStatus } from "~/lib/history/worker/status"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
   //
@@ -82,6 +83,7 @@ const ServerStatusSchema = z
     thinking_blocks: z.record(z.string(), z.unknown()),
     history_raw_capture: z.record(z.string(), z.unknown()),
     history_search: z.record(z.string(), z.unknown()),
+    history_persistence: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -221,6 +223,10 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       requestTelemetry,
 
       history_raw_capture: getRawCaptureStatus(),
+      history_persistence: (() => {
+        const snapshot = getHistoryPersistenceStatus()
+        return { ...snapshot, unackedMessageIds: [...snapshot.unackedMessageIds] }
+      })(),
       history_search: await (async () => {
         const client = getHistorySearchClient()
         if (!client) return { enabled: false }

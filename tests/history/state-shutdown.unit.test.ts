@@ -42,7 +42,10 @@ import {
 } from "~/lib/history/state"
 import { getV3StoredOperation } from "~/lib/history/v3/store"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
+import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
+
+import { historyTerminalPublication } from "../helpers/history-terminal-publication"
 
 function terminalRecord(id: string) {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: Date.now() } })
@@ -88,12 +91,14 @@ describe("shutdownHistory (post-V2-removal surgery)", () => {
 
     test("record published via the terminal-bus survives shutdownHistory + reopen", async () => {
       const record = terminalRecord("shutdown-drain-durable-probe")
+      const reservation = await getHistoryAdmissionController().acquire({ signal: new AbortController().signal })
+      reservation.bindOperationId(record.identity.operationId)
       // Mirrors production: a request settling just before shutdown publishes its
       // terminal record via the terminal-bus subscriber `initHistory` wires
       // (`subscribeModelOperationTerminals(enqueueModelOperation)`), NOT a direct
       // `enqueueModelOperation` call — this exercises the actual subscriber →
       // writer → drain chain `shutdownHistory` is responsible for draining.
-      publishModelOperationTerminal(record)
+      publishModelOperationTerminal(historyTerminalPublication(record))
 
       await shutdownHistory()
       expect(isDatabaseOpen()).toBe(false)

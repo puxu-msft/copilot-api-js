@@ -18,6 +18,7 @@ import type {
   TruncationInfo,
   WarningMessage,
 } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   AttemptSnapshot,
@@ -36,7 +37,13 @@ import {
   REQUEST_DEADLINE_CANCEL_REASON,
 } from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
+import {
+  //
+  createModelOperationTerminalPublication,
+  createRawOperationAttachmentOwner,
+} from "~/lib/history/terminal-publication"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
+import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { state as appState } from "~/lib/state"
@@ -259,6 +266,7 @@ export function createRequestContext(opts: {
   query?: InboundQuery
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
+  historyReservation?: HistoryReservation
   operationIdentity?: {
     kind: OperationKind
     connectionId?: string
@@ -280,6 +288,9 @@ export function createRequestContext(opts: {
   publisher?: ScopedPublisher<"request">
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
+  opts.historyReservation?.bindOperationId(id)
+  const historyAdmissionWaitMs = isHistoryPersistenceReservation(opts.historyReservation) ? opts.historyReservation.historyAdmissionWaitMs : undefined
+  const rawAttachmentOwner = createRawOperationAttachmentOwner()
   const startTime = Date.now()
   const onSettled = opts.onSettled
   const publisher = opts.publisher
@@ -954,6 +965,7 @@ export function createRequestContext(opts: {
     const terminalMetadata = {
       durationMs: finalEndTime - startTime,
       queueWaitMs: _queueWaitMs,
+      ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
       ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
       ...(mergedInfo && { pipelineInfo: mergedInfo }),
       ...(mergedInfo?.preprocessing && { preprocessing: mergedInfo.preprocessing }),
@@ -970,7 +982,9 @@ export function createRequestContext(opts: {
       ...(terminal.attribution !== undefined && { attribution: terminal.attribution }),
       metadata: terminalMetadata,
     })
-    publishModelOperationTerminal(modelOperationTerminalRecord)
+    if (isHistoryPersistenceReservation(opts.historyReservation)) {
+      publishModelOperationTerminal(createModelOperationTerminalPublication(modelOperationTerminalRecord, rawAttachmentOwner))
+    }
     return modelOperationTerminalRecord
   }
 
@@ -1015,6 +1029,7 @@ export function createRequestContext(opts: {
       state: _state,
       startTime,
       queueWaitMs: _queueWaitMs,
+      ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
       ...(requestBodySize !== undefined && { requestBodySize }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
       ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
@@ -1220,6 +1235,9 @@ export function createRequestContext(opts: {
     },
     get queueWaitMs() {
       return _queueWaitMs
+    },
+    get historyAdmissionWaitMs() {
+      return historyAdmissionWaitMs
     },
     get warningMessages() {
       return _warningMessages
@@ -1932,6 +1950,7 @@ export function createRequestContext(opts: {
         active: false,
         lastUpdatedAt: endedAt,
         queueWaitMs: _queueWaitMs,
+        ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
         durationMs: endedAt - startTime,
         ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
         ...(ctx.transport ? { transport: ctx.transport } : {}),

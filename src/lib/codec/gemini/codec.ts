@@ -345,6 +345,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    historyReservation: raw.historyReservation,
   })
 
   ctx.setOriginalRequest({

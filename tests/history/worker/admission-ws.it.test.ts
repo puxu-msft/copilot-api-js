@@ -91,7 +91,7 @@ describe("Responses WebSocket History admission", () => {
     events.onClose?.(new CloseEvent("close"), ws)
     await work
     expect(controller.snapshot()).toMatchObject({ reserved: 1, waiting: 0 })
-    expect(sent.some((frame) => frame.includes("error"))).toBe(true)
+    expect(sent).toEqual([])
 
     held.releaseBeforeBinding("release fixture capacity")
   })

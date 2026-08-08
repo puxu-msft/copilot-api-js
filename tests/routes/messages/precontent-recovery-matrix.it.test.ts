@@ -144,8 +144,8 @@ describe("Task 4.3b pre-content recovery matrix", () => {
   // the expected first recovery-visible frame encodes the frozen three-mode wire contract.
   test("canonical terminal record and V2 entry agree when empty-text recovery wins", async () => {
     const canonical: Array<ModelOperationRecord> = []
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      canonical.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      canonical.push(publication.record)
     })
     const clock = new FakeClock()
     let firstFetchStarted!: () => void
@@ -224,8 +224,8 @@ describe("Task 4.3b pre-content recovery matrix", () => {
 
   test("canonical terminal record and V2 entry retain the primary when empty-text recovery falls back", async () => {
     const canonical: Array<ModelOperationRecord> = []
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      canonical.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      canonical.push(publication.record)
     })
     const clock = new FakeClock()
     let firstFetchStarted!: () => void

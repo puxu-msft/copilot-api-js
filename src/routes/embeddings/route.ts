@@ -2,6 +2,8 @@ import type { Context } from "hono"
 
 import { Hono } from "hono"
 
+import type { HistoryReservation } from "~/lib/history/worker/admission"
+
 import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
 import {
   //
@@ -9,6 +11,7 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
   //
@@ -39,6 +42,10 @@ function parseResponseText(text: string): unknown {
 
 /** Handle every OpenAI/Azure-compatible embeddings entry through one operation. */
 export async function handleEmbeddings(c: Context) {
+  return await withHistoryAdmission(c.req.raw, "embeddings", async (historyReservation) => await handleEmbeddingsAdmitted(c, historyReservation))
+}
+
+async function handleEmbeddingsAdmitted(c: Context, historyReservation: HistoryReservation) {
   const parsedPayload = (c.get("injectedPayload") as EmbeddingRequest | undefined) ?? (await c.req.json<EmbeddingRequest>())
   const semanticInput = structuredClone(parsedPayload)
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
@@ -50,6 +57,7 @@ export async function handleEmbeddings(c: Context) {
     semanticRequest: semanticInput,
     format: "openai-embeddings",
     requestedModel: parsedPayload.model,
+    historyReservation,
     metadata: {
       source: azureModelOverride === undefined ? "openai-compatible" : "azure-openai",
       inputShape: embeddingInputShape(parsedPayload.input),

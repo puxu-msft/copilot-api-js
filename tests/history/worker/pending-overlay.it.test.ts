@@ -78,15 +78,13 @@ describe("legacy terminal sink adapter", () => {
     const sink = new LegacyHistoryTerminalSink({
       enqueueRecord: () => Promise.reject(new Error("legacy writer exploded")),
     })
-    const outcomes: Array<string> = []
+    let resolveOutcome!: (outcome: HistoryPersistenceOutcome) => void
+    const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => {
+      resolveOutcome = resolve
+    })
 
-    expect(() =>
-      sink.enqueue({ protocolVersion: 1, publication: publication("legacy-failed") }, (outcome: HistoryPersistenceOutcome) => outcomes.push(outcome)),
-    ).not.toThrow()
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(outcomes).toEqual(["failed"])
+    expect(() => sink.enqueue({ protocolVersion: 1, publication: publication("legacy-failed") }, resolveOutcome)).not.toThrow()
+    await expect(outcome).resolves.toBe("failed")
   })
 })
 

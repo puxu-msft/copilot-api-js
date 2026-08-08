@@ -6,6 +6,7 @@ import {
   test,
 } from "bun:test"
 
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import {
   //
   _resetShutdownState,
@@ -22,6 +23,8 @@ function noopDeps(overrides: Record<string, unknown> = {}) {
     getClientCountFn: () => 0,
     contextManager: { stopReaper: mock(() => {}) },
     drainModelOperationFinalizationsFn: mock(async () => {}),
+    stopHistoryAdmissionFn: mock(() => {}),
+    drainHistoryAdmissionFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     shutdownDiagnosticLoggingFn: mock(async () => {}),
@@ -34,7 +37,10 @@ function noopDeps(overrides: Record<string, unknown> = {}) {
   }
 }
 
-afterEach(() => _resetShutdownState())
+afterEach(() => {
+  _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
+})
 
 test("stops History admission before the first active-operation snapshot", async () => {
   const events: Array<string> = []

@@ -48,7 +48,6 @@ describe("production History admission wiring", () => {
 
   beforeEach(async () => {
     setStateForTests({ historyDbPath: ":memory:" })
-    await initHistory(true)
     controller = new HistoryAdmissionControllerImpl({
       capacity: 1,
       sink: {
@@ -59,6 +58,7 @@ describe("production History admission wiring", () => {
       },
     })
     setHistoryAdmissionControllerForTests(controller)
+    await initHistory(true)
   })
 
   afterEach(async () => {
@@ -109,6 +109,33 @@ describe("production History admission wiring", () => {
     held.releaseBeforeBinding("release fixture capacity")
   })
 
+  test("releases an unbound reservation when the operation returns without binding", async () => {
+    await expect(withHistoryAdmission(new AbortController().signal, "count_tokens", async () => "no operation")).resolves.toBe("no operation")
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, waiting: 0 })
+  })
+
+  test("releases an unbound reservation when operation setup throws", async () => {
+    await expect(
+      withHistoryAdmission(new AbortController().signal, "count_tokens", async () => {
+        throw new Error("setup failed before operation ID")
+      }),
+    ).rejects.toThrow("setup failed before operation ID")
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, waiting: 0 })
+  })
+
+  test("leaves a bound reservation for the operation finalizer to adjudicate after a handler throw", async () => {
+    await expect(
+      withHistoryAdmission(new AbortController().signal, "count_tokens", async (reservation) => {
+        reservation.bindOperationId("bound-handler-error")
+        throw new Error("handler failed after binding")
+      }),
+    ).rejects.toThrow("handler failed after binding")
+    expect(controller.snapshot()).toMatchObject({ reserved: 1, waiting: 0 })
+
+    controller.failBeforeTerminal("bound-handler-error", new Error("canonical finalizer rejected"))
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, waiting: 0, preTerminalFailuresTotal: 1 })
+  })
+
   test("blocks a model operation at capacity without blocking liveness", async () => {
     const held = await controller.acquire({ signal: new AbortController().signal })
     const modelRequest = Promise.resolve(
@@ -150,7 +177,8 @@ describe("production History admission wiring", () => {
     expect(controller.snapshot().waiting).toBe(1)
 
     clientAbort.abort(new Error("client disconnected before admission"))
-    await expect(response).rejects.toThrow("client disconnected before admission")
+    const abortedResponse = await response
+    expect(abortedResponse.status).toBeGreaterThanOrEqual(400)
     expect(controller.snapshot()).toMatchObject({ reserved: 1, waiting: 0 })
 
     held.releaseBeforeBinding("release fixture capacity")
