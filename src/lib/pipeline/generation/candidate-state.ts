@@ -109,6 +109,9 @@ function snapshotStableState(source: RequestState | undefined): RequestState | u
       {}
     : { initialSanitizationInfo: cloneAndFreeze(source.initialSanitizationInfo, "initialSanitizationInfo") }),
     ...(source.preprocessInfo === undefined ? {} : { preprocessInfo: cloneAndFreeze(source.preprocessInfo, "preprocessInfo") }),
+    // Pure lookup object captured at parse; share by reference across candidates
+    // so every retry/hedge composes target-wire provenance from the same client source.
+    ...(source.sourceToolNameMapper === undefined ? {} : { sourceToolNameMapper: source.sourceToolNameMapper }),
   })
 }
 

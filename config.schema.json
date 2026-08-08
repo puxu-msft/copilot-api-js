@@ -1234,6 +1234,29 @@
                 }
               ]
             },
+            "precontent_recovery": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "protect_streaming_generation": {
               "anyOf": [
                 {
@@ -2678,6 +2701,18 @@
               "anyOf": [
                 {
                   "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "persistence_queue_capacity": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 },
                 {
                   "type": "null"

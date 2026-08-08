@@ -298,6 +298,9 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
         529,
         JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
         modelId,
+        undefined,
+        undefined,
+        error,
       )
     }
     throw error

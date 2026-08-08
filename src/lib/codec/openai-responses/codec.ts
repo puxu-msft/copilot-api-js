@@ -59,6 +59,7 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type {
+  //
   ReasoningRoundTripOptions,
   ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
@@ -309,6 +310,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       return parsed.env.with({
         requestState: {
           responsesFallbackScratch: fallbackScratch,
+          sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
           ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
           ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
         },

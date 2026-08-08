@@ -717,6 +717,19 @@ export const AnthropicConfigSchema = z
      */
     stream_commit_after_sec: nullableNonnegativeInt(),
     /**
+     * Enables one fresh dispatch after a pre-content upstream failure. It is
+     * intentionally independent of buffered_retry because recovery applies to
+     * both live and buffered streaming paths. The value is wired into runtime state; the handler's recovery
+     * decision and dispatch remain intentionally deferred to Task 4.3b. Default true.
+     */
+    precontent_recovery: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+        })
+        .strict(),
+    ),
+    /**
      * L2 — transactional buffered retry for streaming generations cut short by an
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
      * whole response and commits only after `message_stop`, re-running the exchange
@@ -886,6 +899,8 @@ export const HistoryConfigSchema = z
   .object({
     /** Startup-only master switch. false means no History database is opened. */
     enabled: nullableBoolean(),
+    /** Maximum admitted History operations. Strictly positive; 0 is never unlimited. */
+    persistence_queue_capacity: nullablePositiveInt(),
     raw_capture: nullableSection(
       z
         .object({
@@ -1057,8 +1072,7 @@ export const TimeoutsConfigSchema = z
      * Per-model stream-idle timeout override (seconds), keyed by model-name
      * substring OR glob (`*`/`?`) with `"*"` wildcard (specificity: literal > glob >
      * `"*"`, then longest key). A match wins over `stream_idle`; 0 = disabled.
-     * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
-     * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
+     * Bundled default `{}`. Per-key merged with the user table. App-guard only — does not
      * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
      */
     stream_idle_overrides: StreamIdleOverridesSchema.nullable()
@@ -1072,14 +1086,12 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
+    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled; bundled default 0). */
     stale_request_max_age: nullableNonnegativeInt(),
     /**
      * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
-     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled,
-     * behavior then byte-identical to the stale-reaper-only path. Bundled default is an explicit value
-     * (intentional product default); the stale reaper stays as the leak safety-net (`stale_request_max_age`
-     * should be > `request_deadline`).
+     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled and
+     * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
      */
     request_deadline: nullableNonnegativeInt(),
   })

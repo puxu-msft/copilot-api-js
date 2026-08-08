@@ -1,7 +1,10 @@
 import { defineConfig } from "tsdown"
 
 export default defineConfig({
-  entry: ["packages/cli/src/main.ts"],
+  entry: {
+    main: "packages/cli/src/main.ts",
+    "history-worker": "src/lib/history/worker/history-worker.ts",
+  },
 
   format: ["esm"],
   target: "es2022",
@@ -9,7 +12,7 @@ export default defineConfig({
 
   // Runtime-specific sqlite modules must stay external so the bundler does
   // not try to resolve them at build time. The driver layer
-  // (src/lib/history/sqlite/driver.ts) picks one at runtime based on detected
+  // (packages/foundation/src/sqlite/driver.ts) picks one at runtime based on detected
   // host (Bun vs Node).
   deps: {
     neverBundle: ["bun:sqlite", "node:sqlite"],

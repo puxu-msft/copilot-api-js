@@ -34,6 +34,7 @@ import {
   restoreChatCompletionsToolNames,
   restoreResponsesEventToolNames,
   restoreResponsesOutputToolNames,
+  sanitizeResponsesWireToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { setStateForTests } from "~/lib/state"
 
@@ -43,6 +44,10 @@ autoRestoreState()
 
 function enable(): void {
   setStateForTests({ sanitizeToolNames: true })
+}
+
+function toolName(tool: NonNullable<ResponsesPayload["tools"]>[number] | undefined): string {
+  return tool && "name" in tool && typeof tool.name === "string" ? tool.name : ""
 }
 
 describe("Chat Completions tool-name sanitization", () => {
@@ -68,6 +73,20 @@ describe("Chat Completions tool-name sanitization", () => {
     const out = applyChatCompletionsToolNameSanitization(payload, mapper)
     expect(out.tools?.[0].function.name).toBe("mcp_tool")
     expect(out.messages[0].tool_calls?.[0].function.name).toBe("mcp_tool")
+  })
+
+  test("renames a forced tool_choice name to match the renamed tool", () => {
+    enable()
+    const payload: ChatCompletionsPayload = {
+      model: "claude-opus-4.8",
+      messages: [],
+      tools: [{ type: "function", function: { name: "mcp.tool" } }],
+      tool_choice: { type: "function", function: { name: "mcp.tool" } },
+    }
+    const mapper = buildChatCompletionsToolNameMapper(payload, "Anthropic")
+    const out = applyChatCompletionsToolNameSanitization(payload, mapper)
+    // Without this, upstream rejects with "Tool 'mcp.tool' not found in provided tools".
+    expect(out.tool_choice).toEqual({ type: "function", function: { name: "mcp_tool" } })
   })
 
   test("gpt keeps dots (no rename, mapper null)", () => {
@@ -125,6 +144,95 @@ describe("Chat Completions tool-name sanitization", () => {
 })
 
 describe("Responses tool-name sanitization", () => {
+  test("Responses wire is strict even for GPT models (live GHC rejects dotted names)", () => {
+    enable()
+    const payload: ResponsesPayload = {
+      model: "gpt-5.6-luna",
+      input: [],
+      tools: [{ type: "function", name: "mcp.tool" }],
+      tool_choice: { type: "function", name: "mcp.tool" },
+    }
+    const mapper = buildResponsesToolNameMapper(payload, "OpenAI")
+    expect(mapper).not.toBeNull()
+    const out = applyResponsesToolNameSanitization(payload, mapper)
+    expect(out.tools?.[0]).toMatchObject({ type: "function", name: "mcp_tool" })
+    expect(out.tool_choice).toEqual({ type: "function", name: "mcp_tool" })
+  })
+
+  test("final wire sanitizer is idempotent after source sanitization with collisions", () => {
+    enable()
+    const original: ResponsesPayload = {
+      model: "claude-opus-4.8",
+      input: [],
+      tools: [
+        { type: "function", name: "a.b" },
+        { type: "function", name: "a_b" },
+      ],
+      tool_choice: { type: "function", name: "a.b" },
+    }
+    const sourceMapper = buildResponsesToolNameMapper(original, "Anthropic")
+    const sourcePayload = applyResponsesToolNameSanitization(original, sourceMapper)
+    const firstNames = sourcePayload.tools?.map(toolName)
+
+    const final = sanitizeResponsesWireToolNames(sourcePayload, sourceMapper, { sourceMapperApplied: true })
+    // A retry rebuilds from the same stable source body + stable source mapper;
+    // it must not feed the previous attempt's composite mapper back as source.
+    const retry = sanitizeResponsesWireToolNames(sourcePayload, sourceMapper, { sourceMapperApplied: true })
+
+    expect(final.payload.tools?.map(toolName)).toEqual(firstNames)
+    expect(new Set(final.payload.tools?.map(toolName)).size).toBe(2)
+    expect(final.payload.tool_choice).toEqual(sourcePayload.tool_choice)
+    expect(final.mapper?.toClient(toolName(final.payload.tools?.[0]) ?? "")).toBe("a.b")
+    expect(retry.payload).toEqual(final.payload)
+    expect(retry.mapper?.toClient(toolName(retry.payload.tools?.[1]))).toBe("a_b")
+  })
+
+  test("forward provenance preserves both client names when source mapper was not applied", () => {
+    enable()
+    const payload: ResponsesPayload = {
+      model: "gpt-5.6-luna",
+      input: [],
+      tools: [
+        { type: "function", name: "a.b" },
+        { type: "function", name: "a_b" },
+      ],
+      tool_choice: { type: "function", name: "a.b" },
+    }
+    const sourceMapper = buildChatCompletionsToolNameMapper(
+      {
+        model: "claude-opus-4.8",
+        messages: [],
+        tools: payload.tools?.map((tool) => ({ type: "function" as const, function: { name: toolName(tool) } })),
+      },
+      "Anthropic",
+    )
+
+    const final = sanitizeResponsesWireToolNames(payload, sourceMapper, { sourceMapperApplied: false })
+    const wireNames = final.payload.tools?.map(toolName) ?? []
+
+    expect(new Set(wireNames).size).toBe(2)
+    expect(wireNames.map((name) => final.mapper?.toClient(name))).toEqual(["a.b", "a_b"])
+    expect(final.payload.tool_choice).toEqual({ type: "function", name: wireNames[0] })
+  })
+
+  test("final wire sanitizer enforces the 64-character Responses cap", () => {
+    enable()
+    const longName = `tool.${"x".repeat(75)}`
+    const payload: ResponsesPayload = {
+      model: "gpt-5.6-luna",
+      input: [],
+      tools: [{ type: "function", name: longName }],
+      tool_choice: { type: "function", name: longName },
+    }
+
+    const final = sanitizeResponsesWireToolNames(payload, null, { sourceMapperApplied: false })
+    const wireName = toolName(final.payload.tools?.[0]) ?? ""
+
+    expect(wireName.length).toBeLessThanOrEqual(64)
+    expect(final.payload.tool_choice).toEqual({ type: "function", name: wireName })
+    expect(final.mapper?.toClient(wireName)).toBe(longName)
+  })
+
   test("enabled: renames tool defs + function_call input items", () => {
     enable()
     const payload: ResponsesPayload = {
@@ -139,6 +247,60 @@ describe("Responses tool-name sanitization", () => {
     expect(tool && "name" in tool ? tool.name : undefined).toBe("mcp_tool")
     const item = Array.isArray(out.input) ? out.input[0] : undefined
     expect(item?.name).toBe("mcp_tool")
+  })
+
+  test("renames a forced tool_choice name to match the renamed tool", () => {
+    enable()
+    const payload: ResponsesPayload = {
+      model: "claude-opus-4.8",
+      input: [],
+      tools: [{ type: "function", name: "mcp.tool" }],
+      tool_choice: { type: "function", name: "mcp.tool" },
+    }
+    const mapper = buildResponsesToolNameMapper(payload, "Anthropic")
+    const out = applyResponsesToolNameSanitization(payload, mapper)
+    expect(out.tool_choice).toEqual({ type: "function", name: "mcp_tool" })
+  })
+
+  test("renames a named custom tool_choice but leaves builtin choices untouched", () => {
+    enable()
+    const customPayload: ResponsesPayload = {
+      model: "claude-opus-4.8",
+      input: [],
+      tools: [{ type: "custom", name: "mcp.tool" }],
+      tool_choice: { type: "custom", name: "mcp.tool" },
+    }
+    const mapper = buildResponsesToolNameMapper(customPayload, "Anthropic")
+    const customOut = applyResponsesToolNameSanitization(customPayload, mapper)
+    expect(customOut.tools).toEqual([{ type: "custom", name: "mcp_tool" }])
+    expect(customOut.tool_choice).toEqual({ type: "custom", name: "mcp_tool" })
+
+    const builtinPayload: ResponsesPayload = { ...customPayload, tool_choice: { type: "web_search" } }
+    expect(applyResponsesToolNameSanitization(builtinPayload, mapper).tool_choice).toEqual({ type: "web_search" })
+  })
+
+  test("restores custom_tool_call names in non-streaming and streaming lifecycle output", () => {
+    enable()
+    const payload: ResponsesPayload = {
+      model: "gpt-5.6-luna",
+      input: [],
+      tools: [{ type: "custom", name: "custom.tool" }],
+    }
+    const mapper = buildResponsesToolNameMapper(payload, "OpenAI")!
+    const wire = applyResponsesToolNameSanitization(payload, mapper)
+    const wireName = toolName(wire.tools?.[0]) ?? ""
+    const response = {
+      output: [{ type: "custom_tool_call", call_id: "c1", name: wireName, input: "x" }],
+    }
+    const restored = restoreResponsesOutputToolNames(response, mapper)
+    expect(restored.output?.[0]?.name).toBe("custom.tool")
+
+    const event = {
+      type: "response.completed",
+      response: { output: [{ type: "custom_tool_call", call_id: "c1", name: wireName, input: "x" }] },
+    }
+    expect(restoreResponsesEventToolNames(event, mapper)).toBe(true)
+    expect(event.response.output[0]?.name).toBe("custom.tool")
   })
 
   test("restore non-streaming output function_call names", () => {

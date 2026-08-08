@@ -30,6 +30,7 @@
 
 import consola from "consola"
 
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type {
   //
   AnthropicSanitizeFn,
@@ -80,6 +81,11 @@ import {
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
+import {
+  //
+  restoreToolNameInStreamData,
+  restoreToolNamesInResponse,
+} from "~/lib/anthropic/server-tool-filter"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
@@ -182,14 +188,23 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
       return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
     }
+    const restoreTranslatedFrame = (frame: ClientFrame, env: RequestEnvelope): ClientFrame => {
+      if (typeof frame.data !== "string") return frame
+      const data = restoreToolNameInStreamData(frame.data, env.ctx.toolNameMapper)
+      return data === frame.data ? frame : { ...frame, data }
+    }
+    const restoreTranslatedFrames = (frames: ClientFrame | Array<ClientFrame>, env: RequestEnvelope): ClientFrame | Array<ClientFrame> =>
+      Array.isArray(frames) ? frames.map((frame) => restoreTranslatedFrame(frame, env)) : restoreTranslatedFrame(frames, env)
     return {
       renderResponse(frame, env) {
         if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
-        return ensureStreamTranslator(env).renderFrame(frame)
+        return restoreTranslatedFrames(ensureStreamTranslator(env).renderFrame(frame), env)
       },
       flushResponse(env) {
         if (!isForwardTranslateLeg(env.targetEndpoint)) return []
-        return ensureStreamTranslator(env).flush()
+        return ensureStreamTranslator(env)
+          .flush()
+          .map((frame) => restoreTranslatedFrame(frame, env))
       },
       getStreamMeta() {
         return streamTranslator?.getMeta()
@@ -238,6 +253,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
           resanitize: parsed.resanitize as (payload: unknown) => unknown,
           clientRequestHeaders: parsed.clientRequestHeaders,
           preprocessInfo: args.preprocessInfo,
+          sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
           ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
         },
       })
@@ -304,7 +320,10 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
       const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream, reasoningRoundTripOpts(env))
       if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
-      return rendered
+      // S5 response rewrites run before S6 translation, so a Responses→Anthropic
+      // tool_use does not exist yet when the direct-path name-restorer runs.
+      // Restore after translation at the Anthropic client-format boundary.
+      return restoreToolNamesInResponse(rendered as AnthropicMessageResponse, env.ctx.toolNameMapper)
     },
 
     formatError(err) {

@@ -157,6 +157,34 @@ describe("classifyError", () => {
     expect(result.status).toBe(499)
   })
 
+  test("classifies GHC HTTP 408 request-body read timeout as network_error", () => {
+    const headers = new Headers({ "x-github-request-id": "request-id" })
+    const body = JSON.stringify({
+      error: {
+        code: "user_request_timeout",
+        message: "Timed out reading request body. Try again, or use a smaller request size.",
+      },
+    })
+    const error = new HTTPError("Failed to create responses", 408, body, undefined, headers)
+    const result = classifyError(error)
+
+    expect(result.type).toBe("network_error")
+    expect(result.status).toBe(408)
+    expect(result.responseHeaders).toBe(headers)
+    expect(result.raw).toBe(error)
+  })
+
+  test.each([
+    ["ordinary 408", '{"error":{"code":"request_timeout","message":"Request deadline exceeded"}}'],
+    ["matching code with another message", '{"error":{"code":"user_request_timeout","message":"Generation timed out"}}'],
+    ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
+  ])("keeps %s as bad_request", (_label, body) => {
+    const result = classifyError(new HTTPError("Request timeout", 408, body))
+
+    expect(result.type).toBe("bad_request")
+    expect(result.status).toBe(408)
+  })
+
   test("classifies HTTPError 5xx as server_error", () => {
     const error = new HTTPError("Server error", 500, "")
     expect(classifyError(error).type).toBe("server_error")

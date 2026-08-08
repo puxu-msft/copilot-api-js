@@ -121,6 +121,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamKeepaliveEscalateSec: 200,
   streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // D2 partial reversal 2026-07-27: ping stays the normal shape; content delta/anchor is injected only near the 300s deadline
   streamCommitAfterSec: 180,
+  preContentRecovery: { enabled: true },
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
@@ -259,6 +260,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
   historyDbPath: "",
+  historyPersistenceQueueCapacity: 256,
   historyRawCaptureEnabled: false,
   historyRawCaptureDbPath: "",
   historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,

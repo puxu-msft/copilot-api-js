@@ -21,6 +21,7 @@
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { PreprocessInfo } from "~/lib/history/types"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 /**
  * The stable, per-request supply the outbound-leg strategy assembly + wire prep read (R2). Every field
@@ -55,6 +56,12 @@ export interface RequestState {
   readonly initialSanitizationInfo?: unknown
   /** Route-supplied message-level preprocess info (the Anthropic sanitize rewrite + pipelineInfo rebuild read it). */
   readonly preprocessInfo?: PreprocessInfo
+  /**
+   * Client-original ↔ source-format mapper captured once at parse. Immutable across
+   * retries; target-wire mappers compose from this stable provenance rather than
+   * the mutable `ctx.toolNameMapper` that response restoration updates per attempt.
+   */
+  readonly sourceToolNameMapper?: ToolNameMapper | null
   /**
    * REVERSE `@messages` leg only: the shared `ReverseAnthropicMapperHolder` (kept opaque here — a pipeline
    * module can't import the openai-cc reverse-rewrite type without coupling). The leg's `requestRewrites`

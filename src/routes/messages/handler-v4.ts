@@ -40,6 +40,7 @@ import type {
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
+import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -49,6 +50,7 @@ import type {
   ClientSink,
   DriverRequestResult,
   OwnerOperation,
+  ResponseFailureSource,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -86,7 +88,6 @@ import {
   makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
-import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
@@ -152,11 +153,7 @@ import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
-import {
-  //
-  DeliveryOwnerError,
-  getDownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
+import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -184,7 +181,9 @@ import {
   buildOpenAIResponseData,
   buildResponsesResponseData,
 } from "~/lib/request"
+import { isShutdownCausedAbort } from "~/lib/shutdown"
 import { state } from "~/lib/state"
+import { classifyStreamError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -208,6 +207,19 @@ import {
   classifyPostCommitAbort,
   postCommitAbortFrame,
 } from "./post-commit-error"
+import { evaluateDirectRecovery } from "./precontent-recovery-evaluator"
+import {
+  //
+  classifyPreContentRecoveryFailure,
+  shouldAttemptPreContentRecovery,
+  type PreContentRecoveryFailure,
+} from "./precontent-recovery-gate"
+import {
+  //
+  createPreContentRecoverySinkChain,
+  stageDirectRecoveryBatch,
+  type StagedDirectRecoveryBatch,
+} from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
@@ -262,6 +274,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       ...input,
       createState: () => ({
         acc: createAnthropicStreamAccumulator(),
+        repairOutcomeStart: input.env.ctx.repairOutcomes.length,
         terminalObserver: createTerminalObserver(),
         checkRepetition: createStreamRepetitionChecker(model),
         sseEvents: [] as Array<SseEventRecord>,
@@ -322,6 +335,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       snapshot: (state) => ({
         kind: "anthropic-direct" as const,
         acc: state.acc,
+        unrepairableToolInput: input.env.ctx.repairOutcomes.slice(state.repairOutcomeStart).find((outcome) => outcome.outcome === "unrepairable")?.tool,
         terminalObserver: state.terminalObserver,
         sseEvents: state.sseEvents,
         streamState: state.streamState,
@@ -367,6 +381,251 @@ function anthropicCandidateSnapshot(driver: ReturnType<typeof createPipelineDriv
   const session = driver.getCandidateResponseSession(upstream) as CandidateResponseSession<AnthropicCandidateResponseSnapshot> | undefined
   if (!session) throw new Error("[Anthropic:v4] candidate response session missing")
   return session.snapshot()
+}
+
+/** Evaluate a fresh direct-Anthropic candidate without giving it downstream or terminal authority. */
+type CompleteDirectRecoveryEvaluation = Extract<Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>, { kind: "complete" }>
+
+type DirectRecoveryPublication =
+  | { readonly kind: "published"; readonly evaluation: CompleteDirectRecoveryEvaluation }
+  | { readonly kind: "fallback" }
+  | { readonly kind: "client-gone" }
+  | { readonly kind: "wire-torn"; readonly error: Error }
+  | { readonly kind: "commit-failed"; readonly evaluation: CompleteDirectRecoveryEvaluation; readonly error: unknown }
+
+interface DirectRecoveryPublicationHandlers {
+  readonly published: (evaluation: CompleteDirectRecoveryEvaluation) => Promise<void> | void
+  readonly clientGone: () => Promise<void> | void
+  readonly wireTorn: (error: Error) => Promise<void> | void
+  readonly commitFailed: (publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>) => Promise<void> | void
+  readonly settlePostCommitException: (
+    publication: Extract<DirectRecoveryPublication, { kind: "wire-torn" | "commit-failed" }>,
+    callbackError: unknown,
+  ) => Promise<void> | void
+}
+
+type DirectRecoveryPublicationSettlement = "handled" | "fallback"
+
+/** Exhaustively dispatch every publication outcome; only the explicit fallback branch may continue to P. */
+async function settleDirectRecoveryPublication(
+  publication: DirectRecoveryPublication,
+  handlers: DirectRecoveryPublicationHandlers,
+): Promise<DirectRecoveryPublicationSettlement> {
+  switch (publication.kind) {
+    case "published": {
+      await handlers.published(publication.evaluation)
+      return "handled"
+    }
+    case "fallback": {
+      return "fallback"
+    }
+    case "client-gone": {
+      await handlers.clientGone()
+      return "handled"
+    }
+    case "wire-torn": {
+      try {
+        await handlers.wireTorn(publication.error)
+      } catch (callbackError) {
+        await handlers.settlePostCommitException(publication, callbackError)
+      }
+      return "handled"
+    }
+    case "commit-failed": {
+      try {
+        await handlers.commitFailed(publication)
+      } catch (callbackError) {
+        await handlers.settlePostCommitException(publication, callbackError)
+      }
+      return "handled"
+    }
+    default: {
+      publication satisfies never
+      throw new Error("[Anthropic:v4] unreachable direct recovery publication outcome")
+    }
+  }
+}
+
+function recoveryPublicationError(publication: Extract<DirectRecoveryPublication, { kind: "wire-torn" | "commit-failed" }>): unknown {
+  return publication.error
+}
+
+function aggregateRecoverySettlementError(publicationError: unknown, callbackError: unknown): AggregateError {
+  const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+  return new AggregateError(
+    [publicationError, callbackError],
+    `Recovery publication settlement failed: ${message(publicationError)}; ${message(callbackError)}`,
+  )
+}
+
+/** A full recovery batch has already reached the client; only logical settlement remains. */
+async function settleCommittedRecoveryFailure(input: {
+  readonly driver: ReturnType<typeof createPipelineDriver>
+  readonly env: RequestEnvelope
+  readonly model: string
+  readonly publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>
+  readonly recordForwarded: () => void
+}): Promise<void> {
+  const { driver, env, model, publication, recordForwarded } = input
+  driver.pinGenerationTerminalDispatch(env, publication.evaluation.dispatch)
+  recordForwarded()
+  env.ctx.fail(model, publication.error, publication.evaluation.response, {
+    upstreamSucceeded: true,
+    attribution: { category: "proxy", detail: "recovery disposition commit failed after full downstream publication" },
+  })
+}
+
+function ownerTerminalDecisionError(decision: OwnerTerminalDecision): Error {
+  switch (decision.kind) {
+    case "client-aborted": {
+      return new Error(`[delivery] recovery anchor close reached client-gone (partialDelivery=${decision.partialDelivery})`)
+    }
+    case "delivery-finished": {
+      return new Error(`[delivery] recovery anchor close reached ${decision.reason}`)
+    }
+    case "fail-loud": {
+      return new Error(`[delivery] recovery anchor close failed (${decision.reason}): ${decision.error.message}`, { cause: decision.error })
+    }
+    default: {
+      decision satisfies never
+      throw new Error("[Anthropic:v4] unreachable owner terminal decision")
+    }
+  }
+}
+
+/** Post-C9 wire recovery may still attempt terminal wire actions, but request finalization remains owner-owned. */
+async function settleWireTornRecoveryFailure(input: {
+  readonly publicationError: Error
+  readonly model: string
+  readonly ctx: RequestEnvelope["ctx"] | undefined
+  readonly recordForwarded: () => void
+  readonly closeAnchor: () => Promise<OwnerTerminalDecision | undefined>
+  readonly writeTerminal?: () => Promise<void>
+}): Promise<void> {
+  const { publicationError, model, ctx, recordForwarded, closeAnchor, writeTerminal } = input
+  let settlementError: unknown = publicationError
+  let clientGone = false
+  try {
+    const decision = await closeAnchor()
+    if (decision !== undefined) {
+      settlementError = aggregateRecoverySettlementError(settlementError, ownerTerminalDecisionError(decision))
+      clientGone = decision.kind === "client-aborted"
+    }
+  } catch (error) {
+    settlementError = aggregateRecoverySettlementError(settlementError, error)
+  }
+
+  if (!clientGone && writeTerminal) {
+    try {
+      await writeTerminal()
+    } catch (error) {
+      settlementError = aggregateRecoverySettlementError(settlementError, error)
+    }
+  }
+  recordForwarded()
+  ctx?.fail(model, settlementError, undefined, { upstreamSucceeded: true })
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error("Recovery disposition cleanup failed", { cause: error })
+}
+
+async function discardRecoveryEvaluation(evaluation: Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>): Promise<Error | undefined> {
+  try {
+    await evaluation.disposition.discard()
+    return undefined
+  } catch (error) {
+    return asError(error)
+  }
+}
+
+function withCleanupFailure(error: Error, cleanupError: Error | undefined): Error {
+  return cleanupError === undefined ? error : new AggregateError([error, cleanupError], "Recovery publication and cleanup both failed")
+}
+
+async function evaluateAndPublishDirectAnthropicRecovery(
+  driver: ReturnType<typeof createPipelineDriver>,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  primaryError: unknown,
+  deliverySession: DownstreamDeliverySession,
+  anchorState: AnchorState,
+  anchorHooks: AnchorHooks | undefined,
+  resumeHeartbeat: (() => void) | undefined,
+): Promise<DirectRecoveryPublication> {
+  resumeHeartbeat?.()
+  const evaluation = await evaluateDirectAnthropicRecovery(driver, upstream, env, primaryError)
+  if (evaluation.kind !== "complete") {
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (cleanupError !== undefined) throw cleanupError
+    return { kind: "fallback" }
+  }
+  let staged: StagedDirectRecoveryBatch | undefined
+  let publication
+  try {
+    publication = await deliverySession.allocationPort.publishRecoveryBatch(
+      { candidateId: evaluation.candidate, dispatchId: evaluation.dispatch },
+      (envelope) => {
+        staged = stageDirectRecoveryBatch(evaluation.frames, anchorState, anchorHooks)
+        return staged.build(envelope)
+      },
+    )
+  } catch (error) {
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (error instanceof DeliveryOwnerError && error.committed) return { kind: "wire-torn", error: withCleanupFailure(error, cleanupError) }
+    if (cleanupError !== undefined) throw cleanupError
+    return { kind: "fallback" }
+  }
+  if (!publication.ok) {
+    const cleanupError = await discardRecoveryEvaluation(evaluation)
+    if (publication.committed) {
+      // Client visibility is irrevocably gone after C9; cleanup failure cannot downgrade this to primary fallback.
+      return { kind: "client-gone" }
+    }
+    if (cleanupError !== undefined) throw cleanupError
+    return { kind: "fallback" }
+  }
+  if (staged) {
+    // The owner is the sole writer of `anchorClosed`; publish only reconciliation bridge state.
+    const { anchorClosed: _ownerOwnedAnchorClosed, ...bridgeState } = staged.state
+    Object.assign(anchorState, bridgeState)
+  }
+  try {
+    await evaluation.disposition.commit()
+  } catch (error) {
+    return { kind: "commit-failed", evaluation, error }
+  }
+  return { kind: "published", evaluation }
+}
+
+async function evaluateDirectAnthropicRecovery(
+  driver: ReturnType<typeof createPipelineDriver>,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  primaryError: unknown,
+) {
+  return evaluateDirectRecovery({
+    driver: {
+      runResponseSink: (candidateUpstream, candidateEnv, collector, opts) => driver.runResponseSink(candidateUpstream, candidateEnv, collector, opts),
+      getCandidateSnapshot: (candidateUpstream) => {
+        const snapshot = anthropicCandidateSnapshot(driver, candidateUpstream)
+        if (snapshot.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] direct recovery evaluator received a translate candidate")
+        return snapshot
+      },
+      getCandidateIdentity: (candidateUpstream) => {
+        const identity = driver.getCandidateResponseIdentity(candidateUpstream)
+        if (!identity) throw new Error("[Anthropic:v4] recovery evaluator candidate identity missing")
+        return identity
+      },
+      commitConsumedCandidate: (candidateUpstream) => driver.commitConsumedCandidateResponse(candidateUpstream),
+      discardConsumedCandidate: (candidateUpstream) => driver.discardConsumedCandidateResponse(candidateUpstream),
+    },
+    upstream,
+    env,
+    primaryError,
+    responseFromSnapshot: (snapshot) => buildAnthropicResponseData(snapshot.acc, snapshot.acc.model),
+    isContentlessRefusal: (snapshot) => isContentlessRefusal(snapshot.acc.stopReason, hasClientVisibleContent(snapshot.acc.contentBlocks)),
+  })
 }
 
 export async function handleMessagesV4(c: Context): Promise<Response> {
@@ -543,8 +802,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     if (!env.stream) {
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
+        // Snapshot before S6 translation: some translators mutate their input while
+        // assembling the client-format response. History's upstreamResponse must
+        // retain the actual target-protocol body, not that translated object.
+        const rawUpstreamBody = structuredClone(upstream.nonStream)
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-        return renderNonStreamingV4(c, driver, env, resp, upstream.headers)
+        return renderNonStreamingV4(c, driver, env, resp, rawUpstreamBody, upstream.headers)
       } finally {
         detachClientAbort()
       }
@@ -571,7 +834,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // `empty_text` → full anchor injector; `enveloped_ping` → envelope-only injector (message_start + bare
       // ping, no block/remap); `ping` → inert (undefined injector + hooks). Byte-equivalent on the live path
       // when no idle stall occurs (lazy — no injection).
-      const { sink, anchorState, anchorHooks } = makeAnchoredSseSink(stream, {
+      const {
+        sink: rawSink,
+        anchorState,
+        anchorHooks,
+      } = makeAnchoredSseSink(stream, {
         onForwarded: (record) => forwardedSseEvents.push(record),
         streamStartMs,
         heartbeatSec,
@@ -581,11 +848,30 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         ctx: env.ctx,
         ...clientFirstRealSinkOpts(env),
       })
+      const sinkChain = createPreContentRecoverySinkChain(rawSink, anchorHooks, anchorState)
       try {
-        await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
+        await pumpAnthropicStreamingDispatch({
+          sink: sinkChain.sink,
+          rawSink: sinkChain.rawSink,
+          liveSink: sinkChain.liveSink,
+          resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
+          deliverySession: sinkChain.deliverySession,
+          buffered,
+          forwardedSseEvents,
+          streamStartMs,
+          driver,
+          codec,
+          upstream,
+          env,
+          anchorHooks,
+          anchorState,
+        })
       } finally {
-        sink.finalize?.() // terminal delivery drained; seals generation after any synthetic terminus
-        detachClientAbort()
+        try {
+          await sinkChain.settleFinal()
+        } finally {
+          detachClientAbort()
+        }
       }
     })
   }
@@ -655,7 +941,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // `await p` resolves), synthesizing a message_start prelude when the upstream is silent (no captured
     // message_start) — a full empty-text anchor (`empty_text`) or a message_start-only envelope
     // (`enveloped_ping`). The shared AnchorState + hooks flow to the pump below. Inert for `ping`.
-    const { sink, anchorState, anchorHooks } = makeAnchoredSseSink(stream, {
+    const {
+      sink: rawSink,
+      anchorState,
+      anchorHooks,
+    } = makeAnchoredSseSink(stream, {
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
       heartbeatSec: pingSec,
@@ -666,6 +956,8 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // 首包埋点：/v1/messages 客户端格式恒 "anthropic"（延迟提交路径无 env 变量在 scope）。
       ...(commitCtx && clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx: commitCtx })),
     })
+    const sinkChain = createPreContentRecoverySinkChain(rawSink, anchorHooks, anchorState)
+    const sink = sinkChain.sink
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
     commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
@@ -699,7 +991,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // write-attempt time ("recorded == attempted-to-send"), so the snapshot is complete regardless.
       const writeTerminalThenSettle = async (ctx: ReturnType<typeof codec.getContext>, frame: ClientFrame | undefined, settle: () => void): Promise<void> => {
         try {
-          const decision = await closeAnchorViaOwner(sink, anchorHooks, ctx, "terminal")
+          const decision = await closeAnchorViaOwner(sinkChain.deliverySession.allocationPort, anchorHooks, ctx, "terminal")
           if (decision && decision.kind !== "fail-loud") {
             ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
             if (decision.kind === "client-aborted") ctx?.abort(resolvedName)
@@ -749,6 +1041,74 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           await writeTerminalThenSettle(ctx, postCommitAbortFrame(kind), () => ctx?.fail(resolvedName, error))
           return
         }
+        const recoveryFailure = classifyPreContentRecoveryFailure({ error, clientAborted: clientAbort.signal.aborted, lifecycleSignal: ctx?.lifecycleSignal })
+        if (
+          shouldAttemptPreContentRecovery({
+            failure: recoveryFailure,
+            session: sinkChain.deliverySession,
+            config: state.preContentRecovery,
+          })
+        ) {
+          let publication: DirectRecoveryPublication | undefined
+          let recoveryEnv: RequestEnvelope | undefined
+          try {
+            const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
+            if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
+            if (recovered.env.targetEndpoint === ENDPOINT.MESSAGES) {
+              recoveryEnv = recovered.env
+              publication = await evaluateAndPublishDirectAnthropicRecovery(
+                driver,
+                recovered.upstream,
+                recovered.env,
+                error,
+                sinkChain.deliverySession,
+                anchorState,
+                anchorHooks,
+                () => sinkChain.sink.resumeHeartbeat?.(),
+              )
+            } else {
+              await driver.disposeUnconsumedCandidateResponse(recovered.upstream)
+              consola.debug("[Anthropic:v4] pre-ready recovery evaluator is unavailable for a translate leg")
+            }
+          } catch (recoveryError) {
+            consola.error("[Anthropic:v4] pre-content recovery after post-commit pre-ready failure failed", recoveryError)
+          }
+          if (publication && recoveryEnv) {
+            const recoverySettled = await settleDirectRecoveryPublication(publication, {
+              published: (published) => {
+                ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+                ctx?.complete(published.response)
+              },
+              clientGone: () => ctx?.abort(resolvedName),
+              commitFailed: (commitFailed) =>
+                settleCommittedRecoveryFailure({
+                  driver,
+                  env: recoveryEnv,
+                  model: resolvedName,
+                  publication: commitFailed,
+                  recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
+                }),
+              wireTorn: (wireTorn) =>
+                settleWireTornRecoveryFailure({
+                  publicationError: wireTorn,
+                  model: resolvedName,
+                  ctx,
+                  recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
+                  closeAnchor: () => closeAnchorViaOwner(sinkChain.deliverySession.allocationPort, anchorHooks, ctx, "terminal"),
+                  writeTerminal: async () => {
+                    await sinkChain.sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed"))
+                  },
+                }),
+              settlePostCommitException: (postCommit, callbackError) => {
+                ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+                ctx?.fail(resolvedName, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, {
+                  upstreamSucceeded: true,
+                })
+              },
+            })
+            if (recoverySettled === "handled") return
+          }
+        }
         if (error instanceof HTTPError) {
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
@@ -784,10 +1144,28 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
       const { buffered } = resolveBufferedAndHeartbeat(env)
       commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
-      await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
+      await pumpAnthropicStreamingDispatch({
+        sink,
+        rawSink: sinkChain.rawSink,
+        liveSink: sinkChain.liveSink,
+        resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
+        deliverySession: sinkChain.deliverySession,
+        buffered,
+        forwardedSseEvents,
+        streamStartMs,
+        driver,
+        codec,
+        upstream,
+        env,
+        anchorHooks,
+        anchorState,
+      })
     } finally {
-      sink.finalize?.()
-      detachClientAbort()
+      try {
+        await sinkChain.settleFinal()
+      } finally {
+        detachClientAbort()
+      }
     }
   })
 }
@@ -890,7 +1268,10 @@ function applyForwardedAnthropicResponseHeaders(c: Context, upstreamHeaders: Hea
  * Finish a non-streaming Anthropic response: verbose marker (handler-side) → the driver's
  * whole-response rewrite chain (`runResponseWhole`: recover → decode → filter+restore, the
  * same registry the streaming pump drives per-frame, A.B) → setForwardedResponse (client-facing,
- * rewritten) + complete (upstream-original `response`, order matters) → c.json.
+ * rewritten) + complete (pre-S5 client-format `response`, order matters) → c.json.
+ * The raw upstream body and sanitized wire-name provenance remain on
+ * `attempts[].upstreamResponse`; a forward leg's S6 response is already translated
+ * into Anthropic client format before this function runs.
  *
  * The marker stays out of the registry (design §3.1 — it's a verbose debug banner, not an
  * "upstream-quirk fix") and is applied BEFORE the chain. `env.body` is the post-retry env
@@ -908,6 +1289,7 @@ function renderNonStreamingV4(
   driver: ReturnType<typeof createPipelineDriver>,
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
+  rawUpstreamBody: unknown,
   upstreamHeaders: Headers,
 ): Response {
   const reqCtx = env.ctx
@@ -967,7 +1349,7 @@ function renderNonStreamingV4(
         stop_reason: response.stop_reason ?? undefined,
         stopDetails: (response as { stop_details?: unknown }).stop_details,
         content: { role: "assistant", content: response.content },
-        sourceBody: response,
+        sourceBody: rawUpstreamBody,
       },
       { upstreamSucceeded: true },
     )
@@ -1010,7 +1392,7 @@ function renderNonStreamingV4(
     stop_reason: response.stop_reason ?? undefined,
     stopDetails: (response as { stop_details?: unknown }).stop_details,
     content: { role: "assistant", content: response.content },
-    sourceBody: response,
+    sourceBody: rawUpstreamBody,
     responseText: JSON.stringify(response),
   }
   if (failReason) {
@@ -1025,7 +1407,7 @@ function renderNonStreamingV4(
         stop_reason: responseData.stop_reason,
         stopDetails: responseData.stopDetails,
         content: responseData.content,
-        sourceBody: response,
+        sourceBody: rawUpstreamBody,
       },
       // Refusal + unrepairable = a COMPLETE 200 upstream body the proxy re-judged → upstreamSucceeded
       // keeps outboundResponse honest. Semantic truncation = an INCOMPLETE body → stays success:false.
@@ -1103,21 +1485,20 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
  * plain ping (byte-identical to before); `heartbeatSec <= 0` omits the heartbeat entirely.
  */
 async function closeAnchorViaOwner(
-  sink: ClientSink,
+  allocationPort: DownstreamDeliverySession["allocationPort"],
   anchorHooks: AnchorHooks | undefined,
   ctx: RequestEnvelope["ctx"] | undefined,
   mode: "before-real" | "terminal",
 ): Promise<OwnerTerminalDecision | undefined> {
-  if (!anchorHooks) return undefined
-  const port = getDownstreamDeliverySession(sink)?.allocationPort
-  if (!port?.wireState) return undefined
+  if (!anchorHooks || !allocationPort.wireState) return undefined
+  const port = allocationPort
   const operation: OwnerOperation = mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real"
   try {
     const closed = await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorHooks.stopFrame(index)), mode)
     return closed.ok ? undefined : classifyOwnerFailure(closed, operation, { settled: ctx?.settled ?? false })
   } catch (error) {
     if (!(error instanceof DeliveryOwnerError)) throw error
-    return classifyOwnerFailure({ ok: false, reason: "wire-torn", committed: false }, operation, { settled: ctx?.settled ?? false })
+    return { kind: "fail-loud", reason: "wire-torn", error: asError(error.cause ?? error) }
   }
 }
 
@@ -1244,10 +1625,22 @@ function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean;
   return { buffered, heartbeatSec }
 }
 
+function recoveryAnchorState(deliverySession: DownstreamDeliverySession, anchorState: AnchorState | undefined): AnchorState {
+  if (anchorState) return anchorState
+  const wireState = deliverySession.allocationPort.wireState
+  if (!wireState) throw new Error("[Anthropic:v4] recovery publication requires generation wire state")
+  return { wireState, injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+}
+
 interface PumpAnthropicStreamingV4Options {
-  /** The driver-owned client sink (SSE write-out + forwarded sampling + heartbeat). Built by
-   *  the caller so the ③ commit path can emit a first ping on the SAME sink (RFC §4.2.1 C1). */
+  /** Supervisor sink shared by buffered/terminal paths; built once by the stream owner. */
   sink: ClientSink
+  /** Raw delivery sink: buffered driver owns its own terminal fence and must bypass the supervisor. */
+  rawSink: ClientSink
+  /** Persistent rewriting decorator over `sink`, used by both direct-live and translate-live paths. */
+  liveSink: ClientSink
+  /** Delivery resolved from the RAW sink before decoration; Task 4.3b's gate must never resolve through the chain. */
+  deliverySession: DownstreamDeliverySession
   /** L2 buffered-retry routing — resolved by the caller via {@link resolveBufferedAndHeartbeat}. */
   buffered: boolean
   /** The caller-owned forwarded-track array the sink samples into; the pump snapshots it onto ctx. */
@@ -1256,6 +1649,8 @@ interface PumpAnthropicStreamingV4Options {
    *  and the pump's completion summary share one origin (byte-equivalence). */
   streamStartMs: number
   driver: ReturnType<typeof createPipelineDriver>
+  /** Per-request codec; recovery dispatch keeps the same translator state across attempts. */
+  codec: ReturnType<typeof createAnthropicCodec>
   upstream: UpstreamStream
   env: RequestEnvelope
   /**
@@ -1275,12 +1670,27 @@ interface PumpAnthropicStreamingV4Options {
    * `opts.anchorState`. Undefined for `ping` (the driver then self-creates an inert local).
    */
   anchorState?: AnchorState
+  /** Resumes the request-owned supervisor heartbeat immediately before a fresh live recovery consumes frames. */
+  resumeRecoveryHeartbeat?: () => void
+  /** Exactly one recovery attempt is allowed for the request; child pumps carry this guard. */
+  precontentRecoveryAttempted?: boolean
+  /** Client-facing terminal errors retain the failed primary's raw error if its recovery also fails. */
+  recoveryOriginalError?: unknown
 }
 
 /** {@link pumpAnthropicStreamingDispatch} options — the pump options plus the codec (for the translate leg). */
-interface PumpAnthropicStreamingDispatchOptions extends PumpAnthropicStreamingV4Options {
-  /** The per-request anthropic codec — the translate leg reads its `getStreamMeta` / `flushResponse`. */
-  codec: ReturnType<typeof createAnthropicCodec>
+type PumpAnthropicStreamingDispatchOptions = PumpAnthropicStreamingV4Options
+
+/** A recovery child reports its own failure to the primary owner; it never owns a client terminal. */
+class RecoveryAttemptFailure extends Error {
+  readonly primaryError: unknown
+  readonly recoveryError: unknown
+
+  constructor(primaryError: unknown, recoveryError: unknown) {
+    super("[Anthropic:v4] recovery attempt failed", { cause: recoveryError })
+    this.primaryError = primaryError
+    this.recoveryError = recoveryError
+  }
 }
 
 /**
@@ -1308,10 +1718,6 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  * the RAW sink unchanged when the anchor is inert (no hooks / no shared state — `ping`), keeping the live path
  * byte-equivalent. The transform itself branches on `anchorState.anchorBlockOpen` (§10.6).
  */
-function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): ClientSink {
-  return anchorHooks && anchorState ? makeReconcilingSink(sink, anchorState, anchorHooks) : sink
-}
-
 /**
  * Stream pump for the v4 Anthropic path — **owns-the-sink** (Stage B Anthropic cut-over).
  * The driver now OWNS the client write-out: it applies the S5 response-rewrite chain
@@ -1337,9 +1743,92 @@ function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefi
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { sink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
+  const tryReadyLiveRecovery = async (failure: PreContentRecoveryFailure, originalError: unknown): Promise<boolean> => {
+    // Task #3's evaluator owns only the direct Anthropic accumulator contract. Forward translate
+    // legs keep their existing terminal path until they gain an equally exhaustive evaluator.
+    if (env.targetEndpoint !== ENDPOINT.MESSAGES) return false
+    // Both body transport throws and clean EOF before message_stop are deterministic upstream deaths.
+    // Abort provenance remains fail-closed because upstream may still be legitimate long thinking.
+    if (failure.kind === "abort") return false
+    if (
+      opts.precontentRecoveryAttempted
+      || buffered
+      || !shouldAttemptPreContentRecovery({
+        failure,
+        session: opts.deliverySession,
+        config: state.preContentRecovery,
+      })
+    )
+      return false
+    let publication: DirectRecoveryPublication | undefined
+    let recoveryEnv: RequestEnvelope | undefined
+    try {
+      const recovered = await driver.runResponseRecovery(upstream, env, "stream-error-before-content")
+      if (!recovered.ok) throw new Error("[Anthropic:v4] ready-state recovery unexpectedly rejected routing")
+      recoveryEnv = recovered.env
+      publication = await evaluateAndPublishDirectAnthropicRecovery(
+        driver,
+        recovered.upstream,
+        recovered.env,
+        opts.recoveryOriginalError ?? originalError,
+        opts.deliverySession,
+        recoveryAnchorState(opts.deliverySession, anchorState),
+        anchorHooks,
+        opts.resumeRecoveryHeartbeat,
+      )
+    } catch (recoveryError) {
+      consola.error("[Anthropic:v4] pre-content recovery evaluation failed", recoveryError)
+      return false
+    }
+    const settlement = await settleDirectRecoveryPublication(publication, {
+      published: (published) => {
+        recordForwarded()
+        env.ctx.complete(published.response)
+      },
+      clientGone: () => {
+        recordForwarded()
+        env.ctx.abort(model)
+      },
+      commitFailed: (commitFailed) =>
+        settleCommittedRecoveryFailure({
+          driver,
+          env: recoveryEnv,
+          model,
+          publication: commitFailed,
+          recordForwarded,
+        }),
+      wireTorn: (wireTorn) =>
+        settleWireTornRecoveryFailure({
+          publicationError: wireTorn,
+          model,
+          ctx: env.ctx,
+          recordForwarded,
+          closeAnchor: () => closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal"),
+          writeTerminal: async () => {
+            await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed"))
+          },
+        }),
+      settlePostCommitException: (postCommit, callbackError) => {
+        recordForwarded()
+        env.ctx.fail(model, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, { upstreamSucceeded: true })
+      },
+    })
+    return settlement === "handled"
+  }
+  const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
+    // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
+    // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
+    if (source !== "upstream-transport") return false
+    if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
+    if (error instanceof Error && isAbortError(error)) return false
+    const failure = classifyPreContentRecoveryFailure({ error, clientAborted: false, lifecycleSignal: env.ctx.lifecycleSignal })
+    return tryReadyLiveRecovery(failure, error)
+  }
+  const tryCleanEofRecovery = async (): Promise<boolean> =>
+    tryReadyLiveRecovery({ kind: "network-error" }, new Error("upstream stream truncated: closed without message_stop"))
 
   // Snapshot the forwarded track onto the ctx (R3-④: forwardedSseEvents is aliased by
   // entry.inboundResponse — `close()` in runResponseSink's finally already stopped the
@@ -1363,7 +1852,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   try {
     const outcome =
       buffered ?
-        await driver.runResponseBufferedSink(upstream, env, sink, {
+        await driver.runResponseBufferedSink(upstream, env, opts.rawSink, {
           // Buffered synthetic-prelude keepalive (spec 2026-07-08 / §10.6): the handler's injector lazily
           // forwards a message_start prelude via the sink's heartbeat.injectAnchor during a pre-commit stall.
           // On commit the driver dedups the buffered message_start and — for `empty_text` (anchorBlockOpen) —
@@ -1418,8 +1907,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
               }),
           }),
         })
-      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState), {
-          wireAllocationPort: getDownstreamDeliverySession(sink)?.allocationPort,
+      : await driver.runResponseSink(upstream, env, liveSink, {
+          wireAllocationPort: opts.deliverySession.allocationPort,
         })
 
     const candidate = anthropicCandidateSnapshot(driver, upstream)
@@ -1441,18 +1930,54 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // (B0-d). Settle as aborted (forwarded snapshot guaranteed by the finally).
       consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
       env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined })
-      sink.finalize?.()
+      await sink.finalize?.()
       return
     }
 
     if (outcome.kind === "stream-error") {
+      if (opts.recoveryOriginalError !== undefined) throw new RecoveryAttemptFailure(opts.recoveryOriginalError, outcome.error)
+      if (classifyStreamError(outcome.error) === "shutdown" || isShutdownCausedAbort(outcome.error)) {
+        const shutdownError = new HTTPError(
+          "Server is shutting down",
+          529,
+          JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
+          undefined,
+          undefined,
+          undefined,
+          outcome.error,
+        )
+        const partial = buildAnthropicResponseData(acc, model)
+        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
+        if (
+          settleMessagesOwnerFailure(
+            ownerDecision,
+            env,
+            acc.model || model,
+            recordForwarded,
+            { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+            { cause: shutdownError },
+          )
+        )
+          return
+        await sink.writeSynthetic?.(anthropicHttpErrorFrame(shutdownError)).catch(() => undefined)
+        recordForwarded()
+        env.ctx.fail(acc.model || model, shutdownError, {
+          usage: partial.usage,
+          stop_reason: partial.stop_reason,
+          stopDetails: partial.stopDetails,
+          content: partial.content,
+        })
+        await sink.finalize?.()
+        return
+      }
+      if (await tryResponseRecovery(outcome.error, outcome.source)) return
       // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
       // Anthropic error frame + record it into the forwarded track (the client receives it, so
       // it belongs in `inboundResponse.sseEvents`), THEN settle. Ordering is load-bearing:
       // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
       // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
       const error = outcome.error
-      logUpstreamStreamOutcomeError(outcome, { model: acc.model || model, streamState, acc, sseEvents })
+      logUpstreamStreamOutcomeError({ ...outcome, error }, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
@@ -1461,7 +1986,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
       const partial = buildAnthropicResponseData(acc, model)
-      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
       if (
         settleMessagesOwnerFailure(
           ownerDecision,
@@ -1496,7 +2021,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stopDetails: partial.stopDetails,
         content: partial.content,
       })
-      sink.finalize?.()
+      await sink.finalize?.()
       return
     }
 
@@ -1511,6 +2036,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
     if (acc.streamError) {
+      if (opts.recoveryOriginalError !== undefined)
+        throw new RecoveryAttemptFailure(opts.recoveryOriginalError, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
       // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
       // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
       // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
@@ -1526,7 +2053,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stopDetails: partial.stopDetails,
         content: partial.content,
       })
-      sink.finalize?.()
+      await sink.finalize?.()
     } else if (
       isContentlessRefusal(acc.stopReason, hasClientVisibleContent(acc.contentBlocks))
       && (env.ctx.refusalPolicy.mode !== "refusal" || acc.sawMessageStop)
@@ -1563,7 +2090,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
         { upstreamSucceeded: true },
       )
-      sink.finalize?.()
+      await sink.finalize?.()
     } else if (env.ctx.unrepairableToolInput !== null) {
       // A malformed tool_use input could not be repaired (Layer 1 strip + Layer 2 jsonrepair both
       // failed during S5) — forwarding the broken JSON hands the client an unparseable tool call.
@@ -1581,7 +2108,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // §10.5 close-off (I-1): balance any still-open anchor before the error terminus. Almost always inert
       // here — an unrepairable tool_use requires a real content_block_start (which reconcile already closed
       // the anchor at) — but the shared idempotent guard keeps every error-frame terminus uniformly safe.
-      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
       if (
         settleMessagesOwnerFailure(
           ownerDecision,
@@ -1603,8 +2130,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
         { upstreamSucceeded: true },
       )
-      sink.finalize?.()
+      await sink.finalize?.()
     } else if (!acc.sawMessageStop) {
+      if (opts.recoveryOriginalError !== undefined)
+        throw new RecoveryAttemptFailure(opts.recoveryOriginalError, new Error("upstream stream truncated: closed without message_stop"))
+      // A clean EOF before semantic content is a deterministic ready-live upstream death. Try the
+      // same single B2 seam as a thrown transport close before constructing any truncation terminal.
+      if (await tryCleanEofRecovery()) return
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
       // never finished. Settle as FAIL (not a silent `[ OK ]`) — preserving the accumulated
@@ -1620,7 +2152,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
       const truncationError = new Error("upstream stream truncated: closed without message_stop")
-      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
       if (
         settleMessagesOwnerFailure(
           ownerDecision,
@@ -1653,7 +2185,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stopDetails: partial.stopDetails,
         content: partial.content,
       })
-      sink.finalize?.()
+      await sink.finalize?.()
     } else {
       if (isAnthropicMaxTokensTerminal(acc.stopReason)) {
         const truncationClass = classifyMaxTokensTruncation(terminalObserver)
@@ -1673,19 +2205,21 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         }
       }
       env.ctx.complete(buildAnthropicResponseData(acc, model))
-      sink.finalize?.()
+      await sink.finalize?.()
     }
   } catch (error) {
+    if (opts.recoveryOriginalError !== undefined) throw error
+    const terminalError = error instanceof RecoveryAttemptFailure ? error.primaryError : error
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
     if (failedCandidate.kind !== "anthropic-direct") throw error
     const { acc } = failedCandidate
     // Unexpected throw from the driver/sink (not a returned outcome): surface a synthetic error
     // frame + record it into the forwarded track, THEN settle so the persisted inboundResponse
     // includes the client-received error frame (writeSynthetic → recordForwarded → fail).
-    const msg = error instanceof Error ? error.message : String(error)
+    const msg = terminalError instanceof Error ? terminalError.message : String(terminalError)
     // §10.5 close-off (I-1): an unexpected throw is also an error terminus — balance any open anchor before
     // the synthetic error frame (idempotent + inert via the shared anchorClosed guard).
-    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
     if (
       settleMessagesOwnerFailure(
         ownerDecision,
@@ -1693,17 +2227,17 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         acc.model || model,
         recordForwarded,
         { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined },
-        { cause: error },
+        { cause: terminalError },
       )
     )
       return
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, {
+    env.ctx.fail(acc.model || model, terminalError, {
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
     })
-    sink.finalize?.()
+    await sink.finalize?.()
   } finally {
     recordForwarded()
   }
@@ -1750,7 +2284,7 @@ function isMessageTerminatorFrame(frame: ClientFrame): boolean {
  * streaming (constraint #4: only the forward leg is unlocked; reverse streaming stays Phase 5).
  */
 async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchOptions): Promise<void> {
-  const { sink, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, liveSink, forwardedSseEvents, driver, upstream, env, anchorHooks } = opts
   // The translate-leg env.body is the CC-canonical wire body (translateOut delegated to the hub), so it
   // carries the resolved model name; fall back to a literal when absent (defensive, never for a real leg).
   const model = (env.body as { model?: string }).model ?? "unknown"
@@ -1767,9 +2301,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // `content_block_start` — writing it to the raw sink would emit it at the un-remapped index (block-index
     // mismatch / dangling block) under `empty_text` anchor. reconcile leaves index-less message_delta /
     // message_stop unchanged, and is a transparent passthrough when no anchor was injected (byte-equivalent).
-    const clientSink = liveReconcilingSink(sink, anchorHooks, anchorState)
-    const outcome = await driver.runResponseSink(upstream, env, clientSink, {
-      wireAllocationPort: getDownstreamDeliverySession(sink)?.allocationPort,
+    const outcome = await driver.runResponseSink(upstream, env, liveSink, {
+      wireAllocationPort: opts.deliverySession.allocationPort,
     })
 
     const candidate = anthropicCandidateSnapshot(driver, upstream)
@@ -1789,7 +2322,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         usage: { input_tokens: meta?.usage.input_tokens ?? 0, output_tokens: meta?.usage.output_tokens ?? 0 },
         ...(meta?.stopReason && { stop_reason: meta.stopReason }),
       })
-      sink.finalize?.()
+      await sink.finalize?.()
       return
     }
 
@@ -1805,7 +2338,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })
-      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
       if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: error })) return
       // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
       // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
@@ -1829,7 +2362,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(model, error, outboundResponseData())
-      sink.finalize?.()
+      await sink.finalize?.()
       return
     }
 
@@ -1845,7 +2378,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // The processor finish boundary already forwarded block-close frames through the reconciling
       // sink and suppressed clean message terminators.
       const truncationError = new Error("upstream stream truncated: closed without finish_reason")
-      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
       if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: truncationError })) return
       // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
       // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
@@ -1874,7 +2407,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         sseEvents: diag.sseEvents,
       })
       env.ctx.fail(model, truncationError, outboundResponseData())
-      sink.finalize?.()
+      await sink.finalize?.()
       return
     }
 
@@ -1882,7 +2415,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // frames through the same reconciling sink.
     recordForwarded()
     env.ctx.complete(outboundResponseData())
-    sink.finalize?.()
+    await sink.finalize?.()
   } catch (error) {
     // Unexpected throw from the driver/sink: synthesize an Anthropic error terminator + record it, THEN fail.
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
@@ -1890,7 +2423,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     const { ccAcc, respAcc } = failedCandidate
     const failedResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
       ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
-    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
     if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, failedResponseData(), { cause: error })) return
     await sink
       .writeSynthetic?.({
@@ -1900,7 +2433,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, failedResponseData())
-    sink.finalize?.()
+    await sink.finalize?.()
   } finally {
     recordForwarded()
   }

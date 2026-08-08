@@ -41,9 +41,11 @@ import type {
   RequestSample,
   RetryStrategy,
 } from "~/lib/pipeline/types"
+import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { sanitizeResponsesWireToolNames } from "~/lib/openai/tool-name-sanitize"
 import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
@@ -74,6 +76,30 @@ function bodyIsResponsesShaped(env: RequestEnvelope): boolean {
   return env.clientFormat === "openai-responses" || env.clientFormat === "anthropic"
 }
 
+const ORDER_RESPONSES_TOOL_NAME_SANITIZE = 200
+
+/**
+ * Sanitize function names after S2 has produced a Responses-shaped body.
+ *
+ * This belongs to the outbound `/responses` leg rather than any inbound codec:
+ * direct Responses requests arrive in this shape, while Anthropic→Responses
+ * reaches it only after translation. Keeping the rewrite here closes that seam
+ * and makes the constraint apply to every Responses-wire producer.
+ */
+const responsesToolNameSanitize: RequestRewrite = {
+  name: "responses-tool-name-sanitize",
+  order: ORDER_RESPONSES_TOOL_NAME_SANITIZE,
+  appliesTo: (env) => bodyIsResponsesShaped(env) && state.sanitizeToolNames,
+  apply: (env) => {
+    const baseline = env.body as ResponsesPayload
+    const { payload: body, mapper } = sanitizeResponsesWireToolNames(baseline, env.requestState?.sourceToolNameMapper ?? null, {
+      sourceMapperApplied: env.clientFormat === "openai-responses",
+    })
+    env.ctx.setToolNameMapper(mapper)
+    return { env: env.with({ body }), changed: body !== baseline }
+  },
+}
+
 /** Build the `/responses` outbound leg — shared by the RESPONSES + WS_RESPONSES records (same wire). */
 function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof ENDPOINT.WS_RESPONSES): OutboundLeg {
   return {
@@ -101,9 +127,12 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
       return env.with({ body: translatedBody })
     },
 
-    // S3: no request rewrite (the reverse-sanitize dep is MESSAGES-gated, inert on /responses).
-    requestRewrites(): ReadonlyArray<RequestRewrite> {
-      return []
+    // S3: apply Responses-wire constraints after translation. The rewrite is
+    // active for Responses-shaped bodies (direct + Anthropic forward bridge);
+    // CC/Gemini via-responses remain CC-shaped and were sanitized by their own
+    // inbound codecs before prepareWire translates them.
+    requestRewrites(env): ReadonlyArray<RequestRewrite> {
+      return responsesToolNameSanitize.appliesTo(env) ? [responsesToolNameSanitize] : []
     },
 
     prepareWire(env): PreparedRequest {

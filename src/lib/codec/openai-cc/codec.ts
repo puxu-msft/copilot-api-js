@@ -235,6 +235,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       return env.with({
         requestState: {
           truncateBaseline: baseline,
+          sourceToolNameMapper: env.ctx.toolNameMapper,
           ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
           ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
         },

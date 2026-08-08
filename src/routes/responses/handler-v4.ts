@@ -416,7 +416,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -445,7 +445,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -471,7 +471,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error(`[Responses:v4] Upstream error for ${acc.model || model}: ${acc.streamError.code} — ${acc.streamError.message}`)
     recordForwarded()
     env.ctx.fail(acc.model || model, new Error(`${acc.streamError.code}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -498,13 +498,13 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }
 
 // ============================================================================
@@ -613,7 +613,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     recordForwarded()
     consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -629,7 +629,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -642,7 +642,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     consola.error(`[Responses:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "truncated") {
@@ -657,7 +657,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "contentless-refusal") {
@@ -665,11 +665,11 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   // The processor finish boundary already emitted response.completed through restore/onRenderedFrame.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }

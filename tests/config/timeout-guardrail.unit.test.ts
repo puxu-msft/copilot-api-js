@@ -1,17 +1,3 @@
-/**
- * Guardrail: warn when an upstream silence-guard timeout is explicitly disabled (0).
- *
- * Motivation (empirical, exp/ttfb-timeout-queued/report.md): with
- * `timeouts.response_header: 0` the TTFB abort signal is `undefined`, so a
- * silently hung GHC upstream keeps a single streaming request pending for
- * MINUTES until the upstream itself 502s (observed 691s). The mechanism is not
- * buggy — disabling the guard is the footgun. This warning makes the disabled
- * state visible at startup / on change, without spamming per-request hot-reload.
- *
- * `stream_idle: 0` is the same footgun class (mid-stream silence unbounded), so
- * it is covered by the same guardrail (learn-by-analogy).
- */
-
 import {
   //
   afterEach,
@@ -68,74 +54,77 @@ function warnLines(spy: ReturnType<typeof spyOn<typeof consola, "warn">>): Array
   return spy.mock.calls.map((c) => c.map(String).join(" "))
 }
 
-describe("upstream silence-guard timeout disable warning", () => {
-  test("response_header: 0 emits a prominent warning at first apply", async () => {
-    await writeConfig("timeouts:\n  response_header: 0\n")
+describe("wall-clock bounded-wait override warning", () => {
+  test.each([
+    ["response_header", "TTFB"],
+    ["stream_idle", "mid-stream silence"],
+    ["stale_request_max_age", "active upstream lifetime"],
+    ["request_deadline", "client request lifetime"],
+  ])("positive %s warns that legitimate unbounded thinking may be terminated", async (key, label) => {
+    await writeConfig(`timeouts:\n  ${key}: 300\n`)
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      const warned = warnLines(spy)
-      expect(warned.some((l) => /response_header/.test(l) && /disabled/i.test(l))).toBe(true)
+      expect(warnLines(spy).some((line) => line.includes(label) && /legitimate unbounded thinking/i.test(line))).toBeTrue()
     } finally {
       spy.mockRestore()
     }
   })
 
-  test("stream_idle: 0 also warns (same footgun class)", async () => {
-    await writeConfig("timeouts:\n  stream_idle: 0\n")
+  test.each([
+    ["response_header_overrides", "claude-opus-4.8"],
+    ["stream_idle_overrides", "gpt-5.5"],
+  ])("positive %s entry names its model in the warning", async (key, model) => {
+    await writeConfig(`timeouts:\n  ${key}:\n    ${model}: 600\n`)
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      expect(warnLines(spy).some((l) => /stream_idle/.test(l) && /disabled/i.test(l))).toBe(true)
+      expect(warnLines(spy).some((line) => line.includes(`${key}.${model}=600s`) && /legitimate unbounded thinking/i.test(line))).toBeTrue()
     } finally {
       spy.mockRestore()
     }
   })
 
-  test("both disabled → one warning naming both", async () => {
-    await writeConfig("timeouts:\n  response_header: 0\n  stream_idle: 0\n")
+  test("zero-valued per-model entries do not warn", async () => {
+    await writeConfig("timeouts:\n  response_header_overrides:\n    claude-opus-4.8: 0\n  stream_idle_overrides:\n    gpt-5.5: 0\n")
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      const combined = warnLines(spy).filter((l) => /disabled/i.test(l))
-      expect(combined.some((l) => /response_header/.test(l) && /stream_idle/.test(l))).toBe(true)
+      expect(warnLines(spy).some((line) => /bounded-wait override/i.test(line))).toBeFalse()
     } finally {
       spy.mockRestore()
     }
   })
 
-  test("positive timeouts (defaults) → NO warning", async () => {
-    await writeConfig("timeouts:\n  response_header: 300\n  stream_idle: 600\n")
+  test("all four disabled defaults emit no bounded-wait warning", async () => {
+    await writeConfig("timeouts:\n  response_header: 0\n  stream_idle: 0\n  stale_request_max_age: 0\n  request_deadline: 0\n")
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      expect(warnLines(spy).some((l) => /disabled/i.test(l))).toBe(false)
+      expect(warnLines(spy).some((line) => /bounded-wait override/i.test(line))).toBeFalse()
     } finally {
       spy.mockRestore()
     }
   })
 
-  test("absent timeouts section → NO warning (bundled defaults are positive)", async () => {
+  test("absent timeouts section emits no bounded-wait warning", async () => {
     await writeConfig("history:\n  limit: 5\n")
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      expect(warnLines(spy).some((l) => /disabled/i.test(l))).toBe(false)
+      expect(warnLines(spy).some((line) => /bounded-wait override/i.test(line))).toBeFalse()
     } finally {
       spy.mockRestore()
     }
   })
 
-  test("unchanged config on re-apply does NOT re-warn (no per-request spam)", async () => {
-    await writeConfig("timeouts:\n  response_header: 0\n")
-    // First apply warns.
+  test("unchanged positive override does not re-warn on hot re-apply", async () => {
+    await writeConfig("timeouts:\n  response_header: 300\n")
     await applyConfigToState()
-    // Second apply (same mtime) must be silent — mirrors the per-request
-    // hot-reload path that calls applyConfigToState on every request.
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()
-      expect(warnLines(spy).some((l) => /disabled/i.test(l))).toBe(false)
+      expect(warnLines(spy).some((line) => /bounded-wait override/i.test(line))).toBeFalse()
     } finally {
       spy.mockRestore()
     }

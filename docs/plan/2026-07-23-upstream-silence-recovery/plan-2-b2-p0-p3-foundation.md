@@ -1,6 +1,10 @@
 # Plan-2: B2-P0～P3 —— 机制地基（server-tool gate 复用点 / 配置骨架 / semantic-content gate / sink lifetime supervisor）
 
-> **依赖：** 无（可与 B1 并行）。**前置阅读：** spec §4/§6.1 + FINDINGS.md 全文（尤其"B2 必须新建"的 5 件机件列表）。
+> **实施状态（2026-07-28）：Task 0.1～0.7 已完成；Task 0.6 的 candidate lifecycle quiescence join 因当前没有 recovery owner，明确转入 P4/P5 接线。** 全部**零生产接线**（P4/P5 才接），每个已交付 Task 都过了对应验证；逐 Task 的实施状态注解写在各自小节内（含与本文档原始设计的偏离及理由）——**接手时以那些注解 + 当前代码为准**，本文档正文写于底座重写之前。
+>
+> ⚠ **底座已漂移**：master 在本 plan 撰写后重写了 delivery/heartbeat 生命周期（`freezeHeartbeat` 语义、close-before-terminal-drain）并把 commit 窗口重构成 ingress-relative deadline。**Task 0.6 与 plan-3 接线前必须重读现状**，本文档的 `file:line` 可能已漂移。
+>
+> **依赖：** 无（可与 B1 并行；B1 已由主线自行落地、无需再做）。**前置阅读：** spec §4/§6.1 + FINDINGS.md 全文（尤其"B2 必须新建"的 5 件机件列表）。
 >
 > **⚠️ 本阶段是全计划技术难度最高的部分。** 以下设计基于对 `driver.ts` / `coordinator.ts` / `candidate.ts` / `dispatch-scheduler.ts` / `hedge-policy.ts` / `boundary-classifier.ts` 的实证阅读（非猜测），但**部分接线细节需在 TDD 执行期用测试验证**（例如 History `completeCandidate`/`selectGenerationWinner` 的确切调用时机与生产代码里其它 recovery 路径的对照）——凡标注「验证」的地方，实现者必须先读对应源码确认再落地，不能凭本文档假设直接写。
 
@@ -36,29 +40,29 @@ S1 parse → S1b translateInbound → S2 route/translateOut → S3 rewrite-in
 
 ---
 
-## Task 0.1：配置骨架（纯新增，默认关闭，不接线）
+## Task 0.1：配置骨架（纯新增，默认启用，不接线）
 
-**为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取"是否启用/触发条件"，避免接线阶段还要临时加 flag。默认 OFF——B2 是新拓扑，先在配置层留一个总开关，实际接线（P4/P5）完成前不应该有任何行为差异。
+**为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取“是否启用/触发条件”，避免接线阶段还要临时加 flag。配置默认 `enabled:true` 已裁定；B2 是新拓扑，但实际接线留在 P4/P5，所以本阶段仍不产生任何行为差异。
 
-- [ ] **Step 1: 写失败测试** —— 新配置键存在、默认值符合预期、config.ts 能正确映射
+- [x] **Step 1: 写失败测试** —— 新配置键存在、默认值符合预期、config.ts 能正确映射
 
 ```ts
 // tests/config/buffered-retry-keys.unit.test.ts（追加，或新建 precontent-recovery-config.unit.test.ts）
 test("precontent_recovery config defaults to enabled:true with server-tool-safe gate always on", () => {
-  // 断言 state.preContentRecovery = { enabled: true, ... }（默认值待定，倾向默认开——见下方"命名与默认值"）
+  // 断言 state.preContentRecovery = { enabled: true }（默认值已裁定）
 })
 test("config key precontent_recovery.enabled maps to state via applyConfigToState", () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线**：
+- [x] **Step 2: 跑，失败。** —— `bun test tests/config/buffered-retry-keys.unit.test.ts`（新增断言收到 `undefined`，符合缺少 state 字段的预期）。
+- [x] **Step 3: 接线**：
   - `src/lib/state-defaults.ts` 新增 `preContentRecovery: { enabled: true } as PreContentRecoveryConfig`（结构留扩展余地，暂只有 `enabled`；B2-P4 若发现需要更多字段——如"最大一次性重试次数"——此处再扩展，**不要在本 Task 里预先加未用字段**，YAGNI 在"配置项数量"上是合理的，反-YAGNI 只约束"功能范围"不约束"配置粒度"）。
   - `src/lib/config/schema.ts` 新增 `anthropic.precontent_recovery`（或顶层 `buffered_retry` 同级——**待决**：既然 B2 独立于 `protect_streaming_generation`/buffered-retry（可在 buffered/live 任意模式下触发，见 spec Q7），命名不应该嵌进 `buffered_retry` 命名空间，避免"buffered_retry 恒为 map"的既有铁律被误用——建议顶层新键 `anthropic.precontent_recovery: { enabled: boolean }`，与 `stream_commit_after_sec` 平级）。
   - `src/lib/config/config.ts` 新增映射行，镜像 `protect_streaming_escalate_context` 那种简单布尔映射的写法。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(config): add precontent_recovery config scaffold (default enabled, not yet wired)`。
+- [x] **Step 4: 跑，通过。** —— `bun test tests/config/buffered-retry-keys.unit.test.ts tests/config/config-hot-reload.it.test.ts`：404 pass，0 fail；`bunx eslint` 目标文件与 `bun run typecheck` 均通过。
+- [x] **Step 5: 提交** → `feat(config): add precontent_recovery config scaffold (default enabled, not yet wired)`。
 
-**命名与默认值待决项（交主会话/用户确认，不自行拍板）：** 配置键名 `precontent_recovery` / `pre_content_recovery` / 更贴合 spec 用语的其他名字——本计划用 `precontent_recovery` 占位，若用户有偏好命名，实现时改一处即可（不影响后续阶段结构）。默认值建议 `enabled: true`（因为 B2 对合法长思考零误伤、只在真失败时触发，符合"long-termism-wins"默认开启新正确机制的项目哲学）——但因为这是行为默认值变更，仍建议在 P4/P5 完整落地并过 P6 协议矩阵后再实际打开默认值（即：本 Task 先把默认值定义为 `true`，但 P4/P5 的功能开关暂时在代码里额外加一层"feature not yet wired"防护，直到 P5 完成才让默认值生效——**由执行者在 TDD 中用测试锁定这个顺序，不要在 gate 尚未接线完成前就让默认值产生用户可见的行为变化**）。
+**已裁定命名与默认值：** 配置键使用 `precontent_recovery`，默认 `enabled: true`。P4/P5 完整接线前不读取该 state 字段，故这个默认值在本阶段没有用户可见副作用；后续接线须用测试锁定此顺序。
 
 ---
 
@@ -75,7 +79,7 @@ test("config key precontent_recovery.enabled maps to state via applyConfigToStat
 - **ready 但流未产出真实内容**（已有 `upstream`，pump 正在跑，但上游在**首个真实 `content_block_delta`** 前失败）：`hasEmittedRealClientContent === false` → gate false（可安全 B2 恢复）。
 - **ready 且已发过真实 delta**（哪怕 block 未 stop）：`hasEmittedRealClientContent === true` → gate **true**（**禁止** B2 fresh dispatch，避免重复；这一段属于 continuation-retry / truncation 的地盘，不是 B2）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试** —— 新增 pure gate unit 与 delivery integration 覆盖。
 
 ```ts
 // tests/pipeline/semantic-content-gate.unit.test.ts
@@ -99,8 +103,8 @@ test("only a content_block_start (block opened, no delta) → false (no real byt
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现**：
+- [x] **Step 2: 跑，失败。** —— gate 模块不存在，两个新测试文件均以预期的 module-not-found 失败。
+- [x] **Step 3: 实现**：
   - `src/lib/pipeline/generation/semantic-content-gate.ts`（纯函数，读 delivery flag）：
 
 ```ts
@@ -126,8 +130,8 @@ test("primary DID deliver a real content_block_delta then failed mid-block → g
 })
 ```
 
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): delivery-level semantic-content gate (first real content_block_delta, not block-completed)`。
+- [x] **Step 4: 跑，通过。** —— targeted gate：13 pass；现有 streaming/postcommit regression：36 pass、7 skip、0 fail；`bun run typecheck` 与改动文件 eslint 通过。`bun run test:backend` 最终复跑：6359 pass、0 fail（首次并行性能阈值偶发失败后已单文件复跑 3 pass）。
+- [x] **Step 5: 提交** → `feat(pipeline): delivery-level semantic-content gate (first real content_block_delta, not block-completed)`。
 
 ---
 
@@ -145,7 +149,7 @@ runHedge(env = input.env) {
 
 B2 需要的是同构操作，但 role 用已存在的字面量 `"recovery"`（`CandidateRole = "primary" | "hedge" | "recovery" | "continuation"`，`model-operation-record.ts:249`），且必须**恰好触发一次**（B2 spec 明确"一次全新上游 dispatch"，非无限重试/无限竞速）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/precontent-recovery-coordinator.unit.test.ts
@@ -160,10 +164,10 @@ test("budget/reservation accounting shares the SAME generation budget as the pri
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线** —— `coordinator.ts` 的 `GenerationCoordinator<TProcessor>` 接口 + `createGenerationCoordinator` 实现：新增 `recoveryFromPreReadyStarted` 布尔守卫（镜像 `hedgeStarted`），`runRecoveryFromPreReadyFailure(reason, env) { if (recoveryFromPreReadyStarted) throw ...; recoveryFromPreReadyStarted = true; return start({role: "recovery", env}) }`。**不需要**settle 任何 parent（原 primary 已经在 `candidate.ts` 自行 settle 为 `failed`）——这是与 `runRecovery`/`runContinuation` 的关键差异，务必在代码注释里写清楚"为什么这里不 settle parent"（避免未来有人误以为漏写）。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): coordinator.runRecoveryFromPreReadyFailure (parent-less recovery candidate)`。
+- [x] **Step 2: 跑，失败。** —— `bun test tests/pipeline/precontent-recovery-coordinator.unit.test.ts`：3 fail，均为预期的 `TypeError: coordinator.runRecoveryFromPreReadyFailure is not a function`。
+- [x] **Step 3: 接线** —— `coordinator.ts` 的 `GenerationCoordinator<TProcessor>` 接口 + `createGenerationCoordinator` 实现：新增 `recoveryFromPreReadyStarted` 布尔守卫（镜像 `hedgeStarted`），`runRecoveryFromPreReadyFailure(reason, env) { if (recoveryFromPreReadyStarted) throw ...; recoveryFromPreReadyStarted = true; return start({role: "recovery", env}) }`。**不需要**settle 任何 parent（原 primary 已经在 `candidate.ts` 自行 settle 为 `failed`）——这是与 `runRecovery`/`runContinuation` 的关键差异，务必在代码注释里写清楚"为什么这里不 settle parent"（避免未来有人误以为漏写）。
+- [x] **Step 4: 跑，通过。** —— targeted coordinator suite：13 pass、0 fail；`bun run typecheck` 与改动文件 eslint 通过。
+- [x] **Step 5: 提交** → `feat(pipeline): coordinator.runRecoveryFromPreReadyFailure (parent-less recovery candidate)`。
 
 **风险点（验证清单，实现者必须确认）：**
 - `start()` 内部 `runtimes.set(runtime.handle, runtime)` + `active = runtime` 的赋值时序，与 `runHedge`/`runPrimary` 完全一致——确认没有"当 primary 已经因失败清空 `active` 后，新的 recovery 候选是否会被某个陈旧 `active` 引用绊住"的边界问题（读 `coordinator.ts:113` 附近的 `active` 变量全部读写点）。
@@ -177,7 +181,9 @@ test("budget/reservation accounting shares the SAME generation budget as the pri
 
 **关键设计要点（保证零回归）：** `runRequest` 对外的 Promise 语义完全不变——遇到 `coordinator.runPrimary()` reject 时，**先**把 `{coordinator, env: afterHook}` 存进 `lastPreReadyFailure`，**再** rethrow（与今天行为逐字节等价，除非调用方之后显式调用新方法）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试** —— `tests/pipeline/driver-precontent-recovery.it.test.ts` 覆盖既有 reject 身份、fresh recovery 成功、无前置失败 programmer error、server-tool gate 不二次 dispatch。
+
+- [x] **Step 2: 跑，失败。** —— 新 API 缺失时 3 个新增行为按预期以 `TypeError: driver.runPreContentRecovery is not a function` 失败；`runRequest` reject 回归锁在旧行为下已绿，作为 characterization lock。
 
 ```ts
 // tests/pipeline/driver-precontent-recovery.it.test.ts
@@ -196,8 +202,7 @@ test("runPreContentRecovery gates on classifyServerExecutionRisk BEFORE dispatch
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线**：
+- [x] **Step 3: 接线**：
   - `runRequest` 内部把 `const candidate = await exchangePromise` 包一层 try/catch：catch 时 `lastPreReadyFailure = { coordinator, env: afterHook }`，然后 `throw error`（不吞异常）。
   - 新增：
 
@@ -219,20 +224,22 @@ async function runPreContentRecovery(deps: DriverDeps, generation: DriverGenerat
 ```
 
   - `PipelineDriverWithNonStreaming` 接口新增 `runPreContentRecovery(reason: string): Promise<DriverRequestResult>`。
-- [ ] **Step 4: 跑，通过 + 回归**（`bun run test:fast` 确认现有所有 `runRequest` 消费方零行为变化）。
-- [ ] **Step 5: 提交** → `feat(pipeline): driver.runPreContentRecovery — fresh dispatch after a pre-ready primary failure, gated by classifyServerExecutionRisk`。
+- [x] **Step 4: 跑，通过 + 回归** —— targeted 4 pass；`bun run typecheck` 通过；改动文件 eslint 0 error。全套 `test:fast` / `test:backend` 在提交前 gate 复跑。
+- [x] **Step 5: 提交** → `feat(pipeline): add pre-content driver recovery gate`（`7a9ae008`）。
 
-**门控问题（不自行拍板）：** server-tool-risk 命中时具体该"抛错"还是"返回一个专门的 result variant"，属于纯实现细节（不影响外部契约），但影响 P4/P5 的调用方写法是 try/catch 还是 if/else——建议实现者按 TDD 第一次跑到这里时观察调用方（handler-v4.ts）的实际控制流需求再定，别提前锁死。
+**门控决定（2026-07-23，TDD 后）：** risk 命中使用专门的 `ServerExecutionRiskBlocksPreContentRecoveryError` 抛错。该 API 尚无 P4/P5 调用方，因而没有既有 result union 或 if/else 消费契约；抛错与 `runRequest` 的既有失败流一致，保留 risk kind/toolType，明确要求调用方走既有 terminal-error 路径。无论如何，gate 在 `outboundPrepareWire` 后、`runRecoveryFromPreReadyFailure` 前运行，绝不使用 hedge 的 `allowServerTools` 逃生开关。
 
 ---
 
 ## Task 0.5：recovery sink lifetime supervisor
 
+> **实施状态（2026-07-28 完成；2026-07-30 Task 4.3a 终态围栏订正）：** 当前 delivery 重写后，`close()` 是 generation-owned heartbeat 的永久停止信号但仍保留终端结构写能力，`finalize()` 经 `session.terminate()` 执行 stop-heartbeat → serializer terminal drain → raw close → raw finalize。supervisor 仍抑制 attempt-local `finalize`，但 `close()` 不再是空操作：它映射为可恢复的 `suspendHeartbeat()`，立即挡住 driver 退出到 owner final settlement 之间的终态后 ping；fresh recovery 有义务在新 attempt 开始前显式 `resumeHeartbeat()`，最终 `settleFinal()` 才执行永久 close + await finalize。`freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat` 继续原样转发，`settleFinal()` 返回可等待且幂等的 Promise。buffered 路径不经过 supervisor，避免 driver 自有 suspend/resume 与 supervisor terminal fence 争用同一个布尔状态。重写后的 driver 还用 sink 对象身份从 WeakMap 找 generation-owned delivery，故 write-pass-through supervisor 继承该映射；改写型 reconciling decorator 绝不继承。Task 0.5 当时保持零生产接线，4.3a 已正式接入 live 路径。
+
 **为什么需要：** `pumpAnthropicStreamingV4`（handler-v4.ts）现有的每个失败分支都在末尾 `sink.finalize?.()`（经外层 `finally`，handler-v4.ts:531-534 / :711-714）。若 B2 在"stream-error"分支里插入"先试一次 fresh recovery"，**不能让第一次失败路径先 finalize 掉 sink**——finalize 会停掉 heartbeat 计时器、标记"投递已终结"（`onDeliveryFinalized` 回调），这个回调目前接的是 `ctx.finalizeModelOperationDelivery()`（`request-timing.ts:179`），**过早调用会让 History 提前封存投递维度**，之后再写第二条内容会破坏时序/幂等假设。
 
 **设计：** 一个包装 `ClientSink` 的 supervisor，把"调用方明确知道自己可能还要重试"的路径的 `finalize`/`close` 调用**拦截为 no-op**，只有 supervisor 自己认定"这是最终结局"（成功完成 / 恢复也失败 / 恢复被 gate 拒绝）才真正转发给内层 sink。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/recovery-sink-supervisor.unit.test.ts
@@ -249,21 +256,23 @@ test("finalize()/close() called INSIDE a recovery attempt are suppressed (inner 
 test("settleFinal() is idempotent (calling twice does not double-finalize)", async () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现** `src/lib/pipeline/generation/recovery-sink-supervisor.ts`：包装 `ClientSink`，转发所有写方法，拦截 `finalize`/`close`，暴露 `settleFinal(): void`（幂等，真正调用内层 `close()` 然后 `finalize()`，顺序镜像现有 `finalize` 实现里 `close(); onDeliveryFinalized?.()` 的次序，见 `client-sink.ts:354-359`）。
+- [x] **Step 2: 跑，失败。** —— 新模块不存在，targeted test 以预期的 module-not-found 失败。
+- [x] **Step 3: 实现** `src/lib/pipeline/generation/recovery-sink-supervisor.ts`：包装 `ClientSink`，转发全部写方法与可恢复 heartbeat 控制，拦截 attempt-local `finalize`，将 attempt-local `close` 映射为 `suspendHeartbeat`，暴露 `settleFinal(): Promise<void>`。`ClientSink.finalize` 已在 Task 4.3a 收紧为 `void | Promise<void>`；Promise 返回让最终 owner 能观察终结错误，幂等 Promise 也覆盖并发调用。最终顺序为内层永久 `close()` 后 await `finalize()`。
 
 **验证清单（实现者必须确认）：** `makeDeliverySseSink`（`client-sink.ts:467`）返回的 sink 实际上是 `createDownstreamDeliverySession` 包出来的（不是 `makeSseSink` 的裸实现）——supervisor 包装的是"最外层暴露给 pump 的 `ClientSink` 接口"，理论上与内部用的是 `makeSseSink` 还是 `makeDeliverySseSink` 无关（只要接口形状一致）。但要读一下 `createDownstreamDeliverySession`（`~/lib/pipeline/delivery/session`）确认它的 `finalize`/`close` 语义与本 supervisor 的假设（"close 停计时器、finalize 才是终态标记"）一致，避免 supervisor 拦截错了方法导致 heartbeat 计时器泄漏。
 
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): recovery sink lifetime supervisor (defer finalize/close until final outcome)`。
+- [x] **Step 4: 跑，通过。** —— supervisor + delivery lifecycle targeted tests 21 pass、0 fail；两轮 mutation positive control 分别证明抑制/heartbeat 与并发幂等断言会咬，delivery identity 测试也先以 `undefined` 预期变红；typecheck、目标 eslint、真实 backend suite 见 Task 报告。
+- [x] **Step 5: 提交** → `feat(pipeline): defer sink settlement across recovery attempts`。
 
 ---
 
 ## Task 0.6：MED-2 seal 后晚到 upstream 事件的 crash 安全（对抗审 HIGH，B2 必治）
 
+> **实施状态（2026-07-28）：① 已完成，② 留给 P4/P5 recovery owner 接线。** `RequestContext` 新增只读 `modelOperationSealed`，driver 的 `recordOpened` 在入口把整条 late-open headers+timing 观测原子丢弃；`setGenerationDispatchTimingEpoch`、legacy/mock 腿的 `setAttemptTimingEpoch` 与 recorder 的 `setDispatchTiming` 也各自 sealed-safe，而语义写仍经 `assertWritable` loud-throw。新增 `.it` 覆盖正常 open 正样本、deadline/reaper/client-abort × deferred-header，以及真正不 await request 的孤儿拓扑；拆掉 `recordOpened`、两个 context timing setter 与 recorder 四层守卫后，孤儿用例以真实 `unhandledRejection` 栈变红，恢复后变绿。与原计划的主要偏离是：当前 `recovery-sink-supervisor.ts` 只包装 `ClientSink`，不创建也不持有 candidate lifecycle，无法在此层诚实地 await primary + fresh recovery；漂移底座已让主线 primary `exchangePromise` 进入 operation scope，`startGenerationFinalizerIfReady` 会等待该 child settle 才 seal，因此生产 primary 腿今天已被结构性护住。`runPreContentRecovery` 尚未把 fresh recovery 注册进 operation scope，真正 owner 也要到 P4/P5 才出现；本守卫当前覆盖 mock/legacy ctx、candidate-discard/supersede，以及 P4/P5 将新增的未注册 fresh recovery 腿。因此本 Task 不硬塞 lifecycle 句柄，② 连同 fresh recovery 的 join 契约保留在 backlog，交由 P4/P5 接线时完成。
+
 **🟠 对抗审 gpt-souls:reviewer 2026-07-23 发现（主会话 code-read + Q5 实测确认）：** B2 处理「seal 后晚到的上游事件」这一 territory，但草案目录未覆盖。冻结 backlog 已明定 B2 必须对齐——见 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md) 的「timing 写入 vs 同族 capture 的 seal 边界不对称」条。**根因链（已核实）：** `dispatch-scheduler.ts:205-212` 在 `await input.open()` resolve 后**无守卫**调用 `recordOpened`，其 timing 写最终进 `model-operation-record.ts:1053` 的 `assertWritable()`——recorder 已 seal 时**抛错**（同族逐帧 capture 却是 `if(sealed) return` 静默丢弃）。若 operation 在一个 pre-header 的 `open()` 仍挂起期间被 seal（reaper/`request_deadline`/candidate-discard），随后**晚到的 deferred-header**（Q5 实测 header 到达高达 231s、上界未知，**显著拉长这个 pre-header 窗口**）resolve `open()` → `recordOpened` → `assertWritable` 抛错 → 沿 scheduler `run` 上抛 → 若 `p` 已无 live awaiter 则成**孤儿 rejection → unhandledRejection → process.exit**（skill `debugging-server-crashes` 的放大链）。**B2 引入 fresh dispatch 会新增更多「seal 后仍有在飞 open」的路径，放大此 race，故 B2 必须一并治，不能留给 backlog。**
 
-- [ ] **Step 1: 写失败测试**（无 unhandled-rejection 回归）
+- [x] **Step 1: 写失败测试**（无 unhandled-rejection 回归）
 
 ```ts
 // tests/pipeline/precontent-recovery-seal-race.it.test.ts（新）
@@ -276,12 +285,14 @@ test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/
 })
 ```
 
-- [ ] **Step 2: 跑，失败（先证探针能抓到坏行为——正样本对照，见 skill `catching-false-green-tests`）。**
-- [ ] **Step 3: 实现**（对齐 backlog 条目的修法①②，采 consensus 复审建议的「整个 `recordOpened` 作 atomic late-open observer」）：
+- [x] **Step 2: 跑，失败（先证探针能抓到坏行为——正样本对照，见 skill `catching-false-green-tests`）。**
+- [x] **Step 3: 实现**（对齐 backlog 条目的修法①②，采 consensus 复审建议的「整个 `recordOpened` 作 atomic late-open observer」）：
   - **① 守卫整个 `recordOpened`（不止 timing）**：consensus 复审（gpt-souls:reviewer 第二轮）指出——只丢 timing 不够，`recordOpened`（`driver.ts:634-643`）在 timing 前还调 `setHttpHeaders` + `setGenerationDispatchResponseHeaders`，须把**整个** `recordOpened` 当作 sealed 后可安全丢弃的晚到观测：在 `recordOpened` 开头判 recorder sealed → 直接 `return`（或让所有 `recordOpened` 的 context 写走统一的 sealed-safe observation API）。**主会话 code-read 核实的 ground truth（供实现者定位精确修点）**：`recordOpened` 里**当前唯一真会抛**的是 timing 写（`setGenerationDispatchTimingEpoch:1321`→`setDispatchTiming:1053`→`assertWritable`）——`setHttpHeaders:1205` 是纯 `_httpHeaders` 赋值不撞 recorder、`setAttemptResponseHeaders:1500` 的诊断已在 `request.ts:583` 守卫 sealed，二者今天不抛；但**整method 早返回**是更稳健的修法（防未来往 recordOpened 新增无守卫写、且 sealed 后整条 late-open 观测本就该整体丢弃），并须让 timing setter 本身也对齐同族 `if(sealed) return`（双保险，别只靠调用点）。**不改** `assertWritable` 对语义写的 loud-throw（那是既定正确设计）。回归矩阵覆盖**完整 `recordOpened` 路径**（headers + timing），不只断言 timing。
   - **② recovery supervisor 在 cancel/seal 后 await candidate lifecycle quiescence**：Task 0.5 的 supervisor 在最终收口前，`await` 所有它启动过的候选（primary + 任何 fresh recovery）的 `lifecycle.quiesced`，使晚到的 open/reject 在 supervisor 作用域内被观察、不逃逸成孤儿 rejection（参照 `dispatch-scheduler.ts:213-216` 现有 `void response.lifecycle.quiesced.then(...)` 的 budget release 模式，但改为 supervisor 显式 await 而非 fire-and-forget）。
-- [ ] **Step 4: 跑，通过（reaper/deadline/abort × late-header 组合矩阵全绿、零 unhandled-rejection）。**
-- [ ] **Step 5: 提交** → `fix(pipeline): B2 seal-race crash safety — discard late timing on sealed, supervisor awaits quiescence`。同时**从 [deferred-backlog.md](../../todo/deferred-backlog.md) 移除 MED-2 条**（已在 B2 落地、不再是 backlog）。
+- [x] **Step 4: 跑，通过（reaper/deadline/abort × late-header 组合矩阵全绿、零 unhandled-rejection）。**
+- [x] **Step 5: 提交** → `fix(pipeline): make late-open observations seal-safe`。同时**从 [deferred-backlog.md](../../todo/deferred-backlog.md) 移除 MED-2 条**（已在 B2 落地、不再是 backlog）。
+
+**实际：MED-2 条改写为余项条目而非删除，理由见本 Task 实施状态注解。**
 
 **注意**：这条同时修复了 MED-2 backlog 的独立 crash 风险（不止服务 B2）——是 B2 的必要前置，也顺带关闭了一个既有的潜在 process.exit 缺陷。
 
@@ -291,17 +302,17 @@ test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/
 
 **设计依据：** 镜像 `protect-streaming-stats.ts` 现有的 `continuationExhausted` 模式（同一份统计对象，新增两个字段）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/anthropic/protect-streaming-stats.unit.test.ts（追加，若无此文件则新建）
 test("recordProtectStreamingOutcome accepts 'precontent-recovery-success' / 'precontent-recovery-exhausted' outcomes", () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线** —— `ProtectStreamingOutcome` union（`~/lib/pipeline/types.ts`，`ProtectStreamingStats` 消费方 re-export 的类型）新增两个字面量；`protect-streaming-stats.ts` 的 `ProtectStreamingStats` interface + `emptyStats()` + `keyOf()` 补充映射（camelCase：`precontentRecoverySuccess` / `precontentRecoveryExhausted`）。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(telemetry): add precontent-recovery outcome counters (mirrors continuation counters)`。
+- [x] **Step 2: 跑，失败。** —— `bun test tests/anthropic/protect-streaming-stats.unit.test.ts`（新增计数器断言收到 `undefined`，符合缺少字段/映射的预期）。
+- [x] **Step 3: 接线** —— `ProtectStreamingOutcome` union（`~/lib/pipeline/types.ts`，`ProtectStreamingStats` 消费方 re-export 的类型）新增两个字面量；`protect-streaming-stats.ts` 的 `ProtectStreamingStats` interface + `emptyStats()` + `keyOf()` 补充映射（camelCase：`precontentRecoverySuccess` / `precontentRecoveryExhausted`）。
+- [x] **Step 4: 跑，通过。** —— `bun test tests/anthropic/protect-streaming-stats.unit.test.ts`：13 pass，0 fail。
+- [x] **Step 5: 提交** → `feat(telemetry): add precontent-recovery outcome counters (mirrors continuation counters)`。
 
 ---
 

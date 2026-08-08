@@ -6,8 +6,15 @@ import {
   test,
 } from "bun:test"
 
+import type {
+  //
+  PhysicalTransportResponse,
+  UpstreamDispatchLifecycle,
+} from "~/lib/pipeline/types"
+
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
+import { StreamClientAbortError } from "~/lib/stream"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -83,6 +90,124 @@ describe("generation recorder v4 driver integration", () => {
     const renderedNode = record.arena.frames.find((node) => node.provenance === "derived" && node.transformId === "render:openai-cc")
     expect(upstreamNode?.value).toEqual({ data: upstreamFrame.data, type: "message" })
     expect(renderedNode).toMatchObject({ provenance: "derived", derivedFrom: upstreamNode?.handle, origin: { stage: "render", track: "client" } })
+  })
+
+  test("evaluation collector maps a real client-abort upstream iterator to settled-abort and discards the candidate cleanly", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      transport: makeTransport(async () => ({
+        headers: new Headers(),
+        frames: {
+          async *[Symbol.asyncIterator]() {
+            throw new StreamClientAbortError()
+          },
+        },
+      })),
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected routing rejection")
+    const identity = driver.getCandidateResponseIdentity(request.upstream)
+    if (!identity) throw new Error("missing evaluation candidate identity")
+
+    const outcome = await driver.runResponseSink(request.upstream, request.env, makeArraySink().sink, { responseMode: "evaluate" })
+    expect(outcome).toEqual({ kind: "settled-abort" })
+    await driver.discardConsumedCandidateResponse(request.upstream)
+
+    const snapshot = ctx.modelOperationSnapshot
+    expect(snapshot.terminal?.winnerCandidate).toBeUndefined()
+    expect(snapshot.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)?.verdict).toBe("failed")
+    expect(snapshot.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("failed")
+  })
+
+  test("commits an evaluation candidate through the driver as the terminal winner only after its caller promotes it", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      transport: makeTransport(async () => okStream([{ data: "candidate" }])),
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected routing rejection")
+    const identity = driver.getCandidateResponseIdentity(request.upstream)
+    if (!identity) throw new Error("missing evaluation candidate identity")
+    const { sink, frames } = makeArraySink()
+    await driver.runResponseSink(request.upstream, request.env, sink, { responseMode: "evaluate" })
+    expect(frames).toEqual([{ data: "candidate" }])
+
+    await driver.commitConsumedCandidateResponse(request.upstream)
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "candidate" })
+    ctx.finalizeModelOperationDelivery()
+    const terminal = await ctx.whenModelOperationFinalized()
+
+    expect(terminal.terminal).toMatchObject({ winnerCandidate: identity.candidate, committedDispatch: identity.dispatch })
+    expect(terminal.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)?.verdict).toBe("committed")
+    expect(terminal.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("winner")
+  })
+
+  test("rejecting consumed recovery quiescence closes topology without promotion", async () => {
+    const quiesceError = new Error("recovery quiesce rejected")
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced: Promise.reject(quiesceError),
+    }
+    const transport = {
+      send: makeTransport(async () => okStream([{ data: "unused" }])).send,
+      async open(): Promise<PhysicalTransportResponse> {
+        return {
+          kind: "stream",
+          lifecycle,
+          upstream: {
+            headers: new Headers(),
+            lifecycle,
+            frames: {
+              async *[Symbol.asyncIterator]() {
+                yield { data: "candidate" }
+              },
+            },
+          },
+        }
+      },
+    }
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      transport,
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected routing rejection")
+    const identity = driver.getCandidateResponseIdentity(request.upstream)
+    if (!identity) throw new Error("missing recovery identity")
+    await driver.runResponseSink(request.upstream, request.env, makeArraySink().sink, { responseMode: "evaluate" })
+
+    await expect(driver.commitConsumedCandidateResponse(request.upstream)).rejects.toBe(quiesceError)
+    const snapshot = ctx.modelOperationSnapshot
+    expect(snapshot.terminal?.winnerCandidate).toBeUndefined()
+    expect(snapshot.dispatches.find((dispatch) => dispatch.handle === identity.dispatch)?.verdict).toBe("failed")
+    expect(snapshot.candidates.find((candidate) => candidate.handle === identity.candidate)?.verdict).toBe("failed")
+    ctx.fail("m", new Error("primary terminal"))
+    ctx.finalizeModelOperationDelivery()
+    await expect(ctx.whenModelOperationFinalized()).resolves.toBeDefined()
   })
 
   test("records full frame fields plus suppress, buffer, flush N→M, and hook-drop provenance", async () => {

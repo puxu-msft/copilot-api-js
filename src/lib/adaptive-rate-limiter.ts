@@ -36,6 +36,19 @@ function abortableWait(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+function sleepUntilElapsedOrAborted(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener("abort", done, { once: true })
+  })
+}
+
 /**
  * Scoped publisher for `system.rate_limit_state` events. Set once at
  * start.ts via `setRateLimitPublisher(bus.scope('system'))`. When unset
@@ -130,6 +143,10 @@ export interface RateLimitExecutionOptions {
   signal?: AbortSignal
 }
 
+export interface AdaptiveRateLimiterDependencies {
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
+}
+
 export interface RateLimitAdmissionOptions {
   signal: AbortSignal
 }
@@ -190,9 +207,11 @@ export class AdaptiveRateLimiter {
   private admissionNotBefore = 0
   private admissionRetryCount = 0
   private lastAdmissionTime = 0
+  private readonly sleepImpl: (ms: number, signal: AbortSignal) => Promise<void>
 
-  constructor(config: Partial<AdaptiveRateLimiterConfig> = {}) {
+  constructor(config: Partial<AdaptiveRateLimiterConfig> = {}, dependencies: AdaptiveRateLimiterDependencies = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+    this.sleepImpl = dependencies.sleep ?? sleepUntilElapsedOrAborted
   }
 
   /**
@@ -801,20 +820,7 @@ export class AdaptiveRateLimiter {
   }
 
   private sleep(ms: number): Promise<void> {
-    const signal = this.sleepAbortController.signal
-    if (signal.aborted) return Promise.resolve()
-
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer)
-          resolve()
-        },
-        { once: true },
-      )
-    })
+    return this.sleepImpl(ms, this.sleepAbortController.signal)
   }
 
   /**

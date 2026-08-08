@@ -476,6 +476,8 @@ export interface RequestContext {
   readonly modelOperationSnapshot: ModelOperationRecord
   /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
+  /** Whether canonical observability has crossed its immutable terminal seal. */
+  readonly modelOperationSealed: boolean
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -526,6 +528,8 @@ export interface RequestContext {
   recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
   /** Persist a downstream owner failure that occurred after the first external wire write was attempted. */
   recordWirePartialDelivery(diag: NonNullable<PipelineInfo["wirePartialDelivery"]>): void
+  /** Record that a response-processing flush superseded a typed upstream or codec failure on the current generation dispatch. */
+  recordResponseFailureSupersession(input: { supersededError: unknown; supersededSource: "upstream-transport" | "codec-render"; flushError: unknown }): void
   /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
   recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
@@ -542,7 +546,7 @@ export interface RequestContext {
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
   /** Begin one explicit generation candidate in the canonical History V3 topology. */
-  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }): CandidateHandle
   /** Settle one explicit candidate without relying on array position. */
   settleGenerationCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   /** Begin one physical dispatch and return its canonical branded handle. */
@@ -575,6 +579,8 @@ export interface RequestContext {
     outputFrames: ReadonlyArray<unknown>,
     transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
   ): void
+  /** Pins terminal attribution without selecting a recovery candidate as winner. */
+  pinGenerationTerminalDispatch(dispatch: DispatchHandle): void
   /** Select the generation winner for V2 compatibility projection and terminal settlement. */
   selectGenerationWinner(candidate: CandidateHandle, dispatch: DispatchHandle): void
   settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void

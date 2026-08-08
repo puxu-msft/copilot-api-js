@@ -87,7 +87,7 @@ History 使用**一个专用 Bun Worker 线程**。该 Worker 拥有独立 OS �
 
 - `start(config): Promise<ReadyStatus>`；
 - `enqueue(envelope): messageId`；
-- `updateConfig(config)`；
+- `updateConfig(revision, config): Promise<RawTargetDescriptor>`；
 - `stopMaintenance(): Promise<void>`；
 - `drain(): Promise<DrainResult>`；
 - `shutdown(): Promise<void>`；
@@ -253,15 +253,20 @@ terminal 时 raw commands 与 semantic record 一次投递 Worker。
 
 ### 5.3 Raw target 冻结
 
-Worker 在 config 切换后发布可克隆的 raw target descriptor：
+主线程为每次 raw config 变更分配单调 `configRevision`。`updateConfig(revision, config)` 只有在 Worker 打开／验证目标 artifact 并返回同 revision 的 `config-applied` 后才 resolve。ACK 携可克隆的 raw target descriptor：
 
+- config revision；
 - requested；
 - db path；
-- store ID；
+- 持久化 store ID；
 - max object bytes；
-- generation identity。
+- 可选 worker-local generation token。
 
-operation admission 时冻结 descriptor。Worker 重启或 config 热切后，旧 operation 仍写入冻结 target；Worker 打开目标 artifact 时必须校验 store ID，不能把旧 operation 写进新 generation。
+`dbPath + storeId` 是跨 Worker restart 稳定的 artifact identity。worker-local generation token 只用于同一 Worker 生命周期内区分 active／retiring handles；它每次 reopen 可变化，不写入旧 envelope 的跨 restart 校验条件，也不得被描述成持久 generation identity。
+
+主线程维护 `latestDesiredRevision`、`publishedRevision` 与一个代表“latest desired 已发布”的共享 publication barrier。runtime 可串行发送 A、B 等 config revision，但中间 revision A 的 `config-applied` 只更新 A 对应 update waiter／诊断状态；若此时 `latestDesiredRevision=B`，A ACK **不得**发布 admission descriptor、不得 resolve admission barrier、不得放行模型请求。只有 ACK revision 同时满足 `revision === latestDesiredRevision`，runtime 才先原子设置 `publishedRevision=revision` 与 active descriptor，再 resolve barrier。连续新 revision 到达时，必须在任何旧 barrier continuation 获得调度前，先同步更新 `latestDesiredRevision` 并保持／替换为仍 pending 的 barrier；因此 A→B 之间不存在 admission 窗口。迟到旧 revision ACK 只计数，不得回退 active descriptor。
+
+Worker restart 的 `initialize` 携主线程 `latestDesiredRevision`。`ready` 必须回显该 revision 及已验证 descriptor；revision 不匹配则不进入 ready、不重放。匹配的 `ready` 与 latest `config-applied` 走同一个原子发布原语，并 resolve crash 前仍 pending 的 publication barrier。`fatal` 必须 reject barrier 与所有 config update waiter。restart 前已经取得 reservation、并按旧 published descriptor 准入的 operation 仍写入冻结 target；尚未取得 reservation 的请求继续等待 barrier。Worker 收到旧 target envelope 时可重新打开其 `dbPath`，但只能以持久化 `storeId` 校验 artifact identity；匹配即合法，worker-local generation token 不参与跨 restart 判定。旧 envelope 不能被改写到当前 active descriptor 指向的另一 artifact。
 
 ### 5.4 Semantic 与 raw 失败关系
 
@@ -284,9 +289,9 @@ operation admission 时冻结 descriptor。Worker 重启或 config 热切后，�
 
 | 消息 | 作用 |
 |---|---|
-| `initialize` | DB path、raw 配置、retry 与 maintenance 配置 |
+| `initialize` | DB path、最新 desired config revision、raw 配置、retry 与 maintenance 配置 |
 | `persist-operation` | 投递完整 operation envelope |
-| `update-config` | 更新未来 operation 使用的配置 |
+| `update-config` | 携单调 revision 更新未来 operation 使用的配置 |
 | `stop-maintenance` | 停止领取新的 backfill／maintenance unit |
 | `drain` | 等待所有已接收 persistence item 取得终态结果 |
 | `shutdown` | drain 后关闭 semantic/raw DB |
@@ -296,7 +301,8 @@ operation admission 时冻结 descriptor。Worker 重启或 config 热切后，�
 
 | 消息 | 作用 |
 |---|---|
-| `ready` | migration、schema、journal recovery 已完成 |
+| `ready` | migration、schema、journal recovery 已完成；携最新 config revision 与已验证 raw descriptor |
+| `config-applied` | 携 revision 与已验证 raw descriptor，作为主线程原子发布新配置的 ACK |
 | `persist-result` | `persisted | conflict | failed` 终态 ACK |
 | `status` | Worker／DB 状态增量 |
 | `drained` | 指定 barrier 之前的 persistence 已终结 |
@@ -331,14 +337,28 @@ Worker crash 时：
 
 运行中 Worker 暂时不可用时，主线程仍可继续准入，直到 `reserved == capacity`；随后新模型 operation 自然背压。liveness 与管理 API 继续工作。
 
-### 7.2 幂等基础
+### 7.2 Terminal fatal 状态
+
+Worker 普通 crash／可重试启动错误走自动重启。只有协议不兼容、owner/schema 不可恢复、migration/recovery 明确永久失败等 `fatal` 才把 runtime 原子转入不可逆 `terminal-failed`：
+
+1. 停止 restart timer，拒绝创建新 Worker；
+2. 关闭 admission，以具名 History durability error 拒绝所有 admission waiter、config publication barrier 与 config update waiter；
+3. 将当前全部未 ACK item 原子终结为 `failed`，逐项更新 recent durability、释放 reservation、释放 envelope；
+4. 已获 reservation 但尚未 terminal 的请求继续走现有 graceful drain；它们随后 enqueue 时立即得到 `failed` 并释放各自 reservation。terminal-failed 后不得重新积压；
+5. 设置 sticky fatal error，并触发进程现有 graceful shutdown；
+6. 已在等待的 `drain()` 立即 reject；后续 `drain()` 同样确定性 reject；
+7. shutdown 捕获该 rejection 后进入 `failed` 并 exit 1，不等待永远不会到来的 ACK。
+
+这条转移必须避免双释放：fatal 批量终结与迟到 ACK 通过同一 message state transition 原语竞争，只有首次从 `unacked` 离开的路径能释放 reservation。旧 generation 的迟到 ACK 按 §6.3 忽略。
+
+### 7.3 幂等基础
 
 - semantic：`operation_id + revision + digest` 相同重放为 no-op；不同 digest 是 conflict；
 - journal：事务前自包含记录，startup recovery 重建 prepared artifacts；
 - raw object：hash 命中后逐字节 collision check；
 - raw ref：同 operation／sequence／track 键覆盖为同一最终状态。
 
-### 7.3 不扩大为进程级 exactly-once
+### 7.4 不扩大为进程级 exactly-once
 
 本设计保证**Worker crash**后的未 ACK 重放。它不声称解决主进程在以下时刻崩溃的数据丢失：
 
@@ -358,8 +378,8 @@ Worker crash 时：
 3. owner check 与 schema reconcile；
 4. forward migrations；
 5. journal recovery；
-6. raw config 初始化；
-7. Worker 发 `ready`；
+6. Worker 按 `initialize.configRevision` 打开／验证 raw config；
+7. Worker 发携相同 config revision 与 raw descriptor 的 `ready`；主线程核对 revision 后原子发布 descriptor；
 8. 写入先行阶段主线程打开 readonly connection；
 9. 代理开始监听。
 
@@ -377,7 +397,7 @@ migration、owner check 或 journal recovery 失败时，不监听代理端口�
 8. History barrier 成功后继续 Telemetry／Diagnostic barrier。
 9. 全部 durability barrier 成功后才发布 `stopped`。
 
-Worker 在 drain 中 crash 时仍自动重启、recovery、重放并继续 drain。第二个 SIGINT／SIGTERM 保持现有逃生舱：立即 130／143，不等待 Worker。
+Worker 在 drain 中普通 crash 时仍自动重启、recovery、重放并继续 drain。若 restart 期间收到 `fatal`，runtime 按 §7.2 批量终结未 ACK items 并让 `drain()` 确定性 reject；shutdown 进入 `failed`、exit 1。第二个 SIGINT／SIGTERM 保持现有逃生舱：立即 130／143，不等待 Worker。
 
 ## 9. 可观测性
 
@@ -394,7 +414,10 @@ Worker 在 drain 中 crash 时仍自动重启、recovery、重放并继续 drain
 - `history_worker_replays_total`；
 - `history_worker_consecutive_failures`；
 - `history_worker_last_error`；
+- `history_worker_terminal_failed`；
 - `history_worker_next_retry_at`；
+- `history_raw_config_revision`；
+- `history_raw_published_revision`；
 - `history_queue_oldest_unacked_ms`；
 - `historyAdmissionWaitMs` 分布。
 
@@ -404,7 +427,9 @@ Worker 在 drain 中 crash 时仍自动重启、recovery、重放并继续 drain
 - Worker 正常、消费落后；
 - Worker 重启中；
 - startup hard failure；
+- config update 待 ACK／已发布 revision；
 - persistence terminal failure；
+- runtime terminal-failed；
 - shutdown drain 中。
 
 ## 10. 运行时实证前提
@@ -539,6 +564,9 @@ terminal persistence 仍可使用旧 writer。
 - crash-after-commit-before-ACK；
 - 每种窗口最终一条 operation、正确 outcome；
 - old-generation ACK 拒绝；
+- restart 后 `ready` 的 config revision 不匹配则拒绝进入 ready／拒绝重放；
+- restart recovery `fatal` 将所有未 ACK item 终结为 failed，释放 reservation，`drain()` 确定性 reject；
+- fatal 与迟到 ACK 竞态只释放一次；
 - startup hard failure。
 
 ### Batch 2b：Semantic terminal 生产切换
@@ -575,6 +603,14 @@ terminal persistence 仍可使用旧 writer。
 
 - frame→command 字节语义；
 - sequence／track 顺序；
+- config revision 串行，`publishedRevision` 只可推进到 `latestDesiredRevision`；
+- A→B 连续热切时，A ACK 不 resolve admission barrier、不发布 A descriptor；
+- pending latest revision 存在时所有新 admission 等待共享 publication barrier，不能并发冻结中间 descriptor；
+- latest ACK 原子发布后才 resolve barrier 并放行 operation；
+- 迟到旧 revision ACK 不回退 descriptor；
+- Worker restart `ready` revision／descriptor 对账，并恢复 crash 前 pending barrier；
+- 跨 restart 只校验 `dbPath + storeId`，worker-local generation token 变化不误杀合法旧 envelope；
+- config fatal reject barrier／update waiter；
 - operation target 冻结；
 - structured clone；
 - 内存 accumulator 无 SQLite／compression import。
@@ -638,7 +674,8 @@ terminal persistence 仍可使用旧 writer。
 
 - migration／recovery failure 时端口不监听；
 - request drain 期间仍可 terminal；
-- Worker drain 中 crash 后 recovery／replay；
+- Worker drain 中普通 crash 后 recovery／replay；
+- restart recovery `fatal` → 未 ACK 批量 failed、reservation 释放、drain reject、shutdown failed；
 - durability failed → shutdown failed；
 - 第二信号立即 130／143；
 - 非 4141 端口真进程启动／运行／关闭。
@@ -724,9 +761,19 @@ fake 不得比真 Worker 更友好：错误码、unknown ACK、crash、close、o
 - journal 后、transaction 前 crash；
 - transaction 中 crash；
 - commit 后、ACK 前 crash；
-- drain 中 crash；
+- drain 中普通 crash；
 - repeated crash backoff；
-- stale generation ACK。
+- restart migration／recovery fatal；
+- fatal 与迟到 ACK 竞态；
+- stale generation ACK；
+- raw config ACK 前／后并发 admission；
+- A、B 连续 revision 中 A ACK 与 admission continuation 交错，只有 B ACK 放行；
+- B 到达时同步安装／保持 latest publication barrier，不出现 A→B 空窗；
+- config update pending 时 Worker crash，matching ready 恢复 publication barrier；
+- config fatal reject barrier；
+- restart ready revision mismatch；
+- 同一 `dbPath + storeId` 重开后 worker-local token 改变，旧 envelope 仍合法；
+- 相同 path 但 store ID 不同必须形成 identity failure／raw gap。
 
 ### 12.5 Shutdown
 
