@@ -1035,6 +1035,16 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     const requestClosed = new Promise<void>((resolve) => {
       resolveRequestClosed = resolve
     })
+    let postResponseAbortAttached = false
+    const detachPostResponseAbort = (): void => {
+      if (!postResponseAbortAttached) return
+      postResponseAbortAttached = false
+      signal?.removeEventListener("abort", onPostResponseAbort)
+    }
+    const onPostResponseAbort = (): void => {
+      detachPostResponseAbort()
+      req.close(http2.constants.NGHTTP2_CANCEL)
+    }
 
     // activeStreamCount bookkeeping: the stream now owns the reservation acquired
     // above. Node guarantees `close` fires exactly once per h2 stream regardless of
@@ -1043,6 +1053,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // hand-decrementing on every distinct termination path below (global
     // constraint #3). PATH 1 (the sole path once the stream exists).
     req.once("close", () => {
+      detachPostResponseAbort()
       entry.activeStreamCount -= 1
       maybeReclaimRetiringSession(entry)
       if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
@@ -1105,6 +1116,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
           req.once("end", () => {
             ended = true
+            detachPostResponseAbort()
             try {
               controller.close()
             } catch {
@@ -1152,7 +1164,10 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
         },
       })
 
-      if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
+      if (signal) {
+        postResponseAbortAttached = true
+        signal.addEventListener("abort", onPostResponseAbort, { once: true })
+      }
 
       resolve(new Response(body, { status, headers: responseHeaders }))
     })
