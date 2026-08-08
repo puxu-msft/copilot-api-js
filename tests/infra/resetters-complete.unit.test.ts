@@ -89,6 +89,9 @@ const EXEMPT: Record<string, string> = {
   _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  drainScheduledCalibrationPersistenceForTests: "action hook — consumes calibration's existing timer; resetAllLimitsForTesting owns reset",
+  drainScheduledNegotiationPersistenceForTests:
+    "action hook — consumes negotiation's existing timer; clearAnthropicFeatureNegotiationForTests owns reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
   // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
   // no module-global state of its own to reset; the timer itself is
