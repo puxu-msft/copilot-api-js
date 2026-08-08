@@ -184,7 +184,7 @@ mutation 打在**生产代码**上：**取消跨 operation 的 CAS 去重**—�
 
 ## 3. `tests/responses/upstream-ws-crash-safety.it.test.ts` — guarded 腿（**B 类**）
 
-**它守的不变量**：`createUpstreamWsConnection` 的生命周期回调（`onClose`）抛出时，`guardCallback` 必须**吸收**它（warn + 标记不可用 + fail request），**不得**升级成 `uncaughtException` 从而被 main.ts 的崩溃策略变成 `process.exit(1)`。
+**它守的不变量**：`createUpstreamWsConnection` 的生命周期回调（`onClose`）抛出时，必须被**吸收**，**不得**升级成 `uncaughtException` 从而被 main.ts 的崩溃策略变成 `process.exit(1)`。吸收实际有**两层**（本节的 Mutation A/B 实测确认）：第一层是 `notifyClosed` 自己的 try/catch（`upstream-ws-connection.ts:164-173`，测试匹配的 WARN 出自这层），第二层才是包住 `handleClose` 的 `guardCallback`。
 
 这条只能用子进程证：抛出的 WHATWG `EventTarget` 监听器**不会**从 `dispatchEvent` 同步抛出，而是**异步**逃逸成 `uncaughtException`——落在进程内 `expect(...).not.toThrow()` 通过之后。同文件 header `:8-17` 与 fixture `tests/responses/fixtures/ws-crash-probe.ts:1-17` 都把这个理由写死了。
 
@@ -256,7 +256,16 @@ mutation 打在**生产代码**上：**取消跨 operation 的 CAS 去重**—�
 
 这是注释层的 doc-vs-code 漂移，不影响断言正确性（无论哪层吸收，「不崩溃且 guard 被走到」都成立），但会误导下一个读者。**不在本轮静默改**——它是对生产行为的事实性更正（「防御纵深两层」这个描述本身需要复核），登记在「未处置」节交裁决。
 
-> **裁决结果（协调方，本轮内）**：修，且必须写成**两层防御纵深**（不得把单层叙述换成另一个单层叙述），并把 Mutation A / B 各自打红了哪条断言写进注释——那是这段注释唯一不会再腐烂的部分。另需 `rg` 扫全仓的同一单层复述一并更正。已作为独立 commit 执行，见文末「注释更正」节。
+> **裁决结果（协调方，本轮内）**：修，且必须写成**两层防御纵深**（不得把单层叙述换成另一个单层叙述），并把 Mutation A / B 各自打红了哪条断言写进注释——那是这段注释唯一不会再腐烂的部分。另需 `rg` 扫全仓的同一单层复述一并更正。已作为独立 commit 执行。
+>
+> **实际更正的四处**（`rg guardCallback` 全仓扫描后逐条判定）：
+> 1. `tests/responses/upstream-ws-crash-safety.it.test.ts` 用例内注释 —— 改写为两层，并写明「删第一层 → stderr 断言红；两层都删 → exit code 红成 42」。
+> 2. 同文件 header 的 `0 = clean survival (guard absorbed the throw)` —— 改为 `the absorbing layers held` + 指向用例内的两层说明。
+> 3. `tests/responses/fixtures/ws-crash-probe.ts:15-17` 的 mode 说明 —— 改为两层，并加一句「不要再复述成一层」。
+> 4. `tests/responses/fixtures/ws-crash-probe.ts:69-71` 的 `onClose` 行内注释 —— 原写「inside guardCallback」，改为「through notifyClosed，其 try/catch 先吸收；guardCallback 是第二层」。
+>
+> **扫描到但判定不改的**：`upstream-ws-crash-safety.it.test.ts` 的 raw-control 注释（"without guardCallback…"，那条腿确实完全没有 guard，陈述准确）；`src/lib/transport/crash-safety.ts` 的 docstring（讲 `guardCallback` 自身契约，不涉及 onClose 归属）；`tests/transport/crash-safety.unit.test.ts`（同上）；`docs/spec/2026-07-09-codex-responses-tier1-hardening.md`（历史 spec，陈述的是该原语的引入理由）；`docs/DESIGN.md:82`（陈述本身不假，但它引用的「子进程 fault-injection 证明」值得补一笔「两层」——超出本轮范围，登记在「未处置」第 4 条）。
+> 本文档自身第 3 节开头原本也复述了单层说法，已一并更正——**改了内容不改指向它的东西，正是这类修复最常见的漏法**。
 
 ---
 

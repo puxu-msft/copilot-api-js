@@ -28,7 +28,10 @@ setDefaultTimeout(30_000)
  *
  * The fixture (`fixtures/ws-crash-probe.ts`) picks distinct exit codes:
  *   - 42 = process crashed (uncaughtException policy fired)
- *   -  0 = clean survival (guard absorbed the throw)
+ *   -  0 = clean survival (the absorbing layers held)
+ *
+ * "The guard" is really TWO layers of defence in depth on the onClose path — see the guarded
+ * case below for which mutation turns which assertion red.
  *
  * The guarded leg additionally captures the child's stderr and asserts the
  * `onCallbackEscape` WARN ("callback threw; failing request ...") — exit 0 alone
@@ -61,8 +64,16 @@ describe("upstream-ws crash safety (subprocess)", () => {
   })
 
   test("guarded upstream-ws lifecycle callback throw does NOT crash (exit 0) AND the guard is exercised", async () => {
-    // A real createUpstreamWsConnection onClose callback throws; guardCallback must
-    // absorb it (warn + mark unusable + fail request) so no uncaughtException fires.
+    // A real createUpstreamWsConnection onClose callback throws. TWO layers absorb it, and it
+    // matters which is which — the first alone keeps the process alive, and mutating only the
+    // second leaves this case green (measured 2026-08-08):
+    //   1. `notifyClosed`'s own try/catch (upstream-ws-connection.ts:164-173) catches the throw
+    //      and emits the WARN this test matches on. Deleting just this catch keeps exit 0 but
+    //      turns the stderr assertion below red, because layer 2's WARN reads differently
+    //      ("callback threw; failing request + dropping connection").
+    //   2. `guardCallback` around `handleClose`, whose onCallbackEscape absorbs whatever reaches
+    //      it. Deleting BOTH is what finally turns the exit-code assertion red, with 42.
+    // So: the exit code covers layer 2, the stderr match covers layer 1. Neither is redundant.
     const { exitCode, stderr } = await runProbe("guarded")
     expect(exitCode).toBe(0)
     // Exit 0 alone is vacuity-prone: assert the current onClose ownership-boundary WARN and
