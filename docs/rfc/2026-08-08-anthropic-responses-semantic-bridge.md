@@ -72,9 +72,9 @@ raw protocol input
 **Driver／orchestrator** 负责：
 
 - candidate／dispatch／segment lineage、最终 route、fork、retry、hedge、fallback、budget、cancel、flush 和 sink；
-- 在首次不可逆客户端 emission 处原子选择 winner；
+- 在首次不可逆客户端emission处建立初始delivery authority，并在post-commit恢复时原子移交唯一写权；
 - 按顺序调用 mapper、推进 candidate-local ledger、调用对应 emitter；
-- 区分 candidate-local proposed effect、winner-committed effect 与实际 sink effect。
+- 区分candidate-local proposed effect、authority-committed semantic effect与sink-emitted wire effect。
 
 Driver 不得按 block/item type 重判领域语义；任何后代 candidate／retry／fallback 都不得重读热配置改变 ingress snapshot。
 
@@ -165,8 +165,21 @@ type ItemKind =
   | "server-tool-result"
   | "degraded-text"
   | "drop"
-type TerminalKind = "complete" | "partial" | "discarded"
-type ResponseTerminalKind = "completed" | "incomplete" | "failed" | "cancelled"
+type ItemTerminal =
+  | Readonly<{ kind: "complete" }>
+  | Readonly<{
+      kind: "partial"
+      provenance: "fallback"
+      fallbackId: string
+      reason?: DegradationReason
+    }>
+  | Readonly<{
+      kind: "partial"
+      provenance: "eof" | "abort" | "wire-error"
+      fallbackId?: never
+      reason?: DegradationReason
+    }>
+  | Readonly<{ kind: "discarded"; reason: DegradationReason }>
 
 type ModelIdentity = Readonly<{
   protocol: "anthropic" | "responses"
@@ -187,15 +200,22 @@ type CallMetadata = Readonly<{
   name: string
 }>
 
+type ResultMetadata = Readonly<{
+  callId: string
+  name?: string
+  isError: boolean
+  sourcePayload?: unknown
+}>
+
 type SemanticItem =
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "reasoning"; reasoning: ReasoningExchangeItem; terminal: TerminalKind }>
+  | Readonly<{ key: ItemKey; ordinal: number; kind: "reasoning"; reasoning: ReasoningExchangeItem; terminal: ItemTerminal }>
   | Readonly<{
       key: ItemKey
       ordinal: number
       kind: "text" | "degraded-text"
       text: string
       correlationId?: string
-      terminal: TerminalKind
+      terminal: ItemTerminal
     }>
   | Readonly<{
       key: ItemKey
@@ -203,20 +223,17 @@ type SemanticItem =
       kind: "function-call" | "server-tool-call"
       call: CallMetadata
       arguments: string
-      terminal: TerminalKind
+      terminal: ItemTerminal
     }>
   | Readonly<{
       key: ItemKey
       ordinal: number
       kind: "function-result" | "server-tool-result"
-      callId: string
+      result: ResultMetadata
       output: string
-      isError: boolean
-      name?: string
-      sourcePayload?: unknown
-      terminal: TerminalKind
+      terminal: ItemTerminal
     }>
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "drop"; reason: DegradationReason; terminal: "discarded" }>
+  | Readonly<{ key: ItemKey; ordinal: number; kind: "drop"; reason: DegradationReason; terminal: Extract<ItemTerminal, { kind: "discarded" }> }>
 
 type PartKind = "reasoning-summary" | "reasoning-content" | "text"
 type PartState = Readonly<{
@@ -226,7 +243,7 @@ type PartState = Readonly<{
   sourceIndex: number
   textDeltas: readonly string[]
   authoritativeText?: string
-  terminal?: TerminalKind
+  terminal?: ItemTerminal
 }>
 
 type PerOutputItemState = Readonly<{
@@ -236,22 +253,42 @@ type PerOutputItemState = Readonly<{
   ordinal: number
   kind: ItemKind
   call?: CallMetadata
+  result?: ResultMetadata
   argumentDeltas: readonly string[]
   authoritativeArguments?: string
+  outputDeltas: readonly string[]
+  authoritativeOutput?: string
   parts: ReadonlyMap<PartKey, PartState>
   opaque?: ReasoningExchangeItem["opaque"]
   reasoningVisibleKind?: "summary" | "omitted" | "redacted"
   correlationId?: string
-  terminal?: TerminalKind
+  terminal?: ItemTerminal
 }>
 
-type ResponseTerminal = Readonly<{
-  kind: ResponseTerminalKind
-  reason?: string
-  usage?: unknown
-  error?: unknown
-  provenance: "wire-terminal" | "eof" | "abort" | "driver-cancel"
-}>
+type ResponseTerminal =
+  | Readonly<{
+      kind: "completed"
+      usage?: unknown
+      provenance: "wire-terminal"
+    }>
+  | Readonly<{
+      kind: "incomplete"
+      reason: string
+      usage?: unknown
+      provenance: "wire-terminal" | "eof"
+    }>
+  | Readonly<{
+      kind: "failed"
+      error: unknown
+      usage?: unknown
+      provenance: "wire-terminal" | "eof" | "abort" | "preflight-reject"
+    }>
+  | Readonly<{
+      kind: "cancelled"
+      reason: string
+      usage?: unknown
+      provenance: "abort" | "driver-cancel"
+    }>
 
 type LedgerUpdate =
   | Readonly<{
@@ -262,6 +299,7 @@ type LedgerUpdate =
       ordinal: number
       kind: ItemKind
       call?: CallMetadata
+      result?: ResultMetadata
       correlationId?: string
     }>
   | Readonly<{
@@ -272,28 +310,33 @@ type LedgerUpdate =
       sourceIndex: number
     }>
   | Readonly<{ type: "append-part-text"; key: PartKey; delta: string }>
-  | Readonly<{ type: "finish-part"; key: PartKey; text?: string; terminal: TerminalKind; reason?: DegradationReason }>
+  | Readonly<{ type: "finish-part"; key: PartKey; text?: string; terminal: ItemTerminal }>
   | Readonly<{ type: "append-arguments"; key: ItemKey; delta: string }>
   | Readonly<{ type: "set-final-arguments"; key: ItemKey; arguments: string }>
+  | Readonly<{ type: "append-result-output"; key: ItemKey; delta: string }>
+  | Readonly<{ type: "set-final-result-output"; key: ItemKey; output: string }>
   | Readonly<{
       type: "set-reasoning-metadata"
       key: ItemKey
       visibleKind: "summary" | "omitted" | "redacted"
       opaque?: ReasoningExchangeItem["opaque"]
     }>
-  | Readonly<{ type: "finish-item"; key: ItemKey; terminal: TerminalKind; reason?: DegradationReason }>
+  | Readonly<{ type: "finish-item"; key: ItemKey; terminal: ItemTerminal }>
   | Readonly<{ type: "finish-response"; terminal: ResponseTerminal }>
 ```
 
 Ledger invariants：
 
 - 每个 item key 与 part key 只 declare 一次；part 只能引用已 declare 的所属 item，`sourceIndex` 在同 item／kind 内唯一。
-- `CallMetadata` 在 function／server-tool call declare 时即完整存在；缺 `callId` 或 `name` 的 call 不进入 emitter。
+- `CallMetadata`在function／server-tool call declare时即完整存在；缺`callId`或`name`的call不进入emitter。`ResultMetadata`在function／server-tool result declare时即冻结关联ID、error与source payload；result output delta可多次，`.done` output为权威值，delta/done冲突产生observation。
+- declare必须按kind满足互斥metadata：call只允许`call`、result只允许`result`，其它kind两者都不得带；错配fail-closed。
 - part delta 可多次；part `.done` text 是权威值。reasoning summary/content 与 text 各自具有 declare→delta→done lifecycle，Responses emitter不得凭 item 完成猜 nested part 已完成。
 - reasoning visible 的唯一owner是各part的authoritative text加`reasoningVisibleKind`；`ReasoningExchangeItem.visible`只在item终结时由这些字段派生，ledger不并存第二份可独立写入的summary。
 - `.done.arguments` 是无delta或冲突时的权威值；delta/done不一致产生observation，最终snapshot采用authoritative value。
-- `complete`／`partial`／`discarded`是所有item和part的terminal语义。terminal后拒绝更新；partial item可进入snapshot但不得与后续fallback segment合并；discarded只进入observation。
-- 每个response恰有一个response-level terminal；`incomplete`／`failed`／`cancelled`不得由emitter改写为`completed`。缺wire terminal时只能由EOF／abort／driver cancel provenance合成对应非成功终态。
+- `complete`／`partial`／`discarded`是所有item和part的terminal语义。terminal后拒绝更新；partial item可进入snapshot但不得与后续fallback segment合并；discarded只进入observation。partial provenance为`fallback`时必须带`fallbackId`，其它provenance不得带；discarded必须带reason。
+- `finish-item`不得隐式终结child part。任何item terminal前，所有已declare part都必须已terminal。item标`complete`时，非discarded part必须全部complete，discarded part必须已有具名degradation；不得含partial part。item标`partial`前，所有开放part必须先以具名EOF／abort／fallback／wire-error provenance终结为`partial`，既有complete／discarded part保持原终态；item标`discarded`前，所有开放part必须先以同一或派生reason终结为`discarded`。任一前置不满足，reducer拒绝transition，不由emitter补完或跳过child。
+- complete item还必须满足kind-specific权威值门：reasoning／text的所有目标投影part已terminal且可派生final visible；function／server-tool call已有`CallMetadata`与`authoritativeArguments`；function／server-tool result已有`ResultMetadata`与`authoritativeOutput`；drop永远只能discarded。缺任一权威值时不得用delta拼接值冒充done。
+- 每个response恰有一个response-level terminal。`completed`前不得存在开放item／part，且所有非discard item必须complete；`incomplete`／`failed`／`cancelled`前必须先按实际provenance逐个把开放part与item终结为partial或discarded。`incomplete`／`failed`／`cancelled`不得由emitter改写为`completed`；缺wire terminal时只能由EOF／abort／driver cancel provenance合成对应非成功终态。
 - `fork()`可结构共享immutable history，但后续状态隔离。ledger只存活于candidate／dispatch／segment；不得跨retry或hedge candidate共享可变实例。
 - History记录provenance／disposition／terminal／opaque hash或presence，不复制opaque bytes。
 
@@ -341,6 +384,13 @@ type PairTranslationPolicy = Readonly<{
   matchedRuleId?: string
 }>
 
+type DeliveryAuthorityState =
+  | { kind: "uncommitted" }
+  | { kind: "active"; epoch: number }
+  | { kind: "transferred"; epoch: number; toCandidateId: string }
+  | { kind: "terminal"; epoch: number }
+  | { kind: "discarded" }
+
 type CandidateTranslationLineage = Readonly<{
   candidateId: string
   dispatchId: string
@@ -350,18 +400,19 @@ type CandidateTranslationLineage = Readonly<{
   cause: "primary" | "retry" | "hedge" | "fallback"
   configSnapshotId: string
   policy: PairTranslationPolicy
-  clientCommit: "uncommitted" | "winner-committed" | "loser-discarded"
+  deliveryAuthority: DeliveryAuthorityState
 }>
 ```
 
-Lineage与commit不变量：
+Lineage与delivery authority不变量：
 
 - retry、hedge和fallback都创建candidate-local ledger；不得共享可变item state。若要复用已冻结的请求语义，只能从immutable ingress baseline或已提交segment snapshot fork。
-- 首次不可逆客户端 emission 是winner commit point。commit前失败可从immutable baseline重试，且旧candidate标`loser-discarded`；其proposed observations只作candidate诊断，不进入请求级actual effect。
-- commit后失败不得把新candidate伪装成完整替代；任何恢复只可创建明确的post-commit continuation/fallback segment，并保留已发partial item与`wirePartialDelivery`事实。
-- hedge losers无论是否完整解析，都不得写客户端、请求级WARN、History actual observations或业务指标。winner选择和所有loser discard在同一driver临界动作内发布。
-- fallback boundary会终结旧segment中仍开放的item为partial，再创建新segment；新模型不得续写旧item key。
-- response terminal属于各candidate ledger；只有winner terminal可投影成客户端response terminal。loser terminal只留在attempt/candidate诊断。
+- 通常首次不可逆客户端emission是初始authority commit point。两类无普通内容帧的终态也必须选择唯一authority：preflight fail-closed由driver在接受该candidate的typed rejection时建立`active(epoch=0)`、晋级其semantic observations，再原子终结为`terminal`并发送错误响应；合法contentless success在发送terminal前同样建立authority。commit前可重试失败仍从immutable baseline fork，旧candidate标`discarded`，其proposed observations只作candidate诊断，不进入请求级actual effect。
+- request在任一时刻至多一个candidate持`active` delivery authority。未持authority的candidate不得写任何客户端sink；`active` candidate终结整体response时原子转为`terminal`。
+- commit后恢复不是第二个winner，而是同一committed lineage中的authority transfer。旧authority须先把祖先开放part／item按真实provenance终结为partial，并按目标协议顺序发送且确认所有必需的closing wire effects；同时准备好后代首个可发送effect。只有祖先wire lifecycle已闭合后，driver才在同一临界动作把祖先`active(epoch=N)`改为`transferred(epoch=N,toCandidateId)`、后代`uncommitted`改为`active(epoch=N+1)`；准备、closing sink ACK或临界校验失败时不发布transfer、authority仍归祖先，发布成功后authority只归后代，任何瞬间都不可双writer。后代首个effect只能在transfer成功后发送。
+- post-commit continuation／fallback必须保留已发partial item与`wirePartialDelivery`事实；后代创建新segment和item key，不得续写祖先item。最终客户端terminal只由authority chain的`terminal` leaf投影；`transferred`祖先保留自己的partial terminal，不能覆盖leaf结论。
+- hedge losers无论是否完整解析都标`discarded`，不得写客户端、请求级WARN、History actual observations或业务指标。初始authority选择和所有pre-commit loser discard在同一driver临界动作内发布。
+- History所称winner不是单一candidate布尔值，而是唯一authority lineage：`transferred`祖先加一个`terminal` leaf。其它candidate均为discarded或从未获权。response terminal属于各candidate ledger；只有terminal authority leaf可投影成整体客户端response terminal。
 
 逐块carrier action：
 
@@ -409,7 +460,7 @@ type CarrierV2Envelope = Readonly<{
 - 编码为无 padding base64url。解码前校验字符集与长度；解码后按 schema 验证，再 canonical stringify + base64url re-encode，必须与原 payload 字节相等。
 - decoder须联合校验wire prefix、`kind`与`source.protocol`：`claude-signature`只允许Claude signature前缀及Anthropic来源；`responses-encrypted`只允许synthetic-reasoning前缀及Responses来源。任一不一致都fail-closed，不按opaque内容猜kind。
 - `source.model` 是 final resolved model ID，不是客户端 alias；provider/protocol由实际上游腿填写。
-- carrier中的`boundary.partial`只是父`SemanticItem.terminal === "partial"`的序列化投影，用于后续回流；它没有独立setter，decoder必须据它恢复统一item terminal，不能创建reasoning专属的第二状态源。
+- carrier中的`boundary.partial`只是父`SemanticItem.terminal.kind === "partial"`的序列化投影，用于后续回流；它没有独立setter，decoder必须据它恢复统一item terminal，不能创建reasoning专属的第二状态源。
 - opaque只存在于carrier和request-local ledger；observation/History只存carrier version、source、boundary、hash/presence，不复制正文。
 - v1 decoder永久保留到独立迁移决策；v1/external进入配置fallback，不尝试从opaque内容猜source model。
 - 同模型原生Claude assistant content不包装成v2再回送；carrier只服务跨协议客户端投影和后续回流。
@@ -499,15 +550,17 @@ Responses 未公开 `compact_threshold` 默认值，缺省时不得猜；Anthrop
 ## 10．Observation、错误与 History
 
 ```ts
-type ObservationStage = "proposed" | "winner-committed" | "sink-emitted"
+type ObservationStage = "proposed" | "authority-committed" | "sink-emitted"
+type ObservationEffect = "semantic" | "wire"
 
 type TranslationObservation = Readonly<{
   observationId: string
   stage: ObservationStage
+  effect: ObservationEffect
   candidateId: string
   dispatchId: string
   segmentId: SegmentId
-  winner: boolean
+  authorityEpoch?: number
   itemKey?: ItemKey
   quadrant: "history-use" | "history-result" | "live-stream" | "live-nonstream" | "carrier" | "ordering" | "capability"
   disposition: "preserved" | "normalized" | "degraded" | "dropped" | "stripped"
@@ -518,34 +571,41 @@ type TranslationObservation = Readonly<{
 }>
 ```
 
-- Semantic mapper只能产生`proposed` observation。它描述candidate若获胜将采取的语义处置，不声称已写客户端或History actual effect。
-- Driver在winner commit point复制同一`observationId`为`winner-committed`；sink在实际接收对应wire effect后复制为`sink-emitted`。stage只能单向推进，loser／shadow永远停在`proposed`。
-- 请求级WARN和面向用户的History actual projection只从winner的`winner-committed`／`sink-emitted`聚合；candidate级diagnostic可保留loser proposed事实，但必须显式`winner:false`，不得混入actual数组。
-- preserved／normalized同样按stage记录；“mapper计划保留”不等于“客户端收到”。emitter失败不得改写semantic disposition，只会缺少`sink-emitted`并留下terminal error。
-- 同一reason／quadrant／stage的actual observation请求级聚合，日志至多一条。默认fail-closed使用稳定error code；retry／客户端逻辑不得解析英文message。
+- `observationId`在整个request内唯一，每个ID任一时刻只有一个当前stage；晋级是原记录的原子状态替换，不是在`actual`追加第二份副本。stage不得回退或跳过必要的sink ACK。
+- Semantic mapper产出`proposed`语义事实，不自行声称delivery authority或sink效果。driver接受该update时读取candidate当前authority：从未获权／已discarded的candidate保持`proposed`；当前`active(epoch=N)`candidate产生的observation在同一动作中写为`authority-committed`并携`authorityEpoch:N`。因此初始commit后才出现的流式observation不会遗漏。
+- 初始authority commit point把该candidate此前所有proposed observation原子晋级为`authority-committed(epoch=0)`；后续authority transfer只让新candidate的新observation使用新epoch，不重复晋级祖先记录。shadow永远没有authority，全部停在proposed。
+- `effect:"semantic"`表示处置一经authority接受即成为actual，例如strip未知opaque、丢弃无等价capability、normalize order；它不要求存在对应wire byte，`authority-committed`就是终态。`effect:"wire"`表示声称客户端收到某投影，必须由sink ACK同一observationId后从`authority-committed`晋级`sink-emitted`；wire失败则保留committed但不产生emitted。
+- 请求级WARN和History `actual`只从authority lineage的`authority-committed`／`sink-emitted`聚合；candidate diagnostic可保留其他proposed事实，但不得混入actual。`transferred`祖先在其epoch内已committed的事实仍是actual，不能因leaf变化被抹掉。
+- preserved／normalized同样遵守effect与stage；“mapper计划保留”不等于“客户端收到”。同一reason／quadrant／stage的actual observation请求级聚合，日志至多一条。默认fail-closed使用稳定error code；retry／客户端逻辑不得解析英文message。
 
 ### 10.1 History V3与API公开投影
 
 本RFC的History单一权威投影为`HistoryEntry.pipelineInfo.translation.semanticBridgeV2`；两个方向共用versioned envelope，不再各维护一套能力字段：
 
 ```ts
-type SemanticBridgeHistoryV2 = Readonly<{
+type AuthorityLineageEntry = Readonly<{
+  epoch: number
+  candidateId: string
+  dispatchId: string
+  segmentId: SegmentId
+  predecessorCandidateId?: string
+  policy: PairTranslationPolicy
+  outcome: "active" | "transferred" | "terminal"
+}>
+
+type SemanticBridgeHistoryV2Base = Readonly<{
   version: 2
   config: {
     snapshotId: string
-    source: ModelIdentity
-    target: ModelIdentity
-    matchedRuleId?: string
-    policy: PairTranslationPolicy
   }
-  terminal: ResponseTerminal
   actual: readonly TranslationObservation[]
   candidates?: readonly {
     candidateId: string
     dispatchId: string
-    segmentIds: readonly SegmentId[]
+    segmentId: SegmentId
     cause: CandidateTranslationLineage["cause"]
-    winner: boolean
+    policy: PairTranslationPolicy
+    deliveryAuthority: DeliveryAuthorityState
     terminal?: ResponseTerminal
     proposed: readonly TranslationObservation[]
   }[]
@@ -560,12 +620,27 @@ type SemanticBridgeHistoryV2 = Readonly<{
     byteLength: number
   }[]
 }>
+
+type SemanticBridgeHistoryV2 = SemanticBridgeHistoryV2Base &
+  (
+    | Readonly<{
+        lifecycle: "in-flight"
+        terminal?: never
+        authorityLineage: readonly AuthorityLineageEntry[]
+      }>
+    | Readonly<{
+        lifecycle: "terminal"
+        terminal: ResponseTerminal
+        authorityLineage: readonly AuthorityLineageEntry[]
+      }>
+  )
 ```
 
 公开契约：
 
-- `actual`只含winner-committed或sink-emitted observation；loser／shadow只可位于`candidates[].proposed`。若字段被存储裁剪，缺失表示“未捕获／旧记录”，绝不表示“没有退化”；存在空数组才表示“该v2 producer已捕获且无记录”。
-- `candidates`为诊断投影，可由History配置裁剪；`config`、`terminal`和`actual`在v2记录中不可省略。旧History记录没有`semanticBridgeV2`时按unknown capability处理，不回填虚构默认。
+- `actual`只含authority lineage的`authority-committed`或`sink-emitted` observation；discarded／shadow只可位于`candidates[].proposed`。preflight fail-closed与contentless success也须建立并终结唯一authority，因此真实拒绝／终态不会因缺普通内容帧而停在proposed。若字段被存储裁剪，缺失表示“未捕获／旧记录”，绝不表示“没有退化”；存在空数组才表示“该v2 producer已捕获且无记录”。
+- `authorityLineage`为空表示in-flight请求尚未建立delivery authority；一旦非空，epoch从0严格递增。`lifecycle:"in-flight"`时最后一项必须是唯一`active`，此前项全为`transferred`；`lifecycle:"terminal"`时最后一项必须是唯一`terminal`，此前项全为`transferred`。每个`transferred`项的下一项必须以其candidate为predecessor。顶层`terminal`必须等于terminal leaf的response terminal。该链是唯一客户端writer事实，不再用多个candidate上的`winner:boolean`推断。
+- `config.snapshotId`是ingress配置快照identity；route-dependent `PairTranslationPolicy`逐candidate解析，因为fallback可改变target identity。不可省略的`authorityLineage[].policy`保留每个实际writer epoch使用的完整policy；可选`candidates[].policy`补充discarded／从未获权candidate的诊断。`candidates`可由History配置裁剪，但`lifecycle`、`config`、`authorityLineage`和`actual`在v2记录中不可省略，terminal variant还必须有`terminal`。旧History记录没有`semanticBridgeV2`时按unknown capability处理，不回填虚构默认。
 - opaque hash固定为`SHA-256("semantic-bridge-opaque-v2\0" || kind || "\0" || rawOpaqueUtf8Bytes)`的lowercase hex；hash用于同请求内关联与诊断，不承诺跨版本内容寻址。History不存raw opaque正文。
 - `GET /history/api/entries/:id`返回该投影；History WebSocket的完整entry事件沿同一`HistoryEntry` shape返回。列表／summary端点不复制大数组，只可暴露`semanticBridgeVersion`、actual disposition计数与是否有degradation。
 - C3在任何production cutover前同步`src/lib/history/types.ts`、`src/lib/context/types.ts`、V3持久化／投影、History REST／WebSocket测试、`docs/history.md`和`docs/API.md`。不得把公开契约同步拖到C11。
@@ -615,7 +690,7 @@ C4–C7可在C3后并行开发，但C8必须在同一集成态吸收全部能力
 - 官方OpenAI SDK完整lifecycle正控与缺added／part-added红样本；
 - Anthropic SDK thinking／tool round-trip正控；
 - nested summary/content/text parts、multi-reasoning、encrypted-only、`.done.arguments` fallback与delta/done冲突；
-- response completed／incomplete／failed／cancelled及EOF／abort provenance；
+- response completed／incomplete／failed／cancelled及EOF／abort provenance，包括child part开放时提前finish item／response的拒绝正控；
 - 双向ordered-turn、server-tool四格、Scenario A/B四腿；
 - 同模型Claude thinking／redacted／text／tool-use原样回送；
 - 每个阻断式判据的exact mutation，且核对失败来自目标机制。
@@ -628,11 +703,11 @@ Live GHC只采fixture、校准机制解释，不作merge correctness gate。
 
 ### C2：配置快照与candidate lineage
 
-在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、winner commit point、pre-commit retry、post-commit continuation、hedge loser discard和fallback partial segment测试，但仍不改变production translator。
+在ingress捕获一次config snapshot；candidate final route后解析policy。接入candidate／dispatch／segment lineage、初始authority commit、pre-commit retry、post-commit authority transfer、hedge loser discard和fallback partial segment测试；用确定性探针停在transfer临界动作前后，断言任一时刻恰有一个active writer。仍不改变production translator。
 
 ### C3：typed observation与History公共契约
 
-完成proposed→winner-committed→sink-emitted stage、请求级WARN聚合、V3 terminal store、REST／WebSocket readback、summary计数和opaque域分离hash。同步`docs/history.md`与`docs/API.md`。从本commit起，后续shadow可写candidate-local test recorder，但production shadow仍不得写真实日志、History、指标或共享状态。
+完成proposed→authority-committed→sink-emitted stage、authority epoch lineage、请求级WARN聚合、V3 terminal store、REST／WebSocket readback、summary计数和opaque域分离hash。同步`docs/history.md`与`docs/API.md`。从本commit起，后续shadow可写candidate-local test recorder，但production shadow仍不得写真实日志、History、指标或共享状态。
 
 ### C4–C7：production cutover前闭合全部领域语义
 
@@ -645,17 +720,27 @@ Live GHC只采fixture、校准机制解释，不作merge correctness gate。
 
 ### C8：两套wire emitter与全cell shadow parity
 
-Responses emitter与Anthropic emitter都同时实现stream transition消费和non-stream finalized snapshot消费。C8在单一集成态吸收C4–C7全部语义，穷举两个方向的HTTP／WS、stream／non-stream、terminal、usage、error／cancel／EOF／flush和History projection。shadow只写request-local比较器；任何客户端、日志、History、指标或共享状态副作用都使C8失败。
+Responses emitter与Anthropic emitter都同时实现stream transition消费和non-stream finalized snapshot消费。C8在单一集成态吸收C4–C7全部语义，并按方向穷举以下production cells：
 
-C8结束条件是每个production cell都有：正确正样本、目标mutation红样本、官方SDK或结构oracle、shadow parity结果；但production dispatch仍全部指向旧translator。
+- request semantic mapper；
+- codec `translateOut`／cell选择；
+- leg `prepareWire`，保证已是目标协议形状的body不再经CC二次翻译；
+- initial dispatch与每种retry strategy的immutable baseline／fork形状；
+- HTTP／WS、stream／non-stream response emitter；
+- terminal、usage、error／cancel／EOF／flush；
+- observation authority stage与History projection。
+
+Anthropic→Responses前向请求必须对`translateOut`、`prepareWire`、retry baseline三点分别做首次dispatch正控、retry正控和“恢复任一旧点即红”的mutation；Scenario B request consumer漏接不能只靠response parity代替。反方向按其实际接线列出对应cells，不把前向非对称三点虚构成对称路径。
+
+shadow只写request-local比较器；任何客户端、日志、History、指标或共享状态副作用都使C8失败。C8结束条件是每个production cell都有：正确正样本、目标mutation红样本、官方SDK或结构oracle、shadow parity结果；但production dispatch仍全部指向旧translator。
 
 ### C9：Anthropic→Responses原子方向cutover
 
-在一个语义commit内同时切换Anthropic→Responses的request mapper、HTTP／WS、stream／non-stream response、terminal／usage与History actual projection，并删除该方向全部旧production dispatch。不得先切stream再切non-stream，也不得保留运行时flag双轨。test-only fixture replay adapter可暂留到C11。
+在一个语义commit内同时切换Anthropic→Responses的request semantic mapper、`translateOut`、`prepareWire`、initial/retry baseline、HTTP／WS、stream／non-stream response、terminal／usage、observation authority与History actual projection，并删除该方向全部旧production dispatch。不得先切stream再切non-stream，不得遗漏retry路径，也不得保留运行时flag双轨。test-only fixture replay adapter可暂留到C11。
 
 ### C10：Responses→Anthropic原子方向cutover
 
-使用与C9相同的全cell原子门切换反方向，并删除该方向全部旧production dispatch。同模型原生Claude assistant content的旁路不经semantic envelope重建，其reachability正负控必须与cutover同commit通过。
+使用与C9相同的全cell枚举方法、但按该方向的实际非对称接线，在一个语义commit内切换并删除全部旧production dispatch。同模型原生Claude assistant content的旁路不经semantic envelope重建，其reachability正负控必须与cutover同commit通过。
 
 ### C11：退休旧路径与文档
 
@@ -673,6 +758,9 @@ C8结束条件是每个production cell都有：正确正样本、目标mutation�
 | 双向text/tool顺序 | ordered sequence transducer property |
 | server-tool四格 | mapper matrix + HTTP golden |
 | Scenario A/B四腿 | codec/driver prepare-wire on/off双控 |
+| 前向请求三点seam | `translateOut`／`prepareWire`／retry baseline首次dispatch+retry正控；逐点恢复旧路径mutation |
+| delivery authority唯一性 | 初始commit／preflight reject／contentless success／post-commit transfer确定性中点探针 + History lineage |
+| commit后observation不漏 | authority epoch前后流式observation + semantic/wire effect双控 |
 | source-signed/unsigned/redacted诊断 | pure mapper + History V3 store/API |
 | structured-output/context-management | capability table unit + HTTP request golden |
 | carrier canonical与provenance | property +混合v2/v1/external history |
