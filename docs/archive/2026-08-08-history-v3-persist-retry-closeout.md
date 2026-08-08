@@ -28,6 +28,7 @@
 2. History retry × admission 视角首轮确认 publication、admission、count API 与 60000ms 时间预算均保留，但发现默认值测试会因预置 setter 而 false-green，结论 0 blocker／1 major。
 3. `d59a622c` 整改后，原 reviewer 构造代码默认漂移、bundled YAML 漂移及两者同时漂移三类反例，确认互补 oracle 都会变红；复审结论 0 blocker／0 major。
 4. 收尾总结经过两轮事实复审；首轮发现 feature 指针陈旧与 bundled YAML oracle 归属错误两项 major，整改后复审结论 0 blocker／0 major。
+5. 新增的 job tmp 清理门经独立 `verifier` 做 GREEN 验证，报 2 项 major。Major-2（缺逐项前置）成立并已整改；Major-1（称 manifest 与 tmp 文件错位）经逐项复核为 false-red，不采纳。全部 findings 的证据与处置见 [docs/tmp/2026-08-08-job-tmp-closeout-green-review.md](../tmp/2026-08-08-job-tmp-closeout-green-review.md)。
 
 用户于 2026-08-08 裁决：同一交付合并后不因“刚合并”主动重跑全量测试，沿用合并前／合并态证据；后续改动仍执行自己的交付前门禁。因此 `master=d59a622c` 后未再运行一轮全量测试。
 
@@ -39,24 +40,51 @@
 
 ## `$CLAUDE_JOB_DIR/tmp` 清单与处置
 
-盘点根：`/home/xp/.claude/jobs/dddf6825/tmp`。盘点时间：2026-08-08。首次盘点 11 个文件；准备提交本文时新增 `tmp-closeout-project-commit.txt`，清理前复扫门将其打回 disposition，故本表最终覆盖 12 个文件。在本文提交并验证前不清理源文件。
+盘点根：`/home/xp/.claude/jobs/dddf6825/tmp`。盘点时间：2026-08-08。首次盘点 11 个文件；准备提交本文时新增 `tmp-closeout-project-commit.txt`，清理前复扫门将其打回 disposition，故本清单最终覆盖 12 个文件。在本文提交并验证前不清理源文件。
 
-| tmp 文件 | 类型 | 持久承接／证据 | 最终处置 |
+下列每一项都给出绝对路径、类型、长期价值判断、承接证据、清理前置与最终动作；清理前置逐项可执行，不依赖本节末尾的公共门。
+
+### A 组 · commit message 输入（8 项）
+
+共同属性：类型为一次性 commit message 输入；**长期价值为零**——其全部内容在对应 commit 落库时已被 Git object 逐字保存，tmp 副本是纯重复件。共同最终动作：清理前置通过后删除该绝对路径。
+
+**逐项清理前置**：`git show -s --format=%s <commit>` 的输出与该文件首行**逐字相等**。下表每行的 `<commit>` 与期望 subject 已于 2026-08-08 在 `master` 上逐项实跑核对，全部相等。
+
+| 绝对路径 | commit | 该文件首行内容（= 该 commit 的 subject） |
+|---|---|---|
+| `/home/xp/.claude/jobs/dddf6825/tmp/history-retry-commit.txt` | `ea0c0179` | `fix(history): strengthen transient persistence retries` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/shutdown-pty-commit.txt` | `a61bcbd7` | `test(shutdown): allow loaded PTY fixtures to start` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/closeout-verification-commit.txt` | `f6e39031` | `docs: record History retry closeout verification` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/merge-master-commit.txt` | `10387efe` | `merge: integrate current master into History retry defaults` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/review-fix-commit.txt` | `d59a622c` | `test(history): pin retry policy defaults` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/post-merge-test-policy-commit.txt` | `0a88e2c8` | `docs: remember post-merge verification policy` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/scope-post-merge-policy-commit.txt` | `f3c7f9be` | `docs: scope post-merge verification policy` |
+| `/home/xp/.claude/jobs/dddf6825/tmp/tmp-closeout-project-commit.txt` | `0947b2f0` | `docs: reconcile job temporary artifacts` |
+
+`0a88e2c8` 的策略措辞随后由 `f3c7f9be` 收窄作用域；两个 commit 都保留，本组只核对 message 逐字承接，不涉及策略内容本身。
+
+### B 组 · 结论草稿（1 项）
+
+- **绝对路径**：`/home/xp/.claude/jobs/dddf6825/tmp/final-closeout-draft.md`
+- **类型**：收尾总结草稿。
+- **长期价值**：其结论有长期价值，草稿载体本身没有——本文已吸收并修正其结论，两轮事实评审发现的 feature 指针陈旧与 bundled YAML oracle 归属错误两项 major 已在本文改正。
+- **承接证据**：本文「交付结果」「验收与评审证据」两节；草稿中被推翻的两处不再出现于任何活文档。
+- **清理前置**：本文已进入 Git，且草稿中**没有任何结论**只存在于草稿而未出现在本文或其它已提交载体中（逐节比对，2026-08-08 完成）。
+- **最终动作**：前置通过后删除该绝对路径。
+
+### C 组 · merge 前冻结快照（3 项）
+
+共同属性：类型为 merge 前工作区冻结快照，用于冲突解析期间比对；**长期价值为零**——其承接对象是 merge commit `10387efe` 及其两个父提交这一不可变 Git 对象，快照本身只是同一状态的可变副本。共同最终动作：清理前置通过后删除该绝对路径。
+
+| 绝对路径 | 内容 | SHA-256 | 逐项清理前置 |
 |---|---|---|---|
-| `history-retry-commit.txt` | commit message 输入 | Git commit `ea0c0179` 的 subject 为 `fix(history): strengthen transient persistence retries` | 本文提交并复验后删除 tmp 副本 |
-| `shutdown-pty-commit.txt` | commit message 输入 | Git commit `a61bcbd7` 的 subject 为 `test(shutdown): allow loaded PTY fixtures to start` | 本文提交并复验后删除 tmp 副本 |
-| `closeout-verification-commit.txt` | commit message 输入 | Git commit `f6e39031` 的 subject 为 `docs: record History retry closeout verification` | 本文提交并复验后删除 tmp 副本 |
-| `merge-master-commit.txt` | commit message 输入 | Merge commit `10387efe` 的 subject 与两父关系由 Git 保存 | 本文提交并复验后删除 tmp 副本 |
-| `review-fix-commit.txt` | commit message 输入 | Git commit `d59a622c` 的 subject 为 `test(history): pin retry policy defaults` | 本文提交并复验后删除 tmp 副本 |
-| `post-merge-test-policy-commit.txt` | commit message 输入 | Git commit `0a88e2c8` 保存原始策略措辞；后续由 `f3c7f9be` 收窄作用域 | 本文提交并复验后删除 tmp 副本 |
-| `scope-post-merge-policy-commit.txt` | commit message 输入 | Git commit `f3c7f9be` 的 subject 为 `docs: scope post-merge verification policy` | 本文提交并复验后删除 tmp 副本 |
-| `tmp-closeout-project-commit.txt` | commit message 输入 | 用于提交本文、项目 `session-closeout` 与 `CLAUDE.md` 的消息；对应 commit 必须在清理前核对 subject 为 `docs: reconcile job temporary artifacts` | 对应 commit 存在且本文复验后删除 tmp 副本 |
-| `final-closeout-draft.md` | 收尾总结草稿 | 本文吸收并修正其结论；草稿两轮事实评审的 dispositions 见上节 | 本文提交并复验后删除 tmp 草稿 |
-| `pre-review-cached.patch` | merge 前 staged binary patch，约 3.4MiB | SHA-256 `7346d989c7175bca0cd57c10c1df8b4b76654296a202a8dad8dc7d8558dc85e7`；其状态被 merge commit `10387efe`、两个父提交及两路 merge review 承接，不作为长期独立证据 | 本文提交并复验后删除 tmp 重复件 |
-| `pre-review-status.txt` | merge 前 porcelain-v2 状态，约 69KiB | SHA-256 `09c1298380e4be18585e9c6be7d05ad369c95f3eb2d43ded8f72e4c00dbc7c8c`；冲突解析结果由 `10387efe` 与 review 结论承接 | 本文提交并复验后删除 tmp 重复件 |
-| `pre-review-unstaged.patch` | merge 前 unstaged patch | 0 字节；SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`，证明冻结时无 unstaged diff | 本文提交并复验后删除 tmp 空文件 |
+| `/home/xp/.claude/jobs/dddf6825/tmp/pre-review-cached.patch` | staged binary patch，约 3.4MiB | `7346d989c7175bca0cd57c10c1df8b4b76654296a202a8dad8dc7d8558dc85e7` | `10387efe` 可解析且其两父与 merge 结果均在 `master` 可达 |
+| `/home/xp/.claude/jobs/dddf6825/tmp/pre-review-status.txt` | porcelain-v2 状态，约 69KiB | `09c1298380e4be18585e9c6be7d05ad369c95f3eb2d43ded8f72e4c00dbc7c8c` | 同上；冲突解析结果已由 `10387efe` 与两路 merge review 承接 |
+| `/home/xp/.claude/jobs/dddf6825/tmp/pre-review-unstaged.patch` | unstaged patch，0 字节 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | 该 digest 是空文件的已知 SHA-256，本身即「冻结时无 unstaged diff」的完整证据，无需外部承接 |
 
-清理门：本文必须先进入 Git、逐条核对上述 commit 可解析且本文内容经独立评审达到 0 blocker／0 major；随后只删除表内 11 个精确路径，并重新枚举 job tmp。若清理前 job tmp 新增文件，必须先补表与 disposition，禁止用通配删除跳过新文件。
+### 清理门
+
+公共门（**在逐项前置之外附加，不替代它们**）：本文必须先进入 Git，且本文内容经独立评审达到 0 blocker／0 major。随后**只删除上述 12 个精确绝对路径**，逐项核对该项自己的清理前置；删除后重新枚举 job tmp。若复扫发现新增文件，必须先补一项完整 disposition（绝对路径、类型、长期价值、承接证据、清理前置、最终动作），禁止用通配删除跳过新文件。
 
 ## 收尾流程缺陷与修复方向
 
