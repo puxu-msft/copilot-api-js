@@ -10,7 +10,7 @@ metadata:
 **Why:** 2026-08-03 同一条判据被外部评审连打回三轮，每轮我都以为已经修好了（评审全过程在 `docs/tmp/2026-08-03-selfverify-mechanism-review.md`，五轮 244 行）：
 
 1. **判据留在 always-on 规则正文**（`~/.claude/rules/00-user/20-tool-use-preference.md` 的 `root-each-bash-call`）—— 评审判定「没有执行者、没有触发点、没有记录位置」，是 `downgrade-self-adjudicated-gates` 要防的形态本身。
-2. **第一轮打回：搬进 skill 的 verification-log 只修好三分之二** —— 补上了判官和记录位置，我以为闭合。评审实证：项目 `.claude/skills/session-closeout/` 里 `rg` 唯一命中的是**那个 skill 自己的**自验 log，我的断言一个入口都没有。
+2. **第一轮打回：搬进 skill 的 verification-log（当时的 `session-closeout`，现已并入 `closing-a-development-session`） 只修好三分之二** —— 补上了判官和记录位置，我以为闭合。评审实证：项目 `.claude/skills/session-closeout/` 里 `rg` 唯一命中的是**那个 skill 自己的**自验 log，我的断言一个入口都没有。
 3. **第二轮打回：在规则正文加了触发指针，仍不可达** —— 同一轮两处：指针字面只要求「审有没有依赖 sticky cwd」，**照字面执行只裁得了三条断言里的一条**；且我没写 leaf executor 的转交分支（全局硬规则禁止 leaf 派 agent，`~/.claude/rules/00-user/00-kernel.md`）。
 4. **第三轮打回：触发点寄生在会消失的宿主上** —— 它挂在规则的 `Provisional` 条目上，而该条目**会在另一条断言毕业时被删除**——那条断言毕业之日，就是这条断言失去唯一入口之时；同轮还指出审计人口仍偏（只覆盖离开初始 cwd 的会话）。修法是改成**按日期触发的独立 cohort 审计**（协议落在 `~/.claude/skills/proving-where-a-command-ran/verification-log.md`），不寄生在任何会消失的宿主上。
 
