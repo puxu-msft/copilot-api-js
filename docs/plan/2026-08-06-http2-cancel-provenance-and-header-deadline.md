@@ -420,7 +420,7 @@ git commit -m "docs: mark header deadline scope landed"
 
 - [ ] **Step 10：合并当前 `master`，重跑定向门，再 fast-forward 主线**
 
-在隔离分支先 `git merge master`。若 master 新改动触及同一文件，解决后重跑 Task 3 Step 2-3。随后按 `git-preference:coordinating-a-shared-git-worktree` 检查主树 WIP；只在 Git 能无覆盖 fast-forward 时执行主树 `git merge --ff-only nghttp2-root-fixes`。不得 stash、restore 或覆盖 peer WIP。
+在隔离分支先`git merge master`。若master新改动触及相关文件，先运行Task3 Step4绿门观察实际失败，解决冲突后重跑Task3 Step4–5；不得重跑以FAIL为成功标准的Step2红门。随后按`git-preference:coordinating-a-shared-git-worktree`检查主树WIP；只在Git能无覆盖fast-forward时执行主树`git merge --ff-only nghttp2-root-fixes`。不得stash、restore或覆盖peer WIP。
 
 ---
 
@@ -628,12 +628,13 @@ git commit -m "feat: record HTTP2 termination evidence"
 
 **Interfaces:**
 - Produces: `UpstreamStream.getTransportTermination?: () => TransportTerminationObservation | undefined`
-- Produces: `UpstreamStream.terminationQuiesced?: Promise<void>`，HTTP/2由physical `requestClosed` resolve；非H2可省略
-- For failed-open: error carries latest immutable snapshot；正常stream在`lifecycle.quiesced`与`terminationQuiesced`均完成后读accessor最终值
+- Produces: `UpstreamFetchInit.onPhysicalTransport?: (value: { kind: "http2"; quiesced: Promise<void> } | { kind: "undici" }) => void`
+- Produces: `UpstreamStream.terminationQuiesced?: Promise<void>`；只在实际H2选路时取physical `requestClosed`，undici/legacy mock为undefined
+- For failed-open: error carries latest immutable snapshot；正常stream在`lifecycle.quiesced`与实际存在的`terminationQuiesced`均完成后读accessor最终值
 
 - [ ] **Step 1：写 streaming accessor 与 snapshot时序测试**
 
-用h2 transport/injected evidence mock断流：local evidence到达后accessor先显示local snapshot；body/iterator lifecycle先quiesce但physical close barrier仍pending时追加peer/session evidence；只有`await upstream.lifecycle.quiesced`再`await upstream.terminationQuiesced`后连续两次读取才必须deep-equal且不再变化。正常流accessor返回undefined，非H2 `terminationQuiesced`可undefined。
+用h2 transport/injected evidence mock断流：local evidence到达后accessor先显示local snapshot；body/iterator lifecycle先quiesce但physical close barrier仍pending时追加peer/session evidence；只有`await upstream.lifecycle.quiesced`再`await upstream.terminationQuiesced`后连续两次读取才必须deep-equal且不再变化。另用`setUpstreamTransportConfig({http2:{favor:false}})`和plain-http路径断言actual transport报告undici、`terminationQuiesced===undefined`且recovery不挂；normal流accessor返回undefined。
 
 - [ ] **Step 2：运行accessor测试确认红**
 
@@ -650,7 +651,7 @@ const termination = createTransportTerminationCollector()
 onTerminationEvidence: (value) => termination.append(value)
 ```
 
-返回`UpstreamStream`时暴露`getTransportTermination:()=>termination.observe()`和`terminationQuiesced`。HTTP/2的`sendUpstreamHttp`用`onStreamClosed` resolve physical barrier；非H2可省略。若`http2Fetch`已拥有collector，则通过callback追加到transport collector，禁止复制归因逻辑。failed-open error附当时snapshot；scheduler/recovery等待lifecycle+termination双barrier后优先读owned accessor。
+`upstreamFetch`在实际selector分支调用`onPhysicalTransport`：H2由`http2Fetch`在创建`requestClosed`后报告`{kind:"http2",quiesced:requestClosed}`；undici分支在dispatch前报告`{kind:"undici"}`。`sendUpstreamHttp`据此设置`terminationQuiesced`，绝不通过“是否收到onStreamClosed”猜选路。返回`UpstreamStream`时暴露`getTransportTermination:()=>termination.observe()`，仅实际H2携带physical barrier；undici/legacy mock为undefined。若`http2Fetch`已拥有collector，则通过callback追加到transport collector，禁止复制归因逻辑。failed-open error附当时snapshot；scheduler/recovery等待存在的双barrier后优先读owned accessor。
 
 - [ ] **Step 4：保持 hook/mock 兼容**
 
@@ -672,6 +673,7 @@ git commit -m "feat: expose live transport termination provenance"
 ## Task 7：收紧 block-level recovery 的 termination admission
 
 **Files:**
+- Modify: `src/lib/pipeline/types.ts:840-852`
 - Modify: `src/lib/pipeline/driver.ts:1485-1555`
 - Test: `tests/pipeline/buffered-sink.unit.test.ts`
 - Test: `tests/pipeline/continuation-retry.it.test.ts`
@@ -727,7 +729,7 @@ Mutation A：让local/ambiguous返回true，负样本红。Mutation B：让peer/
 - [ ] **Step 7：提交 Task 7**
 
 ```bash
-git add -- src/lib/pipeline/driver.ts tests/pipeline/buffered-sink.unit.test.ts tests/pipeline/continuation-retry.it.test.ts
+git add -- src/lib/pipeline/types.ts src/lib/pipeline/driver.ts tests/pipeline/buffered-sink.unit.test.ts tests/pipeline/continuation-retry.it.test.ts
 git commit -m "fix: retry only attributable upstream stream cuts"
 ```
 

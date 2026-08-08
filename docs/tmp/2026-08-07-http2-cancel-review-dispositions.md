@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前六轮累计 33/33 个独立 findings 已采纳；第七轮局部复评待完成（重复上报已合并进原 ID）
+- 状态：前七轮累计 36/36 个独立 findings 已采纳；第八轮局部复评待完成（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
@@ -40,4 +40,7 @@
 | R30 | C | 三settlement测试未覆盖production recording port→RequestContext接缝 | 采纳 | 新建`tests/pipeline/dispatch-termination-recording.it.test.ts`，真实createDriverRecordingPort+scheduler+RequestContext覆盖settle/dispose/terminal fallback；进入red/green命令与pathspec。 |
 | R31 | C | Task3 production+test同写后直接PASS，无旧实现红门 | 采纳 | 重排为只写listener测试→旧匿名listener FAIL→实现具名幂等detach→PASS→删detach mutation→精确代码+测试提交。 |
 | R32 | C | recovery只等iterator lifecycle，physical stream evidence可后到 | 采纳 | UpstreamStream新增`terminationQuiesced`；recovery、scheduler两路、terminal fallback均依次等iterator+physical双barrier；late evidence变ambiguous不重试测试。 |
-| R33 | C | diagnostics声称读live accessor但未贯穿caller | 采纳 | `ResponseOutcome.stream-error`新增冻结`transportTermination`，driver双barrier后附值；共享outcome diagnostics优先读该字段，handlers已传整个outcome，无需另传accessor。 |
+| R33 | C | diagnostics声称读live accessor但未贯穿caller | 采纳 | `ResponseOutcome.stream-error`新增冻结`transportTermination`，driver iterator+physical双barrier后附值；共享outcome diagnostics优先读该字段，handlers已传整个outcome，无需另传accessor。 |
+| R34 | C | undici/favor:false无onStreamClosed，错误创建physical deferred会永久等待 | 采纳 | `onPhysicalTransport`显式报告实际选路；仅H2携带requestClosed barrier，undici/legacy为undefined；补favor:false/plain-http不挂正控。 |
+| R35 | C | Task7修改ResponseOutcome类型却漏pipeline/types pathspec | 采纳 | Task7 Files与精确git add补`src/lib/pipeline/types.ts`。 |
+| R36 | C | merge复验错误重跑预期FAIL的Task3红门 | 采纳 | merge后先跑Step4绿门观察实际失败，修冲突后重跑Step4–5；不以Step2红门作为交付复验。 |
