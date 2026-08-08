@@ -42,11 +42,11 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 - **实验/探针产物同样归档**：`exp/<topic>/` + README 写清「回答什么问题 / 结论 / **它没有证明什么** / 复跑配方」。「没有证明什么」是必填项——探针的配置决定了它只激活一条路径，不写边界，下一个人（含三小时后的自己）会当成全覆盖（范式：`exp/keepalive-escalation-wire/README.md`；失效模式见 skill `empirical-verification`）。
 - **头部实施状态注解**：四档（已完成/部分完成/未实施/仅研究）+ 配套文件类型注解 + 判定纪律，格式与四档示例见本 skill 的模板 [complete-plan.md](complete-plan.md)。判定是**事实性主张**，靠证据（DESIGN 状态表 / archive RFC / `git log -S` / 生效 config 键）不凭标题；否定性核验用正样本证明 grep 触达（空≠不存在）。
 
-## 3b. `$CLAUDE_JOB_DIR/tmp` 逐文件对账——最终报告前的硬门
+## 3b. `$CLAUDE_JOB_DIR/tmp` 逐文件对账——收尾触发后的硬门
 
-`$CLAUDE_JOB_DIR/tmp` 是当前 job 的工作台，不是存档层。**写最终报告前**必须枚举其中每个普通文件与符号链接，并在仓库内的收尾记录或 evidence manifest 里为每个路径写一行：绝对路径、类型、长期价值、项目接收载体或不可变替代证据、最终动作、清理前置条件。commit-message 文件须核对对应 Git commit 与 subject；patch/status 快照须指向已提交 canonical artifact，或明确指出哪个 Git object + review 结果已取代它；报告草稿与 agent 报告有长期价值时必须进入 `docs/`，不能只在聊天里摘要。
+`$CLAUDE_JOB_DIR/tmp` 是当前 job 的工作台，不是存档层。**任一收尾触发之后、任何完成／状态／交接报告发出之前，以及会话或阶段结束之前**（三者取最早的那一个；不因为「这只是阶段汇报」「这只是口头交接」「这次是我自己主动收尾、用户没要求」而豁免），必须枚举其中每个普通文件与符号链接，并在仓库内的收尾记录或 evidence manifest 里为每个路径写一行：绝对路径、类型、长期价值（即该内容是否必须活过清理，而不只是它当初用来做什么）、项目接收载体或不可变替代证据、最终动作、清理前置条件。commit-message 文件须核对对应 Git commit 与 subject；patch/status 快照须指向已提交 canonical artifact，或明确指出哪个 Git object + review 结果已取代它；报告草稿与 agent 报告有长期价值时必须进入 `docs/`，不能只在聊天里摘要。
 
-顺序固定：**枚举 → 逐项 disposition → 持久化／提炼 → 提交并验证接收载体 → 清理精确路径 → 重新枚举**。清理前复扫发现的新文件必须先补 disposition，禁止用通配或“job 结束会自动清理”绕过；Harness 自动清理只能执行已完成 disposition 的最终动作，不能替代持久化判断。最终报告必须给出 tmp 清单数量、已入项目项、已删除项、保留项及每项理由。
+顺序固定：**枚举 → 逐项 disposition → 持久化／提炼 → 提交并验证接收载体 → 清单本身过独立评审 → 清理精确路径 → 重新枚举**。清单必须先经独立评审达到 0 blocker／0 major 才可执行删除——删掉唯一一份证据不可逆，其授权不能挂在之后的终稿评审上。清理前复扫发现的新文件必须先补 disposition，禁止用通配或“job 结束会自动清理”绕过；Harness 自动清理只能执行已完成 disposition 的最终动作，不能替代持久化判断。最终报告必须给出 tmp 清单数量、已入项目项、已删除项、保留项及每项理由。
 
 本轮失败实例（2026-08-08）：旧流程已走到“可交付”，但 job tmp 仍有 11 个未 disposition 文件，包括最终总结草稿、3.4MiB staged patch、69KiB status 快照、空 unstaged patch 与 7 个 commit-message 文件；用户在收尾后指出遗漏。归档与逐项处置见 `docs/archive/2026-08-08-history-v3-persist-retry-closeout.md`。
 
