@@ -114,14 +114,10 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
+  // This call has two explicitly disjoint modes: build the current floor on a
+  // truly empty database, or leave an existing pre-current database untouched.
+  // The following migrations exclusively own existing-database transitions.
   ensureV3Schema(getDatabase())
-  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
-  // (migrations/index.ts) is intentionally empty today — this call's value is
-  // wiring the pipe end-to-end (storage construction, ledger read/write,
-  // logger adapter) against the REAL V3 db, so the first real 001+ migration
-  // has a proven-working runner to land into, rather than adding one now.
-  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
-  // migration must refuse to start, not silently continue.
   await applyForwardMigrations(getDatabase())
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()

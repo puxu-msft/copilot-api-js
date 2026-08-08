@@ -44,6 +44,11 @@ import {
   prepareModelOperation,
   visitV3StoredOperations,
 } from "~/lib/history/v3/store"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 import { createDatabase } from "~/lib/sqlite/driver"
 
 const tmpDirs: Array<string> = []
@@ -151,6 +156,27 @@ describe("readonly store read surface (Phase 0)", () => {
     const text = projectSearchableText(stored.record)
     expect(text).toContain("what is the searchable prompt")
     expect(text).toContain("here is the searchable reply")
+  })
+
+  test("readonly detail and search projection fail loud for future manifest format", () => {
+    const dbPath = freshDbPath()
+    seedRealV3Db(dbPath, "readonly-future-format")
+    const writable = openDatabase(dbPath)
+    const row = writable.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("readonly-future-format") as { manifest_gz: Uint8Array }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(row.manifest_gz))) as { formatVersion: number }
+    manifest.formatVersion = 999
+    writable
+      .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+      .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), "readonly-future-format")
+    closeDatabase()
+
+    const readonlyDb = openDatabaseReadonly(dbPath)
+    expect(() => getV3StoredOperation("readonly-future-format", readonlyDb)).toThrow(/unsupported manifest format version/i)
+    expect(() => {
+      const stored = getV3StoredOperation("readonly-future-format", readonlyDb)
+      if (stored) projectSearchableText(stored.record)
+    }).toThrow(/unsupported manifest format version/i)
+    readonlyDb.close()
   })
 
   test("openDatabase() still defaults db-param read functions to the module singleton (backward compatible)", () => {
