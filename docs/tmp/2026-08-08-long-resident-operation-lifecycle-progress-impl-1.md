@@ -6,7 +6,7 @@ worktree: /home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations
 plan: docs/plan/2026-08-08-long-resident-operation-lifecycle.md
 agent_id: a-impl-1
 session_id: pending
-status: in-progress — Task 1 complete; Task 2～3 and B1 merged-state review remain
+status: in-progress — Task 1～2 complete; Task 3 and B1 merged-state review remain
 ---
 
 # B1 lifecycle 实施进度
