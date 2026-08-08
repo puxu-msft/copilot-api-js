@@ -1,10 +1,29 @@
 # 批 6 执行件：把 `session-closeout` 并入 `closing-a-development-session`
 
-> **状态：草稿 · 已过一轮部分评审 · 未执行**　　核验基线 `4629ae8f`（2026-08-08）　　分支：`master`（共享主树）
+> **状态：已执行（2026-08-08）· B 级第三方评审进行中**　　全局侧 `~/.claude` commit `7fa63ba`　　项目侧 commit `e7a9cadb`
 >
-> 本文件是**映射表 + 执行顺序**，是批 6 的验收门（「零未映射条目」）。前五批已落地并提交，见文末「已完成部分」。
->
-> ⚠️ **「零未映射」门当前未通过，本文件尚不可据以执行。** 独立评审对源文件**第 1–100 行**已查出 **8 条未映射语义条目**（见「评审已查出的缺口」节）；**101–204 行与 `handover.md` / `complete-plan.md` / `verification-log.md` 三个配套文件尚未被评审覆盖**。执行前必须补完这些条目并重新过门。
+> 执行时**改变了本文原定的归属切分**，见下面「执行时的偏离」。前五批见文末。
+
+## 执行时的偏离（重要，与下面的映射表不一致以本节为准）
+
+**本文原计划把交接（§6）与进度文件协议（§6b）并入 `closing-a-development-session`。执行时发现 user-level 已存在 `writing-handover-docs`**——`closing-a-development-session` 的 intro 本来就把交接委托给它。于是改为：
+
+| 内容 | 实际归宿 |
+|---|---|
+| 收尾九阶段的通用方法（顺序例外、证据先提交、归档四档状态与实验 README 边界、doc-sync 跨文档扫描、提交粒度、正交评审视角与 `property → acceptance` 对账、逐条落盘、恢复原 reviewer） | `closing-a-development-session/source.json` 的既有 stage 正文，以 `###` 子节并入 |
+| HANDOVER/KICKOFF 分工与一致性门、头部状态行与必含项、文档层可发现入口、查 peer 配方、紧急纠错例外三条限制、**§6b 进度文件协议全文**、容量终态与五步接力 | `writing-handover-docs/SKILL.md` |
+| 项目落点、实例证据、含本仓路径的两份模板 | `CLAUDE.md:56`、`docs/archive/2026-08-08-session-closeout-verification-log.md`、`docs/plan/templates/` |
+
+**没有新增 `##` 阶段、没有动 contract 的 `stages` 列表、没有放宽 `tests/test_skill.py`。** 理由：那份测试是这个 skill 唯一的结构守卫，为了塞内容去改它等于自削门禁；用 `###` 子节并入既能保内容、又让守卫原样有效。守卫实测绿（`render_skill.py` + 7 项 contract 测试），description 三个必留子串仍在。
+
+**执行中被守卫咬到一次**：doc-sync 那段我写了字面量 `TODO` 作为「陈旧状态词」的例子，撞上 `assertNotRegex(body, r"\b(?:TBD|TODO|FIXME)\b")`。改成描述性措辞后通过——**这正说明那条守卫是有效的，不是形式主义**。
+
+**零内容丢弃的三个落点**：原 `verification-log.md` 的 178 行连同已积累票数原样迁进归档件（加头说明新观测写去全局 log、两套 V 编号不是同一套）；两份含本仓路径的模板迁进 `docs/plan/templates/`；`git` 识别为 rename，历史保留。
+
+## 尚未闭合
+
+- **B 级第三方评审进行中**（报告：`docs/tmp/2026-08-08-batch6-merge-execution-review.md`）。它的首要任务就是下面那件本文自己没做完的事：**逐条核对零内容丢弃**。
+- 下面的「映射表」与「评审已查出的缺口」保留原样作为**执行前的推理记录**，它当时只覆盖了源文件 1–100 行、且粒度偏粗；**不要拿它当已完成的对账表**——真正的对账由上面那轮评审给。
 
 ## 映射粒度的口径（评审逼出来的，写在最前面）
 
