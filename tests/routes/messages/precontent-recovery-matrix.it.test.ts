@@ -967,6 +967,28 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
   })
 
+  test.each([
+    ["text", () => textBlockStartFrame(0)],
+    ["tool", () => toolBlockStartFrame(0, "tool_open", "lookup")],
+  ])("ready-live clean EOF after a real open %s block never dispatches recovery", async (_name, blockStart) => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(
+          createSseResponse([messageStartFrame({ id: `msg_ready_open_${_name}`, model: MODEL, inputTokens: 5 }), blockStart()]),
+        )
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), `precontent-ready-open-${_name}-clean-eof`)).text()
+
+    expect(calls).toBe(1)
+    expect(frameTypesInOrder(text).filter((type) => type === "content_block_start")).toHaveLength(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "api_error" })
+  })
+
   test("ready-live clean EOF after semantic content stays on the truncation terminal", async () => {
     let calls = 0
     applyFetchMock(

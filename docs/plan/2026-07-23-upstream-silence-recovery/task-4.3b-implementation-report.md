@@ -1,6 +1,6 @@
 # Task 4.3b direct Anthropic B2 实施报告
 
-状态：**实现与测试资产已完成；backend gate 已通过，final merged-state、code、verifier 与 doc reviews 进行中。** 实现基线始于 `dd79edb3`（其父 `84a84bf5` 完成 evaluator discriminant guard，`aa2620db` 修复 ready-live clean EOF），后续关键验证提交为 `328ea295`、`9d4ccfc1`、`7e6d06f6`；交付状态以本文件所在 commit 为准。本报告只覆盖 `/v1/messages` 的 direct Anthropic live B2；buffered B2 与 translated publication 仍未实现、保持 fail-closed，见 [deferred backlog](../../todo/deferred-backlog.md)。
+状态：**实现与测试资产已完成；最新 master 合并态的三项独立评审发现已修复，等待复评与最终 backend gate。** 实现基线始于 `dd79edb3`（其父 `84a84bf5` 完成 evaluator discriminant guard，`aa2620db` 修复 ready-live clean EOF），后续关键验证提交为 `328ea295`、`9d4ccfc1`、`7e6d06f6`；交付状态以本文件所在 commit 为准。本报告只覆盖 `/v1/messages` 的 direct Anthropic live B2；buffered B2 与 translated publication 仍未实现、保持 fail-closed，见 [deferred backlog](../../todo/deferred-backlog.md)。
 
 ## 已实现合同
 
@@ -36,6 +36,16 @@ bun run typecheck
 focused matrix、SDK 与 context oracle 在实现期均以退出码 0 验证。`dd79edb3` 后重新运行 `bun run typecheck`、matrix＋coordinator focused suites（54 pass，0 fail）、C4 dual-read oracle（2 pass，0 fail）与受影响文件 eslint。clean EOF SDK case `ready-live clean EOF before semantic content recovers one coherent SDK message` 连续运行 10 次均退出码 0。
 
 交付前在 `7e6d06f6` 上第二次执行 `bun run test:backend`，退出 0、汇总显示 6276 pass／0 fail；项目已知 `parallel-test.ts` 汇总会漂移，因此该数字不作为精确测试计数，结论只使用退出码与 0 fail。第一次同门在该验证序列中显示 6561 pass／1 fail，失败为 History capture-performance ratio 8.816；该单测随后连续 10 次通过，第二次全 backend 亦为 0 fail。`bun run typecheck` 同样退出 0。Task 5 coverage review 为 0 major，clean EOF verifier 已通过；这些不替代仍在进行的 merged-state、code、verifier 与 doc final reviews。
+
+## 2026-08-08 最新 master 合并态审计补漏
+
+独立 merged-state reviewer 在 feature 吸收 `master@03c3dd13` 后提出三项承重发现，主会话逐条以冻结 spec、父分支归属和红色探针复核，三项均确认并修复：
+
+- bundled `config.yaml` 仍以 600/1200s wall-clock terminator 终止可能合法长思考，违背计划 Global Constraints。现将 `response_header`、`stream_idle`、`stale_request_max_age`、`request_deadline` 及内置 per-model override 全部改为 `0`；新增配置 guard，正值改为显式 bounded-wait override 并告警。
+- primary 已成功写出真实 `content_block_start`、delta 尚未到时，旧 gate 仍为 false，clean EOF 会发 R 并制造两个并列 open block。现由 delivery owner 在任一非 synthetic Anthropic real block start 或 client-format real content frame 成功写出后关闭 B2 gate；text/tool 两种真实 handler 红绿样本均锁住 `calls===1`。
+- isolated fixture 只清 History Worker registry pointer，不 shutdown 所有的 runtime。现新增 async owning reset，先等待 `runtime.shutdown()`，只在仍指向同一 runtime 时清 pointer；fixture 串行 await 该 reset，guard 将 injector setter明确路由到 owning reset。
+
+focused 验证：open-block 2 pass/0 fail；History lifecycle 31 pass/0 fail；timeout config 13 pass/0 fail；recovery delivery 12 pass/0 fail；typecheck exit 0。最终复评、backend 与 commit anchor在下方状态更新后补记。
 
 ## Mutation controls
 

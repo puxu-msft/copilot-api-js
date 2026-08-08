@@ -73,7 +73,7 @@ export interface DeliverySessionTestHooks {
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
 export interface DownstreamDeliverySession {
   readonly identity: symbol
-  /** Irreversible, delivery-scoped flag for real client content that completed a successful owner write. */
+  /** Irreversible, delivery-scoped flag for real client content structure that completed a successful owner write. */
   readonly hasEmittedRealClientContent: boolean
   readonly snapshot: DeliverySnapshot
   readonly clientSink: ClientSink
@@ -265,10 +265,17 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   }
 
   const applyWireFrame = (entry: DeliveryFrame): void => {
-    if (entry.provenance.kind === "candidate" && readSyntheticKind(entry.frame) === undefined && isRealContentFrame?.(entry.frame)) {
+    const payload = parsePayload(entry.frame.data)
+    if (
+      entry.provenance.kind === "candidate"
+      && readSyntheticKind(entry.frame) === undefined
+      && (isRealContentFrame?.(entry.frame) || payload?.type === "content_block_start")
+    ) {
+      // A real block start is already irreversible client-visible protocol structure even before its
+      // first delta. Treat it as delivered content for recovery safety so a fresh attempt cannot open
+      // a second block at the same index beside the primary's still-open block.
       hasEmittedRealClientContent = true
     }
-    const payload = parsePayload(entry.frame.data)
     if (!payload) return
     if (payload.type === "message_start") messageEnvelope = syntheticKind(entry) === "synthetic-message-start" ? "synthetic" : "real"
     if (payload.type === "content_block_start" && typeof payload.index === "number" && typeof payload.content_block?.type === "string") {

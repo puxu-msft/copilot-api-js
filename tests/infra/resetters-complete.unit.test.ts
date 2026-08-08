@@ -112,6 +112,9 @@ const EXEMPT: Record<string, string> = {
   // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
   // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
   recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
+  // Injection setter remains available to tests that install explicit fakes. The fixture registers the
+  // async owning reset instead, because merely clearing the pointer would leak a live Worker.
+  setHistoryPersistenceRuntimeForTests: "runtime injector — reset via resetHistoryPersistenceRuntimeForTests (registered)",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
