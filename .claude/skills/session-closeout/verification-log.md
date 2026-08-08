@@ -146,3 +146,12 @@
 - **V8 正交视角** — ⚠️ 本轮沿用同一 merged-state reviewer 多轮复评，并未预设两个正交 closeout 视角，不计入 V8 分母。事实观察：该 reviewer 先后抓出 bundled timeout 违冻结不变量、real open block gate、Worker owning reset、per-model warning、DESIGN 漂移五类问题，整改后 0 blocker／0 major。｜结论：数据不足
 - **V9 鉴别力正控** — ⚠️ 新增的 real text/tool block-start gate、scalar/per-model bounded-wait 告警与 Worker reset race 均先见目标红再恢复绿；Chat H3 配置顺序依赖亦稳定复现后连续 10 轮通过。因本轮编辑该 log，只记观察。｜结论：数据不足
 - **V14 活跃写入权收口（旧标题“ 双事实源收口”已 superseded）** — ✅ 陈旧 project memory 当时缩成指向 `DESIGN.md`／implementation report／spec 的 stub，并明确 feature 已合并、worktree/branch 已删除；这证明它不再独立维护活跃实施进度。该历史动作不表示 memory 只能留裸指针：按新规则，memory 可完整保留读者所需语境，但须引用权威来源且不继续作为状态写入点。因本轮编辑该 log，不投证实票。｜结论：数据不足
+
+## 2026-08-08 · HTTP/2 header deadline 阶段 1 收尾（分支 tip `f0cb1f1e`，master 核验基线 `d1011fe7`）
+
+- **V1 触发链** — ❌ 负样本。用户说「完成了开始收尾」之后我才加载本 skill；在此之前我已用 `result:` 宣告过阶段 1 交付完成，却没先走六步。命中「用户点名」。｜结论：证伪
+- **V4 查-peer 配方** — ✅ 配方按路径口径跑通且给出了有判别力的答案：`git log --oneline HEAD..master -- src/lib/transport src/lib/fetch-utils.ts src/lib/models/timeout-resolver.ts docs/spec/2026-08-06-*.md` 零命中，而同期不限 path 的 `HEAD..master` 有 16 条（全是 History worker／skill 文档）。零命中在此是**正确结论**而非配方失灵——正因为它把无关的 16 条排除掉了。因本轮追加本 log，依第 11 行不投证实票。｜结论：数据不足
+- **V8 正交视角** — ✅ **计入分母**：派活前就写死两个视角与各自证据义务（判据证伪 / 接手方第一人称走查），不是先后替补。**各自都有独有且改变动作的发现**——判据视角独有：plan 注解 sha 口径错、KICKOFF 数字锚错树、记忆里的 `14475` 复现不出（实测 `14541`）；接手视角独有：**T1 的证伪方法根本不成立**（`package-boundaries.unit.test.ts` 三个检测器只匹配 import specifier，不检测同名类型复制），以及交接文档尚未进 master 导致「从 master 建树就找不到 HANDOVER」。若只派判据视角，那条 major 会漏——它只有靠「实地打开那个测试看它到底检测什么」才暴露。因本轮编辑该 log，只记客观观测。｜结论：数据不足（但分母 +1，独有发现双向成立）
+- **V9 鉴别力正控** — ⚠️ 初稿 T1–T3 写了「待执行期跑」的目标变异、T4 只写了验收判据的否命题（漏正控）。**证伪发生在评审中**：T1 那条不仅缺正控，其证伪方法本身不成立。整改后 T1 补了守卫真实边界说明、T4 补了三种具体 mutation（只等第一道 barrier／从 `errorSnapshot` 读 tag／logical terminal 当场 settle）。**教训：写「证伪方式」时必须去打开那个守卫确认它真的检测那件事，不能从测试文件名推断能力。**｜结论：数据不足
+- **V10 上游对账触发** — ✅ 触发并逐份 disposition：block-level buffered retry ADR（依据未被拆，无需重裁）、旧 `protect_streaming_generation`（用户已裁「不启用、未来删」，列为独立后续项）、2026-08-06 系列交接（其「CANCEL 主线未实施」表述已被阶段 1 部分推翻，写明以 spec 状态节为准）。检索词与范围已落盘在 HANDOVER 的对账节。｜结论：数据不足
+- **V16 property→acceptance 对账** — ⚠️ 本轮 HANDOVER 的 T1–T4 就是该表的实例：**抓到 1 处真漂移**——T4 的性质写「三条 settlement 路径都写入**最终**observation」而验收只写「三条路径都写了字段」，量词一致但**排除项不同**（没有排除「写了中间值」），三种 mutation 正落在这个缝里。证明该对账不是零命中的仪式。｜结论：数据不足
