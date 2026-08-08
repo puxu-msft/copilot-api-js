@@ -1,6 +1,6 @@
 ---
 name: methodology-gates-i-write-fail-at-the-execution-seam
-description: 自己写判据时反复犯同一族错——门写了但执行接缝没接上（不可达裁决点·自证空结果·缺回流·无 oracle·按对象类型分叉），逐条给可观察修法
+description: 写门禁／顺序前置／评审或清理放行时，出现不可达、无回路、无 oracle、自证空结果、双判或 schema 错位、入列前过滤、不可逆 fail-open——同一族「门写了但执行接缝没接上」，附九形态与四问诊断
 metadata:
   type: feedback
 ---

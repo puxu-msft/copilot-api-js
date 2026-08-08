@@ -186,3 +186,11 @@
 - 12 项流程／事实候选均能在事件源定位，且分别由 ff-only memory 或九形态 execution-seam memory 承接。
 - 第 4 类已列 job tmp 56／42／56 人口与 `fd -H` ignore 陷阱；第 6 类已列六项 Git／GNU patch 探针及版本边界；第 5 类无新增。
 - **diff 为空：未发现新的漏列候选。** `Server error mid-response` 后恢复同一 reviewer、缩小任务并逐条落盘属于既有 agent 运维纪律的应用，不是本轮新增知识。
+
+# 复审轮八（`8ba962df`）
+- **Q1 verdict：两条 blocker 均未完全闭合。**
+- **B1 blocker**：🔁 标题写“任何 disposition”，但执行句只规定“补审若改变”；其后的“清单本身独立评审”或清理前复扫也可能改 disposition，却可不经持久化回流直接走向删除。修法：删除 gate 比对“当前完整 manifest”与“最后一次已完成接收载体验证＋评审的 manifest fingerprint”；任一后续评审／复扫使 fingerprint 变化，一律回流持久化、验证、重审。
+- **B2 blocker**：会被“不承认缺 oracle”绕过；现门仍以作者的缺失分类触发。修法：删除授权必须有 reviewer 的显式 positive receipt，至少含事件源 identity／范围、独立枚举已完成、双向 diff 为空；任一字段缺失即机械 fail-closed，而不是等作者标“形式复核”。
+- **Q2 verdict：九形态合并合理，不建议拆。** 九格共享同一触发场景（正在写 skill／rule／验收门）与同一诊断入口（“谁在何时执行、判否回哪、输入可得吗、不可逆是否 fail-closed”四问），拆开反而让一个门需加载多份记忆。
+- 召回层没有被正文长度稀释：MEMORY 钩子逐字列出九类症状；但 frontmatter `description` 只列五类，漏“顺序写反／实际双判／入列前过滤／不可逆 fail-open”，这是 **minor discovery gap**。建议 description 不穷举九格，改用覆盖轴的触发词：“写门禁／顺序前置／评审或清理放行时，出现不可达、无回路、无 oracle、自证空结果、双判／schema 错位、入列前过滤或不可逆 fail-open”。
+- 总体 verdict：**存在 blocker**；B1、B2 各 1，Q2 仅 minor。
