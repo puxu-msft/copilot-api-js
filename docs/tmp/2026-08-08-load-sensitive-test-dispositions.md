@@ -360,6 +360,20 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 是空真断言。** 探针实测该数组在断言点为 `[]`，`[].every()` 恒 `true`。同族背景见 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md`（`driver.unit.test.ts` 那一例的解药是换成直接观测目标机制的 oracle）。这里的正确修法多半是：改为断言「终态后 forwarded 轨帧集合不变」（`:185` 已经在做）并**删掉**这条空真断言，或换一个真能观测到心跳定时器的 oracle。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 
+## 收口验收（四条全部落地后）
+
+`bun run typecheck` —— 绿（`tsc`，无输出即无错）。
+
+`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片），在本 worktree 根、HEAD = `1de883cf`：
+
+```
+[parallel-test] 16 shards · 4856 tests · 4856 pass · 0 fail · 7297 executed · 31 skipped · 89.83s
+```
+
+**口径说明**：`4856 tests` 是用例数、`7297 executed` 是含参数化展开后的执行数、`31 skipped` 主要是 `history-search` 的 native 产物缺失时按 `describe.skipIf(!isNativeHistorySearchAvailable())` 显式跳过（本 worktree 未 `bun run build:history-search`，属预期行为，见 CLAUDE.md「测试分档」）。该数字**未**交叉验证，是 runner 自报的单一来源。
+
+**本轮没有跑 T0.0f 的 15 连跑。** 那才是 faithful 的分片复现，也正是该门本身要做的事；本文件只负责把四条从「会被争用误杀」变成「不会」。四条里只有第 2 条（`store-performance`）在本会话用 spinner 直接复现出了原始失败形态并验证修复，第 1、3、4 条的复现依据分别是：第 1 条真实分片日志 `run-02.log:20-32`（spinner 复现失败，已标注）、第 3、4 条真实分片日志 + 「宽预算下完成、收紧预算下仍绿」的双向分型。
+
 ## 本轮**没有**做的事（显式声明）
 
 - 没有退役（删除/skip）任何一条用例——四条全部保留，用户裁决按目标而非字面执行。
