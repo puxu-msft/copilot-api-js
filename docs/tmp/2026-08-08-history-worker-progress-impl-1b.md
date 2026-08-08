@@ -7,7 +7,7 @@ plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session-0ff74836
 session_id: 0ff74836-c889-4e6b-9aaa-72ba9fe985fd
 predecessor_session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
-status: batch-1b-implementation-restored-verification-pending
+status: batch-1b-candidate-verified-awaiting-master-integration
 continuity: tightly-coupled
 continuity_reason: route admission, terminal publication, shutdown and pending overlay share one reservation lifecycle; splitting before the shared contract is green would force each executor to reconstruct and potentially diverge that lifecycle.
 ---
@@ -22,13 +22,14 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 
 ## 剩余项
 
-- [ ] 冻结并验证 HTTP／Responses WS 生产入口矩阵；管理面、History 查询与 dry-run 不受 admission 阻塞。
-- [ ] 建立 operation-owned、一次性 seal/transfer 的 `ModelOperationTerminalPublication` 与 raw attachment 接缝；terminal bus subscriber 是唯一 `acceptTerminal()` 调用者。
-- [ ] 扩展 context／lightweight reservation 生命周期：创建 operation ID 后 bind；绑定前失败 release；绑定后、publish 前失败走 `failBeforeTerminal`。
-- [ ] 安装 no-throw `LegacyHistoryTerminalSink`，将旧 writer outcome 转为 admission terminal outcome。
-- [ ] shutdown Step 1 停止新 admission waiter，并在 History close 前 drain waiter／reservation barrier。
-- [ ] pending durability 全量 overlay 与独立 256 acknowledged-recent cache；status／metrics／telemetry 接线。
-- [ ] 定向门禁、两方向 mutation 正控、backend、独立复审到 0 blocker／major，并 fast-forward 合入 `master`。
+- [x] 冻结并验证 HTTP／Responses WS 生产入口矩阵；管理面、History 查询与 dry-run 不受 admission 阻塞。
+- [x] 建立 operation-owned、一次性 seal/transfer 的 `ModelOperationTerminalPublication` 与 raw attachment 接缝；terminal bus subscriber 是唯一 `acceptTerminal()` 调用者。
+- [x] 扩展 context／lightweight reservation 生命周期：创建 operation ID 后 bind；绑定前失败 release；绑定后、publish 前失败走 `failBeforeTerminal`。
+- [x] 安装 no-throw `LegacyHistoryTerminalSink`，将旧 writer outcome 转为 admission terminal outcome。
+- [x] shutdown Step 1 停止新 admission waiter，并在 History close 前 drain waiter／reservation barrier。
+- [x] pending durability 全量 overlay 与独立 256 acknowledged-recent cache；status／metrics／telemetry 接线。
+- [x] 定向门禁、两方向 mutation 正控、backend、独立复审到 0 blocker／major。
+- [ ] fast-forward 合入 `master`，回填正式计划的最终完成 SHA。
 
 ## Red 阶段证据
 
@@ -52,7 +53,11 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - Responses WS 的最后一个超时经起始／卡点 snapshot 探针定位：起始 `reserved=0`，卡点 `reserved=1/unacked=0` 且 context manager 无 active operation，说明 terminal publication subscriber 被清空。根因是 `useIsolatedRuntime()` 在 `resetTestRuntime()` 已通过 `initHistory()` 重接 production subscriber 后，又从后置 RESETTERS 调 `resetModelOperationTerminalBusForTests()` 把 subscriber 清掉。现 terminal bus 与 admission 均在 `resetTestRuntime()` 的 `initHistory()` 前重置，并从后置 RESETTERS 移除；WS 正常请求→shutdown 配对 2 pass／0 fail，整文件 14 pass／0 fail，fixture+completeness 8 pass／0 fail，typecheck 绿。临时诊断 probe 已全部撤销。
 - 隔离修复后全 backend 为 5630 pass／0 fail（16 shards，7282 executed，30 skipped，78.22s；`bun run test:backend`，当前提交 `1c54119f`）。两项 exact-patch 正控均命中目标机制并精确恢复：①移除 Chat Completions `withHistoryAdmission` 后 architecture test 报该 owner 0≠1（2 pass／1 fail）；②移除 shutdown Step 1 `stopAdmission` 后 ordering test 缺 `admission-stopped`（1 pass／1 fail）。恢复后合并目标集 5 pass／0 fail，两个生产文件无 diff。
 - 最终评审期间本地 master 合入首信号无损排空重写（最终 merge parent `master@44457047`），与 Batch 1b 的 `src/lib/shutdown.ts`、两份已退役 shutdown-abort 测试等路径重叠。语义合并以新规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 为权威：保留 lossless operation drain，Step 1 只拒绝尚未创建 context 的 admission waiter，canonical finalizer之后／token与History close之前 drain admission；不复活已删除的主动 abort 测试。合并态 typecheck绿，shutdown/admission/h2/rate-limit/architecture 交界集合 49 pass／0 fail。
-- 三路独立评审共报1 blocker／3 major，全部采纳（C），处置与证据见 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md`：①四codec在context创建后立即发布给`getContext()`，parse异常可settle并释放reservation；②统一pending／ack-recent／DB overlay覆盖list／stats／sessions／status，三源按operation ID去重；③饱和controller动态覆盖7个HTTP operation入口与5个豁免表面，Responses WS保留真实饱和测试；④新增acquire→bind/release handoff barrier，manager先发布registry再bind，shutdown在首次registry snapshot前drain handoff。整改联合验收91 pass／0 fail、14 files、289 assertions，typecheck绿，待原reviewer复审。
+- 三路独立评审首轮共报1 blocker／3 major，全部采纳（C），处置与证据见 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md`：①四codec在context创建后立即发布给`getContext()`，parse异常可settle并释放reservation；②统一pending／ack-recent／DB overlay覆盖list／stats／sessions／status，三源按operation ID去重；③饱和controller动态覆盖7个HTTP operation入口与5个豁免表面，Responses WS保留真实饱和测试；④新增acquire→bind/release handoff barrier，manager先发布registry再bind，shutdown在首次registry snapshot前drain handoff。整改联合验收91 pass／0 fail、14 files、289 assertions，typecheck绿；生命周期与shutdown reviewer复审均为0 blocker／major。
+- Overlay／判据 reviewer复审又抓到一个真实假绿：负控请求不存在的`/api/history`，且`status >= 200`让404通过。修为真实`/history/api/entries`、精确200与响应shape；同轮全backend还暴露status改走summary解析后，损坏`summary_json`会漏计canonical operation。`cca342ff`改为overlay IDs＋`v3_operations`排除这些ID后的专用COUNT；原reviewer复审24 pass／0 fail并判0 blocker／major。
+- `cca342ff`后的全backend暴露9个失败、归并为三项同根回归：新`overlay.ts`加入core SCC、同步overlay路径未应用message-only search、entry-evidence测试人口baseline未同步。`df0c7bf4`把overlay helper收回既有SCC成员`queries.ts`、对in-flight与recent terminal都从完整entry应用normalized inbound search、机械同步8增2删的测试人口并删除双实现；联合目标集57 pass／0 fail，SCC与discovery守卫均绿，原reviewer按重写新一轮复审后判0 blocker／major。
+- 最终backend在`df0c7bf4`连续两次得到`7255 executed／30 skipped`，旧`minimum_executed=7258`已成为合法当前人口过不了的false-red。独立解析两组16份JUnit均得到7285 testcase－30 skipped＝7255 executed；7256负控返回非零、7255正控返回零。`94205e89`仅校准该floor为7255，不改files、allowed_skipped或runner blob。校准后精确计划门44 pass／0 fail、typecheck绿、完整backend 0 fail（16 shards，7255 executed，30 skipped，52.45s）。`pass`汇总在相同executed下会漂移，故不拿它作为人口口径；原reviewer最终复审判可合、0 blocker／major。
+- `bun run build`在`94205e89`候选上成功生成`dist/main.mjs`与`dist/history-worker.mjs`；tsdown把动态`bun:ffi`视为external并给出既有warning，不影响构建退出码。
 
 ## 在途意图
 
