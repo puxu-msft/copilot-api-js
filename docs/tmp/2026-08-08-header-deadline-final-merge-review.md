@@ -164,3 +164,45 @@
 ## 总判定
 
 **存在 blocker；blocker 1、major 3、minor 1。当前不可 ff-only 集成。** 冻结 merge commit `02ecde73` 本身未吞改且 typecheck／backend 全绿，但当前 master 已前进导致 ff-only 前提失效；执行记录与 V19 还包含错误的“双评审 0／0”断言，entry discovery baseline 也漏掉一条已核实合法的 native skip。
+
+## 复评（第二轮）
+
+- **冻结 HEAD**：`20bbe5a3c8eb49560ec61f4a12a0e2a4131b263e`（已由 `git rev-parse HEAD` 独立确认）。
+- **本轮 verdict**：**整改本身通过；当前仍不可 ff-only 集成**。上轮 3 个 major 与 1 个 minor 已闭合；C6 两次指定 master 合入动作正确，但 master 再次前进，当前 ancestry 仍失效。新增 3 条 minor（producer pin 对象误判、两处文档证据／因果边界）。
+
+### R-C6 — 当前再次失效（不计整改失败）
+
+- `9e965a66` 的父提交为 `02ecde73 d64630e4`；`20bbe5a3` 的父提交为 `819a7263 4629ae8f`，证明协调者确实先后合入了所述两个 master tip。
+- 复评时当前 `master=142923d3a7ea72c88ae071d231abbe71535d8b63`，冻结 `HEAD=20bbe5a3c8eb49560ec61f4a12a0e2a4131b263e`；`git merge-base master HEAD` 输出 `4629ae8fcae41e73e8768ec47b767090bcd514a2`，`git merge-base --is-ancestor master HEAD` 退出 1。
+- `git rev-list --left-right --count master...HEAD` 输出 `8 11`：master 又有 8 个 HEAD 不含的提交，feature 有 11 个 master 不含的提交。
+- **判定**：按复评约定，这不算上轮 C6 整改失败；两次指定 master 合入动作均有 ancestry 证据。但 ff-only 前提在当前时点仍不成立，交付前必须再次合当前 master，并对新 merge commit 重跑合并态门禁与复评。
+- **错误动作风险**：若按冻结 HEAD 直接执行 ff-only，Git 会拒绝；不得把“已经合过两次 master”当作当前 ancestry 的替代证据。
+
+### R-C8 — PASS（整改闭合；producer 陈旧 pin 另行上报恰当）
+
+- `git diff --numstat 9e965a66 7af27044 -- tests/infra/entry-test-discovery-baseline.json` 输出 `9 0`；完整 diff 只加入目标 testcase identity，未改其他字段。commit `7af27044` 仅改该一文件。
+- 新条目键序为 `kind,file,classname,name,ordinal,count,reason`，与 `scripts/entry-evidence-schema.ts:30` 的 `TESTCASE_KEYS` 完全一致；`reason=native-unavailable`。独立调用 `parseDiscoveryBaseline()` 成功，返回 `allowed=31` 且目标精确一条；`bun test tests/infra/entry-evidence-schema.unit.test.ts tests/infra/capture-entry-evidence.unit.test.ts` 为 16 pass／0 fail。故 canonical bytes、bytewise 排序、唯一性与 schema 均通过项目自身 oracle。
+- 最终态 `bun run test:backend` 本轮实际跑出 `7297 executed／31 skipped`，但两次均因 5 个不同文件的 `TimeoutError` 得到 5 fail，未复现协调者的全绿。五个失败文件单独合跑为 34 pass／0 fail，说明这次红来自 full-suite 并发／机器负载下的超时，不是 allowlist identity 错误；仍应在最终 merge 后重新取得一次 backend 全绿，不能沿用协调者旧绿作为新 merge 证据。
+- 即使该次 backend 红，产物 `/tmp/parallel-test-M0eUCp/skipped-multiset.json` 仍可独立核人口：baseline 31、runtime identities 31、双向差集均 0、executed 7297 ≥ minimum 7279。故本次 C8 精确 allowlist 整改本身闭合。
+- producer 顺序推理成立：`scripts/capture-entry-evidence.ts:259-265` 先解析 baseline 并比较 `runner_git_blob`／file set；只有通过后才在 `:280-300` 跑 wrapper 并调用 `readRunArtifact(...allowed_skipped)`。baseline pin 为 `66d215f2`，HEAD 与 master 的 wrapper blob 均为 `9998d99d`。不过精确地说，`:265` 比的是 `HEAD:scripts/parallel-test.ts`，当前该 blob恰为 `66d215f2`；协调者把“实际 runner `exp/.../baseline-runs.sh=9998d99d`”与 `runner_git_blob` 所指对象混在了一起。当前 producer 是否 fail(4) 取决于 `scripts/parallel-test.ts` blob与 files discovery，不能由 wrapper blob不等直接推出。独立 `git rev-parse HEAD:scripts/parallel-test.ts` 输出 `66d215f2`，所以**陈旧 pin 这一具体理由不成立**。
+- 但“不代改 peer 在飞 gate 文件”仍是恰当处置：当前 master 已领先 8 commits且同批 evidence 文件继续变化；没有冻结目标终态，不应由本分支顺手重锚。若要验证 producer，应在再次合 current master 后，对该新 HEAD 直接运行；不存在绕过顺序、只验证 allowlist 的正式 producer 模式，本轮采用 parser + runtime multiset 独立比较正是允许的窄验证。
+- **新发现（minor）**：producer 不可运行的解释把 `runner_git_blob` 错指成 wrapper blob。下一个接手者会误判 fail(4) 已被静态证明，因而跳过本可运行的 producer。应更正记录：pin 实际指 `scripts/parallel-test.ts`；在最终 merge 态直接运行 producer，以实际 rc 裁决。
+
+### R-C3／C4 — PASS（原 major／minor 均闭合；新增 2 条 minor 表述边界）
+
+- commit `819a7263` 的目标改动完整：对账清单拆分事实／指令 verdict 并加证据边界；V19 写全 42／48／49 三口径、撤回双 0／0、标记不可 graduation；指令评审末尾新增作者处置并明确“尚未经独立 reviewer 复核”。
+- 三个 `file:line` 逐行复核均支持命题：`SKILL.md:49` 确含完整全序、清单须 0 blocker／major、复扫新文件使旧评审失效、禁通配／自动清理绕过；`:51` 确写变量展开+管道在隔离 worktree 被拒及字面路径替代；`:205` 的 V19 已无“连续 3 次零保留”，全文件 `rg '零保留'` 仅命中处置表对旧发现的引用，不命中现行规则。
+- 对账清单 `:42-44` 对两份原始评审 verdict 的复述准确；`:53` 清楚区分当前可核验项、历史独立佐证、不可事后核验动作。没有再把 exact path、无通配符、12/12 或 symlink=0 冒充本轮绿灯。
+- “指令视角发现不针对本次清理判定正确性”在限定语境下成立：原指令评审的三项发现分别针对合并后 skill 强度、命令可照抄性、V19 判据形状；事实评审才逐项审核 42 个 artifact 的保留／可删判定。对账清单同时保留“仍需单独 disposition”的限定，没有把指令缺陷说成无关。
+- 处置表中的三处现存代码事实均被独立复核；master 强机制与 feature 经验确已并集合并。故上轮 C3、C4 major 与 49 口径 minor 全部闭合。
+- **新增 minor-1**：`docs/tmp/2026-08-08-job-tmp-review-instruction.md:46` 写“根因是项目那条既有教训”，把“违反一条规则”拟人化为根因。可核事实只是“复评未落盘，之后两处出现无持久证据的通过断言”；这条时序与机制足以称为 failure mode，但不足以独立证明作者认知层面的唯一根因。下一个接手者会把未经区分的事后归因继续沉淀成权威教训。建议改为“直接失效链是……；命中既有教训……”，不要声称唯一根因。
+- **新增 minor-2**：同文件 `:51` 在“此刻可独立核验的证据”列中写“本轮实测复现两次”，但没有持久命令／输出，和此前 exact-path 动作一样不可事后独立核验。其前半的 `SKILL.md:51` 本体足以证明处置已落地；应删除该次数断言或标注“作者动作自述，不作为复评证据”。下一个接手者会误以为两次 runtime 复现已由本轮 reviewer 再证。
+- **错误动作风险**：原 major 已消除；仅上述两条不会推翻处置正确性，但会再次模糊“可独立核验”与“作者自述”的边界。
+
+### 第二轮总判定
+
+**整改质量判定：通过，无 blocker／major。** 上轮 C3、C4、C8 与 49 口径 minor 已闭合；两次指定 master merge 也正确完成。**当前交付状态：仍不可 ff-only**，因为复评结束前 master 再次前进至 `2a4898e86e6cd70bf65351d2922bf8a49be8ab2c`，最终分叉计数 `14 11`（中途观测曾为 `142923d3`／`8 11`）；按约定不计整改失败，但必须再次合 current master 后重跑 typecheck、backend 与 merged-state review。
+
+本轮新增 **3 minor**：①把 `runner_git_blob` 误当 wrapper blob，错误推断 producer 必 fail(4)；②指令评审补记把“命中既有教训”写成了唯一根因；③“实测复现两次”被放在可独立核验证据列但无持久输出。另有测试证据黄灯：本轮 `typecheck` 绿；两次 backend 都得到 `7297 executed／31 skipped` 且 identity 双向差集 0，但因全套件并发下 5 个测试 TimeoutError 而非全绿，五文件单独合跑 34 pass／0 fail。最终 merge 后必须取得新的 backend 全绿，不能沿用旧绿。
+
+- **最终 ancestry 刷新**：报告收口前再次执行 `git rev-parse master` 与 `git rev-list --left-right --count master...HEAD`，输出 `master=2a4898e86e6cd70bf65351d2922bf8a49be8ab2c`、`14 11`。此最终读数取代本节较早的 `142923d3`／`8 11` 当前态断言；较早数字仅保留为当时观测。
