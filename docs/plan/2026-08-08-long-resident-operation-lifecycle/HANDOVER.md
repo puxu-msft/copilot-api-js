@@ -45,7 +45,7 @@
 | 2 RequestContext 四事实状态机 | ✅ 完成并评审通过 | `0af6850b..f05db881` | |
 | 3 dispatch cleanup failure ownership | ✅ 完成，历经六轮评审 | `4de3cd6e..cf8f4380` | |
 | **B1 合并态评审** | ✅ **已闭合** | — | reviewer approved（0 Critical / 0 Important / 1 Minor）；verifier 0 findings。那条 Minor 已在 `4b961615` 消除 |
-| 4 manager registry + lifecycle failure barrier | ✅ 已实现 | `3e418cdb` | **独立评审在本会话结束时仍在进行中，结论未知**——接手第一件事是确认该评审结论，不要假定通过 |
+| 4 manager registry + lifecycle failure barrier | ⚠️ **已实现但评审未通过** | `3e418cdb` | 独立评审判 **1 blocker + 1 major**，**修掉前不可进入 Task 5**。报告已存档 `docs/tmp/*-task-4-review.md`。修复已派出，结论见该报告与后续 commit |
 | 5 从真实 delivery owner 发布 begin/success/failure | ⬜ 未开工 | — | plan 第 384 行起 |
 | 6 暴露 tracked-operation 运维真相 | ⬜ 未开工 | — | plan 第 454 行起；**受 master 重写影响最大** |
 | 7 全 producer 与现场僵尸回归矩阵 | ⬜ 未开工 | — | plan 第 510 行起 |
@@ -53,9 +53,13 @@
 
 ## 待办（每条带验收判据与证伪方式）
 
-1. **确认 Task 4 评审结论**
-   - 验收：拿到该评审报告并逐条处置；报告路径 `/home/xp/.claude/jobs/36fcb851/tmp/task-4-review.md`（**位于 job 临时目录，job 删除即消失**——若已不存在，须重派一轮 Task 4 评审，不得视为已通过）。
-   - 证伪：若报告不存在或未覆盖 C1–C6，则「Task 4 已评审」这一说法不成立。
+1. **闭合 Task 4 的评审发现**
+   - 评审结论：**1 blocker + 1 major，Task 4 在修掉前不可通过、不得进入 Task 5**。完整报告已存档在 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-4-review.md`（**仓库内，不会随 job 消失**）。
+   - **BLOCKER**：已登记的 delivery failure 永不进入 drain——错误只写进 `manager.ts:272` 的 `lifecycleFailureBarrier`，该 map 全文件仅两处写、零处读，ctx 又已从 registry 删除，失败裁决在进程层彻底消失。plan Step 1 要求的那条用例从未写出，所以套件全绿是 false-green。
+   - **MAJOR**：该 barrier 无任何驱逐、按 requestId 单调增长——**反长驻留的工作自己引入了一条进程级长驻留**。
+   - 验收：`drainLifecycleFailures()` 在 delivery failure 后抛出含原始 error 的 AggregateError，且 barrier 被消费即清空；每条新断言配 exact-patch mutation 证明鉴别力。
+   - 证伪：`grep -n lifecycleFailureBarrier src/lib/context/manager.ts` 若仍只有写、没有读，说明未修。
+   - **两条已记录、本轮不改的观察**（见进度文件）：C2 的「未登记 failure」保护分支**生产不可达**（`request.ts:910` 的 outcome lock 在登记前就 return），只有推理无正负样本，**待独立裁决，别自行删除该分支**；C3 现实现下终态到 release 全是 microtask 链，`/api/status` 撞不上 `blocker==="none"` 的 invariant throw，**Task 6 接线时若在其间插入 await 就会变 500**。
 2. **合并 master**（见上「必须最先做的事」）
    - 验收：合并后三道门禁全绿，且 `git log --oneline master..HEAD` 只含本项目的提交。
    - 证伪：`grep -n "state" src/lib/shutdown.ts` 若显示 drain 摘要仍直接读 `request.state` 而未经 lifecycle blocker 归一，说明缺陷仍在（这正是要修的）。

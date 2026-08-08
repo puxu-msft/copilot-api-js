@@ -10,8 +10,8 @@
 
 ## 启动前的三道 gate（按序，前一道不过不要进下一道）
 
-**Gate 1 —— 确认 Task 4 的独立评审结论。**
-上一会话结束时该评审仍在进行，**结论未知**。报告应在 `/home/xp/.claude/jobs/36fcb851/tmp/task-4-review.md`；该路径属 job 临时目录，**job 一旦删除即消失**。文件不存在就重派一轮 Task 4 评审，**不得视为已通过**。详见 HANDOVER「待办 1」。
+**Gate 1 —— 闭合 Task 4 的评审发现（1 blocker + 1 major）。**
+独立评审判 Task 4 **在修掉前不可通过、不得进入 Task 5**。blocker 是「已登记的 delivery failure 永不进入 drain，错误写进一个只写不读的 map 后随 ctx 删除而彻底消失」，major 是「该 map 无驱逐、按 requestId 单调增长——反长驻留的工作自己引入了长驻留」。完整报告已存档在仓库内 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-4-review.md`。修复在上一会话末已派出，**接手第一件事是确认它是否落地并通过复评**（`grep -n lifecycleFailureBarrier src/lib/context/manager.ts` 若仍只有写、没有读，即未修）。详见 HANDOVER「待办 1」。
 
 **Gate 2 —— 先合并 master，再动任何 Tasks 5–8 的代码。**
 本分支落后 master **287** 个提交，其中 11 个重写了 `src/lib/shutdown.ts`（403 行变动、净减 258），而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
