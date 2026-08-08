@@ -40,6 +40,15 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 - `tests/pipeline/generation-runtime-baseline.http.test.ts` 与 `tests/pipeline/hooks/driver-provenance.unit.test.ts` 首次联合运行失败，均由上述同一callback遮蔽根因导致，非既有失败；修复后联合复跑为15 pass／0 fail，Task 3扩展组合为125 pass／0 fail。
 - `bun run test:backend` 已连续运行两次，均在开始后收到进程级 `SIGUSR2` 并以exit 1终止，未输出单个测试断言失败；该信号不来自本任务启动的4141服务器（本任务没有启动任何服务器）。因此全后端门尚未通过，需在信号来源稳定后重跑，不将其当作既有红挥手。
 
+## SIGUSR2 Phase 1 证据（2026-08-08）
+
+- 原两次backend输出没有完整落盘路径；本轮用只读wrapper重跑，完整日志为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.log`，事件时间线为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.events`，子进程树／信号掩码快照为`/tmp/task37-sigusr2-phase1/backend-20260808T091351Z.children`。wrapper `2918764`、runner `2918774`同属PGID `2918764`；wrapper未收到SIGUSR2 trap，runner记录exit 1。快照显示launcher→Bun runner→isolated child；不能仅凭现有快照断言具体child是信号目标。
+- 该重现首行再次出现`[shutdown] Received SIGUSR2`，因此观察到SIGUSR2的backend运行数为3／3；但本次exit 1的直接原因并非信号：16 shards、4672 tests、4665 pass、7 fail、2 crashed shards。最后崩溃分片隔离时仍在跑`tests/shutdown/shutdown-mid-stream.http.test.ts`等45文件，首个稳定失败是`tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts`。
+- 单跑该文件稳定失败：它期望passthrough `FrameAction`无`provenance`字段，但Task1b正确加入`provenance:"preserve"`；这是需由实施合约决定的真实断言漂移，当前按指令不修。单独shutdown相关6文件为84 pass／0 fail，仍会输出SIGUSR2但由其unit测试有意调用`handleShutdownSignal("SIGUSR2")`，不向OS进程发送该信号。
+- 全仓审计：生产唯一SIGUSR2发送点是`src/lib/restart/takeover.ts:46`的`process.kill(pid,"SIGUSR2")`；只有明确调用方才会激活。`scripts/parallel-test.ts`仅`Bun.spawn`分片，未发送或监听信号；测试中`setupShutdownHandlers`只在`shutdown-sigusr2.unit`与独立fixture使用。全仓还存在e2e handover／server harness精确kill，但不在本backend suffix集合的直接入口。
+- 单一假设（未证实）：并行backend的某一共享进程测试加载了SIGUSR2 handler，外部同PGID／会话来源向runner或其child发送SIGUSR2；但现有证据同时显示独立的7个测试失败足以解释exit 1，不能把exit归咎于信号。
+- 下一步仅做诊断：运行分片时按child PID安装外部signal trace或以`strace -f -e signal`（工具可用时）锁定接收者；在此之前不修改实现或测试。
+
 ## 验证
 
 - 正控：暂时把 direct render projection变异为回传rich `ParsedSseFrame`，`response-processor.unit` 以目标combined-seam断言 `"kind" in frame === true` 失败；恢复`projectParsedSseFrame`后7 pass／0 fail。
