@@ -474,27 +474,53 @@ async function settleCommittedRecoveryFailure(input: {
   })
 }
 
+function ownerTerminalDecisionError(decision: OwnerTerminalDecision): Error {
+  switch (decision.kind) {
+    case "client-aborted": {
+      return new Error(`[delivery] recovery anchor close reached client-gone (partialDelivery=${decision.partialDelivery})`)
+    }
+    case "delivery-finished": {
+      return new Error(`[delivery] recovery anchor close reached ${decision.reason}`)
+    }
+    case "fail-loud": {
+      return new Error(`[delivery] recovery anchor close failed (${decision.reason}): ${decision.error.message}`, { cause: decision.error })
+    }
+    default: {
+      decision satisfies never
+      throw new Error("[Anthropic:v4] unreachable owner terminal decision")
+    }
+  }
+}
+
 /** Post-C9 wire recovery may still attempt terminal wire actions, but request finalization remains owner-owned. */
 async function settleWireTornRecoveryFailure(input: {
   readonly publicationError: Error
   readonly model: string
   readonly ctx: RequestEnvelope["ctx"] | undefined
   readonly recordForwarded: () => void
-  readonly closeAnchor: () => Promise<unknown>
+  readonly closeAnchor: () => Promise<OwnerTerminalDecision | undefined>
   readonly writeTerminal?: () => Promise<void>
 }): Promise<void> {
   const { publicationError, model, ctx, recordForwarded, closeAnchor, writeTerminal } = input
   let settlementError: unknown = publicationError
-  const collect = async (action: () => Promise<unknown>): Promise<void> => {
+  let clientGone = false
+  try {
+    const decision = await closeAnchor()
+    if (decision !== undefined) {
+      settlementError = aggregateRecoverySettlementError(settlementError, ownerTerminalDecisionError(decision))
+      clientGone = decision.kind === "client-aborted"
+    }
+  } catch (error) {
+    settlementError = aggregateRecoverySettlementError(settlementError, error)
+  }
+
+  if (!clientGone && writeTerminal) {
     try {
-      await action()
+      await writeTerminal()
     } catch (error) {
       settlementError = aggregateRecoverySettlementError(settlementError, error)
     }
   }
-
-  await collect(closeAnchor)
-  if (writeTerminal) await collect(writeTerminal)
   recordForwarded()
   ctx?.fail(model, settlementError, undefined, { upstreamSucceeded: true })
 }
@@ -1060,6 +1086,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
                   ctx,
                   recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
                   closeAnchor: () => closeAnchorViaOwner(sinkChain.deliverySession.allocationPort, anchorHooks, ctx, "terminal"),
+                  writeTerminal: async () => {
+                    await sinkChain.sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed"))
+                  },
                 }),
               settlePostCommitException: (postCommit, callbackError) => {
                 ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
@@ -1456,7 +1485,7 @@ async function closeAnchorViaOwner(
     return closed.ok ? undefined : classifyOwnerFailure(closed, operation, { settled: ctx?.settled ?? false })
   } catch (error) {
     if (!(error instanceof DeliveryOwnerError)) throw error
-    return classifyOwnerFailure({ ok: false, reason: "wire-torn", committed: false }, operation, { settled: ctx?.settled ?? false })
+    return { kind: "fail-loud", reason: "wire-torn", error: asError(error.cause ?? error) }
   }
 }
 

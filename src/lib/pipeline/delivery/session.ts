@@ -64,6 +64,8 @@ export interface DeliverySessionTestHooks {
   onCommittedAllocation?: (operation: "allocate-anchor" | "allocate-real-block") => void | Promise<void>
   /** Runs after recovery-batch staging and before its C9 commit; a throw leaves the session reusable. */
   onBeforeRecoveryBatchCommit?: () => void | Promise<void>
+  /** Runs inside the owner immediately before a terminal anchor close wire write. */
+  onCloseAnchor?: () => void | Promise<void>
   /** Rejects a real post-C9 recovery settlement callback to test fail-closed handler behavior. */
   onRecoveryPostCommitSettlement?: (kind: "wire-torn" | "commit-failed") => void | Promise<void>
   /** Observes the actual driver terminal outcome on the production handler path. */
@@ -516,11 +518,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         const unavailable = closeUnavailable<"closed" | "none">()
         if (unavailable) return unavailable
         const current = requireWireState()
-        if (current.openAnchorIndex === undefined) return ownerSuccess("none" as const)
-        if (mode === "terminal") closeHeartbeat()
-        const index = current.openAnchorIndex
-        const entry = frameForSpec(buildStop(index, envelope))
         try {
+          await deliverySessionTestHooks?.onCloseAnchor?.()
+          if (current.openAnchorIndex === undefined) return ownerSuccess("none" as const)
+          if (mode === "terminal") closeHeartbeat()
+          const index = current.openAnchorIndex
+          const entry = frameForSpec(buildStop(index, envelope))
           applyPendingFrame(entry)
           await writeToSink(sink, entry)
           applyWireFrame(entry)

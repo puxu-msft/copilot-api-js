@@ -232,12 +232,18 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
-  test("post-C9 recovery publication failure does not fall back to the primary error", async () => {
+  test("pre-ready wire-torn recovery does not fall back to the primary error", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
-    const rejectRecoveryWrite = true
+    let rejectRecoveryCandidate = true
     setDeliverySessionTestHooksForTests({
-      onWrite() {
-        if (rejectRecoveryWrite) throw new Error("recovery wire torn")
+      onWrite(entry) {
+        if (entry.provenance.kind === "candidate" && rejectRecoveryCandidate) {
+          rejectRecoveryCandidate = false
+          throw new Error("recovery wire torn")
+        }
+      },
+      onCloseAnchor() {
+        throw new Error("recovery owner anchor close rejected")
       },
     })
     let calls = 0
@@ -264,12 +270,11 @@ describe("Task 4.3b pre-content recovery matrix", () => {
 
     expect(calls).toBe(2)
     expect(text).not.toContain("primary must not surface")
-    // A physically torn wire may reject the best-effort recovery terminal; it must never append the primary error.
-    expect(text).not.toContain("msg_torn_recovery")
-    expect(dataFramesOfType(text, "error")).toHaveLength(0)
+    expect(text).toContain("Recovery publication failed")
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-torn" }).entries[0]
-    expect(entry?._index?.derived?.failureReason).toBe("recovery wire torn")
+    expect(entry?._index?.derived?.failureReason).toContain("recovery wire torn")
+    expect(entry?._index?.derived?.failureReason).toContain("recovery owner anchor close rejected")
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
     setDeliverySessionTestHooksForTests(undefined)
   })
