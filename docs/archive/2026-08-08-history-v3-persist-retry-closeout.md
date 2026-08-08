@@ -1,6 +1,6 @@
 # History V3 transient retry 收尾记录
 
-> 状态：实现已完成并合入 `master`；收尾流程加固进行中。实现核验基线：`d59a622ce1afc21587fb692457574ba84d9cabaa`，2026-08-08。本文是一次执行记录，不是活配置权威；当前配置以 [`config.yaml`](../../config.yaml)、[`src/lib/config/schema.ts`](../../src/lib/config/schema.ts) 与 [`src/lib/history/v3/store.ts`](../../src/lib/history/v3/store.ts) 为准。
+> 状态：实现已完成并合入 `master`；收尾流程加固已完成，job tmp 已按清单清空。实现核验基线：`d59a622ce1afc21587fb692457574ba84d9cabaa`，2026-08-08。本文是一次执行记录，不是活配置权威；当前配置以 [`config.yaml`](../../config.yaml)、[`src/lib/config/schema.ts`](../../src/lib/config/schema.ts) 与 [`src/lib/history/v3/store.ts`](../../src/lib/history/v3/store.ts) 为准。
 
 ## 交付结果
 
@@ -99,6 +99,14 @@
 ### 清理门
 
 公共门（**在逐项前置之外附加，不替代它们**）：本文必须先进入 Git，且本文内容经独立评审达到 0 blocker／0 major。随后**只删除上述 12 个精确绝对路径**，逐项核对该项自己的清理前置；删除后重新枚举 job tmp。若复扫发现新增文件，必须先补一项完整 disposition（绝对路径、类型、长期价值、承接证据、清理前置、最终动作），**并把更新后的完整清单重新送评审至 0 blocker／0 major**——先前那次评审只覆盖它当时看到的那份清单，不自动延伸到之后变成的样子；禁止用通配删除跳过新文件。
+
+### 执行结果（2026-08-08）
+
+指令文本与本文经三轮独立评审收敛至 0 blocker／0 major（轮次与 findings 见上文「独立评审闭环」第 5–7 条），公共门就此满足。删除前复扫 `/home/xp/.claude/jobs/dddf6825/tmp`，结果与已评审清单**完全一致：12 项、无新增**，故未触发复审重入。随后逐条列出 12 个绝对路径执行删除，未使用任何通配；删除后复扫该目录**为空**。
+
+- **已持久化进项目**：本文（交付、证据、仓库状态、资产处置、已知边界、清单）、[job tmp 清理门 GREEN 验证与处置](../tmp/2026-08-08-job-tmp-closeout-green-review.md)、[绑定争议的第三方仲裁](../tmp/2026-08-08-manifest-binding-arbitration.md)、[指令文本三轮评审与处置](../tmp/2026-08-08-closeout-instruction-review.md)。
+- **已删除**：上述 12 个绝对路径，全部为其承接对象（Git object 或本文）的重复件。
+- **有理由保留**：无。目录已空。
 
 ## 收尾流程缺陷与修复方向
 
