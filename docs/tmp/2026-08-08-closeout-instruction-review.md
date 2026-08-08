@@ -69,3 +69,50 @@
 | `长期价值` 与 `intended value` 语义分岔 | B | 全局 `source.json` Step 2 的 `intended value` 改为 `long-term value — that is, whether any of its content must survive cleanup, not merely what it was used for`；项目 CLAUDE.md ③b 摘要同步补上「长期价值」与「清单本身过独立评审」，避免复述悄悄弱于权威。 |
 
 **未采纳项：无。** 评审明确声明未以 ROI／YAGNI 缩减条款，也未建议新建证明基础设施，与项目的 `solve-the-task-before-building-proof-infrastructure` 不冲突。
+
+
+## 复评（2026-08-08）
+
+### 范围、证据与 verdict
+
+- **基线**：项目 `6224c79fa5f92f1e5dea8bbbc286cec1db71e83c`；全局 skill `68c5867994a37bfbfe9777e7c5c73733d8afe8b0`。只复核上一轮 6 项整改及其相邻接缝。
+- **执行证据**：`render_skill.py --check` exit 0；`python tests/test_skill.py` 为 7 tests OK；内存移除 `clean_temp → review_temp_manifest` requirement 后同一错误 trace 由红转绿；当前 job tmp 复扫仍为已评审的 12 个路径，无新增项。
+- **总体 verdict**：**0 blocker／2 major；不满足 archive 清理门。** 第 3、4、5、6 项闭合；第 1、2 项各剩一个执行接缝。
+
+### 六项闭合判定
+
+| 原 Major | 判定 | 证据 |
+|---|---|---|
+| 1. cleanup 早于 manifest 评审 | **未完全闭合** | 初始 manifest 已由 contract 与有判别力的测试正确设闸；但清理前复扫新增项不会回到 `review_temp_manifest`，见 Major A。 |
+| 2. 强制 fresh installed-location tests | **未完全闭合** | Step 7 与 completion gate 已允许复用；Step 9 必填项仍要求 `fresh verification commands and outcomes`，见 Major B。 |
+| 3. 三处绕过措辞 | **闭合** | frontmatter 不再依赖用户发起；项目 §3b 覆盖三类报告／结束边界并点名豁免话术；全局 root 语义已改为并集且空／未设须 disposition。 |
+| 4. B 组假全称 | **闭合** | archive 已承接 worktree／发布／资产结论，ff-only 明确 superseded，前置收窄为“无未处置 durable conclusion”。 |
+| 5. 数字口径不足 | **闭合** | 两个不可复现 tree 与一个未记录选择器均明确降级为“未交叉验证”，表头已撤回全称主张。 |
+| 6. 字段语义分岔 | **闭合** | 全局 source、渲染文本、项目 §3b 与 CLAUDE.md 均统一为“内容是否必须活过清理”的长期价值。 |
+
+### 事实性发现
+
+#### [major] `/home/xp/.claude/skills/closing-a-development-session/source.json:13,25,71-74,103-105` — 清理前新增文件只回到 classification，未回到独立评审
+- `review_temp_manifest` 只对首次清单设闸；Step 2／5 规定复扫新路径后“add a manifest row, classify it, and verify its receiver”，没有要求更新后的清单再次达到 0 blocker／0 major。项目 skill `/home/xp/src/copilot-api-js/.claude/worktrees/history-persist-retry-defaults/.claude/skills/session-closeout/SKILL.md:49` 与 archive `:101` 同样漏了复审回环。
+- 失败场景：首次 12 项评审通过后生成第 13 项；作者补一行并自判可删，仍可直接 cleanup，刚新增的 `review_temp_manifest` 门被合法绕过。
+- 修复建议：明确“任何新增／修改 disposition 都使先前 manifest verdict 失效，必须重新验证 receiver 并复审更新后的完整清单至 0 blocker／0 major 后才可清理”；contract 若表达该循环困难，正文必须把重入动作写死。
+
+#### [major] `/home/xp/.claude/skills/closing-a-development-session/source.json:41` — Step 9 仍无条件要求 fresh verification，与已修 Step 7 自相矛盾
+- 同段 completion gate 已允许按项目规则复用证据，但 terminal report 必填列表仍写 `fresh verification commands and outcomes`；渲染结果见 `/home/xp/.claude/skills/closing-a-development-session/SKILL.md:218-230`。
+- 失败场景：执行者复用合法的合并态证据后，无法诚实填写“fresh outcomes”，只能重跑或违反 Step 9；原 Major 2 的冲突仍从另一句进入。
+- 替换措辞：改为 `verification commands and outcomes, labeling each as freshly produced or reused and anchoring it to its commit`，与本段末句及 Step 7 对齐。
+
+### 清理门判定
+
+当前 12 项清单未出现新增路径，且上一轮逐项内容核验仍成立；但 archive 要求“本文内容经独立评审达到 0 blocker／0 major”，本轮仍有上述 2 项 major，因此**清理门未满足，不应执行删除**。
+
+### 主会话处置（复评轮，2026-08-08）
+
+2 项 major **全部采纳**，无驳回。两者都是我上一轮修复自身长出来的新问题，形态在项目规则里都有对应条目：
+
+| Major | 级别 | 处置 |
+|---|---|---|
+| A. 复扫新增项不回到独立评审 | B | 三处同步补上重入：全局 `source.json` Step 2 写明「新增／删除／修改任一 disposition 即使先前评审结论失效，更新后的清单须重新过审」，Step 5 写明「0 blocker／0 major 属于被评审的那份清单，不属于它之后变成的样子」；项目 §3b 与 archive 清理门、修复方向第 5 条同步。这正是 `adopting-agent-findings` 所说「每一轮的新问题往往长在上一轮的修复上」——我在修 fail-closed 的过程中新开了一个 fail-closed 的口子。 |
+| B. Step 9 必填项仍写 `fresh` | B | 改为 `verification commands and outcomes, each labelled freshly produced or reused under the project's rules and anchored to its commit`。形态是 `62-docs-and-handover` 的「改了内容没改指向它的东西」：我改了 Step 7 正文与 Step 9 末句，漏了同段的必填清单。首版修补时我一度写成「fresh …, each labelled … or reused」，自相矛盾，通读时改掉。 |
+
+清理门按评审判定**未满足，未执行任何删除**；job tmp 仍为 12 个文件原样保留。
