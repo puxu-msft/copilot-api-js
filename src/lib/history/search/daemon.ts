@@ -137,6 +137,13 @@ export interface TailCursor {
   indexedAtBoundaryMs?: Array<string>
   /** Poisoned rows already crossed by this durable index frontier. Kept for strict freshness attestation across restarts. */
   poisoned?: Array<{ operationId: string; committedAt: number }>
+  /**
+   * `IndexGeneration.opstamp` of the index commit this cursor was published against
+   * (`search-native.ts`). Binds the cursor to the index that produced it — see
+   * `validateCursorAgainstIndex` below. Absent only in cursors written before this
+   * binding existed, which are treated as unverifiable and therefore discarded.
+   */
+  indexOpstamp?: number
 }
 
 const CURSOR_FILE_NAME = "tail-cursor.json"
@@ -178,6 +185,7 @@ export function readTailCursor(indexPath: string): TailCursor | null {
       operationId: raw.operationId,
       ...(indexedAtBoundaryMs ? { indexedAtBoundaryMs } : {}),
       ...(poisoned ? { poisoned } : {}),
+      ...(typeof raw.indexOpstamp === "number" ? { indexOpstamp: raw.indexOpstamp } : {}),
     }
   } catch {
     return null // ENOENT / corrupt JSON / missing fields -- treat as "no cursor yet".
@@ -316,6 +324,61 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
   let flushedCursor: TailCursor | null = cursor
   const warnPoisonOnce = createPoisonLogDeduper()
 
+  /**
+   * Cursor↔index binding (A3 review finding 6). The persisted cursor is this daemon's
+   * claim about what the index ALREADY holds, and `listSearch` turns that claim into the
+   * freshness attestation the main process trusts to serve a strict, "complete or 503"
+   * search. Nothing tied the two together, so an index that no longer matched its cursor
+   * could certify itself complete and answer with a confident empty page.
+   *
+   * Two paths reach that state with the cursor file still in place (both verified against
+   * the native layer, `native/history-search/src/lib.rs`): `open_index` falls back to
+   * `Index::create_in_dir` — a brand-new EMPTY index — when `Index::open_in_dir` fails on
+   * damaged metadata, and an index directory can be restored from an older snapshot while
+   * the newer cursor survives. A FORMAT-marker bump is not one of them: `assert_identity`
+   * wipes the whole directory, cursor included, and a non-empty directory it does not own
+   * is refused outright.
+   *
+   * So the cursor is checked against the index's own commit state before anything uses
+   * it. Both signals move one way within a single index's life, which is what makes them
+   * comparable across restarts: `opstamp` only grows (commits, background merges), and an
+   * index that has been tailed never falls back to zero documents. Failing either check
+   * means this is not the index the cursor described — drop it, re-tail from the
+   * beginning (upserts are delete-then-add idempotent), and let `listSearch` keep
+   * refusing until the frontier has been rebuilt and flushed.
+   *
+   * Scope: this validates the cursor THIS process inherited from disk, once. An index
+   * swapped underneath a running daemon is a different failure — one its own writer
+   * surfaces directly on the next flush — not something a startup check can cover.
+   */
+  let cursorValidation: Promise<void> | undefined
+
+  async function validateCursorAgainstIndex(): Promise<void> {
+    const claimed = cursor
+    if (claimed === null) return
+    const generation = await options.index.generation()
+    const rebuilt = claimed.indexOpstamp === undefined || generation.docCount === 0 || generation.opstamp < claimed.indexOpstamp
+    if (!rebuilt) return
+    consola.warn(
+      `[history-search-daemon] discarding a tail cursor that outlived its index: the cursor claims committed_at=${claimed.committedAt} `
+        + `at index opstamp=${claimed.indexOpstamp ?? "unrecorded"}, but the index reports opstamp=${generation.opstamp} `
+        + `docCount=${generation.docCount}. Re-tailing from the beginning; strict list-search stays unavailable until it catches up.`,
+    )
+    cursor = null
+    flushedCursor = null
+  }
+
+  function ensureCursorMatchesIndex(): Promise<void> {
+    cursorValidation ??= validateCursorAgainstIndex().catch((error: unknown) => {
+      // A failure to READ the index is an infra fault, not a verdict on the cursor —
+      // clear the memo so the next round retries rather than treating an unchecked
+      // cursor as validated.
+      cursorValidation = undefined
+      throw error
+    })
+    return cursorValidation
+  }
+
   function db(): Database {
     // Constructed lazily (see interface doc) and cached for the daemon's lifetime --
     // one long-lived readonly connection tails many rounds; each round is still its
@@ -375,6 +438,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
    * accumulates its own `processed`/`poisoned` counters).
    */
   async function tailOnce(): Promise<TailRoundResult> {
+    await ensureCursorMatchesIndex()
     const connection = db()
     let processed = 0
     let poisoned = 0
@@ -492,8 +556,12 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     const cursorToPublish = cursor
     await options.index.flush()
     if (cursorToPublish === null) return
-    flushedCursor = cursorToPublish
-    writeTailCursor(options.indexPath, cursorToPublish)
+    // Stamp the cursor with the commit it was published against, so a later process can
+    // tell this index from a rebuilt one (see `validateCursorAgainstIndex`).
+    const generation = await options.index.generation()
+    const published: TailCursor = { ...cursorToPublish, indexOpstamp: generation.opstamp }
+    flushedCursor = published
+    writeTailCursor(options.indexPath, published)
   }
 
   function close(): void {
@@ -506,6 +574,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
   }
 
   async function listSearch(request: HistorySearchListRequest): Promise<HistorySearchListResponse["listSearch"]> {
+    await ensureCursorMatchesIndex()
     const frontier = flushedCursor
     const targetCovered =
       frontier !== null

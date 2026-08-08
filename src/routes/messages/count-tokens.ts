@@ -15,7 +15,6 @@ import {
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
-import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { calibrate } from "~/lib/models/calibration"
 import {
@@ -24,6 +23,7 @@ import {
   isEndpointSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   formatDuration,
@@ -70,7 +70,7 @@ async function countTokensViaGhc(
       wire,
       headers,
       model: outboundModel,
-      signal: createResponseHeaderTimeoutSignal(outboundModel),
+      responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(outboundModel),
     })
     const responseText = await response.text()
     const envelope = parseEnvelope(responseText)

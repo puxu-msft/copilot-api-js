@@ -1204,3 +1204,32 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
 - **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
 - **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。
+
+## shutdown drain source 仍由协调器手工枚举（2026-08-08，无损排空评审整改期间发现）
+
+- **根因 / 现状**：`src/lib/shutdown.ts` 的 production `ShutdownDrainSource.getActive()` 手工拼接 `RequestContextManager.getTrackedOperations()` 与 `listInFlightLightweightModelOperations()`。本轮正是因为旧实现只枚举前者，才漏掉 count_tokens／embeddings；修复后当前两类 operation 已闭合，但模式本身仍要求每新增一种不建 `RequestContext` 的旁路 operation 都记得回来改 shutdown 协调器。
+- **结构怪味**：职责错位 + 开放集合手工枚举。operation producer 决定“什么算已接纳”，shutdown 却在外部维护第二份成员清单；下一位复用者仍会踩同类漏接。
+- **理想架构 / 若做需改什么**：建立单一 accepted-operation registry／registration port，让 generation 与 lightweight producer 都向同一个只读 drain view 注册；shutdown 只消费该 view，不知道 operation 种类。迁移时保留每类日志投影，补“新增第三种测试 operation 不改 shutdown 也会被 drain”的正控，并保留本轮两个 omission mutation。
+- **为何暂缓**：当前只有两类 producer，现有 union 已由真实 HTTP 测试与双 mutation 锁住；抽统一 registry 会改动 `RequestContextManager` 所有权、test bootstrap 与日志类型，是独立架构重构，不影响本轮无损关闭正确性。
+- **触发条件**：新增第三种不建 `RequestContext` 的模型 operation，或下一次需要改 `ShutdownActiveOperation` 联合类型时，先做该收敛，禁止继续追加第三个 spread。
+
+## native `list-search` 在过滤前物化全部全文命中（A3 review finding 4，2026-08-08 在 current master 复核仍成立）
+
+- **根因 / 现状**：`native/history-search/src/lib.rs` 的 `list_search_blocking` 先 `TopDocs::with_limit(searcher.num_docs()).order_by_score()`（`:287`、`:294`）拿到**全部**全文命中，再对每一条 `searcher.doc(address)`（`:306`）解压 stored document，**之后**才在 Rust 侧套结构 filter、排序、分页。于是每次 `search=` 列表请求的代价随「命中数」线性增长，且常数项是 stored-doc 解压——而 `operation_kind` / `endpoint` / `state` / `session_id` / `agent_id` 这些等值维**本来就是 `STRING`（已建索引）**，完全可以下推给倒排索引先筛掉。与计划里「fast-field keyset ＋ `limit+1`」的形状不符。
+- **当前行为**：功能正确（顺序、`total`、`hasOlder`/`hasNewer`、cursor 语义都对），没有已观测的用户可见故障；代价是 CPU 与解压带宽，在当前语料规模下未触发投诉。sidecar 是可选独立服务，不可达时主进程返回 503 而非退化。
+- **一个不能绕开的冻结契约**：wire 契约承诺**精确 `total`**（[docs/API.md](../API.md) 的 `/history/api/entries` 行、`ListSearchResult.total`），主进程据此拼合并后的分页总数。因此**不能**靠「只取前 N 条就返回」来消除线性遍历——遍历所有命中是精确计数的必要条件；能消除的是**评分堆**与**stored-doc 物化**，这两项才是真正的常数项元凶。
+- **理想架构 / 若做需改什么**：① 把等值维下推进 `BooleanQuery`（`TermQuery`，`Occur::Must`；多值维用嵌套 `Should`），让倒排先筛；② 用 `Query::weight(EnableScoring::disabled_from_searcher(&searcher))` + `Weight::for_each_no_score(segment_reader, …)` 逐段遍历，取代 `TopDocs(...).order_by_score()`（不需要打分，最终顺序由 `(created_at desc, operation_id desc)` 决定）；③ 排序/keyset 所需的 `created_at`、`operation_id` 改从 fast field 读，二者**已经是 `FAST`**（`schema()`），因此这一步零 schema 改动；④ 剩下三个谓词需要新增 fast 列才能摆脱 stored-doc：`pid`（`STORED` i64）、`request_model`/`response_model`（子串匹配，无法用 term 查询）、`mainAgentOnly`（语义是「`agent_id` 不存在」）。加 `FAST` 属于 on-disk 布局变更，**必须同时 bump `FORMAT_MARKER`**——`assert_identity` 会对自有的旧标记目录执行 wipe-and-rebuild，索引是可丢弃派生物，这条自愈路径已经存在。
+- **已核实的上游 API（tantivy 0.26.1，仓库内 vendored 源码，非记忆）**：`Weight::for_each_no_score` (`src/query/weight.rs:101`)、`EnableScoring::disabled_from_searcher` (`src/query/query.rs:57`)、`FastFieldReaders::{u64,str,i64}` (`src/fastfield/readers.rs:176/195/363`)。
+- **为何暂缓**：它是**性能/架构**改动而非 correctness 缺陷（本轮已闭合的三条 A3 都是 correctness），要主张改善必须先有**可复现基线**（合成语料下的分档计时），否则等于用推理冒充测量；且顺序、`total`、`hasOlder`/`hasNewer`、`invalidCursor` 四项语义必须逐条保持不变，值得配自己的 mutation 对照，塞进本轮会让本轮的验证链变糊。
+- **触发条件（值得做）**：① History 语料规模上一个数量级、或 `search=` 列表请求出现可观测延迟；② 因别的原因已经要动 `schema()` / bump `FORMAT_MARKER` 时（顺手把 fast 列一起加上，省一次全量重建）；③ 有人打算放宽「精确 total」契约时——那会改变本条的最优解形状，需要先重裁契约。
+- **发现方**：NGHTTP2_CANCEL 系列 A3 独立评审 finding 4（`docs/plan/2026-08-06-nghttp2-cancel-series/review-core-a3.md`），2026-08-08 对照 current master 源码逐行复核仍成立；同轮已闭合 finding 3（`state ∧ success`）、5（list query 校验）、6（cursor↔index generation 绑定）。
+
+## `pipelineInfo.responseHeaderTimeoutMs` 声明了但从无生产写点（2026-08-08，客户端连接 skill 事实订正的邻域发现）
+
+- **根因 / 现状**：`src/lib/history/types.ts:233` 声明了 `responseHeaderTimeoutMs`，`ctx.setStreamTimeouts()` 的签名（`src/lib/context/types.ts:538`、`src/lib/context/request.ts:1304`）也收这个 patch 键，但**六处生产调用点全都只传 `streamIdleTimeoutMs`**：`src/routes/messages/handler-v4.ts:811,1155`、`src/routes/chat-completions/handler-v4.ts:250`、`src/routes/responses/handler-v4.ts:204`、`src/routes/responses/ws.ts:347`、`src/routes/gemini/handler-v4.ts:221`。唯一写过它的是单测 `tests/context/request-context.unit.test.ts:1225`。
+- **当前行为**：功能无缺陷——这是纯诊断字段，缺失不影响请求处理。代价落在**事后归因**：一条 header-timeout 事故的 entry 里没有任何结构化的阈值快照，而 `stale_request_max_age` / `request_deadline` 反倒能从终端 error 文案里取回嵌入秒数（`src/lib/context/manager.ts:329,440` → `_index.derived.failureReason`，`src/lib/history/v3/projection.ts:437`）。于是**四个 wall-clock terminator 里，最像超时的那一个反而最没有证据**，最容易被凭记忆的默认值补上——正是 2026-07-28 那次「609ms 请求被报成 900s header 超时」的同族陷阱。
+- **理想架构 / 若做需改什么**：在已经调 `resolveStreamIdleTimeoutMs(...)` 的同六处，一并传 `responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(resolvedName)`（该 resolver 已存在，见 `src/lib/transport/send.ts:222`、`src/lib/anthropic/client.ts:164` 等调用点）。`setStreamTimeouts` 本就是 merge 语义（单测 `:1222` 守着「两次调用累加」），无需改契约、无需 schema 变更。**注意 per-model override 与 `0`=禁用两种情形都要能忠实落盘**，否则字段存在却撒谎，比缺失更糟。
+- **为何暂缓**：本轮任务是订正 skill 的陈旧事实，不是补产品接线；且这条要做就该**四个 terminator 一起走结构化字段**（现在 stale/deadline 靠解析错误文案取值，是同一个缺陷的另一面），那是一次独立的可观测性改动，值得自己的判据与 mutation 对照。skill `debugging-claude-client-connection` 已按**当前真实接线**写明取证表（哪一格有值、哪一格必须判「未决」），归因不会因此走错。
+- **触发条件（值得做）**：① 又出现一次 header-timeout 归因争议；② 因别的原因要动 `pipelineInfo` 或 `setStreamTimeouts` 时顺手补全；③ 有人打算把 `failureReason` 文案解析写成正式 oracle 时——那说明结构化字段的缺口已经在制造成本。
+- **发现方**：`debugging-claude-client-connection` skill 事实订正的独立评审（复评轮 major 1，`docs/tmp/2026-08-08-batch1-client-connection-skill-review.md`），主会话逐个调用点复核确认。
+

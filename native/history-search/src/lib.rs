@@ -73,6 +73,24 @@ pub struct ListSearchResult {
     pub invalid_cursor: bool,
 }
 
+/// The index's OWN commit state, read from Tantivy rather than from any marker this
+/// project writes beside it.
+///
+/// The JS tail cursor records this at publish time so a later process can prove the
+/// durable frontier that cursor claims is still backed by THIS index. Both fields move
+/// only one way while an index lives: commits and merges raise `opstamp`, and a tailed
+/// index never loses every document. Two reachable paths break that continuity while the
+/// cursor file survives — `open_index` falling back to `create_in_dir` after
+/// `Index::open_in_dir` fails on damaged metadata, and an index directory restored from
+/// an older snapshot — and those are exactly the cases where a surviving cursor must stop
+/// being believed. (A FORMAT-marker bump is NOT one of them: `assert_identity` wipes the
+/// whole directory, cursor included.)
+#[napi(object)]
+pub struct IndexGeneration {
+    pub doc_count: i64,
+    pub opstamp: i64,
+}
+
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
@@ -635,6 +653,29 @@ impl HistoryIndex {
         tokio::task::spawn_blocking(move || list_search_blocking(&index, &reader, fields, request))
             .await
             .map_err(native_error)?
+    }
+
+    /// Read this index's own commit state (see `IndexGeneration`). Reloads the reader
+    /// first, so the count reflects the latest commit rather than the snapshot the
+    /// reader happened to be holding.
+    #[napi]
+    pub async fn generation(&self) -> Result<IndexGeneration> {
+        let index = self.index.clone();
+        let reader = self.reader.clone();
+        tokio::task::spawn_blocking(move || -> Result<IndexGeneration> {
+            reader.reload().map_err(native_error)?;
+            let doc_count = i64::try_from(reader.searcher().num_docs())
+                .map_err(|_| native_error("index doc count out of i64 range"))?;
+            let metas = index.load_metas().map_err(native_error)?;
+            let opstamp = i64::try_from(metas.opstamp)
+                .map_err(|_| native_error("index opstamp out of i64 range"))?;
+            Ok(IndexGeneration {
+                doc_count,
+                opstamp,
+            })
+        })
+        .await
+        .map_err(native_error)?
     }
 
     /// Commit staged documents, then drop the writer to release the Tantivy directory

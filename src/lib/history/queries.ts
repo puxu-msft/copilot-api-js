@@ -8,14 +8,23 @@ import type {
 } from "./types"
 
 import { formatFromEndpoint } from "./endpoint-format"
-import { resolveResponseModel } from "./entry-view"
+import {
+  //
+  resolveResponseModel,
+  resolveResponseSuccess,
+} from "./entry-view"
 import {
   //
   getInFlight,
   listInFlight,
   toEntrySummary,
 } from "./in-flight"
-import { isActiveState } from "./lifecycle-state"
+import {
+  //
+  isActiveState,
+  lifecycleStatesForQuery,
+  matchesLifecycleQuery,
+} from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
@@ -59,8 +68,7 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
     const res = resolveResponseModel(entry)?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
-  if (opts.success === true && entry.state !== "completed") return false
-  if (opts.success === false && entry.state !== "failed") return false
+  if (!matchesLifecycleQuery({ state: entry.state, responseSuccess: resolveResponseSuccess(entry) }, opts)) return false
   return true
 }
 
@@ -104,10 +112,15 @@ function operationKindsForSearch(kind: NonNullable<QueryOptions["operationKind"]
 }
 
 function statesForSearch(options: QueryOptions): Array<string> {
-  if (options.state) return [options.state]
-  if (options.success === true) return ["completed"]
-  if (options.success === false) return ["failed"]
-  return []
+  return [...(lifecycleStatesForQuery(options) ?? [])]
+}
+
+function hasConflictingLifecycleFilters(options: QueryOptions): boolean {
+  return lifecycleStatesForQuery(options)?.length === 0
+}
+
+function emptySummaryResult(): SummaryResult {
+  return { entries: [], total: 0, nextCursor: null, prevCursor: null }
 }
 
 function isOnCursorSide(summary: EntrySummary, cursor: EntrySummary | undefined, direction: "older" | "newer"): boolean {
@@ -127,12 +140,7 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
     const res = summary.responseModel?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
-  if (opts.state && summary.state !== opts.state) return false
-  if (!opts.state && opts.success !== undefined) {
-    if (summary.state !== undefined) {
-      if (summary.state !== (opts.success ? "completed" : "failed")) return false
-    } else if (summary.responseSuccess !== opts.success) return false
-  }
+  if (!matchesLifecycleQuery(summary, opts)) return false
   if (opts.agentId && summary.agentId !== opts.agentId) return false
   if (!opts.agentId && opts.mainAgentOnly && summary.agentId !== undefined) return false
   if (opts.pid !== undefined && summary.pid !== opts.pid) return false
@@ -307,6 +315,9 @@ export function getSummary(id: string): EntrySummary | undefined {
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
+  if (hasConflictingLifecycleFilters(options)) {
+    return { entries: [], total: 0, page: 1, limit, totalPages: 0 }
+  }
 
   const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
   const operationKind = options.operationKind ?? "generation"
@@ -348,6 +359,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 }
 
 export async function getHistorySummariesAsync(options: QueryOptions = {}): Promise<SummaryResult> {
+  if (hasConflictingLifecycleFilters(options)) return emptySummaryResult()
   if (!options.search) return getHistorySummaries(options)
   const { limit = 50, terminalOnly } = options
   const operationKind = options.operationKind ?? "generation"
@@ -449,6 +461,7 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
 }
 
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
+  if (hasConflictingLifecycleFilters(options)) return emptySummaryResult()
   const { limit = 50, terminalOnly } = options
 
   const operationKind = options.operationKind ?? "generation"

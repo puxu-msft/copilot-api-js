@@ -22,13 +22,25 @@ describe("createStreamTranslator", () => {
     translator.translate({
       type: "response.created",
       sequence_number: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      response: { id: "r1", object: "response", created_at: 1, status: "in_progress", model: "gpt-5", output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as any,
+
+      response: {
+        id: "r1",
+        object: "response",
+        created_at: 1,
+        status: "in_progress",
+        model: "gpt-5",
+        output: [],
+        usage: null,
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      } as any,
     })
     const completed = translator.translate({
       type: "response.completed",
       sequence_number: 1,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       response: {
         id: "r1",
         object: "response",
@@ -48,9 +60,49 @@ describe("createStreamTranslator", () => {
     expect(completed[1]?.usage).toMatchObject({
       prompt_tokens: 1000,
       completion_tokens: 50,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } as any,
     })
+  })
+
+  test("omits null cache-write details from the streaming CC usage projection", () => {
+    const translator = createStreamTranslator()
+    translator.translate({
+      type: "response.created",
+      sequence_number: 0,
+      response: {
+        id: "r-null-cache",
+        object: "response",
+        created_at: 1,
+        status: "in_progress",
+        model: "gpt-5",
+        output: [],
+        usage: null,
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      },
+    })
+    const completed = translator.translate({
+      type: "response.completed",
+      sequence_number: 1,
+      response: {
+        id: "r-null-cache",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3, input_tokens_details: { cache_write_tokens: null } },
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      } as never,
+    })
+
+    expect(completed[1]?.usage).toEqual({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 })
   })
 
   test("translates text deltas and emits a usage chunk on completion", () => {
@@ -581,14 +633,28 @@ describe("createStreamTranslator — reasoning summary bridge (probe exp/synthet
       type: "response.output_item.added",
       sequence_number: 1,
       output_index: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "OPAQUE-BLOB" } as any,
     })
     expect(added).toHaveLength(1)
     expect((added[0]?.choices[0]?.delta as { reasoning_encrypted_content?: string }).reasoning_encrypted_content).toBe("OPAQUE-BLOB")
 
-    const d1 = t.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 2, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "**Calc**\n\n" })
-    const d2 = t.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 3, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "80 km/h" })
+    const d1 = t.translate({
+      type: "response.reasoning_summary_text.delta",
+      sequence_number: 2,
+      item_id: "rs_1",
+      output_index: 0,
+      summary_index: 0,
+      delta: "**Calc**\n\n",
+    })
+    const d2 = t.translate({
+      type: "response.reasoning_summary_text.delta",
+      sequence_number: 3,
+      item_id: "rs_1",
+      output_index: 0,
+      summary_index: 0,
+      delta: "80 km/h",
+    })
     expect((d1[0]?.choices[0]?.delta as { reasoning?: string }).reasoning).toBe("**Calc**\n\n")
     expect((d2[0]?.choices[0]?.delta as { reasoning?: string }).reasoning).toBe("80 km/h")
   })
@@ -599,7 +665,7 @@ describe("createStreamTranslator — reasoning summary bridge (probe exp/synthet
       type: "response.output_item.added",
       sequence_number: 1,
       output_index: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "" } as any,
     })
     expect(added).toHaveLength(0)
@@ -627,12 +693,82 @@ describe("END-TO-END two-hop: Responses reasoning events → CC → Anthropic th
     }
 
     // Real GHC event order (probe exp/synthetic-reasoning-summary-shape).
-    feed(rt.translate({ type: "response.created", sequence_number: 0, response: { id: "r1", object: "response", created_at: 1, status: "in_progress", model: "gpt-5.4-mini", output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as never }))
-    feed(rt.translate({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "ENC-1804" } as never }))
-    feed(rt.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 2, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "Calculating: " }))
-    feed(rt.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 3, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "80 km/h." }))
-    feed(rt.translate({ type: "response.output_text.delta", sequence_number: 4, output_index: 1, content_index: 0, item_id: "m1", delta: "The speed is 80 km/h." }))
-    feed(rt.translate({ type: "response.completed", sequence_number: 5, response: { id: "r1", object: "response", created_at: 1, status: "completed", model: "gpt-5.4-mini", output: [], usage: { input_tokens: 41, output_tokens: 64, total_tokens: 105 }, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as never }))
+    feed(
+      rt.translate({
+        type: "response.created",
+        sequence_number: 0,
+        response: {
+          id: "r1",
+          object: "response",
+          created_at: 1,
+          status: "in_progress",
+          model: "gpt-5.4-mini",
+          output: [],
+          usage: null,
+          tools: [],
+          tool_choice: "auto",
+          parallel_tool_calls: false,
+          store: false,
+        } as never,
+      }),
+    )
+    feed(
+      rt.translate({
+        type: "response.output_item.added",
+        sequence_number: 1,
+        output_index: 0,
+        item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "ENC-1804" } as never,
+      }),
+    )
+    feed(
+      rt.translate({
+        type: "response.reasoning_summary_text.delta",
+        sequence_number: 2,
+        item_id: "rs_1",
+        output_index: 0,
+        summary_index: 0,
+        delta: "Calculating: ",
+      }),
+    )
+    feed(
+      rt.translate({
+        type: "response.reasoning_summary_text.delta",
+        sequence_number: 3,
+        item_id: "rs_1",
+        output_index: 0,
+        summary_index: 0,
+        delta: "80 km/h.",
+      }),
+    )
+    feed(
+      rt.translate({
+        type: "response.output_text.delta",
+        sequence_number: 4,
+        output_index: 1,
+        content_index: 0,
+        item_id: "m1",
+        delta: "The speed is 80 km/h.",
+      }),
+    )
+    feed(
+      rt.translate({
+        type: "response.completed",
+        sequence_number: 5,
+        response: {
+          id: "r1",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "gpt-5.4-mini",
+          output: [],
+          usage: { input_tokens: 41, output_tokens: 64, total_tokens: 105 },
+          tools: [],
+          tool_choice: "auto",
+          parallel_tool_calls: false,
+          store: false,
+        } as never,
+      }),
+    )
     for (const s of at.flush()) anthropicFrames.push(s.frame)
 
     const parse = (f: { data?: string }) => JSON.parse(f.data ?? "{}") as Record<string, unknown>
@@ -641,7 +777,9 @@ describe("END-TO-END two-hop: Responses reasoning events → CC → Anthropic th
     expect(starts.map((f) => (parse(f).content_block as { type: string }).type)).toEqual(["thinking", "text"])
 
     // The thinking text = concatenated summary deltas.
-    const thinkingDeltas = anthropicFrames.filter((f) => parse(f).type === "content_block_delta" && (parse(f).delta as { type: string }).type === "thinking_delta")
+    const thinkingDeltas = anthropicFrames.filter(
+      (f) => parse(f).type === "content_block_delta" && (parse(f).delta as { type: string }).type === "thinking_delta",
+    )
     expect(thinkingDeltas.map((f) => (parse(f).delta as { thinking: string }).thinking).join("")).toBe("Calculating: 80 km/h.")
 
     // The signature is a labeled envelope whose payload decodes back to the encrypted_content (round-trip).

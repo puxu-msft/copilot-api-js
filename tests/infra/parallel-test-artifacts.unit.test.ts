@@ -1,8 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 
-import { compareFileIdentities, parseJUnit } from "../../scripts/parallel-test-artifacts"
+import {
+  //
+  compareFileIdentities,
+  parseJUnit,
+} from "../../scripts/parallel-test-artifacts"
 
 const BUN_JUNIT_CORPUS = path.join(import.meta.dir, "fixtures/bun-junit-shard-14.xml")
 

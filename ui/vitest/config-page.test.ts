@@ -161,7 +161,7 @@ describe("VConfigPage", () => {
     expect(wrapper.text()).toContain("OpenAI Responses")
     expect(wrapper.text()).toContain("Timeouts")
     expect(wrapper.text()).toContain("Model Refresh Interval")
-    expect(wrapper.text()).toContain("Shutdown")
+    expect(wrapper.text()).not.toContain("Shutdown")
     expect(wrapper.text()).toContain("History")
     expect(wrapper.text()).toContain("Model Overrides")
     expect(wrapper.text()).toContain("Rate Limiter")

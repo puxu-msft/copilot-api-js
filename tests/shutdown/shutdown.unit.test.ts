@@ -24,13 +24,13 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { createBus } from "~/lib/observability"
 import {
   //
   getUpstreamWsManager,
   resetUpstreamWsManagerForTests,
 } from "~/lib/openai/upstream-ws"
-import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import {
   //
   _resetShutdownState,
@@ -45,7 +45,6 @@ import {
 } from "~/lib/shutdown"
 import { registerTerminal } from "~/lib/tui/terminal-coordinator"
 
-import { FakeClock } from "../helpers/fake-clock"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
 
@@ -399,7 +398,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 1 active request(s)")
+    expect(result).toContain("Waiting for 1 accepted operation(s)")
     expect(result).toContain("POST /v1/messages claude-sonnet-4")
     expect(result).toContain("streaming")
   })
@@ -425,7 +424,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 2 active request(s)")
+    expect(result).toContain("Waiting for 2 accepted operation(s)")
     expect(result).toContain("claude-sonnet-4")
     expect(result).toContain("gpt-4o")
   })
@@ -557,20 +556,12 @@ describe("lossless drain", () => {
   })
 
   test("waits until accepted operations complete", async () => {
-    const clock = new FakeClock()
-    clock.install()
-    try {
-      const tracker = createMockTracker([{ status: "streaming" }])
-      setTimeout(() => tracker._clearRequests(), 30)
+    const tracker = createMockTracker([{ status: "streaming" }])
+    setTimeout(() => tracker._clearRequests(), 30)
 
-      const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-      await clock.advance(30)
-      await shutdown
+    await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
 
-      expect(getShutdownPhase()).toBe("stopped")
-    } finally {
-      clock.restore()
-    }
+    expect(getShutdownPhase()).toBe("stopped")
   })
 
   test("never force-closes the listener", async () => {

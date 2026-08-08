@@ -138,7 +138,10 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
   })
 
   test("the real Claude signature is carried BYTE-EXACT in encrypted_content via the claude-signature-carrier (Phase 5 round-trip) — recoverable via extractClaudeSignature", () => {
-    const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "thinking", thinking: "reasoning text", signature: "REAL-SIGNATURE-xyz" }]), ctx)
+    const result = translateAnthropicResponseToResponses(
+      anthropicResponse([{ type: "thinking", thinking: "reasoning text", signature: "REAL-SIGNATURE-xyz" }]),
+      ctx,
+    )
     const reasoning = result.output[0] as ResponsesReasoningOutput
     expect(reasoning.encrypted_content).toBeDefined()
     // Byte-exact recoverability is the load-bearing property (probe (e): Claude's upstream rejects a
@@ -189,10 +192,7 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
     )
     const reasoningItems = result.output.filter((o): o is ResponsesReasoningOutput => o.type === "reasoning")
     expect(reasoningItems.length).toBe(2)
-    expect(reasoningItems.map((r) => r.summary)).toEqual([
-      [{ type: "summary_text", text: "first" }],
-      [{ type: "summary_text", text: "second" }],
-    ])
+    expect(reasoningItems.map((r) => r.summary)).toEqual([[{ type: "summary_text", text: "first" }], [{ type: "summary_text", text: "second" }]])
     expect(reasoningItems.map((r) => extractClaudeSignature(r.encrypted_content))).toEqual(["SIG-ONE", "SIG-TWO"])
     // Distinct ids (no accidental id collision now that reasoning is per-block).
     expect(new Set(reasoningItems.map((r) => r.id)).size).toBe(2)

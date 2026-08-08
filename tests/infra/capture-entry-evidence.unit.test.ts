@@ -1,5 +1,19 @@
-import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import {
+  //
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -32,34 +46,30 @@ function createFixture(options: { omitArtifacts?: boolean; skippedKind?: SkipKin
   git(tree, ["config", "user.name", "Test"])
   const runnerBlob = git(tree, ["hash-object", "scripts/parallel-test.ts"])
   const allowedSkipped =
-    options.skippedKind === "testcase"
-      ? [{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "", name: "", ordinal: 1, count: 1, reason: "todo" }]
-      : options.skippedKind === "suite"
-        ? [{ kind: "suite", file: "tests/a.unit.test.ts", suite_name: "suite", count: 1, reason: "whole-suite-skip" }]
-        : []
+    options.skippedKind === "testcase" ? [{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "", name: "", ordinal: 1, count: 1, reason: "todo" }]
+    : options.skippedKind === "suite" ? [{ kind: "suite", file: "tests/a.unit.test.ts", suite_name: "suite", count: 1, reason: "whole-suite-skip" }]
+    : []
   writeFileSync(
     path.join(tree, "tests/infra/entry-test-discovery-baseline.json"),
     `${JSON.stringify({ schema_version: 1, runner_git_blob: runnerBlob, minimum_executed: 1, files: ["tests/a.unit.test.ts"], allowed_skipped: allowedSkipped }, null, 2)}\n`,
   )
   const runtimeSkippedKind = options.runtimeSkippedKind ?? options.skippedKind
   const testcase =
-    runtimeSkippedKind === "testcase"
-      ? '<testcase classname="" name="" file="tests/a.unit.test.ts"><skipped/></testcase>'
-      : '<testcase classname="suite" name="case" file="tests/a.unit.test.ts"/>'
+    runtimeSkippedKind === "testcase" ?
+      '<testcase classname="" name="" file="tests/a.unit.test.ts"><skipped/></testcase>'
+    : '<testcase classname="suite" name="case" file="tests/a.unit.test.ts"/>'
   const skippedIdentity =
-    runtimeSkippedKind === "testcase"
-      ? '[{ "kind": "testcase", "file": "tests/a.unit.test.ts", "classname": "", "name": "", "ordinal": 1, "count": 1 }]'
-      : runtimeSkippedKind === "suite"
-        ? '[{ "kind": "suite", "file": "tests/a.unit.test.ts", "suite_name": "suite", "count": 1 }]'
-        : "[]"
-  const artifacts = options.omitArtifacts
-    ? "true"
-    : `printf '<testsuites>${testcase}</testsuites>\\n' > "$d/shard-01.xml"
+    runtimeSkippedKind === "testcase" ? '[{ "kind": "testcase", "file": "tests/a.unit.test.ts", "classname": "", "name": "", "ordinal": 1, "count": 1 }]'
+    : runtimeSkippedKind === "suite" ? '[{ "kind": "suite", "file": "tests/a.unit.test.ts", "suite_name": "suite", "count": 1 }]'
+    : "[]"
+  const artifacts =
+    options.omitArtifacts ? "true" : (
+      `printf '<testsuites>${testcase}</testsuites>\\n' > "$d/shard-01.xml"
 printf '{\\n  "files": [\\n    "tests/a.unit.test.ts"\\n  ]\\n}\\n' > "$d/runtime-identity.json"
 printf '{\\n  "executed": 1,\\n  "skipped": ${options.skippedKind ? 1 : 0},\\n  "skipped_identities": ${skippedIdentity}\\n}\\n' > "$d/skipped-multiset.json"`
-  const manifestCollision = options.manifestDirectory
-    ? 'mkdir "$OUT/evidence-manifest.json"\nprintf "preserve me\\n" > "$OUT/evidence-manifest.json/sentinel.txt"'
-    : ""
+    )
+  const manifestCollision =
+    options.manifestDirectory ? 'mkdir "$OUT/evidence-manifest.json"\nprintf "preserve me\\n" > "$OUT/evidence-manifest.json/sentinel.txt"' : ""
   writeFileSync(
     path.join(tree, "exp/inter-block-anchor-allocator/baseline-runs.sh"),
     `#!/usr/bin/env bash
@@ -139,7 +149,12 @@ describe("capture-entry-evidence", () => {
       try {
         const insideLink = path.join(lexicalOutside, "inside-tree")
         symlinkSync(fixture.tree, insideLink)
-        replaceOut(fixture, mode === "exact" ? fixture.tree : mode === "symlink" ? insideLink : path.join(insideLink, "new-child"))
+        replaceOut(
+          fixture,
+          mode === "exact" ? fixture.tree
+          : mode === "symlink" ? insideLink
+          : path.join(insideLink, "new-child"),
+        )
         expectPathFailure(fixture)
       } finally {
         clean(fixture)

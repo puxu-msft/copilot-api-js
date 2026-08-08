@@ -25,13 +25,9 @@ import type {
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import {
-  //
-  createResponseHeaderTimeoutSignal,
-  captureHttpHeaders,
-} from "~/lib/fetch-utils"
+import { captureHttpHeaders } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import { state } from "~/lib/state"
-import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
@@ -60,8 +56,10 @@ export interface PostAnthropicUpstreamArgs {
   headers: Record<string, string>
   /** Resolved outbound model name retained in the prepared transport contract. */
   model: string
-  /** Combined request-owned abort signal (timeout + client abort). */
+  /** Request-owned lifecycle abort signal. */
   signal?: AbortSignal
+  /** Maximum time to receive response headers; disarmed before body consumption. */
+  responseHeaderTimeoutMs?: number
 }
 
 /**
@@ -80,6 +78,7 @@ export async function postAnthropicUpstream(args: PostAnthropicUpstreamArgs): Pr
     headers: args.headers,
     body: JSON.stringify(args.wire),
     signal: args.signal,
+    responseHeaderTimeoutMs: args.responseHeaderTimeoutMs,
   })
 }
 
@@ -148,12 +147,11 @@ export async function createAnthropicMessages(
 
   consola.debug("Sending direct Anthropic request to Copilot /v1/messages")
 
-  // Fold the model-specific response-header timeout and downstream client abort
-  // into the fetch. Shutdown deliberately contributes no request signal: the first
-  // process signal must leave accepted requests fully capable of completing.
-  // `model` is the resolved outbound name, so timeout overrides key on the model
-  // the request is actually sent as rather than the client's raw alias.
-  const upstreamSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(model), opts?.clientAbortSignal)
+  // Client disconnect remains a request-owned lifecycle abort. The model-specific
+  // response-header deadline is passed separately and disarmed before body consumption.
+  // Shutdown deliberately contributes no signal: the first process signal must leave
+  // accepted requests fully capable of completing.
+  const upstreamSignal = opts?.clientAbortSignal
 
   const response = await postAnthropicUpstream({
     // web_search bypass hop: append the forwarded client query to the upstream path
@@ -163,6 +161,7 @@ export async function createAnthropicMessages(
     headers,
     model,
     signal: upstreamSignal,
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(model),
   })
 
   if (opts?.headersCapture) {

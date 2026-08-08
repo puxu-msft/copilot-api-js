@@ -17,8 +17,9 @@
 // scalar; `model === undefined` skips the table and returns the scalar; a
 // value of 0 means "disabled" (no timeout), preserved through Ms conversion.
 
-import { findMostSpecific } from "~/lib/anthropic/per-model-config"
 import { state } from "~/lib/state"
+
+import { findMostSpecific } from "./model-pattern"
 
 /** Effective stream-idle timeout in seconds for `model` (0 = disabled). */
 export function resolveStreamIdleTimeoutSec(model: string | undefined): number {

@@ -1,3 +1,4 @@
+import type { GhcInputTokensDetails } from "~/types/api/ghc-usage"
 import type {
   //
   ChatCompletionResponse,
@@ -13,6 +14,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { HTTPError } from "~/lib/error"
+import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
 export function translateResponsesResponseToCC(response: ResponsesResponse): ChatCompletionResponse {
   if (response.status === "failed") {
@@ -33,7 +35,7 @@ export function translateResponsesResponseToCC(response: ResponsesResponse): Cha
         logprobs: null,
       },
     ],
-    ...(response.usage && { usage: mapUsage(response.usage) }),
+    ...(response.usage && { usage: mapResponsesUsageToCC(response.usage) }),
     ...(response.service_tier !== undefined && { service_tier: response.service_tier }),
   }
 }
@@ -57,7 +59,7 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
     }
 
     if (item.type === "reasoning") {
-      for (const s of item.summary) if (s.type === "summary_text" && s.text) reasoningParts.push(s.text)
+      for (const summary of item.summary) if (summary.text) reasoningParts.push(summary.text)
       if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) reasoningEncrypted = item.encrypted_content
     }
 
@@ -105,16 +107,19 @@ function mapIncompleteFinishReason(incompleteDetails?: { reason: string } | null
   return "length"
 }
 
-function mapUsage(usage: ResponsesUsage) {
+export function mapResponsesUsageToCC(usage: ResponsesUsage) {
+  const inputDetails = usage.input_tokens_details as GhcInputTokensDetails | undefined
+  const cachedTokens = nonNegOrUndef(inputDetails?.cached_tokens)
+  const cacheWriteTokens = nonNegOrUndef(inputDetails?.cache_write_tokens)
   return {
     prompt_tokens: usage.input_tokens,
     completion_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
-    ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens != null) && {
+    ...((cachedTokens !== undefined || cacheWriteTokens !== undefined) && {
       prompt_tokens_details: {
-        ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+        ...(cachedTokens !== undefined && { cached_tokens: cachedTokens }),
         // GHC extension: forward cache_write so the client sees it (spec §7).
-        ...(usage.input_tokens_details?.cache_write_tokens != null && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+        ...(cacheWriteTokens !== undefined && { cache_write_tokens: cacheWriteTokens }),
       },
     }),
     ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {
