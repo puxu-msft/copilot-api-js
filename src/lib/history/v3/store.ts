@@ -32,8 +32,9 @@ import {
   tryMarkSummaryProjectionReady,
 } from "./summary-store"
 
-const FORMAT_VERSION = 2
-const SCHEMA_VERSION = "5"
+const FORMAT_VERSION = 3
+const SCHEMA_VERSION = "6"
+const JOURNAL_FORMAT_VERSION = 2
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -118,7 +119,27 @@ interface PreparedPayloadValue {
   sequenceNodes: Array<PreparedSequenceNode>
 }
 
-interface PreparedOperation {
+export interface CapturedTransportEvidence {
+  availability: "captured"
+  digest: string
+  byteLength: number
+  encoding: "binary"
+}
+
+export interface TransportEvidenceInput {
+  dispatchIndex: number
+  sequence: number
+  capture: CapturedTransportEvidence
+  bytes: Uint8Array
+}
+
+export type HydratedTransportEvidence = TransportEvidenceInput
+
+interface PreparedTransportEvidence extends TransportEvidenceInput {
+  compressed: Uint8Array
+}
+
+export interface PreparedOperation {
   id: string
   revision: number
   digest: string
@@ -131,6 +152,7 @@ interface PreparedOperation {
   manifest: Uint8Array
   compressedManifest: Uint8Array
   compressedJournalRecord: Uint8Array
+  transportEvidence: Array<PreparedTransportEvidence>
   objects: Array<PreparedObject>
   sequenceNodes: Array<PreparedSequenceNode>
   tracks: Array<{ name: string; attemptIndex: number; refs: string; compressed: Uint8Array }>
@@ -265,6 +287,12 @@ CREATE TABLE IF NOT EXISTS v3_timeline_chunks (
   payload_gz BLOB NOT NULL,
   PRIMARY KEY(operation_id, chunk_index)
 );
+CREATE TABLE IF NOT EXISTS v3_transport_evidence (
+  digest TEXT PRIMARY KEY,
+  encoding TEXT NOT NULL,
+  evidence_gz BLOB NOT NULL,
+  byte_length INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS v3_journal (
   operation_id TEXT NOT NULL,
   revision INTEGER NOT NULL,
@@ -274,6 +302,7 @@ CREATE TABLE IF NOT EXISTS v3_journal (
   created_at INTEGER NOT NULL,
   committed_at INTEGER,
   error TEXT,
+  format_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(operation_id, revision)
 );
 CREATE TABLE IF NOT EXISTS v3_summary_backlog (
@@ -284,34 +313,33 @@ CREATE TABLE IF NOT EXISTS v3_summary_backlog (
 `
 
 /**
- * Reconcile the V3 schema floor and correct pre-timing rows in place. Historical
- * `committed_at` is the closest durable upper bound on terminal time; it is
- * explicitly labelled so consumers never mistake persistence time for an exact
- * model-operation boundary.
+ * Establish the current floor for a brand-new database, or reconcile only
+ * idempotent current-schema indexes for an already-migrated database.
+ *
+ * Existing schema-5 databases deliberately remain byte/schema-identical here:
+ * `001-transport-evidence-schema` is the sole owner of adding evidence storage,
+ * adding `v3_journal.format_version`, and publishing schema version 6.
  */
 export function ensureV3Schema(db: Database = getDatabase()): void {
-  db.exec(V3_SCHEMA_SQL)
+  const metaExists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_meta'").get()
+  if (!metaExists) {
+    const create = db.transaction(() => {
+      db.exec(V3_SCHEMA_SQL)
+      db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version',?)").run(SCHEMA_VERSION)
+    })
+    create()
+    return
+  }
+
   const version = db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get() as { value: string } | undefined
-  const embeddedSearchPresent = db
-    .prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('v3_search_membership','v3_search_objects','v3_search_backlog') LIMIT 1")
-    .get()
-  if (version?.value === SCHEMA_VERSION && !embeddedSearchPresent) return
-  const columns = new Set((db.prepare("PRAGMA table_info(v3_operations)").all() as Array<{ name: string }>).map((column) => column.name))
-  const trackColumns = new Set((db.prepare("PRAGMA table_info(v3_tracks)").all() as Array<{ name: string }>).map((column) => column.name))
-  const migrate = db.transaction(() => {
-    if (!columns.has("ended_at")) db.exec("ALTER TABLE v3_operations ADD COLUMN ended_at INTEGER")
-    if (!columns.has("timing_source")) db.exec("ALTER TABLE v3_operations ADD COLUMN timing_source TEXT NOT NULL DEFAULT 'storage-commit-upper-bound'")
-    if (!columns.has("summary_json")) db.exec("ALTER TABLE v3_operations ADD COLUMN summary_json TEXT")
-    if (!trackColumns.has("track_gz")) db.exec("ALTER TABLE v3_tracks ADD COLUMN track_gz BLOB")
-    // Search is a disposable, independently versioned Tantivy sidecar. Drop the
-    // former embedded projection without touching authoritative operations/CAS.
-    db.exec("DROP TABLE IF EXISTS v3_search_membership")
-    db.exec("DROP TABLE IF EXISTS v3_search_objects")
-    db.exec("DROP TABLE IF EXISTS v3_search_backlog")
-    db.prepare("UPDATE v3_operations SET ended_at=committed_at WHERE ended_at IS NULL AND timing_source='storage-commit-upper-bound'").run()
-    db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version',?)").run(SCHEMA_VERSION)
-  })
-  migrate()
+  if (version?.value !== SCHEMA_VERSION) return
+
+  // Current-floor reconciliation is additive/idempotent and never owns a version
+  // transition. It is safe after migrations and on every ordinary store access.
+  db.exec(V3_SCHEMA_SQL)
+  db.exec("DROP TABLE IF EXISTS v3_search_membership")
+  db.exec("DROP TABLE IF EXISTS v3_search_objects")
+  db.exec("DROP TABLE IF EXISTS v3_search_backlog")
 }
 
 function canonicalize(value: unknown): string {
@@ -344,9 +372,13 @@ function digestBytes(domain: string, bytes: Uint8Array): string {
   return digestBytesAt(FORMAT_VERSION, domain, bytes)
 }
 
-function objectHash(kind: string, value: unknown): PreparedObject {
+function objectHashAt(version: number, kind: string, value: unknown): PreparedObject {
   const canonical = encoder.encode(canonicalize(value))
-  return { hash: digestBytes(`object:${kind}`, canonical), kind, canonical, compressed: compressBytes(canonical) }
+  return { hash: digestBytesAt(version, `object:${kind}`, canonical), kind, canonical, compressed: compressBytes(canonical) }
+}
+
+function objectHash(kind: string, value: unknown): PreparedObject {
+  return objectHashAt(FORMAT_VERSION, kind, value)
 }
 
 const VOLATILE_KEYS = new Set(["cache_control", "ephemeral"])
@@ -384,7 +416,7 @@ function shouldExtractSequence(value: ReadonlyArray<unknown>): boolean {
   return value.length > 0 && value.every((item) => item !== null && typeof item === "object" && !ArrayBuffer.isView(item))
 }
 
-function preparePayloadValue(value: unknown): PreparedPayloadValue {
+function preparePayloadValueAt(version: number, value: unknown): PreparedPayloadValue {
   const objects = new Map<string, PreparedObject>()
   const sequenceNodes = new Map<string, PreparedSequenceNode>()
   const sequences: Array<PreparedSequenceRef> = []
@@ -399,9 +431,9 @@ function preparePayloadValue(value: unknown): PreparedPayloadValue {
       for (const [index, item] of input.entries()) {
         const stripped = stripVolatile(item)
         for (const overlay of stripped.overlays) overlays.push({ index, path: overlay.path, value: overlay.value })
-        const itemObject = addObject(objectHash("sequence-item", stripped.clean))
+        const itemObject = addObject(objectHashAt(version, "sequence-item", stripped.clean))
         const nodeBytes = encoder.encode(`${parentHash ?? ""}\0${itemObject.hash}`)
-        const hash = digestBytes("sequence-node", nodeBytes)
+        const hash = digestBytesAt(version, "sequence-node", nodeBytes)
         const node: PreparedSequenceNode = { hash, parentHash, itemHash: itemObject.hash, depth: index + 1 }
         const existing = sequenceNodes.get(hash)
         if (existing && (existing.parentHash !== node.parentHash || existing.itemHash !== node.itemHash || existing.depth !== node.depth)) {
@@ -418,13 +450,17 @@ function preparePayloadValue(value: unknown): PreparedPayloadValue {
     return Object.fromEntries(Object.entries(input).map(([key, nested]) => [key, walk(nested, [...path, key])]))
   }
   const skeleton = walk(value, [])
-  const object = addObject(objectHash(sequences.length > 0 ? "payload-skeleton" : "payload", skeleton))
+  const object = addObject(objectHashAt(version, sequences.length > 0 ? "payload-skeleton" : "payload", skeleton))
   return {
     object,
     sequences,
     objects: [...objects.values()],
     sequenceNodes: [...sequenceNodes.values()],
   }
+}
+
+function preparePayloadValue(value: unknown): PreparedPayloadValue {
+  return preparePayloadValueAt(FORMAT_VERSION, value)
 }
 
 function refs(track: OperationTrack | undefined): string {
@@ -484,7 +520,7 @@ function recordWithoutTracks(record: ModelOperationRecord): ModelOperationRecord
   })
 }
 
-function legacyV1Digest(record: ModelOperationRecord): string {
+export function legacyManifestV1Digest(record: ModelOperationRecord): string {
   const objectHashes = new Map<string, string>()
   for (const node of record.arena.payloads) {
     const canonical = encoder.encode(canonicalize(node.value))
@@ -505,8 +541,68 @@ function legacyV1Digest(record: ModelOperationRecord): string {
   return digestBytesAt(1, "operation", manifest)
 }
 
+export function legacyManifestV2Digest(record: ModelOperationRecord): string {
+  const objectsByHash = new Map<string, PreparedObject>()
+  const sequenceNodesByHash = new Map<string, PreparedSequenceNode>()
+  const objectHashes = new Map<string, string>()
+  const payloadSequences = new Map<string, Array<PreparedSequenceRef>>()
+  for (const node of record.arena.payloads) {
+    const prepared = preparePayloadValueAt(2, node.value)
+    objectHashes.set(node.handle, prepared.object.hash)
+    if (prepared.sequences.length > 0) payloadSequences.set(node.handle, prepared.sequences)
+    for (const object of prepared.objects) objectsByHash.set(object.hash, object)
+    for (const sequenceNode of prepared.sequenceNodes) sequenceNodesByHash.set(sequenceNode.hash, sequenceNode)
+  }
+  for (const node of record.arena.frames) objectHashes.set(node.handle, objectHashAt(2, "frame", node.value).hash)
+  const tracklessRecord = recordWithoutTracks(record)
+  const manifestValue = {
+    ...tracklessRecord,
+    arena: {
+      payloads: tracklessRecord.arena.payloads.map(({ value: _value, ...node }) => node),
+      frames: tracklessRecord.arena.frames.map(({ value: _value, ...node }) => node),
+    },
+  }
+  const manifest = encoder.encode(
+    JSON.stringify({
+      formatVersion: 2,
+      record: manifestValue,
+      objectHashes: Object.fromEntries(objectHashes),
+      payloadSequences: Object.fromEntries(payloadSequences),
+      tracksExternal: true,
+    }),
+  )
+  return digestBytesAt(2, "operation", manifest)
+}
+
 export function prepareModelOperation(
   record: ModelOperationRecord,
+  timingOverride?: { endedAt?: number; source: Exclude<V3TimingSource, "canonical"> },
+): PreparedOperation {
+  return prepareModelOperationWithTransportEvidence(record, [], timingOverride)
+}
+
+function evidenceDigest(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex")
+}
+
+function prepareTransportEvidence(inputs: ReadonlyArray<TransportEvidenceInput>): Array<PreparedTransportEvidence> {
+  const previousSequence = new Map<number, number>()
+  return inputs.map((input) => {
+    if (!Number.isInteger(input.dispatchIndex) || input.dispatchIndex < 0) throw new Error("[history/v3] invalid transport evidence dispatch index")
+    if (!Number.isInteger(input.sequence) || input.sequence < 1) throw new Error("[history/v3] invalid transport evidence sequence")
+    const previous = previousSequence.get(input.dispatchIndex) ?? 0
+    if (input.sequence <= previous) throw new Error("[history/v3] non-increasing transport evidence sequence")
+    previousSequence.set(input.dispatchIndex, input.sequence)
+    if (input.capture.byteLength !== input.bytes.byteLength) throw new Error("[history/v3] transport evidence byte length mismatch")
+    if (input.capture.digest !== evidenceDigest(input.bytes)) throw new Error("[history/v3] transport evidence digest mismatch")
+    const bytes = Uint8Array.from(input.bytes)
+    return { ...input, bytes, compressed: compressBytes(bytes) }
+  })
+}
+
+export function prepareModelOperationWithTransportEvidence(
+  record: ModelOperationRecord,
+  transportEvidenceInputs: ReadonlyArray<TransportEvidenceInput>,
   timingOverride?: { endedAt?: number; source: Exclude<V3TimingSource, "canonical"> },
 ): PreparedOperation {
   if (!record.terminal) throw new Error("[history/v3] terminal record required")
@@ -536,15 +632,18 @@ export function prepareModelOperation(
       frames: tracklessRecord.arena.frames.map(({ value: _value, ...node }) => node),
     },
   }
+  const transportEvidence = prepareTransportEvidence(transportEvidenceInputs)
+  const transportEvidenceRefs = transportEvidence.map(({ dispatchIndex, sequence, capture }) => ({ dispatchIndex, sequence, ...capture }))
   const manifestText = JSON.stringify({
     formatVersion: FORMAT_VERSION,
     record: manifestValue,
     objectHashes: Object.fromEntries(objectHashes),
     payloadSequences: Object.fromEntries(payloadSequences),
     tracksExternal: true,
+    transportEvidenceRefs,
   })
   const manifest = encoder.encode(manifestText)
-  const journalRecord = encoder.encode(JSON.stringify(record))
+  const journalRecord = encoder.encode(JSON.stringify({ journalFormatVersion: JOURNAL_FORMAT_VERSION, record, transportEvidenceRefs }))
   const digest = digestBytes("operation", manifest)
   const timelineEvents = [
     ...record.arena.payloads.map((node) => ({ sequence: node.sequence, occurredAt: node.occurredAt, type: "payload", handle: node.handle })),
@@ -633,6 +732,7 @@ export function prepareModelOperation(
     manifest,
     compressedManifest: compressBytes(manifest),
     compressedJournalRecord: compressBytes(journalRecord),
+    transportEvidence,
     objects: [...objectsByHash.values()],
     sequenceNodes: [...sequenceNodesByHash.values()],
     tracks,
@@ -669,6 +769,27 @@ function insertSequenceNode(db: Database, node: PreparedSequenceNode): void {
   db.prepare("INSERT INTO v3_sequence_nodes(hash,parent_hash,item_hash,depth) VALUES(?,?,?,?)").run(node.hash, node.parentHash, node.itemHash, node.depth)
 }
 
+function insertTransportEvidence(db: Database, evidence: PreparedTransportEvidence): void {
+  const existing = db.prepare("SELECT encoding,evidence_gz,byte_length FROM v3_transport_evidence WHERE digest=?").get(evidence.capture.digest) as
+    | { encoding: string; evidence_gz: Uint8Array; byte_length: number }
+    | undefined
+  if (existing) {
+    if (existing.encoding !== evidence.capture.encoding) throw new Error(`[history/v3] transport evidence encoding mismatch: ${evidence.capture.digest}`)
+    if (existing.byte_length !== evidence.capture.byteLength)
+      throw new Error(`[history/v3] transport evidence byte length mismatch: ${evidence.capture.digest}`)
+    const existingBytes = decompressBytes(existing.evidence_gz)
+    if (!Buffer.from(existingBytes).equals(Buffer.from(evidence.bytes)))
+      throw new Error(`[history/v3] transport evidence digest collision: ${evidence.capture.digest}`)
+    return
+  }
+  db.prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)").run(
+    evidence.capture.digest,
+    evidence.capture.encoding,
+    evidence.compressed,
+    evidence.capture.byteLength,
+  )
+}
+
 export function commitPreparedOperation(db: Database, prepared: PreparedOperation): "inserted" | "idempotent" {
   ensureV3Schema(db)
   const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as
@@ -696,14 +817,18 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
   let thrown: unknown
   const result = runHistoryWrite("v3-commit", () => {
     try {
-      // Journal is self-contained: operation tx rollback may remove every CAS object,
-      // so recovery cannot depend on value-stripped manifest + v3_objects.
+      // Transaction A publishes one recovery set: every evidence entity and the
+      // journal that references it either become durable together or both roll back.
       const journalPayload = prepared.compressedJournalRecord
-      db.prepare(
-        "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
-      ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now())
+      const transactionA = db.transaction(() => {
+        for (const evidence of prepared.transportEvidence) insertTransportEvidence(db, evidence)
+        db.prepare(
+          "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error,format_version) VALUES(?,?,?,?,?,?,NULL,NULL,?)",
+        ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now(), JOURNAL_FORMAT_VERSION)
+      })
+      transactionA()
       const committedAt = Date.now()
-      const tx = db.transaction(() => {
+      const transactionB = db.transaction(() => {
         for (const object of prepared.objects) insertObject(db, object)
         for (const node of prepared.sequenceNodes) insertSequenceNode(db, node)
         db.prepare(
@@ -730,7 +855,7 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         // duplicate every semantic value forever and defeat content-addressed storage.
         db.prepare("DELETE FROM v3_journal WHERE operation_id=? AND revision=?").run(prepared.id, prepared.revision)
       })
-      tx()
+      transactionB()
     } catch (error) {
       thrown = error
       throw error
@@ -1045,8 +1170,11 @@ function summaryFromRow(
   db: Database,
   row: { manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
 ): EntrySummary {
-  if (row.summary_json) return { ...(JSON.parse(row.summary_json) as EntrySummary), pinned: row.pinned === 1 }
+  // A cached summary is never permission to publish an unvalidated canonical
+  // operation. Decode + evidence validation is the shared release gate for every
+  // consumer, including the summary fast path.
   const stored = storedOperationFromRow(db, row)
+  if (row.summary_json) return { ...(JSON.parse(row.summary_json) as EntrySummary), pinned: row.pinned === 1 }
   return recordToEntrySummary(stored.record, stored)
 }
 
@@ -1202,6 +1330,7 @@ export function clearV3Store(db: Database = getDatabase()): void {
     db.prepare("DELETE FROM v3_sequence_nodes").run()
     db.prepare("DELETE FROM v3_objects").run()
     db.prepare("DELETE FROM v3_journal").run()
+    db.prepare("DELETE FROM v3_transport_evidence").run()
   })
   clear()
 }
@@ -1214,25 +1343,125 @@ export function clearV3Store(db: Database = getDatabase()): void {
  * this is what makes it safe to call against an independent readonly connection
  * (e.g. from the history-search sidecar, out-of-process search plan Phase 0).
  */
-export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
-  const manifest = JSON.parse(decoder.decode(decompressBytes(manifestBlob))) as {
-    formatVersion?: number
-    record: Omit<ModelOperationRecord, "arena"> & {
-      arena: {
-        payloads: Array<Omit<ModelOperationRecord["arena"]["payloads"][number], "value">>
-        frames: Array<Omit<ModelOperationRecord["arena"]["frames"][number], "value">>
-      }
+interface TransportEvidenceRef extends CapturedTransportEvidence {
+  dispatchIndex: number
+  sequence: number
+}
+
+interface ManifestEnvelope {
+  formatVersion: 1 | 2 | 3
+  record: Omit<ModelOperationRecord, "arena"> & {
+    arena: {
+      payloads: Array<Omit<ModelOperationRecord["arena"]["payloads"][number], "value">>
+      frames: Array<Omit<ModelOperationRecord["arena"]["frames"][number], "value">>
     }
-    objectHashes: Record<string, string>
-    payloadSequences?: Record<string, Array<PreparedSequenceRef>>
-    tracksExternal?: boolean
   }
-  if (
-    manifest.formatVersion !== undefined
-    && (!Number.isInteger(manifest.formatVersion) || manifest.formatVersion < 1 || manifest.formatVersion > FORMAT_VERSION)
-  ) {
-    throw new Error(`[history/v3] unsupported manifest format version: ${String(manifest.formatVersion)}`)
+  objectHashes: Record<string, string>
+  payloadSequences?: Record<string, Array<PreparedSequenceRef>>
+  tracksExternal?: boolean
+  transportEvidenceRefs: Array<TransportEvidenceRef>
+}
+
+function decodeManifestEnvelope(manifestBlob: Uint8Array): ManifestEnvelope {
+  const decoded = JSON.parse(decoder.decode(decompressBytes(manifestBlob))) as Record<string, unknown>
+  const version = decoded.formatVersion
+  if (!Number.isInteger(version) || (version !== 1 && version !== 2 && version !== 3)) {
+    throw new Error(`[history/v3] unsupported manifest format version: ${String(version)}`)
   }
+  if (!decoded.record || typeof decoded.record !== "object" || !decoded.objectHashes || typeof decoded.objectHashes !== "object") {
+    throw new Error("[history/v3] invalid manifest envelope")
+  }
+  const refs = version === 3 ? decoded.transportEvidenceRefs : []
+  if (version === 3 && !Array.isArray(refs)) throw new Error("[history/v3] invalid manifest-v3 transport evidence refs")
+  return {
+    ...(decoded as unknown as Omit<ManifestEnvelope, "formatVersion" | "transportEvidenceRefs">),
+    formatVersion: version,
+    transportEvidenceRefs: refs as Array<TransportEvidenceRef>,
+  }
+}
+
+function validateTransportEvidenceRefs(refs: ReadonlyArray<TransportEvidenceRef>): void {
+  const previousSequence = new Map<number, number>()
+  for (const ref of refs) {
+    if (!Number.isInteger(ref.dispatchIndex) || ref.dispatchIndex < 0) throw new Error("[history/v3] invalid transport evidence dispatch index")
+    if (!Number.isInteger(ref.sequence) || ref.sequence < 1) throw new Error("[history/v3] invalid transport evidence sequence")
+    const previous = previousSequence.get(ref.dispatchIndex) ?? 0
+    if (ref.sequence <= previous) throw new Error("[history/v3] non-increasing transport evidence sequence")
+    previousSequence.set(ref.dispatchIndex, ref.sequence)
+  }
+}
+
+function hydrateTransportEvidenceRefs(db: Database, refs: ReadonlyArray<TransportEvidenceRef>): Array<HydratedTransportEvidence> {
+  if (refs.length === 0) return []
+  validateTransportEvidenceRefs(refs)
+  const hydrated = new Map<string, { bytes: Uint8Array; encoding: string; byteLength: number }>()
+  for (const ref of refs) {
+    let entity = hydrated.get(ref.digest)
+    if (!entity) {
+      const evidenceRow = db.prepare("SELECT encoding,evidence_gz,byte_length FROM v3_transport_evidence WHERE digest=?").get(ref.digest) as
+        | { encoding: string; evidence_gz: Uint8Array; byte_length: number }
+        | undefined
+      if (!evidenceRow) throw new Error(`[history/v3] missing transport evidence: ${ref.digest}`)
+      const bytes = decompressBytes(evidenceRow.evidence_gz)
+      entity = { bytes, encoding: evidenceRow.encoding, byteLength: evidenceRow.byte_length }
+      hydrated.set(ref.digest, entity)
+    }
+    if (entity.encoding !== ref.encoding) throw new Error(`[history/v3] transport evidence encoding mismatch: ${ref.digest}`)
+    if (entity.byteLength !== ref.byteLength || entity.bytes.byteLength !== ref.byteLength) {
+      throw new Error(`[history/v3] transport evidence byte length mismatch: ${ref.digest}`)
+    }
+    if (evidenceDigest(entity.bytes) !== ref.digest) throw new Error(`[history/v3] transport evidence digest mismatch: ${ref.digest}`)
+  }
+  return refs.map((ref) => {
+    const { dispatchIndex, sequence, ...capture } = ref
+    const entity = hydrated.get(ref.digest)
+    if (!entity) throw new Error(`[history/v3] missing transport evidence after validation: ${ref.digest}`)
+    return { dispatchIndex, sequence, capture, bytes: Uint8Array.from(entity.bytes) }
+  })
+}
+
+export function hydrateTransportEvidence(db: Database, operationId: string): Array<HydratedTransportEvidence> {
+  const row = db.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(operationId) as { manifest_gz: Uint8Array } | undefined
+  if (!row) return []
+  const manifest = decodeManifestEnvelope(row.manifest_gz)
+  return hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
+}
+
+function operationEvidenceRefGroups(db: Database): Array<Array<TransportEvidenceRef>> {
+  const rows = db.prepare("SELECT manifest_gz FROM v3_operations").all() as Array<{ manifest_gz: Uint8Array }>
+  return rows.map(({ manifest_gz }) => {
+    const manifest = decodeManifestEnvelope(manifest_gz)
+    return manifest.transportEvidenceRefs
+  })
+}
+
+function journalEvidenceRefGroups(db: Database): Array<Array<TransportEvidenceRef>> {
+  const rows = db.prepare("SELECT payload_gz,format_version FROM v3_journal WHERE committed_at IS NULL").all() as Array<{
+    payload_gz: Uint8Array
+    format_version: number
+  }>
+  return rows.map(({ payload_gz, format_version }) => decodeJournalPayload(format_version, payload_gz).refs)
+}
+
+export function garbageCollectTransportEvidence(db: Database = getDatabase()): number {
+  ensureV3Schema(db)
+  const groups = [...operationEvidenceRefGroups(db), ...journalEvidenceRefGroups(db)]
+  // Validate every root document and entity before deleting anything. Sequence
+  // domains are operation-local, so validating one flattened cross-operation list
+  // would falsely reject two operations that both start dispatch 0 at sequence 1.
+  for (const refs of groups) hydrateTransportEvidenceRefs(db, refs)
+  const refs = groups.flat()
+  const reachable = [...new Set(refs.map(({ digest }) => digest))]
+  const result =
+    reachable.length === 0 ?
+      db.prepare("DELETE FROM v3_transport_evidence").run()
+    : db.prepare(`DELETE FROM v3_transport_evidence WHERE digest NOT IN (${reachable.map(() => "?").join(",")})`).run(...reachable)
+  return result.changes
+}
+
+export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
+  const manifest = decodeManifestEnvelope(manifestBlob)
+  if (manifest.formatVersion === 3) hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
   const hashes = [...new Set(Object.values(manifest.objectHashes))]
   const values = new Map<string, unknown>()
   const loadObjects = (requested: ReadonlyArray<string>): void => {
@@ -1340,28 +1569,52 @@ export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOp
   return record
 }
 
+interface JournalV2Payload {
+  journalFormatVersion: 2
+  record: ModelOperationRecord
+  transportEvidenceRefs: Array<TransportEvidenceRef>
+}
+
+function decodeJournalPayload(formatVersion: number, payload: Uint8Array): { record: ModelOperationRecord; refs: Array<TransportEvidenceRef> } {
+  const decoded = JSON.parse(decoder.decode(decompressBytes(payload))) as unknown
+  if (formatVersion === 1) return { record: decoded as ModelOperationRecord, refs: [] }
+  if (formatVersion !== JOURNAL_FORMAT_VERSION) throw new Error(`[history/v3] unsupported journal format version: ${formatVersion}`)
+  const journal = decoded as Partial<JournalV2Payload>
+  if (journal.journalFormatVersion !== JOURNAL_FORMAT_VERSION || !journal.record || !Array.isArray(journal.transportEvidenceRefs)) {
+    throw new Error("[history/v3] invalid journal-v2 payload")
+  }
+  return { record: journal.record, refs: journal.transportEvidenceRefs }
+}
+
 /** Resume terminal journal rows that were appended but never committed. */
 export function recoverV3Journal(db: Database = getDatabase()): number {
   ensureV3Schema(db)
   const rows = db
-    .prepare("SELECT operation_id,revision,digest,payload_gz,created_at FROM v3_journal WHERE committed_at IS NULL ORDER BY created_at")
+    .prepare("SELECT operation_id,revision,digest,payload_gz,created_at,format_version FROM v3_journal WHERE committed_at IS NULL ORDER BY created_at")
     .all() as Array<{
     operation_id: string
     revision: number
     digest: string
     payload_gz: Uint8Array
     created_at: number
+    format_version: number
   }>
   let recovered = 0
   for (const row of rows) {
     try {
-      const recoveredRecord = JSON.parse(decoder.decode(decompressBytes(row.payload_gz))) as ModelOperationRecord
-      const prepared = prepareModelOperation(
-        recoveredRecord,
-        recoveredRecord.terminal?.occurredAt === undefined ? { endedAt: row.created_at, source: "storage-commit-upper-bound" } : undefined,
-      )
+      const { record: recoveredRecord, refs } = decodeJournalPayload(row.format_version, row.payload_gz)
+      const timingOverride =
+        recoveredRecord.terminal?.occurredAt === undefined ? { endedAt: row.created_at, source: "storage-commit-upper-bound" as const } : undefined
+      const evidence = hydrateTransportEvidenceRefs(db, refs)
+      const prepared = prepareModelOperationWithTransportEvidence(recoveredRecord, evidence, timingOverride)
       if (prepared.revision !== row.revision) throw new Error("journal revision mismatch")
-      if (prepared.digest !== row.digest && legacyV1Digest(recoveredRecord) !== row.digest) throw new Error("journal digest mismatch")
+      if (row.format_version === 1) {
+        const v1Matches = legacyManifestV1Digest(recoveredRecord) === row.digest
+        const v2Matches = legacyManifestV2Digest(recoveredRecord) === row.digest
+        if (v1Matches === v2Matches) throw new Error(v1Matches ? "journal legacy digest collision" : "journal digest mismatch")
+      } else if (prepared.digest !== row.digest) {
+        throw new Error("journal digest mismatch")
+      }
       commitPreparedOperation(db, prepared)
       recovered++
     } catch (error) {

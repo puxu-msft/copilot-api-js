@@ -78,47 +78,42 @@ describe("History V3 semantic store", () => {
     })
   })
 
-  test("migrates legacy operation rows to an explicitly marked storage-commit upper bound", () => {
+  test("does not mutate a pre-current schema before forward migrations own the transition", () => {
     closeDatabase()
     openInMemoryDatabase()
     const db = getDatabase()
     db.exec(`
-      CREATE TABLE v3_operations (
-        operation_id TEXT PRIMARY KEY,
+      CREATE TABLE v3_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO v3_meta(key,value) VALUES('schema_version','5');
+      CREATE TABLE v3_journal (
+        operation_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
         digest TEXT NOT NULL,
-        kind TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        payload_gz BLOB NOT NULL,
         created_at INTEGER NOT NULL,
-        terminal_sequence INTEGER NOT NULL,
-        manifest_gz BLOB NOT NULL,
-        pinned INTEGER NOT NULL DEFAULT 0,
-        committed_at INTEGER NOT NULL
+        committed_at INTEGER,
+        error TEXT,
+        PRIMARY KEY(operation_id,revision)
       );
     `)
-    db.prepare("INSERT INTO v3_operations VALUES(?,?,?,?,?,?,?,?,?)").run("legacy", 1, "digest", "generation", 1_000, 4, new Uint8Array([1]), 0, 9_000)
 
     ensureV3Schema(db)
-    ensureV3Schema(db)
 
-    expect(db.prepare("SELECT ended_at,timing_source FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({
-      ended_at: 9_000,
-      timing_source: "storage-commit-upper-bound",
-    })
-    db.prepare("UPDATE v3_operations SET ended_at=NULL WHERE operation_id='legacy'").run()
-    ensureV3Schema(db)
-    expect(db.prepare("SELECT ended_at FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({ ended_at: null })
+    expect(db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "5" })
+    expect(db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_transport_evidence'").get()).toBeNull()
+    expect((db.prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name)).not.toContain("format_version")
   })
 
-  test("drops the embedded search projection without touching canonical operations", () => {
+  test("drops an embedded search projection only on the current schema", () => {
     const db = getDatabase()
-    db.exec(V3_SCHEMA_SQL)
+    ensureV3Schema(db)
     commitPreparedOperation(db, prepareModelOperation(terminalRecord("keep-canonical")))
     db.exec(`
       CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL);
       CREATE TABLE v3_search_membership(operation_id TEXT NOT NULL, object_hash TEXT NOT NULL, PRIMARY KEY(operation_id,object_hash));
       CREATE TABLE v3_search_backlog(operation_id TEXT PRIMARY KEY, reason TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     `)
-    db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version','4')").run()
     db.prepare("INSERT INTO v3_search_objects VALUES(?,?,?)").run("obsolete", new Uint8Array([1]), 2)
 
     ensureV3Schema(db)
@@ -128,10 +123,6 @@ describe("History V3 semantic store", () => {
     expect(tableExists("v3_search_membership")).toBe(false)
     expect(tableExists("v3_search_backlog")).toBe(false)
     expect(getV3Operation("keep-canonical")?.identity.operationId).toBe("keep-canonical")
-
-    db.exec("CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL)")
-    ensureV3Schema(db)
-    expect(tableExists("v3_search_objects")).toBe(false)
   })
 
   test("keeps newly imported records without canonical terminal time explicitly unavailable", () => {
@@ -220,7 +211,16 @@ describe("History V3 semantic store", () => {
 
     clearV3Store(db)
 
-    for (const table of ["v3_summary_backlog", "v3_timeline_chunks", "v3_tracks", "v3_operations", "v3_sequence_nodes", "v3_objects", "v3_journal"]) {
+    for (const table of [
+      "v3_summary_backlog",
+      "v3_timeline_chunks",
+      "v3_tracks",
+      "v3_operations",
+      "v3_sequence_nodes",
+      "v3_objects",
+      "v3_journal",
+      "v3_transport_evidence",
+    ]) {
       expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, table).toBe(0)
     }
     expect((db.prepare("SELECT COUNT(*) AS n FROM v3_meta").get() as { n: number }).n).toBeGreaterThan(0)

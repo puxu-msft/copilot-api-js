@@ -63,4 +63,18 @@ export const MIGRATIONS: Array<HistoryMigration> = [
   sqlMigration("001-operation-summary-projection", (db) => {
     db.exec(SUMMARY_PROJECTION_MIGRATION_SQL)
   }),
+  sqlMigration("001-transport-evidence-schema", (db) => {
+    const version = db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get() as { value: string } | undefined
+    if (version?.value === "6") return
+    if (version?.value !== "5") throw new Error(`[history/v3] transport evidence migration requires schema 5, got ${version?.value ?? "missing"}`)
+    db.exec(`CREATE TABLE IF NOT EXISTS v3_transport_evidence (
+      digest TEXT PRIMARY KEY,
+      encoding TEXT NOT NULL,
+      evidence_gz BLOB NOT NULL,
+      byte_length INTEGER NOT NULL
+    )`)
+    const journalColumns = new Set((db.prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name))
+    if (!journalColumns.has("format_version")) db.exec("ALTER TABLE v3_journal ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1")
+    db.prepare("UPDATE v3_meta SET value='6' WHERE key='schema_version'").run()
+  }),
 ]

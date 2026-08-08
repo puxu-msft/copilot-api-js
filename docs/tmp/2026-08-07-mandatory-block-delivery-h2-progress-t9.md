@@ -1,11 +1,11 @@
 ---
 slug: t9
-status: in-progress
-base: 6d4314817c0492019477e04a8f25b4864e39f6fb
-branch: mandatory-block-delivery-h2-implementation
-worktree: /home/xp/src/copilot-api-js/.worktree/mandatory-block-delivery-h2-implementation
+status: remediation-complete-pending-rereview
+base: e43d08ec4f65acaddc364d22f05f8d28a0890dd4
+branch: agent-aefcc691bad9daa35
+worktree: /home/xp/src/copilot-api-js/.worktree/agent-aefcc691bad9daa35
 plan: docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-3-http2-observation.md
-agent-id: pending
+agent-id: agent-aefcc691bad9daa35
 continuity: 须连续
 ---
 
@@ -15,13 +15,12 @@ continuity: 须连续
 
 ## 剩余项
 
-- 完成 Task 9 brief 全部 checklist；验收以冻结计划、定向 History 测试和 mutation controls 为准。
-- 每个实现 commit 同步更新本文件，并用 `--first-parent` 对账确认无遗漏。
-- 任务双审放行后，把持久结论折回正式计划并归档本文件。
+- coordinator 恢复原 code reviewer 与 independent verifier 复审整改diff及相邻契约。
+- 复审放行后把持久结论折回正式计划并归档本文件；Task 12再同步live docs。
 
 ## 在途意图
 
-尚未开始实现。目标是在不注册 production persistence sink 的边界内，先完成 schema 6／manifest 3／journal 2、evidence CAS、事务 A/B 与 legacy recovery substrate。
+首轮 findings 已整改、mutation闭环、全验证完成：定向69 pass、backend6148 pass、typecheck/path lint绿。真实v1/v2 schema-5 fixtures与三份新增可重放patch已提交；patch文本已规范化并重新验证可apply，report更新最终hash。等待原审查者复审，不接Task10。
 
 ## 已作废的路子
 
