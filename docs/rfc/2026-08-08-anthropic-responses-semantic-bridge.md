@@ -1,6 +1,6 @@
 # RFC：Anthropic ↔ Responses protocol-neutral semantic bridge
 
-> 状态：Draft，待对抗评审
+> 状态：Accepted，五轮对抗评审收口（零blocker／major）
 > 日期：2026-08-08
 > 决策输入：用户已逐节批准本 RFC 的目标架构、公共策略与渐进迁移设计
 > 事实输入：[2026-08-06 thinking translation audit](../tmp/2026-08-06-thinking-translation-audit.md)

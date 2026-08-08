@@ -3,7 +3,7 @@
 > 评审对象：[`2026-08-08-anthropic-responses-semantic-bridge.md`](2026-08-08-anthropic-responses-semantic-bridge.md)、[`2026-08-08 protocol-neutral reasoning exchange ADR`](../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)
 > 第1轮基线：`78b5a97d`
 > 第1轮后先行修订：`fb20919a`、`b6cbced2`
-> 状态：第4轮复评已处置；协议与History视角可定稿，架构唯一剩余A11已整改，待第5轮原reviewers复评
+> 状态：五轮评审已收口；协议、架构／cutover、决策／config／docs三视角均零blocker／major
 
 本文件转录并处置第1轮三名独立 reviewer 的返回结果。首轮报告没有写入仓库，以下按原评审分组保留 finding，而不是把重叠项去重；这样每名 reviewer 的复评范围都可逐条追溯。技术设计裁决均为 C 级可逆产物决策。实施授权冲突涉及用户已裁决事项，按 A 级“适用性明确且本次裁定是遵从既有决定”分支直接同步，不重新询问。
 
@@ -129,6 +129,24 @@ History reviewer关闭in-flight／terminal判别联合、唯一ResponseTerminal 
 | A11 | `SegmentBoundaryUpdate`允许pre-commit fallback + `partialOutputKept:true`，但RFC未定义应建立旧authority后flush+transfer，还是reject；实现会产生不同客户端wire。 | 采纳（C）。update按`authorityPhase`判别；phase由driver在authority临界区据锁内状态派生／复核。pre-commit true时，有可发wire effect则旧candidate建立epoch 0、flush+ACK closing后transfer至epoch 1；空segment则discard旧candidate、后代首次写／contentless terminal／preflight reject时直接epoch 0，不建transfer。空segment normalized observation归属新candidate并在其获权时晋级actual，不留在discarded祖先。post-commit只允许true；continuation恒为post-commit true。History transferred entry记录boundary authority phase。 | RFC §3.4、§6、§10.1、§12 |
 
 架构视角结论：A11复评关闭后可定稿。
+
+## 第5轮复评
+
+复评基线：`b84047d2`。
+
+### 协议状态机与wire语义
+
+`authorityPhase`锁内派生／复核、pre-commit retain三分支、fallback／continuation terminal ID、空segment observation owner与boundary lifecycle回归全部关闭。未发现新增blocker／major，reviewer明确给出“协议视角可定稿”。
+
+### 架构与History
+
+History reviewer确认pre-commit retain三支、空segment observation归属、boundary authority phase、terminal wire committed语义及裁剪后policy／actual／opaque保真均关闭；未发现新增blocker／major，明确给出“决策/config/docs视角可定稿”。
+
+架构reviewer逐支执行锁内phase复核、pre-commit false、pre-commit true有wire、pre-commit true空segment、flush失败、post-commit fallback／continuation与History投影，A11全部关闭；未发现新增blocker／major，明确给出“架构/cutover视角可定稿”。
+
+### 收口结论
+
+固定基线`b84047d2`的第5轮复评三视角均为零blocker／major。RFC可从Draft改为Accepted，并进入独立TDD plan／kickoff阶段；产品代码仍未开始实施。
 
 ## 复评门
 
