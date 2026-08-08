@@ -9,12 +9,14 @@ import fs from "node:fs/promises"
 import {
   //
   clearAnthropicFeatureNegotiationForTests,
+  drainScheduledNegotiationPersistenceForTests,
   flushAndFreezePersistence as flushAndFreezeNegotiation,
   markSystemRejectModel,
 } from "../../src/lib/anthropic/feature-negotiation"
 import { PATHS } from "../../src/lib/config/paths"
 import {
   //
+  drainScheduledCalibrationPersistenceForTests,
   ensureModelLimits,
   flushAndFreezePersistence as flushAndFreezeCalibration,
   learnCalibration,
@@ -71,7 +73,7 @@ test("feature-negotiation: flushAndFreeze 立即落盘一次；freeze 后 markX 
   // freeze 后：markSystemRejectModel 仍更新内存态（freeze 只冻结持久化），但不再
   // 触发任何后续写盘 —— 用一个新学到的 key 验证磁盘快照没有变化（无新 key 落盘）。
   markSystemRejectModel("claude-haiku-4.6")
-  await new Promise((r) => setTimeout(r, 1100)) // 超过两模块的 debounce 上限（feature-negotiation 1000ms）
+  expect(await drainScheduledNegotiationPersistenceForTests()).toBe(false)
   const snapshot2 = await readNegotiationDisk()
   expect(hasLearnedRejectModel(snapshot2, "claude-haiku-4-6")).toBe(false)
 })
@@ -82,7 +84,7 @@ test("reset 解冻：clearAnthropicFeatureNegotiationForTests 后 schedulePersis
   clearAnthropicFeatureNegotiationForTests() // 折进既有 resetter：须解冻
 
   markSystemRejectModel("claude-opus-4.9")
-  await new Promise((r) => setTimeout(r, 1100)) // 等 debounce 触发（未 freeze 时应正常落盘）
+  expect(await drainScheduledNegotiationPersistenceForTests()).toBe(true)
   const snapshot = await readNegotiationDisk()
   expect(hasLearnedRejectModel(snapshot, "claude-opus-4-9")).toBe(true)
 })
@@ -91,7 +93,7 @@ test("gracefulShutdown 普通信号(SIGINT)不 freeze、仅 handoff(SIGUSR2) fre
   // SIGINT：不得 freeze —— 之后普通 debounce 落盘必须仍生效。
   await gracefulShutdown("SIGINT", FAST_NOOP_DEPS)
   markSystemRejectModel("claude-sonnet-4.9")
-  await new Promise((r) => setTimeout(r, 1100))
+  expect(await drainScheduledNegotiationPersistenceForTests()).toBe(true)
   const snapshotAfterSigint = await readNegotiationDisk()
   expect(hasLearnedRejectModel(snapshotAfterSigint, "claude-sonnet-4-9")).toBe(true)
 
@@ -106,7 +108,7 @@ test("gracefulShutdown 普通信号(SIGINT)不 freeze、仅 handoff(SIGUSR2) fre
   expect(hasLearnedRejectModel(snapshotAfterHandoffFlush, "claude-haiku-4-7")).toBe(true)
 
   markSystemRejectModel("claude-opus-4.10") // freeze 后学到的：不该再落盘
-  await new Promise((r) => setTimeout(r, 1100))
+  expect(await drainScheduledNegotiationPersistenceForTests()).toBe(false)
   const snapshotStillFrozen = await readNegotiationDisk()
   expect(hasLearnedRejectModel(snapshotStillFrozen, "claude-opus-4-10")).toBe(false)
 
@@ -123,10 +125,10 @@ test("calibration: flushAndFreeze 立即落盘一次；freeze 后 learnCalibrati
   expect(snapshot1.limits).toHaveProperty("m-flush-freeze")
 
   learnCalibration("m-flush-freeze-2", 20000, 26000, { isLive: true })
-  await new Promise((r) => setTimeout(r, 5200)) // calibration debounce 5000ms
+  expect(await drainScheduledCalibrationPersistenceForTests()).toBe(false)
   const snapshot2 = (await readLearnedLimitsDisk()) as { limits: Record<string, unknown> }
   expect(snapshot2.limits).not.toHaveProperty("m-flush-freeze-2")
-}, 10_000)
+})
 
 test("calibration: resetAllLimitsForTesting 解冻后 schedulePersist 恢复写盘", async () => {
   ensureModelLimits("m-reset-unfreeze")
@@ -136,16 +138,16 @@ test("calibration: resetAllLimitsForTesting 解冻后 schedulePersist 恢复写�
 
   ensureModelLimits("m-reset-unfreeze-2")
   learnCalibration("m-reset-unfreeze-2", 20000, 26000, { isLive: true })
-  await new Promise((r) => setTimeout(r, 5200))
+  expect(await drainScheduledCalibrationPersistenceForTests()).toBe(true)
   const snapshot = (await readLearnedLimitsDisk()) as { limits: Record<string, unknown> }
   expect(snapshot.limits).toHaveProperty("m-reset-unfreeze-2")
-}, 10_000)
+})
 
 test("calibration: gracefulShutdown 仅 handoff(SIGUSR2) freeze，SIGINT 不 freeze", async () => {
   await gracefulShutdown("SIGINT", FAST_NOOP_DEPS)
   ensureModelLimits("m-sigint")
   learnCalibration("m-sigint", 20000, 26000, { isLive: true })
-  await new Promise((r) => setTimeout(r, 5200))
+  expect(await drainScheduledCalibrationPersistenceForTests()).toBe(true)
   const snapshotAfterSigint = (await readLearnedLimitsDisk()) as { limits: Record<string, unknown> }
   expect(snapshotAfterSigint.limits).toHaveProperty("m-sigint")
 
@@ -160,9 +162,9 @@ test("calibration: gracefulShutdown 仅 handoff(SIGUSR2) freeze，SIGINT 不 fre
 
   ensureModelLimits("m-after-freeze") // freeze 后学到的：不该再落盘
   learnCalibration("m-after-freeze", 20000, 26000, { isLive: true })
-  await new Promise((r) => setTimeout(r, 5200))
+  expect(await drainScheduledCalibrationPersistenceForTests()).toBe(false)
   const snapshotStillFrozen = (await readLearnedLimitsDisk()) as { limits: Record<string, unknown> }
   expect(snapshotStillFrozen.limits).not.toHaveProperty("m-after-freeze")
 
   resetAllLimitsForTesting() // 解冻，收尾干净
-}, 15_000)
+})
