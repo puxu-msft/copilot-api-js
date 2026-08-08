@@ -139,7 +139,7 @@ describe("readonly store read surface (Phase 0)", () => {
     // hydrateManifest itself, directly against the raw manifest blob — the sidecar's
     // actual entry point once it tails `v3_operations` itself (Phase 1).
     const row = readonlyDb.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("rebuild-op") as { manifest_gz: Uint8Array }
-    const hydrated = hydrateManifest(readonlyDb, row.manifest_gz)
+    const hydrated = hydrateManifest(readonlyDb, row.manifest_gz, "rebuild-op")
     expect(hydrated.identity.operationId).toBe("rebuild-op")
 
     readonlyDb.close()

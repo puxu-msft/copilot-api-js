@@ -14,6 +14,7 @@ import type { SqliteDatabase } from "~/lib/sqlite/driver"
 import {
   //
   SUMMARY_PROJECTION_MIGRATION_SQL,
+  SUMMARY_PROJECTION_READY_KEY,
   SUMMARY_PROJECTION_TRIGGER_SQL,
 } from "~/lib/history/v3/summary-schema"
 
@@ -104,6 +105,8 @@ export const MIGRATIONS: Array<HistoryMigration> = [
     db.prepare("UPDATE v3_meta SET value='6' WHERE key='schema_version'").run()
   }),
   sqlMigration("002-summary-integrity-invalidation", (db) => {
+    db.prepare("DELETE FROM history_meta WHERE key=?").run(SUMMARY_PROJECTION_READY_KEY)
+    db.prepare("UPDATE v3_operation_summaries SET projection_status='pending',projection_error=NULL").run()
     db.exec(SUMMARY_PROJECTION_TRIGGER_SQL)
   }),
 ]

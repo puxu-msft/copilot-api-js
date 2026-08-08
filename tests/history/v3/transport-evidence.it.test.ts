@@ -372,6 +372,95 @@ describe("History V3 transport evidence substrate", () => {
     ).toEqual([manifestPrepared.transportEvidence[0].capture.digest, journalPrepared.transportEvidence[0].capture.digest].sort())
   })
 
+  test("transport evidence hydration refuses normalized refs that diverge from the manifest", () => {
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("evidence-normalized-ref-mismatch"), [
+      captured(new Uint8Array([56]), 0, 1),
+      captured(new Uint8Array([57]), 0, 2),
+    ])
+    commitPreparedOperation(getDatabase(), prepared)
+    getDatabase().prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(prepared.id)
+
+    expect(() => hydrateTransportEvidence(getDatabase(), prepared.id)).toThrow(/operation evidence refs mismatch/i)
+  })
+
+  test("transport evidence hydration refuses a manifest whose embedded identity belongs to another row", () => {
+    const shared = captured(new Uint8Array([58]), 0, 1)
+    const first = prepareModelOperationWithTransportEvidence(terminalRecord("evidence-identity-first"), [shared])
+    const second = prepareModelOperationWithTransportEvidence(terminalRecord("evidence-identity-second"), [shared])
+    commitPreparedOperation(getDatabase(), first)
+    commitPreparedOperation(getDatabase(), second)
+    expect(hydrateTransportEvidence(getDatabase(), first.id)).toHaveLength(1)
+    getDatabase()
+      .prepare(
+        `UPDATE v3_operations
+         SET manifest_gz=(SELECT manifest_gz FROM v3_operations WHERE operation_id=?),
+             digest=(SELECT digest FROM v3_operations WHERE operation_id=?)
+         WHERE operation_id=?`,
+      )
+      .run(second.id, second.id, first.id)
+
+    expect(() => hydrateTransportEvidence(getDatabase(), first.id)).toThrow(/manifest operation identity mismatch/i)
+  })
+
+  test("garbage collection refuses a manifest whose embedded identity belongs to another row before deleting", () => {
+    const shared = captured(new Uint8Array([59]), 0, 1)
+    const first = prepareModelOperationWithTransportEvidence(terminalRecord("gc-identity-first"), [shared])
+    const second = prepareModelOperationWithTransportEvidence(terminalRecord("gc-identity-second"), [shared])
+    commitPreparedOperation(getDatabase(), first)
+    commitPreparedOperation(getDatabase(), second)
+    getDatabase()
+      .prepare(
+        `UPDATE v3_operations
+         SET manifest_gz=(SELECT manifest_gz FROM v3_operations WHERE operation_id=?),
+             digest=(SELECT digest FROM v3_operations WHERE operation_id=?)
+         WHERE operation_id=?`,
+      )
+      .run(second.id, second.id, first.id)
+    const orphan = captured(new Uint8Array([60]), 0, 1)
+    getDatabase()
+      .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")
+      .run(orphan.capture.digest, orphan.capture.encoding, compressBytes(orphan.bytes), orphan.capture.byteLength)
+
+    expect(() => garbageCollectTransportEvidence(getDatabase())).toThrow(/manifest operation identity mismatch/i)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(2)
+  })
+
+  test("garbage collection refuses normalized operation refs that diverge from the manifest before deleting", () => {
+    const referenced = prepareModelOperationWithTransportEvidence(terminalRecord("gc-normalized-ref-mismatch"), [
+      captured(new Uint8Array([61]), 0, 1),
+      captured(new Uint8Array([62]), 0, 2),
+    ])
+    commitPreparedOperation(getDatabase(), referenced)
+    const orphan = captured(new Uint8Array([63]), 0, 1)
+    getDatabase()
+      .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")
+      .run(orphan.capture.digest, orphan.capture.encoding, compressBytes(orphan.bytes), orphan.capture.byteLength)
+    getDatabase().prepare("DELETE FROM v3_operation_evidence_refs WHERE operation_id=? AND sequence=2").run(referenced.id)
+
+    expect(() => garbageCollectTransportEvidence(getDatabase())).toThrow(/operation evidence refs mismatch/i)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(3)
+  })
+
+  test("garbage collection refuses normalized journal refs that diverge from the payload before deleting", () => {
+    const referenced = prepareModelOperationWithTransportEvidence(terminalRecord("gc-journal-ref-mismatch"), [
+      captured(new Uint8Array([64]), 0, 1),
+      captured(new Uint8Array([65]), 0, 2),
+    ])
+    setV3TransactionBFailureInjectorForTests((stage) => {
+      if (stage === "canonical") throw new Error("leave transaction A pending")
+    })
+    expect(() => commitPreparedOperation(getDatabase(), referenced)).toThrow(/leave transaction A pending/i)
+    setV3TransactionBFailureInjectorForTests(null)
+    getDatabase().prepare("DELETE FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? AND sequence=2").run(referenced.id, referenced.revision)
+    const orphan = captured(new Uint8Array([66]), 0, 1)
+    getDatabase()
+      .prepare("INSERT INTO v3_transport_evidence(digest,encoding,evidence_gz,byte_length) VALUES(?,?,?,?)")
+      .run(orphan.capture.digest, orphan.capture.encoding, compressBytes(orphan.bytes), orphan.capture.byteLength)
+
+    expect(() => garbageCollectTransportEvidence(getDatabase())).toThrow(/journal evidence refs mismatch/i)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(3)
+  })
+
   test("garbage collection fails loud before deleting when any root has invalid refs or missing evidence", () => {
     const bytes = new Uint8Array([41])
     const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("gc-missing-root"), [captured(bytes, 0, 1)])

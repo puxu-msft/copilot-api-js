@@ -95,6 +95,12 @@ export function isHistoryEnabled(): boolean {
 }
 
 export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
+  // Config reloads and test-runtime resets can re-enter initHistory while the
+  // previous database's summary worker is between batches. Drain that worker
+  // before closing or replacing its handle; the next enabled lifecycle starts a
+  // fresh worker below and resets the cooperative stop flag.
+  stopV3SummaryBackfill()
+  await drainV3SummaryBackfill()
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
   enabled = enable
@@ -120,6 +126,11 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   ensureV3Schema(getDatabase())
   await applyForwardMigrations(getDatabase())
   recoverV3Journal(getDatabase())
+  // Integrity readiness is part of opening the canonical V3 store, not an optional
+  // post-listen optimization. The worker remains asynchronous and cooperatively
+  // stoppable; starting it here guarantees every production lifecycle has a
+  // strict scrub/repair path even when no caller invokes startHistoryBackfills().
+  startV3SummaryBackfill(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(async (record) => {
     const outcome = await enqueueModelOperationWithOutcome(record)

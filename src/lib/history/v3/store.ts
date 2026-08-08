@@ -24,14 +24,21 @@ import type { Database } from "../sqlite/connection"
 import type { V3TimingSource } from "./timing-source"
 
 import { getDatabase } from "../sqlite/connection"
+import {
+  //
+  deleteMeta,
+  setMeta,
+} from "../sqlite/meta"
 import { recordToEntrySummary } from "./projection"
 import {
   //
   backfillExistingSummaryRows,
   getSummaryProjectionReadiness,
+  inspectSummaryProjectionReadiness,
   markSummaryProjectionPoisoned,
   publishValidatedOperationSummary,
-  tryMarkSummaryProjectionReady,
+  type SummaryProjectionReadiness,
+  SUMMARY_PROJECTION_READY_KEY,
 } from "./summary-store"
 
 export type { V3TimingSource } from "./timing-source"
@@ -909,7 +916,7 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
           prepared.transportEvidence.map(({ dispatchIndex, sequence, capture }) => ({ dispatchIndex, sequence, ...capture })),
         )
         transactionBFailureInjectorForTests?.("refs")
-        hydrateManifest(db, prepared.compressedManifest)
+        hydrateManifest(db, prepared.compressedManifest, prepared.id)
         transactionBFailureInjectorForTests?.("strict")
         db.prepare("UPDATE v3_operations SET summary_json=? WHERE operation_id=?").run(prepared.summaryJson, prepared.id)
         publishValidatedOperationSummary(db, prepared.id, restoreReadyMarker)
@@ -1169,6 +1176,7 @@ export function getV3StoreStatus(): V3StoreStatus {
 }
 
 interface V3StoredOperationRow {
+  operation_id: string
   manifest_gz: Uint8Array
   pinned: number
   ended_at: number | null
@@ -1177,7 +1185,7 @@ interface V3StoredOperationRow {
 
 function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3StoredOperation {
   return {
-    record: hydrateManifest(db, row.manifest_gz),
+    record: hydrateManifest(db, row.manifest_gz, row.operation_id),
     pinned: row.pinned === 1,
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
     timingSource: row.timing_source,
@@ -1186,7 +1194,7 @@ function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3Stor
 
 export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
   ensureV3Schema(db)
-  const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
+  const row = db.prepare("SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
     | V3StoredOperationRow
     | undefined
   return row ? storedOperationFromRow(db, row) : undefined
@@ -1220,9 +1228,13 @@ export function listV3StoredOperations(kind?: string, limit = 100, db: Database 
   const rows =
     kind ?
       db
-        .prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?")
+        .prepare(
+          "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?",
+        )
         .all(kind, limit)
-    : db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(limit)
+    : db
+        .prepare("SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?")
+        .all(limit)
   return (rows as Array<V3StoredOperationRow>).map((row) => storedOperationFromRow(db, row))
 }
 
@@ -1232,7 +1244,7 @@ export function listV3Operations(kind?: string, limit = 100): Array<ModelOperati
 
 function summaryFromRow(
   db: Database,
-  row: { manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
+  row: { operation_id: string; manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
 ): EntrySummary {
   // A cached summary is never permission to publish an unvalidated canonical
   // operation. Decode + evidence validation is the shared release gate for every
@@ -1242,7 +1254,7 @@ function summaryFromRow(
   return recordToEntrySummary(stored.record, stored)
 }
 
-/** Visit persisted summaries newest-first without hydrating canonical payloads on format-v2 rows. */
+/** Visit persisted summaries newest-first after validating each canonical operation. */
 export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, kind?: string, pageSize = 256): void {
   const db = getDatabase()
   ensureV3Schema(db)
@@ -1252,25 +1264,72 @@ export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, ki
       kind ?
         db
           .prepare(
-            "SELECT manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+            "SELECT operation_id,manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
           )
           .all(kind, pageSize, offset)
       : db
           .prepare(
-            "SELECT manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+            "SELECT operation_id,manifest_gz,summary_json,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
           )
           .all(pageSize, offset)
-    const page = rows as Array<{ manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource }>
+    const page = rows as Array<{
+      operation_id: string
+      manifest_gz: Uint8Array
+      summary_json: string | null
+      pinned: number
+      ended_at: number | null
+      timing_source: V3TimingSource
+    }>
     if (page.length === 0) return
     offset += page.length
     for (const row of page) if (visitor(summaryFromRow(db, row)) === false) return
   }
 }
 
+export function validateAndMarkSummaryProjectionReady(db: Database = getDatabase()): SummaryProjectionReadiness {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const rows = db.prepare("SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY operation_id").all() as Array<{
+      operation_id: string
+      manifest_gz: Uint8Array
+      pinned: number
+      ended_at: number | null
+      timing_source: V3TimingSource
+    }>
+    for (const row of rows) {
+      try {
+        const record = hydrateManifest(db, row.manifest_gz, row.operation_id)
+        const stored = {
+          record,
+          pinned: row.pinned === 1,
+          ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
+          timingSource: row.timing_source,
+        }
+        db.prepare("UPDATE v3_operations SET summary_json=? WHERE operation_id=?").run(JSON.stringify(recordToEntrySummary(record, stored)), row.operation_id)
+        publishValidatedOperationSummary(db, row.operation_id, false)
+      } catch (error) {
+        markSummaryProjectionPoisoned(db, row.operation_id, error instanceof Error ? error.message : String(error))
+      }
+    }
+    const readiness = inspectSummaryProjectionReadiness(db)
+    if (readiness.ready) setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
+    else deleteMeta(db, SUMMARY_PROJECTION_READY_KEY)
+    db.exec("COMMIT")
+    return readiness
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK")
+    } catch {
+      // Preserve the strict validation error when SQLite already rolled back.
+    }
+    throw error
+  }
+}
+
 export function startV3SummaryBackfill(
   db: Database = getDatabase(),
   batchSize = 16,
-  checkReadiness: typeof tryMarkSummaryProjectionReady = tryMarkSummaryProjectionReady,
+  checkReadiness: (database: Database) => SummaryProjectionReadiness = validateAndMarkSummaryProjectionReady,
 ): void {
   if (summaryBackfill) return
   summaryBackfillStop = false
@@ -1303,7 +1362,7 @@ export function startV3SummaryBackfill(
       for (const row of rows) {
         try {
           const stored = {
-            record: hydrateManifest(db, row.manifest_gz),
+            record: hydrateManifest(db, row.manifest_gz, row.operation_id),
             pinned: row.pinned === 1,
             ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
             timingSource: row.timing_source,
@@ -1354,13 +1413,15 @@ export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => 
       kind ?
         db
           .prepare(
-            "SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+            "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
           )
           .all(kind, pageSize, offset)
       : db
-          .prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?")
+          .prepare(
+            "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ? OFFSET ?",
+          )
           .all(pageSize, offset)
-    const page = rows as Array<{ manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }>
+    const page = rows as Array<V3StoredOperationRow>
     if (page.length === 0) return
     offset += page.length
     for (const row of page) {
@@ -1395,6 +1456,7 @@ export function clearV3Store(db: Database = getDatabase()): void {
     db.prepare("DELETE FROM v3_objects").run()
     db.prepare("DELETE FROM v3_journal").run()
     db.prepare("DELETE FROM v3_transport_evidence").run()
+    deleteMeta(db, SUMMARY_PROJECTION_READY_KEY)
   })
   clear()
 }
@@ -1489,20 +1551,26 @@ function operationRefs(db: Database, operationId: string): Array<TransportEviden
   ).map((row) => persistedEvidenceRef(row, "operation"))
 }
 
-function validateStoredOperationDigest(db: Database, manifestBlob: Uint8Array, manifest: ManifestEnvelope): void {
-  const operationId = manifest.record.identity.operationId
+function assertManifestOperationIdentity(manifest: ManifestEnvelope, expectedOperationId: string): void {
+  const actualOperationId = manifest.record.identity.operationId
+  if (actualOperationId !== expectedOperationId) {
+    throw new Error(`[history/v3] manifest operation identity mismatch: expected ${expectedOperationId}, got ${actualOperationId}`)
+  }
+}
+
+function validateStoredOperationDigest(db: Database, manifestBlob: Uint8Array, manifest: ManifestEnvelope, operationId: string): void {
   const row = db.prepare("SELECT digest FROM v3_operations WHERE operation_id=?").get(operationId) as { digest: string } | undefined
   if (!row) throw new Error(`[history/v3] missing stored operation digest: ${operationId}`)
   const actual = digestBytesAt(manifest.formatVersion, "operation", decompressBytes(manifestBlob))
   if (actual !== row.digest) throw new Error(`[history/v3] operation digest mismatch: ${operationId}`)
 }
 
-function validatePersistedOperationEvidenceRefs(db: Database, manifest: ManifestEnvelope): void {
+function validatePersistedOperationEvidenceRefs(db: Database, manifest: ManifestEnvelope, operationId: string): Array<HydratedTransportEvidence> {
   validateTransportEvidenceRefs(manifest.transportEvidenceRefs)
-  const normalized = operationRefs(db, manifest.record.identity.operationId)
+  const normalized = operationRefs(db, operationId)
   validateTransportEvidenceRefs(normalized)
   if (!refsEqual(manifest.transportEvidenceRefs, normalized)) throw new Error("[history/v3] operation evidence refs mismatch")
-  hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
+  return hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
 }
 
 function hydrateTransportEvidenceRefs(db: Database, refs: ReadonlyArray<TransportEvidenceRef>): Array<HydratedTransportEvidence> {
@@ -1538,23 +1606,38 @@ export function hydrateTransportEvidence(db: Database, operationId: string): Arr
   const row = db.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(operationId) as { manifest_gz: Uint8Array } | undefined
   if (!row) return []
   const manifest = decodeManifestEnvelope(row.manifest_gz)
-  return hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
+  assertManifestOperationIdentity(manifest, operationId)
+  return validatePersistedOperationEvidenceRefs(db, manifest, operationId)
 }
 
 function operationEvidenceRefGroups(db: Database): Array<Array<TransportEvidenceRef>> {
-  const rows = db.prepare("SELECT manifest_gz FROM v3_operations").all() as Array<{ manifest_gz: Uint8Array }>
-  return rows.map(({ manifest_gz }) => {
+  const rows = db.prepare("SELECT operation_id,manifest_gz FROM v3_operations").all() as Array<{ operation_id: string; manifest_gz: Uint8Array }>
+  return rows.map(({ operation_id, manifest_gz }) => {
     const manifest = decodeManifestEnvelope(manifest_gz)
+    assertManifestOperationIdentity(manifest, operation_id)
+    validateTransportEvidenceRefs(manifest.transportEvidenceRefs)
+    const normalized = operationRefs(db, operation_id)
+    validateTransportEvidenceRefs(normalized)
+    if (!refsEqual(manifest.transportEvidenceRefs, normalized)) throw new Error("[history/v3] operation evidence refs mismatch")
     return manifest.transportEvidenceRefs
   })
 }
 
 function journalEvidenceRefGroups(db: Database): Array<Array<TransportEvidenceRef>> {
-  const rows = db.prepare("SELECT payload_gz,format_version FROM v3_journal WHERE committed_at IS NULL").all() as Array<{
+  const rows = db.prepare("SELECT operation_id,revision,payload_gz,format_version FROM v3_journal WHERE committed_at IS NULL").all() as Array<{
+    operation_id: string
+    revision: number
     payload_gz: Uint8Array
     format_version: number
   }>
-  return rows.map(({ payload_gz, format_version }) => decodeJournalPayload(format_version, payload_gz).refs)
+  return rows.map(({ operation_id, revision, payload_gz, format_version }) => {
+    const refs = decodeJournalPayload(format_version, payload_gz).refs
+    validateTransportEvidenceRefs(refs)
+    const normalized = journalRefs(db, operation_id, revision)
+    validateTransportEvidenceRefs(normalized)
+    if (!refsEqual(refs, normalized)) throw new Error("[history/v3] journal evidence refs mismatch")
+    return refs
+  })
 }
 
 export function garbageCollectTransportEvidence(db: Database = getDatabase()): number {
@@ -1573,10 +1656,11 @@ export function garbageCollectTransportEvidence(db: Database = getDatabase()): n
   return result.changes
 }
 
-export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
+export function hydrateManifest(db: Database, manifestBlob: Uint8Array, expectedOperationId: string): ModelOperationRecord {
   const manifest = decodeManifestEnvelope(manifestBlob)
-  validateStoredOperationDigest(db, manifestBlob, manifest)
-  if (manifest.formatVersion === 3) validatePersistedOperationEvidenceRefs(db, manifest)
+  assertManifestOperationIdentity(manifest, expectedOperationId)
+  validateStoredOperationDigest(db, manifestBlob, manifest, expectedOperationId)
+  if (manifest.formatVersion === 3) validatePersistedOperationEvidenceRefs(db, manifest, expectedOperationId)
   const hashes = [...new Set(Object.values(manifest.objectHashes))]
   const values = new Map<string, unknown>()
   const loadObjects = (requested: ReadonlyArray<string>): void => {
@@ -1770,8 +1854,10 @@ export function resetV3WriterForTests(): void {
   pendingDrains.clear()
   pendingBytes = 0
   draining = false
+  // Keep the in-flight promise reachable so teardown can still drain it. Dropping
+  // the handle here lets an old backfill continue against a later test's reopened
+  // singleton database while every lifecycle check falsely reports no work.
   summaryBackfillStop = true
-  summaryBackfill = null
   commitFailureInjectorForTests = null
   transactionBFailureInjectorForTests = null
   status = {

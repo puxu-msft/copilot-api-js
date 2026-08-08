@@ -18,12 +18,12 @@ import {
 } from "~/lib/history/sqlite/connection"
 import { getMeta } from "~/lib/history/sqlite/meta"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
-import { ensureV3Schema } from "~/lib/history/v3/store"
 import {
   //
-  SUMMARY_PROJECTION_READY_KEY,
-  tryMarkSummaryProjectionReady,
-} from "~/lib/history/v3/summary-store"
+  ensureV3Schema,
+  validateAndMarkSummaryProjectionReady,
+} from "~/lib/history/v3/store"
+import { SUMMARY_PROJECTION_READY_KEY } from "~/lib/history/v3/summary-store"
 import { compressBytes } from "~/lib/sqlite/compression"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
@@ -51,7 +51,7 @@ async function seedReady(id = "dml-op"): Promise<void> {
   const db = getDatabase()
   await applyForwardMigrations(db)
   commitV3HistoryEntry(entry(id))
-  expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+  expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
   expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
 }
 

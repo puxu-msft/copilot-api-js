@@ -1,12 +1,11 @@
 diff --git a/src/lib/history/v3/store.ts b/src/lib/history/v3/store.ts
-index 6ae7efdd..bd58348f 100644
 --- a/src/lib/history/v3/store.ts
 +++ b/src/lib/history/v3/store.ts
-@@ -1461,7 +1461,7 @@ export function garbageCollectTransportEvidence(db: Database = getDatabase()): n
-
- export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
+@@ -1660,7 +1660,7 @@ export function hydrateManifest(db: Database, manifestBlob: Uint8Array, expectedO
    const manifest = decodeManifestEnvelope(manifestBlob)
--  if (manifest.formatVersion === 3) hydrateTransportEvidenceRefs(db, manifest.transportEvidenceRefs)
+   assertManifestOperationIdentity(manifest, expectedOperationId)
+   validateStoredOperationDigest(db, manifestBlob, manifest, expectedOperationId)
+-  if (manifest.formatVersion === 3) validatePersistedOperationEvidenceRefs(db, manifest, expectedOperationId)
 +  if (manifest.formatVersion === 3) validateTransportEvidenceRefs(manifest.transportEvidenceRefs)
    const hashes = [...new Set(Object.values(manifest.objectHashes))]
    const values = new Map<string, unknown>()

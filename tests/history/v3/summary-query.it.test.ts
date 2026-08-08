@@ -39,7 +39,11 @@ import { deleteMeta } from "~/lib/history/sqlite/meta"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
 import { getStats } from "~/lib/history/stats"
-import { ensureV3Schema } from "~/lib/history/v3/store"
+import {
+  //
+  ensureV3Schema,
+  validateAndMarkSummaryProjectionReady,
+} from "~/lib/history/v3/store"
 import {
   //
   explainSessionEntryPagePlan,
@@ -47,7 +51,6 @@ import {
   querySummaryPage,
   setSummarySnapshotObserverForTests,
   SUMMARY_PROJECTION_READY_KEY,
-  tryMarkSummaryProjectionReady,
   withValidatedSummarySnapshot,
 } from "~/lib/history/v3/summary-store"
 import { createDatabase } from "~/lib/sqlite/driver"
@@ -142,7 +145,7 @@ describe("persisted list-search facade", () => {
     ensureV3Schema(reader)
     await applyForwardMigrations(reader)
     persist({ id: "snapshot-visible", startedAt: 100 })
-    expect(tryMarkSummaryProjectionReady(reader).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(reader).ready).toBe(true)
 
     const writer = createDatabase(dbPath)
     writer.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
@@ -195,7 +198,7 @@ describe("persisted list-search facade", () => {
     ensureV3Schema(reader)
     await applyForwardMigrations(reader)
     persist({ id: "snapshot-facade", startedAt: 100, sessionId: "snapshot-session" })
-    expect(tryMarkSummaryProjectionReady(reader).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(reader).ready).toBe(true)
 
     const writer = createDatabase(dbPath)
     writer.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
@@ -212,7 +215,7 @@ describe("persisted list-search facade", () => {
 
   test("revalidates readiness in a new snapshot after awaiting the search sidecar", async () => {
     persist({ id: "search-stale", startedAt: 100, sessionId: "s1" })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
     const boundaryRows = getDatabase()
       .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
@@ -248,7 +251,7 @@ describe("persisted list-search facade", () => {
   test("freezes the authoritative commit target and preserves the sidecar's ordered persisted IDs", async () => {
     persist({ id: "search-older", startedAt: 100, sessionId: "s1" })
     persist({ id: "search-newer", startedAt: 200, sessionId: "s1" })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
     const boundaryRows = getDatabase()
       .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
@@ -337,7 +340,7 @@ describe("persisted summary SQL query", () => {
     persist({ id: "a-session", startedAt: 100, requestModel: "model-z", responseModel: "model-z", sessionId: "session-1", agentId: "agent-1" })
     persist({ id: "z-session", startedAt: 100, requestModel: "model-a", responseModel: "model-a", sessionId: "session-1", state: "failed" })
     persist({ id: "ws-session", startedAt: 200, operationKind: "responses_ws", requestModel: "ws-model", sessionId: "session-1" })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
 
     getDatabase()
       .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=?")
@@ -368,7 +371,7 @@ describe("persisted summary SQL query", () => {
     persist({ id: "page-a", startedAt: 100, sessionId: "paged-session" })
     persist({ id: "page-b", startedAt: 200, sessionId: "paged-session" })
     persist({ id: "page-c", startedAt: 300, sessionId: "paged-session" })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     const plan = explainSessionEntryPagePlan(getDatabase(), "paged-session", 2)
     expect(plan.some((detail) => detail.includes("idx_v3_operation_summaries_session"))).toBe(true)
     expect(plan.some((detail) => detail.includes("USE TEMP B-TREE"))).toBe(false)
@@ -389,7 +392,7 @@ describe("persisted summary SQL query", () => {
 
   test("stats preserve the response-success fallback without an overlay exclusion", () => {
     persist({ id: "stats-fallback", startedAt: 100, requestModel: "fallback-model", responseModel: "fallback-model", sessionId: "fallback-session" })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     getDatabase().prepare("UPDATE v3_operation_summaries SET state=NULL,response_success=1,duration_ms=10 WHERE operation_id='stats-fallback'").run()
     getDatabase()
       .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=?")
@@ -428,7 +431,7 @@ describe("persisted summary SQL query", () => {
       durationMs: 50,
       sessionId: "stats-session",
     })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     getDatabase().prepare("UPDATE v3_operation_summaries SET duration_ms=50 WHERE operation_id='stats-failure'").run()
     putInFlight({ ...liveEntry("stats-overlay", 100), durationMs: 0, sessionId: "stats-session" })
     getDatabase()
@@ -454,7 +457,7 @@ describe("persisted summary SQL query", () => {
   })
 
   test("in-flight overlays use the same operation-kind and state precedence as persisted SQL", () => {
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     putInFlight({ ...liveEntry("live-count", 300), operationKind: "count_tokens" })
     putInFlight({
       ...liveEntry("live-failed", 200),
@@ -472,7 +475,7 @@ describe("persisted summary SQL query", () => {
   test("the facade merges in-flight rows without corrupting totals or terminal-only pages", () => {
     persist({ id: "persisted-a", startedAt: 100 })
     persist({ id: "persisted-b", startedAt: 200 })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
     putInFlight(liveEntry("live-only", 300))
 
     const combined = getHistorySummaries()
@@ -499,7 +502,7 @@ describe("persisted summary SQL query", () => {
     ] as const) {
       persist({ id, startedAt })
     }
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
 
     const newer = getHistorySummaries({ cursor: "b", direction: "newer", limit: 2 })
     expect(newer.entries.map((row) => row.id)).toEqual(["d", "c"])

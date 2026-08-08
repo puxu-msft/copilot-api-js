@@ -51,6 +51,7 @@ import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {
   //
+  drainV3SummaryBackfill,
   drainV3Writer,
   resetV3WriterForTests,
   setV3TransactionBFailureInjectorForTests,
@@ -282,6 +283,7 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // or leaks into the next test. Mirrors the production shutdown drain
     // (`shutdownHistory`'s `drainV3Writer` call).
     await drainV3Writer()
+    await drainV3SummaryBackfill()
     restoreStateForTests(snapshot)
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget

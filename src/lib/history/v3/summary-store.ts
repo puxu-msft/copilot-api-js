@@ -11,7 +11,6 @@ import type { Database } from "~/lib/history/sqlite/connection"
 
 import {
   //
-  deleteMeta,
   getMeta,
   setMeta,
 } from "~/lib/history/sqlite/meta"
@@ -560,53 +559,36 @@ export function markSummaryProjectionPoisoned(db: Database, operationId: string,
   db.prepare(
     `UPDATE v3_operation_summaries
      SET projection_status='poisoned',projection_error=?
-     WHERE operation_id=? AND projection_status<>'ready'`,
+     WHERE operation_id=?`,
   ).run(reason, operationId)
 }
 
-export function tryMarkSummaryProjectionReady(db: Database): SummaryProjectionReadiness {
-  db.exec("BEGIN IMMEDIATE")
-  try {
-    const divergence = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM (
-           SELECT o.operation_id
-           FROM v3_operations o
-           LEFT JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
-           WHERE s.operation_id IS NULL OR NOT (${projectionEquality})
-           UNION ALL
-           SELECT s.operation_id
-           FROM v3_operation_summaries s
-           LEFT JOIN v3_operations o ON o.operation_id=s.operation_id
-           WHERE o.operation_id IS NULL
-         )`,
-      )
-      .get() as { n: number }
-    const statuses = db
-      .prepare(
-        `SELECT
-           SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned,
-           SUM(CASE WHEN projection_status<>'ready' THEN 1 ELSE 0 END) AS not_ready
-         FROM v3_operation_summaries`,
-      )
-      .get() as { pending: number | null; poisoned: number | null; not_ready: number | null }
-    const pending = statuses.pending ?? 0
-    const poisoned = statuses.poisoned ?? 0
-    const ready = divergence.n === 0 && (statuses.not_ready ?? 0) === 0
-    if (ready) {
-      if (getMeta(db, SUMMARY_PROJECTION_READY_KEY) !== "1") setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
-    } else {
-      deleteMeta(db, SUMMARY_PROJECTION_READY_KEY)
-    }
-    db.exec("COMMIT")
-    return { ready, pending, poisoned }
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK")
-    } catch {
-      // Preserve the gate error when SQLite already rolled the transaction back.
-    }
-    throw error
-  }
+export function inspectSummaryProjectionReadiness(db: Database): SummaryProjectionReadiness {
+  const divergence = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT o.operation_id
+         FROM v3_operations o
+         LEFT JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
+         WHERE s.operation_id IS NULL OR NOT (${projectionEquality})
+         UNION ALL
+         SELECT s.operation_id
+         FROM v3_operation_summaries s
+         LEFT JOIN v3_operations o ON o.operation_id=s.operation_id
+         WHERE o.operation_id IS NULL
+       )`,
+    )
+    .get() as { n: number }
+  const statuses = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned,
+         SUM(CASE WHEN projection_status<>'ready' THEN 1 ELSE 0 END) AS not_ready
+       FROM v3_operation_summaries`,
+    )
+    .get() as { pending: number | null; poisoned: number | null; not_ready: number | null }
+  const pending = statuses.pending ?? 0
+  const poisoned = statuses.poisoned ?? 0
+  return { ready: divergence.n === 0 && (statuses.not_ready ?? 0) === 0, pending, poisoned }
 }

@@ -73,7 +73,7 @@ describe("real History V3 legacy SQLite fixtures", () => {
         expect(stored?.record.identity.operationId).toBe(id)
         expect(projectSearchableText(stored!.record)).toContain("shared payload")
         const row = readonly.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(id) as { manifest_gz: Uint8Array }
-        expect(hydrateManifest(readonly, row.manifest_gz).identity.operationId).toBe(id)
+        expect(hydrateManifest(readonly, row.manifest_gz, id).identity.operationId).toBe(id)
       }
       readonly.close()
 
