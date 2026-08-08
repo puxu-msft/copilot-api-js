@@ -246,6 +246,34 @@ describe("P6-T1 candidate dispatch runtime", () => {
     expect(recording.candidates.get(candidate.handle)?.verdict).toBeUndefined()
   })
 
+  test("undefined cleanup rejection fails settlement and releases the active dispatch", async () => {
+    const recording = recordingPort()
+    const quiesced = Promise.reject(undefined)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        throw undefined
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("undefined-cleanup-rejection"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "undefined-cleanup-rejection"),
+    })
+
+    const ready = await candidate.run()
+    const outcome = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "undefined-cleanup-rejection" }).then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(outcome).toEqual({ state: "rejected", error: undefined })
+    expect(recording.dispatches.get(ready.dispatch)?.verdict).toBe("failed")
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-undefined-cleanup" })).resolves.toBeUndefined()
+  })
+
   test("cleanup recording failure preserves errors and allows one terminal settlement retry", async () => {
     const cleanupError = new Error("cleanup failed")
     const recordingError = new Error("recording failed")
