@@ -252,3 +252,63 @@ describe("capture-entry-evidence", () => {
     }
   }, 30_000)
 })
+
+describe("baseline-runs summary accounting", () => {
+  // Exercises the shipped wrapper bytes, but from a throwaway git repo: the wrapper
+  // derives REPO from its own location and fails any run whose tree or HEAD moves,
+  // so pointing it at the shared worktree would go red whenever a peer commits.
+  // The copy is asserted byte-identical, so this still grades the real script.
+  const WRAPPER = "exp/inter-block-anchor-allocator/baseline-runs.sh"
+
+  function runWrapper(options: { tests: number; executed: number; minTests: number }): { exitCode: number; seen: string; stderr: string } {
+    const work = mkdtempSync(path.join(os.tmpdir(), "baseline-runs-summary-"))
+    try {
+      const wrapper = path.join(work, WRAPPER)
+      mkdirSync(path.dirname(wrapper), { recursive: true })
+      const shipped = readFileSync(path.join(REPO_ROOT, WRAPPER))
+      writeFileSync(wrapper, shipped, { mode: 0o755 })
+      expect(Bun.SHA256.hash(readFileSync(wrapper), "hex")).toBe(Bun.SHA256.hash(shipped, "hex"))
+      git(work, ["init"])
+      git(work, ["config", "user.email", "test@example.invalid"])
+      git(work, ["config", "user.name", "Test"])
+      git(work, ["add", "."])
+      git(work, ["commit", "-m", "wrapper"])
+
+      const runner = path.join(work, "fake-runner.sh")
+      writeFileSync(
+        runner,
+        `#!/usr/bin/env bash\nmkdir -p "$PARALLEL_TEST_ARTIFACT_DIR"\nprintf '[parallel-test] 16 shards · ${options.tests} tests · ${options.tests} pass · 0 fail · ${options.executed} executed · 30 skipped · 1.00s\\n'\nprintf '[parallel-test] artifacts=%s\\n' "$PARALLEL_TEST_ARTIFACT_DIR"\n`,
+        { mode: 0o755 },
+      )
+      const out = path.join(work, "runs")
+      const result = Bun.spawnSync([wrapper, "bash", runner], {
+        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: String(options.minTests), ALLOW_DIRTY: "1", STOP_ON_FAIL: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const stderr = new TextDecoder().decode(result.stderr)
+      const log = path.join(out, "run-01.log")
+      // A wrapper that bailed before running (rc 2/3) leaves no log; surfacing its
+      // stderr keeps that failure diagnosable instead of an ENOENT from the reader.
+      const seen = existsSync(log) ? (/^=== tests seen\s*:\s*(.+)$/m.exec(readFileSync(log, "utf8"))?.[1]?.trim() ?? "") : ""
+
+      return { exitCode: result.exitCode, seen, stderr }
+    } finally {
+      rmSync(work, { recursive: true, force: true })
+    }
+  }
+
+  test("reads the executed population past the trailing artifact-dir line", () => {
+    const result = runWrapper({ tests: 6719, executed: 7259, minTests: 7255 })
+
+    expect({ exitCode: result.exitCode, seen: result.seen, stderr: result.stderr }).toEqual({ exitCode: 0, seen: "7259", stderr: "" })
+  })
+
+  test("still rejects a degenerate run that reports almost nothing", () => {
+    const result = runWrapper({ tests: 1, executed: 1, minTests: 7255 })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.seen).toBe("1")
+    expect(result.stderr).toContain("MIN_TESTS=7255")
+  })
+})
