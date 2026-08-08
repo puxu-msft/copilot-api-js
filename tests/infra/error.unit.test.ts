@@ -178,6 +178,10 @@ describe("classifyError", () => {
     ["ordinary 408", '{"error":{"code":"request_timeout","message":"Request deadline exceeded"}}'],
     ["matching code with another message", '{"error":{"code":"user_request_timeout","message":"Generation timed out"}}'],
     ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
+    ["plain-text body", "Timed out reading request body."],
+    ["malformed JSON body", '{"error":'],
+    ["missing error object", '{"code":"user_request_timeout","message":"Timed out reading request body."}'],
+    ["non-string message", '{"error":{"code":"user_request_timeout","message":408}}'],
   ])("keeps %s as bad_request", (_label, body) => {
     const result = classifyError(new HTTPError("Request timeout", 408, body))
 

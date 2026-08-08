@@ -177,7 +177,7 @@ export function classifyError(error: unknown): ApiError {
 function classifyHTTPError(error: HTTPError): ApiError {
   const { status, responseText, message } = error
 
-  // GHC accepted the HTTP/2 stream but its edge timed out while reading the request body. This is a transient upload/transport failure rather than an application-level rejection: replaying the unchanged request once is the only path to a response. Match both the structured code and the specific message so unrelated 408 deadlines remain terminal.
+  // Project availability policy: treat this narrowly identified GHC request-body read timeout as a retryable transport-class failure and replay the unchanged request once through network-retry. This is not an HTTP idempotency or zero-processing guarantee. Match both the structured code and the specific message so unrelated 408 deadlines remain terminal.
   if (status === 408 && isRequestBodyReadTimeout(responseText)) {
     return {
       type: "network_error",
