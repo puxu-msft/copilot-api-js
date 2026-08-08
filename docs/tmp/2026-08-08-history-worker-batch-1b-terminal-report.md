@@ -47,6 +47,10 @@
 - **临时证据的安全性不依赖清理时机，而依赖「长期价值已先行落进已提交的持久接收者」。** 56项每一项的接收者见清单逐行：测试／构建／mutation 原始输出 → 已提交的 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 证据摘要；提交消息输入 → 对应的本地 Git commit；三方对账副本 → 已提交的 `tests/infra/entry-test-discovery-baseline.json` 与 B3/B4 处置记录；本轮评审结论 → 本报告与终审报告本身。**因此 Claude job 目录的自动清理在任何时刻发生都不会删除唯一副本。**
 - **诚实边界（终审 reviewer 判 major 并修正）**：harness 的 job 自动清理是**本会话不可控的生命周期事件**，它不读取 Git ancestry，因此**任何「清理必须晚于某个 Git 门」的说法都没有执行接缝、不成立**。此前本报告把「确认收尾提交在 `master` 祖先」写成清理前置，是把不可控事件写成受控门——已改正。`master` ancestry 的正确职责只有一个：作为「可宣告集成完成、可清理本 branch／worktree」的门。若将来确需强制 temp cleanup 晚于某事件，需要一个可显式 hold job 生命周期并经过验证的外部机制，本轮产物没有这种机制。
 - 本会话未手工删除任何临时文件（避免通配符误删与跨会话误伤），56项全部保留。冻结门与逐路径复核条件见清单头部，已按终审 D1 裁决补齐附加条件。初次冻结 6,568,459 bytes → 终审前重枚举 6,568,699 bytes → fast-forward 落地后重枚举仍为 56 项、6,568,699 bytes；240 bytes 差异全部来自 `shared-main-index.terminal-review.snapshot` 按最新共享 index 重新快照，已逐路径复核其类型、用途、receiver 与最终动作均未变。
+- **归档价值逐类审计（2026-08-08 收尾时应用户要求执行，结论：无一项需归档）**。不依据清单自述，逐类实际打开核验：entry baseline 三方副本 3 项（接收者=已提交 baseline＋B3/B4 处置）；测试／构建／lint／mutation 日志 10 项（摘要在已提交 progress 与 dispositions）；提交消息输入 20 项（消息已在 `master` 提交内）；路径／提交清单 4 项（可由 git 再生）；mutation patches 2 项（dispositions 已记变异内容与变红观测）；WIP／恢复 patches 4 项（**实测已全部落进 `master`**，一份为空）；perf 转录大纲 1 项（源 jsonl 31MB 完好在盘，可再生）；ws 探针日志 4 项（结果由 `17c05e59`／`db16510e` 承接）；共享 index 快照 7 项（已被 `master` 取代）。
+  - `check-junit-executed.py` **判为冗余不归档**：仓库已有 `scripts/parallel-test-artifacts.ts`，是更完整的 TS 实现（含 skipped identity 追踪），一次性 python 脚本无独立价值。
+  - **一处险些漏掉的检查**：`old-without-activity.patch` 含 `history_admission_wait_ms` 直方图与 `historyAdmissionWaitMs` 字段，不属 Batch 1b 主体。逐个 grep `master` 确认直方图、字段、`src/lib/context/activity-summary.ts` 与 `src/lib/context/request.ts` 接线全部在位，无遗漏。
+  - **一处险些写下的伪证据**：文件名 `ws-shutdown-x10.log` 诱导推断「连跑 10 次确认非 flaky」，实测 `rg -c 'Ran [0-9]+ tests'` 只有 **1** 处——它是「一个文件 10 个用例」的**单次**运行，不存在确定性连跑证据。**按文件名下结论会在文档里留下一条永远复现不出的断言。**
 
 ## 结构怪味与处置
 
