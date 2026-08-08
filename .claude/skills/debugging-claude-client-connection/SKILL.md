@@ -109,4 +109,4 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 
 流内 `event: error`（`@anthropic-ai/sdk` `core/streaming.js:113`）→ `new APIError(undefined, body, ...)`：**`.status===undefined`、非 RateLimitError/AuthenticationError/BadRequestError 子类**（子类只由 HTTP-response 路径 `error.js generate(status)` 产）、**零自动重试**（`shouldRetry` 作用于 HTTP response、先于流迭代）。HTTP-4xx 则得类型化子类 + `.status` + 自动重试。`error.type` 两形态都在 `body.error.type` 保住。
 
-**CC 包装层**：对 200+SSE-error **401/400 完全等价**（显示正确 + 不重试本就正确，401 还触发「请 /login」UX）；**仅 429/5xx 可重试类真发散**——HTTP-429 持续重试 ≥7×退避，200+SSE-error-429 一次即弃。流一旦 commit（message_start 后），即便真上游错误 CC 也不重试（流式协议固有）。支撑 [[project-pre-response-abort-rfc]] 的延迟-commit GO 裁决（grace<60s、heartbeat<60s、错误帧残余可接受）。
+**CC 包装层**：对 200+SSE-error **401/400 完全等价**（显示正确 + 不重试本就正确，401 还触发「请 /login」UX）；**仅 429/5xx 可重试类真发散**——HTTP-429 持续重试 ≥7×退避，200+SSE-error-429 一次即弃。流一旦 commit（message_start 后），即便真上游错误 CC 也不重试（流式协议固有）。支撑 [pre-response-abort spec](../../../docs/spec/pre-response-abort-handling.md) 的延迟-commit GO 裁决（`:10-12`：grace 硬约束 `<60s`、heartbeat 须 `<60s`、错误帧残余可接受）。
