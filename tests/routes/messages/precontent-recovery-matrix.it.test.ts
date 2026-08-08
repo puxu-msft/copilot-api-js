@@ -308,6 +308,74 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
   })
 
+  test("ready-live recovery resumes the suspended heartbeat while evaluation waits, then publishes its batch without interleaving", async () => {
+    const clock = new FakeClock()
+    let recoveryFirstPull!: () => void
+    const recoveryFirstPullP = new Promise<void>((resolve) => (recoveryFirstPull = resolve))
+    let releaseRecovery!: () => void
+    const recoveryReleaseP = new Promise<void>((resolve) => (releaseRecovery = resolve))
+    let calls = 0
+
+    clock.install()
+    try {
+      setStateForTests({ streamCommitAfterSec: 0, streamKeepalivePingSec: 2, streamKeepaliveMode: "ping", maxReactiveRetries: 0 })
+      applyFetchMock(
+        mock(() => {
+          calls += 1
+          if (calls === 1)
+            return Promise.resolve(
+              createSseResponseThenError(
+                [messageStartFrame({ id: "msg_primary_before_recovery", model: MODEL, inputTokens: 5 })],
+                tagTransportError(new Error("primary heartbeat fallback"), "refused-stream"),
+              ),
+            )
+          const encoder = new TextEncoder()
+          let released = false
+          return Promise.resolve(
+            new Response(
+              new ReadableStream({
+                async pull(controller) {
+                  recoveryFirstPull()
+                  if (released) return
+                  released = true
+                  await recoveryReleaseP
+                  for (const frame of completeFrames("msg_recovery_after_heartbeat")) controller.enqueue(encoder.encode(frame))
+                  controller.close()
+                },
+              }),
+              { status: 200, headers: { "content-type": "text/event-stream" } },
+            ),
+          )
+        }),
+      )
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const responseP = request(createFullTestApp(), "precontent-recovery-heartbeat")
+
+      await recoveryFirstPullP
+      await drain()
+      await clock.advance(2_001)
+      await drain()
+      await clock.advance(2_001)
+      await drain()
+      releaseRecovery()
+      const text = await (await responseP).text()
+
+      expect(calls).toBe(2)
+      // The resumed timer arms from the recovery-start clock, so this controlled 4s window emits exactly one cadence ping before R's atomic batch.
+      expect(frameTypesInOrder(text).filter((type) => type === "ping")).toHaveLength(1)
+      const frameTypes = frameTypesInOrder(text)
+      expect(frameTypes.slice(frameTypes.lastIndexOf("ping") + 1)).toEqual([
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+      ])
+    } finally {
+      clock.restore()
+    }
+  })
+
   test("commit rejection after full recovery publication preserves R wire and records its cleanup error", async () => {
     const quiesceError = new Error("recovery commit quiesce rejected")
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
