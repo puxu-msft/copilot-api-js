@@ -16,6 +16,8 @@ import {
   test,
 } from "bun:test"
 
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+
 import { tagTransportError } from "~/lib/error/transport-reason"
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
@@ -1024,6 +1026,37 @@ describe("Task 4.3b pre-content recovery matrix", () => {
       expect(dataFramesOfType(winner.text, "error")[0]?.error).toMatchObject({ message: "pre-wire owner rejected" })
       expect(winner.text).not.toContain("msg_begin_leg_owner")
     }
+  })
+
+  // Every row reaches the delayed-commit catch before B2. Tagged cancellation causes use the
+  // production constructor; `header-timeout` and `unknown-abort` have no cancellation tag by design.
+  test.each([
+    ["header-timeout", () => Object.assign(new Error("header timeout"), { name: "TimeoutError" }), "timeout_error"],
+    ["request-deadline", () => cancellationAbortError("request-deadline", "request_deadline"), "timeout_error"],
+    ["reaper-cancel", () => cancellationAbortError("stale-reaper", "reaped"), "timeout_error"],
+    ["request-cancel", () => cancellationAbortError("request-cancel", "cancelled"), "api_error"],
+    ["dispatch-cancel", () => cancellationAbortError("dispatch-cancel", "lost hedge race"), "api_error"],
+    ["unknown-abort", () => new DOMException("untagged abort", "AbortError"), "api_error"],
+  ] as const)("delayed-commit abort producer %s bypasses B2", async (_kind, abortError, expectedType) => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return new Promise<Response>((_resolve, reject) => {
+          setTimeout(() => reject(abortError()), 10)
+        })
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const text = await (await request(createFullTestApp(), `precontent-abort-${_kind}`)).text()
+
+    expect(calls).toBe(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: expectedType })
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `precontent-abort-${_kind}` }).entries[0]
+    expect(entry?.attempts).toHaveLength(1)
   })
 
   test("codec-render failures never make a fresh recovery dispatch", async () => {
