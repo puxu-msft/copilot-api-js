@@ -38,8 +38,10 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
+import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -395,6 +397,53 @@ describe("driver.runExchange — error-driven retry", () => {
         decideRoute: (e) => codec.decideRoute(e),
         transport,
         strategies: buildOpenAiCcStrategies({ originalPayload: env.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
+      })
+
+      const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
+      for (let i = 0; i < 50 && clock.liveTimerCount === 0; i++) await Promise.resolve()
+      expect(clock.liveTimerDelaysMs).toEqual([1000])
+      await clock.advance(1000)
+      const result = await resultPromise
+
+      expect(result.ok).toBe(true)
+      expect(attempts).toBe(2)
+      expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "network-retry", waitMs: 1000 }])
+    } finally {
+      clock.restore()
+    }
+  })
+
+  test("retries a GHC request-body read timeout once through the production Responses strategy stack", async () => {
+    const clock = new FakeClock()
+    clock.install()
+    try {
+      const { ctx, calls } = makeCtx()
+      const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+      const env = makeEnv(ctx, payload)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) {
+          throw new HTTPError(
+            "Failed to create responses",
+            408,
+            JSON.stringify({
+              error: {
+                code: "user_request_timeout",
+                message: "Timed out reading request body. Try again, or use a smaller request size.",
+              },
+            }),
+          )
+        }
+        return okStream()
+      })
+      const driver = createPipelineDriver({
+        ...BASE,
+        codec,
+        decideRoute: (e) => codec.decideRoute(e),
+        transport,
+        strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
       })
 
       const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })

@@ -130,7 +130,7 @@
 - [合成/改写帧 forwarded 轨完整性（landed master 2026-07-20）](project-synthetic-frame-forwarded-track-completeness-spec.md) — Unit1 前提被 V3 实测推翻(只治瞬态快照)
 - [Responses 三件（buffered-merge landed master / Codex tier-1 硬化 / runtime-split）](project-responses-buffered-merge-landed.md) — 托管 reducer+两旋钮·drop-delta 默认作用所有 Responses 流；[tier-1](reference-undici-websocket-runtime-split-bun-vs-node.md) 关闭码1000+guardCallback+**下游保活**+opt-in buffered(此处「默认 OFF」指 tier-1 原始 buffered retry、非 buffered-merge)、Bun→原生 WS 有 ping / Node→真 undici 无 ping
 - [transport 配置三轴归位 2c19c7cf + h2 池按容量选路 N=1 36cf45bf](project-transport-config-three-axis-reorg.md) — timeouts/upstream_transport/responses_ws；[h2 池](project-h2-pool-capacity-routing-and-pre-response-retry.md) 消灭并发流 blast-radius
-- [上游静默 commit 时机 spec（plan 已定稿+两轮对抗审，实施中）](project-upstream-silence-commit-timing-spec.md) — 证伪等-header 判别；**接手看 docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md**
+- [上游静默 commit 时机与 direct live B2（已本地集成；buffered／translated 待续）](project-upstream-silence-commit-timing-spec.md) — 证伪等-header 判别；**接手看 docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md**
 - [对称四点 hook 架构 v3 2a77bf7c（v2 118a9c33 已被其取代）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange；[v2 中间件](project-upstream-hook-middleware.md) 三挂载点接口**已退役**、仅存历史；hook 帧进上游轨必打 synthetic 标记
 - [请求生命周期 cancel/settle/quiesce + 首包时序埋点 f982e0e3（均 landed）](project-request-lifecycle-cancel-settle-quiesce.md) — 多根因；[埋点](project-request-timing-instrumentation-landed.md) 上游4刻/客户端3刻/DDSketch
 - [AskUserQuestion 顶层 question 键抢救（landed）](methodology-plan-verify-interface-location-and-wiring-channel.md) — salvage→兜底 header→strip

@@ -131,3 +131,11 @@
 ## 2026-08-06 · 上游空正文 HTTP 499 有界重试（sha `d2607ec9`）
 
 - **V9 鉴别力正控** — ⚠️ **强观测但不投证实票**。本轮新增 classifier → production retry registry → driver 三层判据；先观察旧实现因 499 被分类为 `bad_request` 而三层红，再把目标机制精确变异为 `status === 498`，三层测试分别在分类结果、策略认领和 1000ms backoff／第二次 transport 调用处再次变红；反向应用冻结 patch 后三层恢复为绿。负向样本同时锁定非空 499 保持 `bad_request`、空正文 401/403 保持 `auth_expired`。本轮按本 skill 要求追加该 verification log，因而命中投票规则第 11 行“编辑过该目录”，只记录客观观测。｜结论：数据不足（正控已实际改变并验证测试形状）
+
+## 2026-08-08 · upstream-silence recovery 本地集成与清理（sha `e45536af`）
+
+- **V1 触发链** — ❌ 用户明确要求“收尾和清理”后才调用本 skill；前一轮虽已主动完成评审、doc-sync、提交和本地 fast-forward，但没有在首次宣告完成前加载本 skill。命中“用户点名”负样本。｜结论：证伪
+- **V7 闭环提交时点** — ⚠️ 本轮没有新建 HANDOVER／KICKOFF 或实验目录；现有四份 live 状态文档先经独立 reviewer 0 blocker／0 major，再精确提交为 `e45536af`，随后碰撞集 4 paths × 15 peer dirty paths = 0 才 ff-only 到共享 master。`git diff-tree -r e45536af` 精确包含这四份文档。因本轮追加 verification log，不投证实票。｜结论：数据不足
+- **V8 正交视角** — ⚠️ 本轮沿用同一 merged-state reviewer 多轮复评，并未预设两个正交 closeout 视角，不计入 V8 分母。事实观察：该 reviewer 先后抓出 bundled timeout 违冻结不变量、real open block gate、Worker owning reset、per-model warning、DESIGN 漂移五类问题，整改后 0 blocker／0 major。｜结论：数据不足
+- **V9 鉴别力正控** — ⚠️ 新增的 real text/tool block-start gate、scalar/per-model bounded-wait 告警与 Worker reset race 均先见目标红再恢复绿；Chat H3 配置顺序依赖亦稳定复现后连续 10 轮通过。因本轮编辑该 log，只记观察。｜结论：数据不足
+- **V14 双事实源收口** — ✅ 陈旧 project memory 已缩成指向 `DESIGN.md`／implementation report／spec 的 stub，并明确 feature 已合并、worktree/branch 已删除；不再与正式文档并列维护实施进度。因本轮编辑该 log，不投证实票。｜结论：数据不足
