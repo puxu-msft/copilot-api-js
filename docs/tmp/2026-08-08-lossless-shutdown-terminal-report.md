@@ -2,9 +2,9 @@
 
 > 冻结时间 2026-08-08。分支 `worktree-fix-shutdown-review-findings`，worktree 位于 `.claude/worktrees/fix-shutdown-review-findings`。
 >
-> **一句话状态：整改全部完成、全门绿；五轮独立评审的发现均已处置，其中收尾三轮的处置尚待未卷入方复评闭合。尚未合回 master——合并是本报告后唯一剩下的动作，需要用户决定。**
+> **一句话状态：整改全部完成、全门绿、五轮独立评审的发现全部处置并复评闭合。尚未合回 master——合并是本报告后唯一剩下的动作，需要用户决定。**
 >
-> **不要把本报告读成「0 blocker / 0 major」。** 实施本身的三轮评审已闭合于 0/0；但收尾阶段的文档评审报了 1 blocker / 2 major、终审又报了 1 blocker / 2 major，这些处置由我自己做出，**截至本节冻结时尚未经未卷入方复评**。复评状态见第 4 节末。
+> **各轮的真实计数（不要压缩成一句「0/0」）：** 实施阶段三轮闭合于 0 blocker / 0 major；收尾阶段的指令类文本评审报 0 blocker / 3 major（已由未卷入第三方逐条复评 FIXED）、文档与证据评审报 1 blocker / 2 major、终态报告终审报 1 blocker / 2 major（已由原终审 reviewer 复评 FIXED，属 C 级、按分级可由其收口）。所有发现均已处置，无未闭合项。
 
 ## 1. 交付内容
 
@@ -80,7 +80,9 @@
 2. **major：「四路独立评审 0 blocker / 0 major」把结论说得比实际好。** 成立。已改写本报告开头与本节：实施三轮闭合于 0/0，收尾两轮各报 1 blocker / 2 major，且处置由我自评。
 3. **major：「架构与 discovery guards 34/34」不可复现。** 成立。实测为 17 文件、178 pass、0 fail，命令已写出；`34/34` 无可复现 selector，已从本报告、`-review.md` 与 plan 三处一并更正。
 
-**复评状态：** 上述三条的处置已交未卷入方复评——结论见第 4 节表格末行更新与 `docs/tmp/2026-08-08-closeout-final-review.md` 的追加段。**在该复评给出结论之前，本报告不得被引用为「已闭合」。**
+**复评状态：已闭合。** 上述三条的处置由**原终审 reviewer** 复评，逐条判 FIXED，总体 0 blocker / 0 major，并实跑复核了两项：`git merge-tree --write-tree master HEAD` 退出 0、guards 复现 17 文件 178 pass。
+
+> **措辞更正（由该 reviewer 自己指出）：** 这一轮是「原终审 reviewer 复评」，**不是**「未卷入方复评」——它正是这三条的提出者。按 `adopting-agent-findings` 的分级，这三条属 C 级（落进产物但可逆的文档修订），交回原评审者明确表态即可；若其中任何一条被升格为 B 级（改变模型收到的指令或加载行为），则须另派未卷入的第三方。本轮三条均不改变指令加载行为，故按 C 级收口。
 
 ## 5. 分支与 worktree 状态
 
@@ -132,4 +134,4 @@ git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-fi
 - **未 cherry-pick peer 分支 `worktree-nghttp2-header-deadline`。** 该判断经复测成立——它自己合进 master 后 `lint:all` 即转绿。
 - **首信号后新建 upstream WS 仍无 shutdown 交叉测试直接覆盖。** 这一点在 skill 里显式标为证据边界，未扩大声称；已建 context 的 token refresh、新建 h2 与 pre-content recovery 三条均有直接证据。
 - **一处曾写出的不可复现数字已更正，记在这里以免被当成从未发生：** 本报告初版写「架构与 discovery guards 34/34」，该数字无可复现 selector，由终审抓出；实测为 17 文件 178 pass。同类风险已在验证表里用「命令」列固定住——每一行都要能被单独复跑。
-- **收尾三轮评审的处置由我自评，尚待未卷入方复评。** 见第 4 节末的复评状态。
+- **收尾三轮评审的处置已复评闭合。** 指令类文本三条由未卷入的第三方复评 FIXED；终审三条由原终审 reviewer 复评 FIXED（C 级，按分级可由其收口）。文档评审的三条由我自评后，其结论被终审独立重查并进一步收紧（正是终审抓出「四路 0/0」的夸大与「34/34」不可复现）。
