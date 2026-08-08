@@ -40,6 +40,7 @@ import type {
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
+import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -152,11 +153,6 @@ import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
-import {
-  //
-  runRecoveryPostCommitSettlementForTests,
-  type DownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
@@ -428,7 +424,6 @@ async function settleDirectRecoveryPublication(
     }
     case "wire-torn": {
       try {
-        await runRecoveryPostCommitSettlementForTests("wire-torn")
         await handlers.wireTorn(publication.error)
       } catch (callbackError) {
         await handlers.settlePostCommitException(publication, callbackError)
@@ -437,7 +432,6 @@ async function settleDirectRecoveryPublication(
     }
     case "commit-failed": {
       try {
-        await runRecoveryPostCommitSettlementForTests("commit-failed")
         await handlers.commitFailed(publication)
       } catch (callbackError) {
         await handlers.settlePostCommitException(publication, callbackError)
@@ -470,16 +464,39 @@ async function settleCommittedRecoveryFailure(input: {
   readonly model: string
   readonly publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>
   readonly recordForwarded: () => void
-  readonly finalize?: () => Promise<void> | undefined
 }): Promise<void> {
-  const { driver, env, model, publication, recordForwarded, finalize } = input
+  const { driver, env, model, publication, recordForwarded } = input
   driver.pinGenerationTerminalDispatch(env, publication.evaluation.dispatch)
   recordForwarded()
   env.ctx.fail(model, publication.error, publication.evaluation.response, {
     upstreamSucceeded: true,
     attribution: { category: "proxy", detail: "recovery disposition commit failed after full downstream publication" },
   })
-  await finalize?.()
+}
+
+/** Post-C9 wire recovery may still attempt terminal wire actions, but request finalization remains owner-owned. */
+async function settleWireTornRecoveryFailure(input: {
+  readonly publicationError: Error
+  readonly model: string
+  readonly ctx: RequestEnvelope["ctx"] | undefined
+  readonly recordForwarded: () => void
+  readonly closeAnchor: () => Promise<unknown>
+  readonly writeTerminal?: () => Promise<void>
+}): Promise<void> {
+  const { publicationError, model, ctx, recordForwarded, closeAnchor, writeTerminal } = input
+  let settlementError: unknown = publicationError
+  const collect = async (action: () => Promise<unknown>): Promise<void> => {
+    try {
+      await action()
+    } catch (error) {
+      settlementError = aggregateRecoverySettlementError(settlementError, error)
+    }
+  }
+
+  await collect(closeAnchor)
+  if (writeTerminal) await collect(writeTerminal)
+  recordForwarded()
+  ctx?.fail(model, settlementError, undefined, { upstreamSucceeded: true })
 }
 
 function asError(error: unknown): Error {
@@ -1037,7 +1054,13 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
                   recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
                 }),
               wireTorn: (wireTorn) =>
-                writeTerminalThenSettle(ctx, anthropicErrorFrame("api_error", "Recovery publication failed"), () => ctx?.fail(resolvedName, wireTorn)),
+                settleWireTornRecoveryFailure({
+                  publicationError: wireTorn,
+                  model: resolvedName,
+                  ctx,
+                  recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
+                  closeAnchor: () => closeAnchorViaOwner(sinkChain.deliverySession.allocationPort, anchorHooks, ctx, "terminal"),
+                }),
               settlePostCommitException: (postCommit, callbackError) => {
                 ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
                 ctx?.fail(resolvedName, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, {
@@ -1740,19 +1763,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           model,
           publication: commitFailed,
           recordForwarded,
-          finalize: async () => {
-            await sink.finalize?.()
+        }),
+      wireTorn: (wireTorn) =>
+        settleWireTornRecoveryFailure({
+          publicationError: wireTorn,
+          model,
+          ctx: env.ctx,
+          recordForwarded,
+          closeAnchor: () => closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal"),
+          writeTerminal: async () => {
+            await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed"))
           },
         }),
-      wireTorn: async (wireTorn) => {
-        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
-        if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, { usage: { input_tokens: 0, output_tokens: 0 } }, { cause: wireTorn }))
-          return
-        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed")).catch(() => undefined)
-        recordForwarded()
-        env.ctx.fail(model, wireTorn)
-        await sink.finalize?.()
-      },
       settlePostCommitException: (postCommit, callbackError) => {
         recordForwarded()
         env.ctx.fail(model, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, { upstreamSucceeded: true })
