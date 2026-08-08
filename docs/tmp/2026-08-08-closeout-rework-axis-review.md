@@ -180,3 +180,9 @@
 - **第 5 类（mutation／正负控）“无新增”属实**：末段整改没有实际注入新的 production mutation；“patch 粒度不足则承重”只是规则示例。Batch 1b 既有 mutation／floor 双控已在 dispositions 与 progress 承接，不是本轮新增。
 - **第 6 类（运行态／外部能力探针）“无新增”不属实**：本轮 reviewer 实跑 Git `2.43.0` 的 unmerged-index、resolved-but-uncommitted `MERGE_HEAD`、divergent／dirty-path stderr、不重叠 staged dirt fast-forward，以及 GNU patch／`git apply --directory` 行为；这些结论直接驱动多轮裁决。① memory 承接其大部分，但候选清单应显式 disposition，不能以“已写进①”代替入列。
 - 结论：10 项清单仍漏 A、B 与第 4／6 类新增事实；第 5 类无新增属实。
+
+# 复审轮七（`8ba962df`）
+- 对账范围：父 transcript 末段 `:11444-12043`，按候选关键词、评审通知与整改摘要切片。
+- 12 项流程／事实候选均能在事件源定位，且分别由 ff-only memory 或九形态 execution-seam memory 承接。
+- 第 4 类已列 job tmp 56／42／56 人口与 `fd -H` ignore 陷阱；第 6 类已列六项 Git／GNU patch 探针及版本边界；第 5 类无新增。
+- **diff 为空：未发现新的漏列候选。** `Server error mid-response` 后恢复同一 reviewer、缩小任务并逐条落盘属于既有 agent 运维纪律的应用，不是本轮新增知识。
