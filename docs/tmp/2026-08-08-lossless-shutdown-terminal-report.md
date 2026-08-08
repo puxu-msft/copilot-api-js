@@ -2,7 +2,7 @@
 
 > 冻结时间 2026-08-08。分支 `worktree-fix-shutdown-review-findings`，worktree 位于 `.claude/worktrees/fix-shutdown-review-findings`。
 >
-> **一句话状态：整改全部完成、全门绿、五轮独立评审的发现全部处置并复评闭合。尚未合回 master——合并是本报告后唯一剩下的动作，需要用户决定。**
+> **一句话状态：整改全部完成、全门绿、五轮独立评审的发现全部处置并复评闭合，并已由 `ad8128ad` 合入 master。** 用户于 2026-08-08 执行合并；本会话未推送任何内容，发布仍是用户的决定。
 >
 > **各轮的真实计数（不要压缩成一句「0/0」）：** 实施阶段三轮闭合于 0 blocker / 0 major；收尾阶段的指令类文本评审报 0 blocker / 3 major（已由未卷入第三方逐条复评 FIXED）、文档与证据评审报 1 blocker / 2 major、终态报告终审报 1 blocker / 2 major（已由原终审 reviewer 复评 FIXED，属 C 级、按分级可由其收口）。所有发现均已处置，无未闭合项。
 
@@ -33,7 +33,7 @@
 | `a6be256a` | entry evidence validator 文件级超时预算 |
 | `6adf2e56`／`93de46b9`／`51d705cf`／`5405056b`／`e5ad10ea`／`73928cef`／`2c248536` | 收尾：证据归档、plan 终态化、skill 复跑协议、记忆条目、临时清单、两轮收尾评审处置 |
 
-**`04e6ecb1`～`4c555ef9` 已在 master**（由 peer 的 `0732fc76` 带入）。**`77d6d479` 起的整改仍只在本分支**。
+**`04e6ecb1`～`4c555ef9` 先随 peer 的 `0732fc76` 进入 master；`77d6d479` 起的整改由 `ad8128ad` 合入 master。** 本表所列全部提交现均在 master 上——`git merge-base --is-ancestor 954a1bff master` 退出 0。唯一例外是本次收尾在合并之后追加的文档更新，见第 9 节。
 
 ## 3. 验证（均在本分支最终状态执行）
 
@@ -86,35 +86,24 @@
 
 ## 5. 分支与 worktree 状态
 
-- 分支 `worktree-fix-shutdown-review-findings`，worktree 干净（`git status --short` 无输出），HEAD 全部已提交。
-- **未推送**，也不会推送——发布是用户的决定。
-- 已把 `master@475bed45` 合入本分支（`616baffc`，解掉两处冲突：评审报告文件名撞车、`deferred-backlog.md` 追加点）。**master 在本会话期间由多个并发会话持续前进**（观察窗口内 `d47492a6 → d1011fe7 → b936a8e9 → 475bed45`），因此这里不钉死某个 tip——合并前请就地复核，不要引用本报告的快照值：
-
-  ```
-  git -C /home/xp/src/copilot-api-js merge-tree --write-tree master worktree-fix-shutdown-review-findings >/dev/null && echo "no conflict"
-  ```
-
-  **已知的两个复发冲突点**：`docs/todo/deferred-backlog.md`（各会话都在文末追加条目，解法恒为「两边并列保留」）与 `docs/tmp/` 下按日期命名的评审报告（易撞名，解法为加任务前缀）。两者都不涉及代码语义。
-- **worktree 保留，不删除**——它是整改提交的唯一持有者。
-- 主检出树（`/home/xp/src/copilot-api-js`）本会话全程未触碰；其它会话的未提交工作未受影响。
-
-**合并本任务需要用户在主检出树执行**（本会话被 worktree 隔离守卫限制，无法操作共享检出，这也是本报告不代为合并的原因）：
-
-```
-git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-findings
-```
-
-合并前请确认主树工作区状态——该树常有其它并发会话的未提交改动。
+- 分支 `worktree-fix-shutdown-review-findings`，worktree 干净，HEAD 全部已提交。
+- **已合入 master**：用户于 2026-08-08 执行 `git merge --no-ff`，产生 `ad8128ad`。核实命令：`git branch -a --contains 954a1bff` 同时列出 `master`；`git show master:src/lib/shutdown.ts | grep -n 'getActive: ()'` 显示两个 registry 的并集。
+- **未推送**，也不会推送——发布是用户的决定。合并只落在本地 master。
+- 合并前本分支已把 `master@475bed45` 合入自身（`616baffc`，解掉两处冲突）。**master 在本会话期间由多个并发会话持续前进**（观察窗口内 `d47492a6 → d1011fe7 → b936a8e9 → 475bed45 → eea7a646`），故本报告不钉死 tip。
+- **已知的两个复发冲突点**（下次从这条分支或类似长跑分支合并时仍会遇到）：`docs/todo/deferred-backlog.md`（各会话都在文末追加条目，解法恒为「两边并列保留」）与 `docs/tmp/` 下按日期命名的评审报告（易撞名，解法为加任务前缀）。两者都不涉及代码语义。
+- **worktree 与分支保留**——本次收尾又在其上追加了合并后的文档更新（见第 9 节），需要再合一次；这些提交是那批更新的唯一持有者。
+- 主检出树（`/home/xp/src/copilot-api-js`）本会话全程未由本会话直接操作；其它会话的未提交工作未受影响。
 
 ## 6. 文档与证据落点
 
 - 冻结规格：`docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md`（状态：已实施）。
-- 实施计划：`docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`，已转终态记录，状态头含「整改待合并」判定命令。
+- 实施计划：`docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`，已转终态记录，状态头给出「整改已合入 master」的正向判定命令。
 - live docs：`docs/DESIGN.md`、`docs/lifecycle.md` 已反映两个 registry 的并集边界与资源关闭顺序。
 - 操作性知识：skill `process-lifecycle-shutdown`（含证据边界与正控复跑协议）。
 - 评审与证据：`docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`、两份变异 patch、`-timings.xml`、`-shard-timeouts.md`、三份收尾评审报告（`-closeout-instruction-review.md`、`-closeout-docs-review.md`、`-closeout-final-review.md`）。
 - 结构性待办：`docs/todo/deferred-backlog.md:1208`「shutdown drain source 仍由协调器手工枚举」——长期形状是统一的 accepted-operation registry，本轮不夹带架构重写。
-- 临时证据清单：`docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md`（35 个文件逐条处置，有长期价值的三项已逐字持久化进仓库，未删除任何临时文件）。
+- 临时证据清单：`docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md`（53 个文件逐条处置，有长期价值的四项已持久化进仓库，未删除任何临时文件）。
+- 自有测试集的可复跑口径：`docs/tmp/2026-08-08-lossless-shutdown-self-tests.sh`（自解析仓库根，实跑复现 100 tests / 12 files；这是「12 文件 100 pass」的唯一精确口径，先前那版 98 pass 正是因为文件集没写明才对不上）。
 - 记忆：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` + `MEMORY.md` 索引行。
 
 ## 7. 可复用资产
@@ -128,10 +117,34 @@ git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-fi
 
 ## 8. 未做的事（显式声明）
 
-- **未推送任何东西。** 所有提交都在本地。
-- **未合并回 master。** 见第 5 节，需用户执行。
+- **未推送任何东西。** 所有提交都在本地，包括用户执行的那次 master 合并。
+- **本次收尾追加的文档更新尚未合入 master。** 见第 9 节——合并落地后我更新了四份文档里「待合并」的陈旧断言，这批提交仍只在分支上。
 - **未删除任何临时文件。** 见临时清单。
 - **未 cherry-pick peer 分支 `worktree-nghttp2-header-deadline`。** 该判断经复测成立——它自己合进 master 后 `lint:all` 即转绿。
 - **首信号后新建 upstream WS 仍无 shutdown 交叉测试直接覆盖。** 这一点在 skill 里显式标为证据边界，未扩大声称；已建 context 的 token refresh、新建 h2 与 pre-content recovery 三条均有直接证据。
 - **一处曾写出的不可复现数字已更正，记在这里以免被当成从未发生：** 本报告初版写「架构与 discovery guards 34/34」，该数字无可复现 selector，由终审抓出；实测为 17 文件 178 pass。同类风险已在验证表里用「命令」列固定住——每一行都要能被单独复跑。
 - **收尾三轮评审的处置已复评闭合。** 指令类文本三条由未卷入的第三方复评 FIXED；终审三条由原终审 reviewer 复评 FIXED（C 级，按分级可由其收口）。文档评审的三条由我自评后，其结论被终审独立重查并进一步收紧（正是终审抓出「四路 0/0」的夸大与「34/34」不可复现）。
+
+## 9. 合并落地之后的更新（本批仍待合并）
+
+用户于 2026-08-08 执行合并、产生 `ad8128ad` 之后，本报告在内的多份文档里「尚未合回 master、待合并」的断言**当场变成了陈旧状态**。这是收尾阶段最容易留下的一类错误：文档写于合并之前，而它描述的正是合并这件事本身。
+
+本批更新（仍只在 `worktree-fix-shutdown-review-findings` 上）：
+
+- `docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`：状态头由「尚未合回 master」改为「已合入 master（`ad8128ad`）」，判定命令同步改为「应同时列出 `master`」的正向形态；实施结果的验证数字重锚。
+- `docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`：合并状态同上更正。
+- 本报告：第 1 行状态、第 5 节、第 8 节三处更正，并新增本节。
+- `docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md`：第二次冻结（53 个文件），补入收尾后半程新增文件的分类；14 个 commit-message 输入逐条与已落地 commit 的 subject 比对，14/14 相等。
+- 新增 `docs/tmp/2026-08-08-lossless-shutdown-self-tests.sh`：把自有测试集的精确文件清单从 job 临时目录提炼进仓库（原件写死 worktree 路径、收尾后失效；归档版自解析仓库根并加存在性校验），实跑退出 0、复现 100 tests / 12 files。
+- 新增记忆 `docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md` + `MEMORY.md` 索引行。
+- **更正四份他人文档的陈旧合并状态**：`docs/memory/project-{history-search-out-of-process,responses-buffered-merge-landed,symmetric-four-point-hooks}.md` 与 `docs/plan/monorepo-split/plan-telemetry-package.md` 仍称「待合并 master」，而其提交（`30a483df`／`8e0376d4`／`2a77bf7c`／`bd3aafe0`）早已在 master。逐个用 `git merge-base --is-ancestor` 复核后更正。**越界与否已交独立评审裁定**：机械更新一个可由 `merge-base` 判定的状态事实不越界、无需原作者裁决；若涉及结论或取舍则不适用此结论。
+
+**本批也经过独立评审**：合并后收尾产物评审报 0 blocker / 4 major——终态报告提交谱系表第十处陈旧断言（不含任何我扫过的关键词）、上述四组他人文档、记忆判据可被三种说法绕过且「当场登记」无载体、临时清单把 job 目录外已不可复核的事写成无条件「已核验」。四条全部处置并经复评 FIXED，0 blocker / 0 major。报告见 `docs/tmp/2026-08-08-lossless-shutdown-postmerge-review.md`。
+
+**因此需要再合一次**：
+
+```
+git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-findings
+```
+
+这批全是 `docs/` 下的文档、记忆条目与一个归档脚本，无代码改动；对当前 master 的 `merge-tree` 退出 0。合并后本分支与 worktree 即可回收。
