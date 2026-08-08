@@ -413,11 +413,11 @@ Commit: `feat(history): add persistence admission controller`
 
 - [x] **Step 1b.3: 扩展 context/lightweight reservation 接口**
 
-`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；创建 operation ID 后立即调用 `bindOperationId(id)`。context/lightweight 不直接 enqueue persistence。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
+`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；manager 先把新 context 发布到 operation registry，再调用 `bindOperationId(id)`，使 shutdown 的首次 registry snapshot 不会漏掉已绑定 operation；direct 构造与 lightweight operation 在创建 ID 后立即 bind。context/lightweight 不直接 enqueue persistence。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
 
 - [x] **Step 1b.4: 接 HTTP routes 与 shutdown Step 1**
 
-新增 `withHistoryAdmission(c, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper 监听 `c.req.raw.signal` 和专用 admission-stop signal。生产 controller 安装 `LegacyHistoryTerminalSink`：它把 publication.record 交现有 `enqueueModelOperationWithOutcome`，再回调 outcome；Batch 2b 删除 adapter。`gracefulShutdown` Step 1 必须在统计 active context 前同步调用 `stopHistoryAdmission(shutdownError)`，拒绝全部 pre-context waiter；新增 `drainHistoryAdmissionWaiters()` barrier，确保 waiter 全 settled 后才允许 History close。不得等到 Batch 5 才接。
+新增 `withHistoryAdmission(requestOrSignal, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper监听客户端AbortSignal和专用admission-stop signal，并从acquire开始跟踪到reservation首次bind／release。生产 controller 安装 `LegacyHistoryTerminalSink`：它把 publication.record 交现有 `enqueueModelOperationWithOutcome`，再回调 outcome；Batch 2b 删除 adapter。`gracefulShutdown` Step 1 必须在统计 active context 前同步调用 `stopHistoryAdmission(shutdownError)`，拒绝全部pre-context waiter；随后调用 `drainHistoryAdmissionHandoffs()`，确保已grant reservation的async continuation完成bind／release，且已绑定operation先进入registry，再读取首次active snapshot。不得等到Batch 5才接。
 
 - [x] **Step 1b.5: 接 Responses WS**
 
