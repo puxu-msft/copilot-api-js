@@ -292,12 +292,28 @@ describe("baseline-runs summary accounting", () => {
       const runner = path.join(work, "fake-runner.sh")
       writeFileSync(
         runner,
-        `#!/usr/bin/env bash\nmkdir -p "$PARALLEL_TEST_ARTIFACT_DIR"\nprintf '[parallel-test] 16 shards · ${options.tests} tests · ${options.tests} pass · 0 fail · ${options.executed} executed · 30 skipped · 1.00s\\n'\nprintf '[parallel-test] artifacts=%s\\n' "$PARALLEL_TEST_ARTIFACT_DIR"\n`,
+        `#!/usr/bin/env bash\nprintf '[parallel-test] 16 shards · ${options.tests} tests · ${options.tests} pass · 0 fail · ${options.executed} executed · 30 skipped · 1.00s\\n'\nprintf '[parallel-test] artifacts=%s\\n' "\${PARALLEL_TEST_ARTIFACT_DIR:-/tmp/none}"\n`,
         { mode: 0o755 },
       )
       const out = path.join(work, "runs")
+      // Every wrapper knob is pinned, including the ones this case does not vary:
+      // the suite itself runs under the evidence producer, which exports
+      // REQUIRE_TEST_ARTIFACTS=1 and PARALLEL_TEST_ARTIFACT_DIR. Inheriting those
+      // sends the wrapper down the artifact-transfer branch and fails a run that
+      // has nothing to do with summary accounting.
+      const environment = { ...process.env }
+      delete environment.PARALLEL_TEST_ARTIFACT_DIR
       const result = Bun.spawnSync([wrapper, "bash", runner], {
-        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: String(options.minTests), ALLOW_DIRTY: "1", STOP_ON_FAIL: "1" },
+        env: {
+          ...environment,
+          OUT: out,
+          RUNS: "1",
+          MIN_RUNS: "1",
+          MIN_TESTS: String(options.minTests),
+          ALLOW_DIRTY: "1",
+          STOP_ON_FAIL: "1",
+          REQUIRE_TEST_ARTIFACTS: "0",
+        },
         stdout: "pipe",
         stderr: "pipe",
       })
