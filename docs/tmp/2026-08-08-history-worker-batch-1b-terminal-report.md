@@ -1,0 +1,53 @@
+# History Worker Batch 1b 终态报告
+
+> 状态：收尾候选，待本报告与临时证据清单独立复审、共享 `master` fast-forward及安装位置复验。
+> 核验基线：候选 `926b24786824a5428f46aff0401faf7d8ecb3c52`；共享 `master@82c0664eb9bc60732fe0aa0c482d361d18055eac`；日期 2026-08-08。
+> 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
+
+## 交付内容
+
+- Batch 1b 已在 `d3b4ac77` 落地主线：所有生产模型 operation 在 parse／dispatch 前经有界 History admission；terminal publication由单一owner发布；pending／acknowledged-recent／DB overlay覆盖list／stats／sessions／status；shutdown在首次operation registry快照前stop admission并drain pre-context handoff。
+- 最新主线的History V3四字段持久化重试契约已同步到Worker wire：`src/lib/history/persist-retry-config.ts`是`maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`唯一类型owner，V3 store与Worker protocol复用它；initialize protocol拒绝缺失或负值cap。
+- Task 2a正式计划与kickoff已同步：真实semantic backend必须用非默认`maxBackoffMs`和injectable delay证明每次等待上限被消费，删除字段传递的mutation必须变红；当前没有把尚不存在的backend消费测试冒充已实现。
+- 活文档：`docs/DESIGN.md`的History架构行；执行权威：`docs/plan/2026-08-07-history-persistence-worker.md`；下一批入口：`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`；评审处置：`docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md`；完成历史：`docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`。
+
+## 验收证据
+
+- Batch 1b最终实现候选`94205e89`：精确计划门44 pass／0 fail；完整backend为16 shards、7255 executed、30 skipped、0 fail、52.45s；build成功。证据摘要及口径在评审处置文档。
+- 合入`master@d59a622c`后的范围化复验：typecheck通过；Batch 1b计划门44 pass／0 fail；History retry相关目标集415 pass／0 fail。
+- M2四字段契约TDD：旧protocol缺失`maxBackoffMs`时15 pass／1 fail；补第一项后缺失`maxTotalMs`仍15 pass／1 fail；共享类型owner与完整validator落地后联合回归68 pass／0 fail，typecheck与精确lint通过。
+- 原合并态reviewer在`22c8e08b`独立复跑79 pass／0 fail，核验共享类型owner、protocol双向判别、fixtures及Task 2a执行期正控，结论为0 blocker／major；`64e40640` review-gate闭环终审同为0 blocker／major。
+- 最新`master@82c0664e`只新增三份协议中立推理文档，与本轮代码／plan／kickoff／测试零路径交集；候选无冲突合入为`926b2478`，按moving-HEAD规则未重复全量验证。
+
+## Git、发布与工作树状态
+
+- 本报告起草基线`926b2478`相对共享`master@82c0664e`领先9笔本地提交；本报告与临时清单的闭环提交会在其上另增一笔。`git diff --check master..926b2478`通过，候选工作树在起草本报告前除两份新收尾文档外无未提交代码。
+- 尚未执行最终fast-forward；共享`master`仍为`82c0664e`。任何“已集成最终收尾”的结论必须由`git merge-base --is-ancestor <final> master`外部裁决。
+- 未推送、未创建PR、未发布任何ref或artifact。
+- 本会话不删除worktree或分支；最终fast-forward和安装位置复验完成后，分支仍先保留给后续Task 2a启动，除非用户另行要求清理。
+- 共享主树此前观测到`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP；最终fast-forward前须重新冻结共享index并重算碰撞集，不能复用旧快照。
+
+## 临时证据
+
+- 清单：`docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md`。
+- `$CLAUDE_JOB_DIR/tmp`共54项、6,137,136 bytes；逐项记录绝对路径、类型、用途、持久接收者、最终动作和清理前置。
+- 本会话未手工删除任何临时文件。54项全部保留至Claude job目录自动清理；前置是本报告、清单及其接收者已提交且最终主线ancestry验证通过。
+
+## 结构怪味与处置
+
+- `src/lib/history/v3/store.ts`与`src/lib/history/worker/protocol.ts`曾平行维护同一重试类型，后者弱一档且漏`maxBackoffMs`；已在`src/lib/history/persist-retry-config.ts`修成唯一类型owner，store只保留兼容别名，protocol只import／re-export。
+- kickoff的reviewed-plan blob门与“每批回填plan状态”形成两阶段时序：回填后旧门应红，复审后由单独提交更新anchor。已按`22c8e08b`→`64e40640`闭环，不移除或放宽门。
+- Batch 1b progress的15个first-parent提交中有5个后半程提交未同步更新progress；自验日志已诚实记录V12证伪。完成文档虽最终补齐，但不把结果补齐冒充过程合规。
+
+## 可复用资产
+
+- **已实现，项目代码／测试：** `HistoryPersistRetryConfig`共享类型owner；触发是主线程store与Worker wire共用配置字段，关闭“平行类型一侧漏字段”的缺口。现有architecture／protocol测试体系足以承载，无需新增agent soul。
+- **已实现，执行oracle：** initialize四字段合法逐值保留＋缺失／负值拒绝；Task 2a保留真实backend消费mutation。无需另建skill，因为这是History领域契约，应留在plan与测试。
+- **不新增rule／skill：** master移动后的范围化复验、共享worktree碰撞集、instruction文本复审均已有always-on规则和现成skills覆盖；新增同义资产会制造双源。
+
+## 尚待动作
+
+1. 独立review本终态报告与临时证据清单到0 blocker／major。
+2. 重新冻结共享index并确认候选净路径与共享WIP碰撞集为0。
+3. 在共享checkout对`worktree-history-worker-batch-1b-resume`执行`git merge --ff-only`。
+4. 从共享`master`复验HEAD、reviewed-plan硬门、关键测试与工作树WIP保留情况；更新本报告为已集成状态并做最终独立复审。
