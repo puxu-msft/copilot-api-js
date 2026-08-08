@@ -44,6 +44,7 @@ import type {
 
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
+import { encodeSseFrame } from "~/lib/pipeline/sse-encoder"
 
 import type { OwnerRawSink } from "./delivery/types"
 import type {
@@ -200,19 +201,15 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
 
-  // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
-  // are part of the wire (the upstream may emit `id:`/`retry:` lines), so dropping them
-  // would silently narrow the bypass-direct passthrough. Byte-equivalent to the legacy
-  // (legacy forwardClientFrame semantics, retired): `id` stringified, undefined keys omitted.
-  const writeSse = (frame: ClientFrame): Promise<void> =>
-    enqueue(() =>
-      stream.writeSSE({
-        data: frame.data ?? "",
-        ...(frame.event !== undefined && { event: frame.event }),
-        ...(frame.id !== undefined && { id: String(frame.id) }),
-        ...(frame.retry !== undefined && { retry: frame.retry }),
-      }),
-    )
+  // Encode once: the exact same result owns transport bytes and client History projection.
+  // Hono's writeSSE cannot represent an explicit empty `id:` reset, so this path writes raw bytes.
+  const writeEncoded = (frame: ClientFrame, sample: (projection: ClientFrame) => void): Promise<void> => {
+    const encoded = encodeSseFrame(frame)
+    sample(encoded.projection)
+    return enqueue(async () => {
+      await stream.write(encoded.bytes)
+    })
+  }
 
   const sampleForwarded = (
     frame: ClientFrame,
@@ -319,8 +316,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     // frame is REGULAR content flowing through this SAME `write()` call as every other real frame, so
     // the driver has no separate call site to route it through (unlike writeKeepalive/writeAnchor,
     // which the driver/handler always calls deliberately for its OWN synthesized frames).
-    sampleForwarded(frame, readSyntheticKind(frame))
-    return writeSse(frame)
+    return writeEncoded(frame, (projection) => sampleForwarded(projection, readSyntheticKind(frame)))
   }
 
   // Handler-injected synthetic frame (the terminal error frame): write to the wire AND
@@ -331,16 +327,14 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // `ctx.fail/complete` — the settle snapshots `inboundResponse` synchronously, so a
   // post-settle snapshot (e.g. a trailing `finally`) would miss this frame.
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame, readSyntheticKind(frame), "synthetic")
-    return writeSse(frame)
+    return writeEncoded(frame, (projection) => sampleForwarded(projection, readSyntheticKind(frame), "synthetic"))
   }
 
   // A proxy-synthesized keepalive the HANDLER injects out-of-band (the cold-start commit's immediate
   // first ping). Sampled into the forwarded track with a `synthetic:"keepalive"` marker so it's never
   // mistaken for real content (the internal heartbeat timer marks its own pings the same way).
   const writeKeepalive = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame, "keepalive")
-    return writeSse(frame)
+    return writeEncoded(frame, (projection) => sampleForwarded(projection, "keepalive"))
   }
 
   // A proxy-synthesized FABRICATED `message_start` envelope (fake id + zeroed usage) the injector writes
@@ -352,8 +346,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // open-block state: a message_start opens no content block, so noteBlockState is a deliberate no-op on it
   // (the anchor's content_block_start@0, written via writeAnchor, is what lights openBlock={0,text}).
   const writeSyntheticEnvelope = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame, "synthetic-message-start")
-    return writeSse(frame)
+    return writeEncoded(frame, (projection) => sampleForwarded(projection, "synthetic-message-start"))
   }
 
   // A proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's content_block_start@0
@@ -366,8 +359,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const writeAnchor = (frame: ClientFrame): Promise<void> => {
     lastRealMs = Date.now()
     noteBlockState(frame)
-    sampleForwarded(frame, "anchor")
-    return writeSse(frame)
+    return writeEncoded(frame, (projection) => sampleForwarded(projection, "anchor"))
   }
 
   // close stops the heartbeat timer (no-op when none) — runResponseSink's `finally`
@@ -429,8 +421,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     // frame), shares the chain (no byte-interleave). Errors swallowed: the next real write hits the
     // same closed stream and routes through the driver's outcome path.
     const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(currentOpenBlock()) : heartbeat.pingFrame
-    sampleForwarded(frame, "keepalive")
-    void writeSse(frame).catch(() => undefined)
+    void writeEncoded(frame, (projection) => sampleForwarded(projection, "keepalive")).catch(() => undefined)
     lastRealMs = Date.now()
   }
   const tick = (): void => {

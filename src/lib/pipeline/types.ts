@@ -26,6 +26,7 @@ import type {
   SseFrame,
   StreamErrorKind,
 } from "~/lib/stream"
+import type { ParsedSseFrame } from "~/lib/transport/parsed-sse-frame"
 
 // `import type` — erased at runtime, so this does NOT create a runtime cycle with
 // rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
@@ -48,12 +49,11 @@ import type { FrameAction } from "./rewrite-registry"
 // SSE frames + upstream stream
 // ============================================================================
 
-/**
- * One SSE frame flowing from upstream, pre-rewrite. Today this is the raw wire
- * shape (`{ event?, data? }`); it gains a parsed-view discriminant when the
- * response rewrite/translate stages (S5/S6) land (P1/P2).
- */
+/** Semantic SSE fields exposed to upstream observers, rewrites, hooks, and codecs. */
 export type UpstreamFrame = SseFrame
+
+/** Transport-owned parsed frame entering the response processor before semantic projection. */
+export type TransportUpstreamFrame = ParsedSseFrame | UpstreamFrame
 
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
@@ -79,8 +79,8 @@ export interface UpstreamDispatchLifecycle {
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
  * carries the upstream HTTP response headers for capture (Retry-After, quota).
  */
-export interface UpstreamStream {
-  frames: AsyncIterable<UpstreamFrame>
+export interface UpstreamStream<Frame extends TransportUpstreamFrame = TransportUpstreamFrame> {
+  frames: AsyncIterable<Frame>
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
@@ -139,7 +139,11 @@ export interface Transport {
 }
 
 export type PhysicalTransportResponse =
-  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | {
+      kind: "stream"
+      upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }
+      lifecycle: UpstreamDispatchLifecycle
+    }
   | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }

@@ -15,11 +15,13 @@ import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
 import { isClientContentFrame } from "~/lib/pipeline/request-timing"
 
+import { decodeSseWrite } from "../helpers/sse-write-stream"
+
 function createDelivery() {
   const writes: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE(value: { data: string | Promise<string>; event?: string }) {
-      if (typeof value.data !== "string") throw new Error("test sink expects synchronous SSE data")
+    write(input: Uint8Array | string) {
+      const value = decodeSseWrite(input)
       writes.push({ data: value.data, ...(value.event !== undefined && { event: value.event }) })
       return Promise.resolve()
     },
@@ -43,7 +45,7 @@ describe("semantic-content gate delivery integration", () => {
   test("flips at the same client-sink egress point as first-real timing", async () => {
     const sessionRef: { current?: DownstreamDeliverySession } = {}
     let gateAtFirstRealCallback: boolean | undefined
-    const stream = { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+    const stream = { write: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
     const sink = makeDeliverySseSink(stream, {
       isRealContentFrame: (frame) => isClientContentFrame(frame, "anthropic"),
       onFirstRealContent: () => {
@@ -94,7 +96,7 @@ describe("semantic-content gate delivery integration", () => {
 
   test("a rejected candidate write does not claim client-visible semantic delivery", async () => {
     const stream = {
-      writeSSE() {
+      write() {
         return Promise.reject(new Error("client write failed"))
       },
     } as unknown as Parameters<typeof makeDeliverySseSink>[0]
@@ -109,8 +111,8 @@ describe("semantic-content gate delivery integration", () => {
   test("owner-allocated candidate writes flip the same delivery-scoped signal", async () => {
     const writes: Array<{ data: string; event?: string }> = []
     const stream = {
-      writeSSE(value: { data: string | Promise<string>; event?: string }) {
-        if (typeof value.data !== "string") throw new Error("test sink expects synchronous SSE data")
+      write(input: Uint8Array | string) {
+        const value = decodeSseWrite(input)
         writes.push({ data: value.data, ...(value.event !== undefined && { event: value.event }) })
         return Promise.resolve()
       },

@@ -20,7 +20,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   PreparedRequest,
-  UpstreamFrame,
+  TransportUpstreamFrame,
 } from "~/lib/pipeline/types"
 
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
@@ -33,6 +33,7 @@ import {
 } from "~/lib/shutdown"
 import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { semanticSseMessage } from "~/lib/transport/parsed-sse-frame"
 
 import {
   //
@@ -63,8 +64,8 @@ function makeWire(over?: Partial<PreparedRequest>): PreparedRequest {
   }
 }
 
-async function collect(frames: AsyncIterable<UpstreamFrame>): Promise<Array<UpstreamFrame>> {
-  const out: Array<UpstreamFrame> = []
+async function collect(frames: AsyncIterable<TransportUpstreamFrame>): Promise<Array<TransportUpstreamFrame>> {
+  const out: Array<TransportUpstreamFrame> = []
   for await (const f of frames) out.push(f)
   return out
 }
@@ -87,7 +88,7 @@ describe("createUpstreamHttpTransport", () => {
 
     const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
     const frames = await collect(upstream.frames)
-    expect(frames.map((f) => f.data)).toEqual(['{"choices":[{"delta":{"content":"hi"}}]}', "[DONE]"])
+    expect(frames.map((f) => semanticSseMessage(f).data)).toEqual(['{"choices":[{"delta":{"content":"hi"}}]}', "[DONE]"])
     expect(upstream.nonStream).toBeUndefined()
     expect(upstream.headers.get("x-upstream")).toBe("yes")
     expect(upstream.lifecycle).toBeDefined()
@@ -140,7 +141,7 @@ describe("createUpstreamHttpTransport", () => {
     // The first real frame flows through the guard normally.
     const first = await iterator.next()
     expect(first.done).toBe(false)
-    expect((first.value as UpstreamFrame).data).toBe('{"choices":[{"delta":{"content":"hi"}}]}')
+    expect(semanticSseMessage(first.value as TransportUpstreamFrame).data).toBe('{"choices":[{"delta":{"content":"hi"}}]}')
 
     // Reaper force-fails mid-stream (upstream is now blocked, past the last frame). Abort WITH the
     // cause tag the real `ctx.reapInFlight()` carries — a bare abort would simulate the producer

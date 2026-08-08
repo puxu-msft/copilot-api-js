@@ -1,5 +1,3 @@
-import type { ClientFrame } from "~/lib/pipeline/types"
-
 /**
  * Per-frame synthetic-origin provenance (a pipeline-level primitive).
  *
@@ -29,11 +27,11 @@ const FRAME_SYNTHETIC_ORIGIN = Symbol("frameSyntheticOrigin")
 export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical" | "buffered-terminal-repair"
 
 /** Tag a frame with its synthetic origin (mutates + returns the SAME object — see module doc). */
-export function tagFrameSynthetic<T extends ClientFrame>(frame: T, kind: SyntheticOriginKind): T {
+export function tagFrameSynthetic<T extends object>(frame: T, kind: SyntheticOriginKind): T {
   return Object.assign(frame, { [FRAME_SYNTHETIC_ORIGIN]: kind })
 }
 
 /** Read a frame's synthetic-origin kind (undefined = a genuine real frame, not synthetic). */
-export function readSyntheticKind(frame: ClientFrame): SyntheticOriginKind | undefined {
-  return (frame as unknown as Record<symbol, unknown>)[FRAME_SYNTHETIC_ORIGIN] as SyntheticOriginKind | undefined
+export function readSyntheticKind(frame: object): SyntheticOriginKind | undefined {
+  return (frame as Record<symbol, unknown>)[FRAME_SYNTHETIC_ORIGIN] as SyntheticOriginKind | undefined
 }

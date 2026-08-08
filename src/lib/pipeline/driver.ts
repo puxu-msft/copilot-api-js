@@ -69,6 +69,7 @@ import type {
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
+  UpstreamFrame,
   OwnerOperation,
   ResponseOutcome,
   RetryAction,
@@ -624,7 +625,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       createProcessor: ({ candidate, dispatch, env: processorEnv }) => {
         const responseRewrites = migratedCell(processorEnv)?.responseRewrites(processorEnv) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
         const renderer = deps.codec.createCandidateRenderer?.(processorEnv) ?? {
-          renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+          renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
           flushResponse: () => [],
         }
         const createSession = deps.candidateResponseSessionFactory ?? createDefaultCandidateResponseSession
@@ -886,7 +887,7 @@ function runResponse(
   // This compatibility adapter still creates exactly one processor and owns no retry loop.
   const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
   const renderer = deps.codec.createCandidateRenderer?.(env) ?? {
-    renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+    renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
     flushResponse: () => [],
   }
   const session = createDefaultCandidateResponseSession({

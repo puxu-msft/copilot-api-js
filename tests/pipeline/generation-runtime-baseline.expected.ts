@@ -226,7 +226,7 @@ export function expectedGenerationRuntimeResults(): Record<string, unknown> {
     },
     "cc-direct": {
       wire: ccDirectWire(),
-      terminal: terminal(17, 3, ["client-transform:client", "client-transform:client", "client-sink:client"]),
+      terminal: terminal(17, 3, ["client-transform:client", "client-transform:client", "render:client"]),
     },
     "gemini-translation": {
       wire: geminiTranslationWire(),

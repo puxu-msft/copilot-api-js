@@ -35,7 +35,7 @@ export function sse(event: string | undefined, dataObj: unknown): UpstreamFrame 
 /** Internal: build an `UpstreamStream` from frames WITHOUT any hook-origin tag. Exposed (not just
  *  module-private) because `replayFromHistory` builds its stream the same way, then tags it
  *  "hook-replay" instead of "hook-mock". */
-export function rawStream(frames: Array<UpstreamFrame>, headers = new Headers()): UpstreamStream {
+export function rawStream(frames: Array<UpstreamFrame>, headers = new Headers()): UpstreamStream<UpstreamFrame> {
   async function* gen() {
     for (const f of frames) yield f
   }
@@ -45,7 +45,7 @@ export function rawStream(frames: Array<UpstreamFrame>, headers = new Headers())
 /** Public: build a mock `UpstreamStream` tagged "hook-mock" (so the driver's history sink marks
  *  its upstream-original-track frames `synthetic:"hook-mock"` — richest-data-flow: a hook-mock
  *  response must stay distinguishable from a real GHC upstream one). */
-export function streamOf(frames: Array<UpstreamFrame>, headers = new Headers()): UpstreamStream {
+export function streamOf(frames: Array<UpstreamFrame>, headers = new Headers()): UpstreamStream<UpstreamFrame> {
   return tagStream(rawStream(frames, headers), "hook-mock")
 }
 
@@ -63,7 +63,7 @@ export function streamOf(frames: Array<UpstreamFrame>, headers = new Headers()):
 // self-validating).
 
 /** Build a complete Anthropic Messages SSE event sequence carrying `text` as a single text block. */
-export function mockAnthropicMessage(text: string): UpstreamStream {
+export function mockAnthropicMessage(text: string): UpstreamStream<UpstreamFrame> {
   const frames: Array<UpstreamFrame> = [
     sse("message_start", {
       type: "message_start",
@@ -104,7 +104,7 @@ function buildCcChunkPair(text: string): [ChatCompletionChunk, ChatCompletionChu
 
 /** Build a complete CC (OpenAI Chat Completions) streaming SSE sequence carrying `text`, terminated
  *  by the real wire's `data: [DONE]` sentinel (no `event:` line — matches real CC/OpenAI SSE). */
-export function mockCcChunks(text: string): UpstreamStream {
+export function mockCcChunks(text: string): UpstreamStream<UpstreamFrame> {
   const [contentChunk, finishChunk] = buildCcChunkPair(text)
   const frames: Array<UpstreamFrame> = [sse(undefined, contentChunk), sse(undefined, finishChunk), sse(undefined, "[DONE]")]
   return streamOf(frames)
@@ -114,7 +114,7 @@ export function mockCcChunks(text: string): UpstreamStream {
  *  production CC→Gemini translator (`~/lib/gemini/convert-stream`) fed with the SAME CC chunks
  *  {@link mockCcChunks} would emit, so the emitted Gemini frames are byte-real translator output —
  *  not a hand-rolled approximation of the Gemini wire shape. */
-export function mockGeminiResponse(text: string): UpstreamStream {
+export function mockGeminiResponse(text: string): UpstreamStream<UpstreamFrame> {
   const [contentChunk, finishChunk] = buildCcChunkPair(text)
   const translator = createGeminiStreamTranslator("hook-mock")
   const frames: Array<UpstreamFrame> = [
@@ -209,7 +209,7 @@ function rebuildHeaders(entry: HistoryEntry): Headers {
  * proxy-injected or hook-origin frames, never genuine upstream traffic (the upstream-original track
  * itself should never carry `synthetic`, but the filter is defense-in-depth per the plan).
  */
-export async function replayFromHistory(selector: string | { model?: string; endpoint?: string; latest?: boolean }): Promise<UpstreamStream> {
+export async function replayFromHistory(selector: string | { model?: string; endpoint?: string; latest?: boolean }): Promise<UpstreamStream<UpstreamFrame>> {
   const entry = findHistoryEntry(selector)
   if (!entry) throw new Error(`replayFromHistory: no history entry matches selector ${JSON.stringify(selector)}`)
 
@@ -238,7 +238,7 @@ export function delay(ms: number): <T>(value: T) => Promise<T> {
  *  (dropped connection, truncated SSE). Spreads the input `stream` (preserves `headers` + whatever
  *  hook-origin tag/symbol-keyed properties it carries — including `HOOK_ORIGIN`, since `Object.assign`/
  *  spread carries own Symbol keys along, mirroring `tagFrameRewritten`'s documented behavior in origin.ts). */
-export function truncateAfter(n: number, stream: UpstreamStream): UpstreamStream {
+export function truncateAfter(n: number, stream: UpstreamStream<UpstreamFrame>): UpstreamStream<UpstreamFrame> {
   async function* gen() {
     let i = 0
     for await (const f of stream.frames) {

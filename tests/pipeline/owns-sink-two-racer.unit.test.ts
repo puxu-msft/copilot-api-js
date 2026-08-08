@@ -40,6 +40,7 @@ import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { guardSseIterable } from "~/lib/stream"
 
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
 
 // ── minimal identity driver scaffolding ──────────────────────────────────────
@@ -68,7 +69,7 @@ function makeEnv(): RequestEnvelope {
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+    write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
   } as unknown as Parameters<typeof makeSseSink>[0]
   return { stream, written }
 }

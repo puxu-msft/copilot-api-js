@@ -539,7 +539,31 @@ export function createRequestContext(opts: {
         ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
       })
     }
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = frame as {
+      kind?: unknown
+      message?: unknown
+      idField?: unknown
+      event?: unknown
+      data?: unknown
+      id?: unknown
+      retry?: unknown
+      raw?: unknown
+    }
+    if (candidate.kind === "parsed-sse" && typeof candidate.message === "object" && candidate.message !== null) {
+      const message = candidate.message as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown }
+      return Object.freeze({
+        kind: "parsed-sse",
+        message: Object.freeze({
+          ...(message.event !== undefined && { event: message.event }),
+          ...(message.data !== undefined && { data: message.data }),
+          ...(message.id !== undefined && { id: message.id }),
+          ...(message.retry !== undefined && { retry: message.retry }),
+        }),
+        idField: snapshotForRecorder(candidate.idField),
+        ...(record?.type !== undefined && { type: record.type }),
+        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
+      })
+    }
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
       ...(candidate.data !== undefined && { data: candidate.data }),

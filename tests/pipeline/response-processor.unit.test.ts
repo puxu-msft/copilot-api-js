@@ -92,6 +92,28 @@ describe("P2-T1 branch-local response processor", () => {
     expect(await collect(hedge, [input])).toEqual([{ event: "message", data: "frame:1" }])
   })
 
+  test("projects direct rich SSE to wire before exactly-once post-render classification", async () => {
+    let classifications = 0
+    const richUpstream = {
+      kind: "parsed-sse",
+      message: { event: "response.delta", data: "payload", id: "alpha" },
+      idField: { kind: "present", value: "alpha" },
+    } as unknown as UpstreamFrame
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        classifications++
+        expect("kind" in frame).toBeFalse()
+        return frame
+      },
+    })
+
+    expect(await collect(processor, [richUpstream])).toEqual([{ event: "response.delta", data: "payload", id: "alpha" }])
+    expect(classifications).toBe(1)
+  })
+
   test("is single-use so one processor cannot silently share state across dispatches", async () => {
     const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
     expect(await collect(processor, [{ data: "one" }])).toEqual([{ data: "one" }])
