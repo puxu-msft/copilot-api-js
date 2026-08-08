@@ -68,7 +68,7 @@
   - `OperationBlocker = "request-running"|"operation-body"|"delivery-finalization"|"canonical-finalization"|"none"`
   - `OperationLifecycleSnapshot`
   - `deriveOperationBlocker(input)`、`isDeliveryTerminal(state)`
-  - `OperationScope.snapshot(): OperationScopeSnapshot`
+  - `readonly OperationScope.snapshot: OperationScopeSnapshot`
 
 - [ ] **Step 1: 写纯函数失败测试**
 
@@ -322,7 +322,8 @@ git commit -m "fix(transport): surface dispatch cleanup failures"
 **Interfaces:**
 - Consumes `RequestContext.operationLifecycle` 与 `onLifecycleFailure`。
 - Produces:
-  - `TrackedOperationsSnapshot = Readonly<{ count:number; byBlocker:Readonly<Record<OperationBlocker,number>>; oldestAgeMs:number }>`
+  - `TrackedOperationBlocker = Exclude<OperationBlocker, "none">`
+  - `TrackedOperationsSnapshot = Readonly<{ count:number; byBlocker:Readonly<Record<TrackedOperationBlocker,number>>; oldestAgeMs:number }>`
   - `RequestContextManager.getTrackedOperationsSnapshot(now?:number): TrackedOperationsSnapshot`
   - `RequestContextManager.drainLifecycleFailures(): Promise<void>`，取代窄命名的 `drainModelOperationFinalizations()`。
   - 私有唯一 `releaseTrackedOperationIfTerminal(id)`。
@@ -358,7 +359,7 @@ function releaseTrackedOperationIfTerminal(id: string): void {
 
 - [ ] **Step 4: 实现即时聚合与 failure drain**
 
-`getTrackedOperationsSnapshot` 每次遍历 registry，不维护平行计数。`oldestAgeMs` 在 count 0 时为 0；`byBlocker` 总数必须等于 count。`drainLifecycleFailures()` 先等待 pending canonical finalizers，再一次性抛 AggregateError；保留旧方法仅会形成双真相，因此全调用点在 Task 6 同步改名。
+`getTrackedOperationsSnapshot` 每次遍历 registry，不维护平行计数。`oldestAgeMs` 在 count 0 时为 0；`byBlocker` 只允许四个非 `none` blocker，求和必须等于 count。若 registry 中出现 `blocker === "none"`，立即抛 invariant error，证明 release 接缝漏执行，而不是把它计入公开聚合。`drainLifecycleFailures()` 先等待 pending canonical finalizers，再一次性抛 AggregateError；保留旧方法仅会形成双真相，因此全调用点在 Task 6 同步改名。
 
 - [ ] **Step 5: 运行 manager 与 shutdown 基线测试**
 
@@ -557,19 +558,35 @@ git commit -m "test(lifecycle): cover delivery producer convergence"
 
 **Interfaces:** No new product interfaces. This task proves prior interfaces and synchronizes live docs.
 
-- [ ] **Step 1: 运行五组 exact-patch mutation**
+- [ ] **Step 1: 运行规格 §12 的完整 8 项 exact-patch mutation**
 
 每个 mutation 先从包含真实实现的 committed baseline 构造 patch，再应用、跑具名测试取红、`git apply --reverse --check`、反向恢复并跑绿：
 
-1. 删除 logical terminal 的 `operationScope.seal()` → blocker 应为 operation-body。
-2. 删除 recovery outer `settleFinal()` → recovery producer 应停在 delivery-finalization。
-3. Delivery reject 后保留 finalizing／伪装 finalized → failure tests 分别抓僵尸／隐藏失败。
-4. Manager 在 logical failed 时提前 delete，或 canonical reject 不 delete → drain 双向测试转红。
-5. 分别删除非 recovery SSE、Responses WS、non-streaming notification → producer 矩阵对应类别转红。
+1. 删除 recovery outer `settleFinal()` → recovery producer 停在 delivery-finalization。
+2. Delivery reject 后永久保留 finalizing，或错误标成 finalized → failure tests 分别抓僵尸／隐藏失败。
+3. 删除 dispatch scheduler `active.delete`／candidate reservation release 的 `finally` → active slot、candidate verdict、reservation 与 registry 收敛 oracle 转红。
+4. 删除 logical terminal 的 `operationScope.seal()` → blocker 稳定停在 operation-body。
+5. Manager 在 logical failed 时提前 delete → shutdown drain false-green 测试转红。
+6. Canonical reject 后不 release registry → tracked-operation 僵尸测试转红。
+7. 分别删除非 recovery SSE、Responses WS、non-streaming notification → producer 矩阵对应类别转红。
+8. 把一个 blocker mapping 故意映射错 → lifecycle unit、shutdown formatter、status 聚合三层同时因目标机制转红。
 
 把每项 target test、红色错误、恢复绿和 commit anchor 写入 review 文档。Mutation 本身不提交。
 
-- [ ] **Step 2: 连跑时序敏感用例**
+- [ ] **Step 2: 显式运行 recovery 既有合同矩阵**
+
+| 合同 | 命令／具名 oracle |
+|---|---|
+| Direct handler、three keepalive modes、clean EOF、abort provenance、publication failure | `bun test tests/routes/messages/precontent-recovery-matrix.it.test.ts` |
+| 真实 `@anthropic-ai/sdk` 离线 E2E | `bun test tests/e2e-client/precontent-recovery.it.test.ts` |
+| History／canonical 双读 | `bun test tests/routes/messages/precontent-recovery-matrix.it.test.ts --test-name-pattern='canonical terminal record and V2 entry'` |
+| Recovery C9 batch／wire-torn | `bun test tests/pipeline/recovery-batch-publication.it.test.ts` |
+| Candidate／hedge／budget | `bun test tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/precontent-recovery-coordinator.unit.test.ts tests/pipeline/coordinator-hedge.unit.test.ts` |
+| Evaluator／anchor architecture guards | `bun test tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts tests/architecture/anchor-close-sites.unit.test.ts` |
+
+每条记录执行 commit、完整命令、退出码和实际命中用例。不得用 `test:backend` 代替 SDK E2E，因为 `package.json` 明确把 `test:e2e` 分成独立档位。
+
+- [ ] **Step 3: 连跑时序敏感用例**
 
 Run 10 times:
 
@@ -581,7 +598,7 @@ done
 
 Expected: 10/10 exit 0。若出现 flaky，先根因修复，不提高 timeout 掩盖。
 
-- [ ] **Step 3: 运行架构守卫、typecheck 与 backend**
+- [ ] **Step 4: 运行架构守卫、typecheck 与 backend**
 
 ```bash
 bun test tests/architecture/package-boundaries.unit.test.ts tests/architecture/circular-deps-ratchet.unit.test.ts tests/architecture/delivery-lifecycle-producers.unit.test.ts
@@ -592,7 +609,7 @@ bun run test:backend
 
 Expected: 全部 exit 0。Backend 汇总数字只记录命令、commit、0 fail 与 skip 口径，不硬编码数量。
 
-- [ ] **Step 4: 同步 live docs**
+- [ ] **Step 5: 同步 live docs**
 
 - `DESIGN.md`：记录四事实 snapshot、manager 双 registry 和 recovery 已落 master。
 - `lifecycle.md`：把 logical terminal、operation quiescence、delivery terminal、canonical terminal 的偏序与 failure barrier 写成 SSOT。
@@ -601,18 +618,18 @@ Expected: 全部 exit 0。Backend 汇总数字只记录命令、commit、0 fail 
 
 全文通读所有修改文档，再以代码／命令复核每条当前状态断言。
 
-- [ ] **Step 5: 提交 B6 实现文档**
+- [ ] **Step 6: 提交 B6 实现文档**
 
 ```bash
 git add -- docs/DESIGN.md docs/lifecycle.md docs/API.md docs/spec/2026-08-08-long-resident-operation-lifecycle.md docs/plan/2026-08-08-long-resident-operation-lifecycle.md docs/plan/2026-08-08-long-resident-operation-lifecycle-review.md
 git commit -m "docs: record operation lifecycle convergence"
 ```
 
-- [ ] **Step 6: 派四类独立评审并逐条处置**
+- [ ] **Step 7: 派四类独立评审并逐条处置**
 
 对同一冻结 final commit 派 code reviewer、verifier、merged-state reviewer、doc reviewer。评审 prompt 必须逐条核验 spec §13 的 12 条命题，并同时查 false-green／false-red。所有报告落 `docs/plan/2026-08-08-long-resident-operation-lifecycle-review.md`，findings 标级、逐条处置；改动后用同一 reviewer复评，直到 0 blocker／0 major。异模型不可用时明确记录，不伪称完成异模型票，但至少一个独立 reviewer 与一个独立 verifier必须成功。
 
-- [ ] **Step 7: 最终 sanity 与提交状态**
+- [ ] **Step 8: 最终 sanity 与提交状态**
 
 重新运行 `git status --short --branch`、`git rev-parse HEAD`、focused lifecycle tests、`bun run typecheck`。确认工作树只含计划内变更，所有批次 B1～B6 条件闭合，再将 plan/spec 状态改为 done 并提交：
 
