@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
 const CAPTURE = path.join(REPO_ROOT, "scripts/capture-entry-evidence.ts")
+const BASELINE_RUNS = path.join(REPO_ROOT, "exp/inter-block-anchor-allocator/baseline-runs.sh")
 
 type SkipKind = "testcase" | "suite"
 
@@ -117,6 +118,56 @@ function replaceOut(fixture: { tree: string; out: string; entrySha: string }, ou
 }
 
 describe("capture-entry-evidence", () => {
+  function runBaselineSummaryFixture(runnerExitCode: number): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "baseline-summary-"))
+    const out = path.join(tree, "out")
+    const scriptDir = path.join(tree, "exp/inter-block-anchor-allocator")
+    const fakeRunner = path.join(tree, "fake-runner.sh")
+    mkdirSync(scriptDir, { recursive: true })
+    cpSync(BASELINE_RUNS, path.join(scriptDir, "baseline-runs.sh"))
+    const failed = runnerExitCode === 0 ? 0 : 1
+    const passed = 10 - failed
+    writeFileSync(
+      fakeRunner,
+      `#!/usr/bin/env bash
+printf '[parallel-test] 2 shards · 10 tests · ${passed} pass · ${failed} fail · 10 executed · 0 skipped · 1s\\n'
+printf '[parallel-test] artifacts=/tmp/fake-artifacts\\n'
+exit ${runnerExitCode}
+`,
+    )
+    git(tree, ["init"])
+    git(tree, ["config", "user.email", "test@example.invalid"])
+    git(tree, ["config", "user.name", "Test"])
+    git(tree, ["add", "."])
+    git(tree, ["commit", "-m", "fixture"])
+    try {
+      const result = Bun.spawnSync(["bash", path.join(scriptDir, "baseline-runs.sh"), "bash", fakeRunner], {
+        cwd: tree,
+        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: "10" },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      return { result, log: readFileSync(path.join(out, "run-01.log"), "utf8") }
+    } finally {
+      rmSync(tree, { recursive: true, force: true })
+    }
+  }
+
+  test("baseline runner reads the count summary rather than a later artifacts line", () => {
+    const { result, log } = runBaselineSummaryFixture(0)
+    expect(result.exitCode).toBe(0)
+    expect(log).toContain("=== tests seen   : 10")
+  })
+
+  test("baseline runner preserves a failing suite's count and exit-code diagnosis", () => {
+    const { result, log } = runBaselineSummaryFixture(7)
+    const stderr = new TextDecoder().decode(result.stderr)
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== tests seen   : 10")
+    expect(stderr).toContain("run 01 exited 7")
+    expect(stderr).not.toContain("reported no tests")
+  })
+
   test("rejects a lexical outside symlink parent whose missing child resolves inside TREE", () => {
     const fixture = createFixture()
     const lexicalOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-link-"))
