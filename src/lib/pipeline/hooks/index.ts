@@ -16,6 +16,13 @@
 
 export {
   //
+  type ClientTurn,
+  mapClientMessages,
+  stripMessageBlock,
+  stripSystemText,
+} from "./client-rewrite"
+export {
+  //
   getUpstreamHook,
   getUpstreamHookState,
   loadUpstreamHook,
@@ -32,13 +39,6 @@ export {
   tagStream,
   wasFrameRewritten,
 } from "./origin"
-export {
-  //
-  type ClientTurn,
-  mapClientMessages,
-  stripMessageBlock,
-  stripSystemText,
-} from "./client-rewrite"
 export {
   //
   delay,

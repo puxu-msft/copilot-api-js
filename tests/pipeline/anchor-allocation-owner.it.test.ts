@@ -187,7 +187,9 @@ test("wire-torn blocks frontier progress but still closes the already allocated 
   expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
   const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" }))
   failWrite = true
-  await expect(port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0)))])).rejects.toThrow("tear after anchor commit")
+  await expect(port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0)))])).rejects.toThrow(
+    "tear after anchor commit",
+  )
   failWrite = false
 
   expect(await port.beginLeg("recovery", { candidateId: "recovery", dispatchId: "recovery-dispatch" })).toEqual({
@@ -214,7 +216,7 @@ test("owner block and anchor-close writes advance the heartbeat activity clock",
 
   const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" }))
   now = 30
-  expect(ownerValue(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0))) ]))).toBeDefined()
+  expect(ownerValue(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0)))]))).toBeDefined()
   now = 40
   expect(ownerValue(await port.writeBlockFrame(leg, 0, anchorStop(0)))).toBe("written")
   expect(delivery.snapshot.ledger.lastWriteAtMonotonic).toBe(40)

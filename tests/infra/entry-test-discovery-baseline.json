@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "runner_git_blob": "201996e18033d27e1214cb0f8d688f6850d89840",
-  "minimum_executed": 7255,
+  "runner_git_blob": "66d215f226259a72abe239b20cfc44c87c2df5d5",
+  "minimum_executed": 7279,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",
     "tests/anthropic/anthropic-client.it.test.ts",
@@ -131,6 +131,7 @@
     "tests/architecture/per-model-idle-transport-boundary.unit.test.ts",
     "tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts",
     "tests/architecture/precontent-recovery-sink-chain.unit.test.ts",
+    "tests/architecture/response-header-timeout-scope.unit.test.ts",
     "tests/architecture/source-ast.unit.test.ts",
     "tests/architecture/state-defaults-value-owners.unit.test.ts",
     "tests/architecture/state-out-edges.unit.test.ts",

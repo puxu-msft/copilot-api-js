@@ -5,11 +5,35 @@
 - **范围：** 上游 HTTP 请求的 response-header deadline、HTTP/2 stream termination provenance、History/诊断投影
 - **相关：** [upstream-http2-transport](upstream-http2-transport.md)、[block-level buffered retry ADR](../decisions/2026-07-11-block-level-buffered-retry.md)、[request lifecycle cancel/settle/quiesce RFC](../rfc/2026-07-14-request-lifecycle-cancel-settle-quiesce.md)
 
+## 实施状态
+
+截至 commit `bea1dfa3d61896bf2089958676bd1236269877d9`（2026-08-08），**阶段 1 已完成并合入本地 `master`；阶段 2、3 尚未开始，父任务仍为部分完成**。
+
+阶段 1 的实现提交为：
+
+- `0f9023b2`：建立可解除的 response-header deadline primitive，并让 `upstreamFetch` 在 transport resolve/reject 后解除它。
+- `b1a0f6e6`：迁移全部 HTTP 调用点为独立 duration，保留 WebSocket first-event signal。
+- `88bb1039`：把 deadline primitive 下沉到 transport 叶子，避免 `upstream-fetch → fetch-utils → context` 新增 SCC；同时把通用 model-pattern matcher 归位。
+- `7cf1e896`：为 HTTP/2 post-response abort listener 建立具名幂等 cleanup，并覆盖 natural end、abort、physical close、`onStreamClosed` 与 reservation 回零。
+- `bae83f01`：应用仓库 lint 修复；`0732fc76` 将 lossless shutdown 主线语义合入阶段分支；`a0ad0f1a`、`da584116` 随后闭合 lint gate、校准 discovery baseline 与 H2 时序测试。
+- `03a84bcb`：闭合独立评审发现，whole/streaming Responses usage 复用单一 mapper，并以真实 shared-send 运行时 oracle 替代实现字符串正向断言。
+- `b0d9dbf0`、`bea1dfa3`：把交付窗口内前进的主线（`d59a622c`、`82c0664e`）并入阶段分支。`b0d9dbf0` 逐 hunk 解决三处冲突——`count-tokens` 同时保留 History admission 外壳与 scalar `responseHeaderTimeoutMs`、refusal projection 同时保留 `historyTestReservation` 与逐字常量、discovery baseline 取两侧并集；`bea1dfa3` 只并入三份与本阶段零交集的 semantic-bridge 文档。
+
+在该 commit 上的验收证据：
+
+- `bun run typecheck`：通过。
+- `bun run lint:all`：通过；不属于 root tsconfig 的三个独立脚本/fixture 使用 typescript-eslint 官方 `disableTypeChecked`，仍保留普通语法与格式 lint。
+- `bun run test:backend`：`7279 executed / 30 skipped / 0 fail`；`tests/infra/entry-test-discovery-baseline.json` 冻结 `minimum_executed=7279`、712 个文件、30 条 allowed skips，16 个 shard JUnit 叶节点独立重算为 `7309 testcase − 30 skipped = 7279 executed`、0 failure/error。合并前分支单独口径为 `7244`，该数字已被合并态取代。
+- 定向 deadline、H2、cancel、WS、shutdown、count-tokens/History admission 与 translator 验收：独立 verifier 与独立 code reviewer 均对最终 tip 复评 PASS（0 blocker、0 major、0 minor）。
+- exact-patch mutation 双控：删除 deadline signal 接线、删除 resolve/reject disarm、只保留 deadline signal、跳过 timer clear、删除幂等门、删除 H2 natural-end/close detach、删除 shared-send 的真实 duration property，分别使其目标判据精确变红；每次均在 `git apply --reverse --check` 后反向恢复，恢复态全绿。
+
+阶段 1 保持 2026-08-08 主线确立的 lossless shutdown 契约：第一次进程信号不向已接收请求注入 shutdown abort；header deadline 只与 client/reaper/dispatch 等 request-owned lifecycle signal 分离，不复活已删除的 shutdown→request cancel/529 rewrite。
+
 ## 1. 问题与裁决
 
 生产 History 中大量 generation 以 `Stream closed with error code NGHTTP2_CANCEL` 失败。单看这条 Bun `node:http2` 错误无法判定谁发起了 CANCEL：peer 发 `RST_STREAM(CANCEL)` 与本地调用 `ClientHttp2Stream.close(NGHTTP2_CANCEL)` 都可能产生同一错误文本。当前 transport 将 post-header body error 与 close-before-end 都标成 `mid-body-close`；这个标签说明阶段，却不说明发起方，上层仍只能靠错误字符串、请求状态和经过时间猜测来源。
 
-同时，`createResponseHeaderTimeoutSignal()` 返回不可解除的 `AbortSignal.timeout()`。`sendUpstreamHttp()` 将它与 shutdown/client/reaper/dispatch signal 合并后传给 `upstreamFetch()`；`http2Fetch()` 收到响应头后仍继续监听这个 composite signal，并在其 abort 时关闭 body stream。因此，名义上只覆盖“发请求到收到响应头”的 deadline 实际延伸到整个响应 body 生命周期。
+修复前，`createResponseHeaderTimeoutSignal()` 返回不可解除的 `AbortSignal.timeout()`。`sendUpstreamHttp()` 将它与 shutdown/client/reaper/dispatch signal 合并后传给 `upstreamFetch()`；`http2Fetch()` 收到响应头后仍继续监听这个 composite signal，并在其 abort 时关闭 body stream。因此，名义上只覆盖“发请求到收到响应头”的 deadline 实际延伸到整个响应 body 生命周期。阶段 1 已在上述实施 commit 中解除该作用域泄漏。
 
 用户裁决如下：
 

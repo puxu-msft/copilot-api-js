@@ -45,12 +45,12 @@ import { setCaptureWorkObserverForTests } from "~/lib/context/model-operation-re
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
+import { setSummaryPreviewVisitObserverForTests } from "~/lib/history/in-flight"
 import {
   //
   resetHistoryPersistErrorStats,
 } from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
-import { setSummaryPreviewVisitObserverForTests } from "~/lib/history/in-flight"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {

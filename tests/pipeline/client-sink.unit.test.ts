@@ -26,10 +26,13 @@ import {
   makeSseSink,
   makeWsSink,
 } from "~/lib/pipeline/client-sink"
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
 
 import { FakeClock } from "../helpers/fake-clock"
-
-import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
 describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {
   // Root fix: writeSynthetic previously sampled the forwarded track with a hardcoded `undefined`
@@ -53,7 +56,10 @@ describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded 
   test("not-regression: an UNTAGGED synthetic frame still records synthetic:undefined (byte-equivalent to before)", async () => {
     const sse: Array<{ synthetic?: string }> = []
     const ws: Array<{ synthetic?: string }> = []
-    await makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => sse.push({ synthetic: r.synthetic }) }).writeSynthetic?.({ event: "error", data: "{}" })
+    await makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => sse.push({ synthetic: r.synthetic }) }).writeSynthetic?.({
+      event: "error",
+      data: "{}",
+    })
     await makeWsSink({ send: () => undefined } as never, { onForwarded: (r) => ws.push({ synthetic: r.synthetic }) }).writeSynthetic?.({ data: "{}" })
     expect(readSyntheticKind({ data: "{}" })).toBeUndefined()
     expect(sse).toEqual([{ synthetic: undefined }])

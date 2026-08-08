@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
+
+import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 import { translateResponsesResponseToCC } from "~/lib/openai/translate/responses-to-cc"
-import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 test("translateResponsesResponseToCC forwards cache_write_tokens in prompt_tokens_details", () => {
   const resp = {

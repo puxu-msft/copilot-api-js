@@ -12,14 +12,14 @@
  * removed 2026-07-18), so every consumer reads the new legs uniformly.
  */
 
+import type { CategoryProvenance } from "~/lib/anthropic/refusal-detail"
+
 import type {
   //
   HistoryEntry,
   MessageContent,
   UsageData,
 } from "./types"
-
-import type { CategoryProvenance } from "~/lib/anthropic/refusal-detail"
 
 import {
   //

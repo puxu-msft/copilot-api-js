@@ -8,7 +8,7 @@ import {
 import {
   //
   captureHttpHeaders,
-  createResponseHeaderTimeoutSignal,
+  createUpstreamFirstEventTimeoutSignal,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { setStateForTests } from "~/lib/state"
@@ -35,17 +35,17 @@ describe("sanitizeHeadersForHistory", () => {
   })
 })
 
-describe("createResponseHeaderTimeoutSignal", () => {
+describe("createUpstreamFirstEventTimeoutSignal", () => {
   test("returns undefined when fetch timeout is disabled", () => {
     setStateForTests({ responseHeaderTimeout: 0 })
 
-    expect(createResponseHeaderTimeoutSignal()).toBeUndefined()
+    expect(createUpstreamFirstEventTimeoutSignal()).toBeUndefined()
   })
 
   test("returns an abort signal when fetch timeout is configured", () => {
     setStateForTests({ responseHeaderTimeout: 1 })
 
-    const signal = createResponseHeaderTimeoutSignal()
+    const signal = createUpstreamFirstEventTimeoutSignal()
 
     expect(signal).toBeDefined()
     expect(signal?.aborted).toBe(false)
@@ -55,21 +55,21 @@ describe("createResponseHeaderTimeoutSignal", () => {
     // scalar disabled (0) but the model has an override → a signal is produced.
     setStateForTests({ responseHeaderTimeout: 0, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
 
-    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeDefined()
+    expect(createUpstreamFirstEventTimeoutSignal("gpt-5.5")).toBeDefined()
     // A non-matching model falls back to the (disabled) scalar → undefined.
-    expect(createResponseHeaderTimeoutSignal("gpt-4.1")).toBeUndefined()
+    expect(createUpstreamFirstEventTimeoutSignal("gpt-4.1")).toBeUndefined()
   })
 
   test("per-model override of 0 disables even when the scalar is set", () => {
     setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 0 } })
 
-    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeUndefined()
+    expect(createUpstreamFirstEventTimeoutSignal("gpt-5.5")).toBeUndefined()
   })
 
   test("undefined model uses the scalar (no-arg behavior unchanged)", () => {
     setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
 
-    expect(createResponseHeaderTimeoutSignal()).toBeDefined()
+    expect(createUpstreamFirstEventTimeoutSignal()).toBeDefined()
   })
 })
 

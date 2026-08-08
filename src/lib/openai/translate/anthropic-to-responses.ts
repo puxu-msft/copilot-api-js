@@ -52,9 +52,11 @@ import type {
 
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
 import {
+  //
   refusalCategoryForDiagnostics,
   type RefusalTranslationDegradationReporter,
 } from "~/lib/anthropic/refusal-detail"
+
 import type { TranslateExchangeContext } from "./responses-to-cc-request"
 
 /**
