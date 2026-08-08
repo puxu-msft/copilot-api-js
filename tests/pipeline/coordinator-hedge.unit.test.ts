@@ -331,6 +331,76 @@ describe("generation coordinator hedge race", () => {
     expect(shouldAttemptPreContentRecovery({ failure: recoveryFailure, session: { hasEmittedRealClientContent: false }, config: { enabled: true } })).toBe(true)
   })
 
+  test("delayed hedge: an owner-only terminal recording rejection surfaces failure, not terminal success", async () => {
+    const recordingError = new Error("hedge candidate recording failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
+    const primary = runtime("primary", "primary", 1)
+    primary.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 15))
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const hedge = runtime("hedge", "hedge", 2, undefined, undefined, recordingError)
+    hedge.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      generationBudget: budget,
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : hedge.runtime),
+    })
+    const primaryCandidate = await coordinator.runPrimary()
+
+    const result = await coordinator.racePrimaryWithDelayedHedge({ primary: primaryCandidate, delayMs: 0, hedgeEnv: env() })
+
+    expect(result.kind).toBe("failure")
+    if (result.kind !== "failure") throw new Error("expected owner-only failure result")
+    expect(result.error).toBeInstanceOf(AggregateError)
+    expect((result.error as AggregateError).errors).toEqual([recordingError])
+    expect((result.error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([])
+    expect(budget.snapshot().activeCandidates).toBe(0)
+  })
+
+  test("delayed hedge: a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe", async () => {
+    const probeError = new Error("primary probe failed")
+    const recordingError = new Error("hedge candidate recording failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
+    const primary = runtime("primary", "primary", 1)
+    primary.ready.upstream.frames = {
+      // eslint-disable-next-line require-yield -- fault injection: fail after threshold wins the race
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 15))
+        throw probeError
+      },
+    }
+    const hedge = runtime("hedge", "hedge", 2, undefined, undefined, recordingError)
+    hedge.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      generationBudget: budget,
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : hedge.runtime),
+    })
+    const primaryCandidate = await coordinator.runPrimary()
+
+    const result = await coordinator.racePrimaryWithDelayedHedge({ primary: primaryCandidate, delayMs: 0, hedgeEnv: env() })
+
+    expect(result.kind).toBe("failure")
+    if (result.kind !== "failure") throw new Error("expected probe+owner failure result")
+    expect(result.error).toBeInstanceOf(AggregateError)
+    expect((result.error as AggregateError).errors).toEqual([probeError, recordingError])
+    expect((result.error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: probeError, source: "upstream-transport" },
+    ])
+    expect(budget.snapshot().activeCandidates).toBe(0)
+  })
+
   test("terminal and failed candidates release shared generation capacity", async () => {
     const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 3, maxActiveDispatches: 2, maxTotalDispatches: 4 })
     const terminal = runtime("primary", "terminal", 1)
