@@ -16,7 +16,6 @@ import {
   toEntrySummary,
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
-import { listHistoryOverlaySummaries } from "./overlay"
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
@@ -164,6 +163,30 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
   if (messages.length === 0) return false
   const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
   return text.toLowerCase().includes(needle.toLowerCase())
+}
+
+export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary> {
+  const merged = new Map<string, EntrySummary>()
+  for (const entry of listInFlight()) {
+    if (inFlightMatchesSearch(entry, search)) merged.set(entry.id, toEntrySummary(entry))
+  }
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (merged.has(operationId)) continue
+    const entry = recordToHistoryEntry(record)
+    if (inFlightMatchesSearch(entry, search)) merged.set(operationId, recentRecordToSummary(record))
+  }
+  return [...merged.values()]
+}
+
+export function listHistoryOverlayEntries(): Array<HistoryEntry> {
+  const merged = new Map<string, HistoryEntry>()
+  for (const entry of listInFlight()) merged.set(entry.id, entry)
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (!merged.has(operationId)) merged.set(operationId, recordToHistoryEntry(record))
+  }
+  return [...merged.values()]
 }
 
 function persistedCandidates(
@@ -429,7 +452,7 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, terminalOnly } = options
 
   const operationKind = options.operationKind ?? "generation"
-  const overlaySummaries = listHistoryOverlaySummaries().filter(
+  const overlaySummaries = listHistoryOverlaySummaries(options.search).filter(
     (summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options),
   )
   const cursorSummary = resolveSummaryCursor(options, operationKind)

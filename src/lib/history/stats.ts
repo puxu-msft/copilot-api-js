@@ -9,8 +9,11 @@ import {
   resolveStopReason,
 } from "./entry-view"
 import { toEntrySummary } from "./in-flight"
-import { listHistoryOverlaySummaries } from "./overlay"
-import { getHistory } from "./queries"
+import {
+  //
+  getHistory,
+  listHistoryOverlaySummaries,
+} from "./queries"
 import { getDatabase } from "./sqlite/connection"
 import { visitV3Summaries } from "./v3/store"
 import {

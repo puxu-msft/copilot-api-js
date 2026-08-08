@@ -11,7 +11,7 @@ import {
   //
   listHistoryOverlayEntries,
   listHistoryOverlaySummaries,
-} from "./overlay"
+} from "./queries"
 import { getDatabase } from "./sqlite/connection"
 import { recordToHistoryEntry } from "./v3/projection"
 import {
@@ -157,12 +157,8 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
   const db = getDatabase()
-  const overlayEntries = listHistoryOverlayEntries().filter(
-    (entry) => entry.operationKind === "generation" && entry.sessionId === sessionId,
-  )
-  const overlaySummaries = listHistoryOverlaySummaries().filter(
-    (summary) => summary.operationKind === "generation" && summary.sessionId === sessionId,
-  )
+  const overlayEntries = listHistoryOverlayEntries().filter((entry) => entry.operationKind === "generation" && entry.sessionId === sessionId)
+  const overlaySummaries = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId === sessionId)
   if (isSummaryProjectionReady(db)) {
     const page = querySessionEntryPage(db, sessionId, cursor, limit, overlaySummaries)
     const stored = getV3StoredOperations(page.operationIds, db)
