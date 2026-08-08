@@ -308,6 +308,71 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
   })
 
+  test("commit rejection after full recovery publication preserves R wire and records its cleanup error", async () => {
+    const quiesceError = new Error("recovery commit quiesce rejected")
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    let exchanges = 0
+    let recoveryQuiesceObserved = false
+    const { setUpstreamHookForTests } = await import("~/lib/pipeline/hooks/loader")
+    setUpstreamHookForTests({
+      async exchange(_wire, _env, next) {
+        const exchangeNumber = ++exchanges
+        const upstream = await next()
+        if (exchangeNumber !== 2) return upstream
+
+        const quiesced = Promise.reject(quiesceError)
+        void quiesced.catch(() => {
+          recoveryQuiesceObserved = true
+        })
+        return Object.assign(upstream, {
+          lifecycle: {
+            cancel() {},
+            async dispose() {
+              return { quiesced: true, connectionReusable: false }
+            },
+            quiesced,
+          },
+        })
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary commit fallback" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_commit_rejected_recovery")))
+      }),
+    )
+    try {
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const response = await request(createFullTestApp(), "precontent-publication-commit-rejected")
+      const text = await response.text()
+
+      expect(calls).toBe(2)
+      expect(exchanges).toBe(2)
+      expect(recoveryQuiesceObserved).toBeTrue()
+      expect(text).toContain("msg_commit_rejected_recovery")
+      expect(text).not.toContain("primary commit fallback")
+      // The full R wire is already terminal; no primary fallback frame may append after failed settlement.
+      expect(dataFramesOfType(text, "error")).toHaveLength(0)
+      await drainV3Writer()
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-commit-rejected" }).entries[0]
+      expect(entry?._index?.derived?.failureReason).toBe("recovery commit quiesce rejected")
+      expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    } finally {
+      setUpstreamHookForTests(undefined)
+    }
+  })
+
   test("translated pre-ready recovery disposal failure closes the unconsumed candidate and preserves primary terminal", async () => {
     const translatedModel = "claude-opus-4.8@responses"
     const cleanupError = new Error("translated recovery dispose rejected")
@@ -474,6 +539,69 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts).toHaveLength(2)
     expect(entry?.attempts?.[0]?.upstreamResponse?.success).toBe(false)
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
+  })
+
+  test("ready-live commit rejection preserves the complete recovery wire and records cleanup failure", async () => {
+    const quiesceError = new Error("ready recovery commit quiesce rejected")
+    let exchanges = 0
+    let recoveryQuiesceObserved = false
+    const { setUpstreamHookForTests } = await import("~/lib/pipeline/hooks/loader")
+    setUpstreamHookForTests({
+      async exchange(_wire, _env, next) {
+        const exchangeNumber = ++exchanges
+        const upstream = await next()
+        if (exchangeNumber !== 2) return upstream
+
+        const quiesced = Promise.reject(quiesceError)
+        void quiesced.catch(() => {
+          recoveryQuiesceObserved = true
+        })
+        return Object.assign(upstream, {
+          lifecycle: {
+            cancel() {},
+            async dispose() {
+              return { quiesced: true, connectionReusable: false }
+            },
+            quiesced,
+          },
+        })
+      },
+    })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return Promise.resolve(
+            createSseResponseThenError(
+              [messageStartFrame({ id: "msg_ready_commit_primary", model: MODEL, inputTokens: 5 })],
+              tagTransportError(new Error("ready primary commit fallback"), "refused-stream"),
+            ),
+          )
+        return Promise.resolve(createSseResponse(completeFrames("msg_ready_commit_recovery")))
+      }),
+    )
+    try {
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const response = await request(createFullTestApp(), "precontent-ready-commit-rejected")
+      const text = await response.text()
+
+      expect(calls).toBe(2)
+      expect(exchanges).toBe(2)
+      expect(recoveryQuiesceObserved).toBeTrue()
+      expect(text).toContain("msg_ready_commit_primary")
+      expect(text).toContain("recovered response")
+      expect(text).not.toContain("ready primary commit fallback")
+      expect(dataFramesOfType(text, "error")).toHaveLength(0)
+      await drainV3Writer()
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-commit-rejected" }).entries[0]
+      expect(entry?._index?.derived?.failureReason).toBe("ready recovery commit quiesce rejected")
+      expect(entry?.attempts?.[0]).toMatchObject({ candidateRole: "primary", candidateVerdict: "failed", dispatchVerdict: "discarded" })
+      expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+      expect(entry?.attempts?.[1]?.upstreamResponse?.success).toBe(false)
+    } finally {
+      setUpstreamHookForTests(undefined)
+    }
   })
 
   test("ready-live post-C9 recovery publication failure does not fall back to the primary error", async () => {

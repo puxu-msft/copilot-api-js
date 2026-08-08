@@ -429,12 +429,33 @@ export function stageDirectRecoveryFrames(
   return { state, entries }
 }
 
+type CompleteDirectRecoveryEvaluation = Extract<Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>, { kind: "complete" }>
+
 type DirectRecoveryPublication =
-  | { readonly kind: "published"; readonly evaluation: Extract<Awaited<ReturnType<typeof evaluateDirectAnthropicRecovery>>, { kind: "complete" }> }
+  | { readonly kind: "published"; readonly evaluation: CompleteDirectRecoveryEvaluation }
   | { readonly kind: "fallback" }
   | { readonly kind: "client-gone" }
   | { readonly kind: "wire-torn"; readonly error: Error }
-  | { readonly kind: "commit-failed"; readonly error: unknown }
+  | { readonly kind: "commit-failed"; readonly evaluation: CompleteDirectRecoveryEvaluation; readonly error: unknown }
+
+/** A full recovery batch has already reached the client; only logical settlement remains. */
+async function settleCommittedRecoveryFailure(input: {
+  readonly driver: ReturnType<typeof createPipelineDriver>
+  readonly env: RequestEnvelope
+  readonly model: string
+  readonly publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>
+  readonly recordForwarded: () => void
+  readonly finalize?: () => Promise<void> | undefined
+}): Promise<void> {
+  const { driver, env, model, publication, recordForwarded, finalize } = input
+  driver.pinGenerationTerminalDispatch(env, publication.evaluation.dispatch)
+  recordForwarded()
+  env.ctx.fail(model, publication.error, publication.evaluation.response, {
+    upstreamSucceeded: true,
+    attribution: { category: "proxy", detail: "recovery disposition commit failed after full downstream publication" },
+  })
+  await finalize?.()
+}
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("Recovery disposition cleanup failed", { cause: error })
@@ -499,7 +520,7 @@ async function evaluateAndPublishDirectAnthropicRecovery(
   try {
     await evaluation.disposition.commit()
   } catch (error) {
-    return { kind: "commit-failed", error }
+    return { kind: "commit-failed", evaluation, error }
   }
   return { kind: "published", evaluation }
 }
@@ -974,7 +995,17 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
                 ctx?.abort(resolvedName)
                 return
               }
-              if (evaluation.kind === "wire-torn" || evaluation.kind === "commit-failed") {
+              if (evaluation.kind === "commit-failed") {
+                await settleCommittedRecoveryFailure({
+                  driver,
+                  env: recovered.env,
+                  model: resolvedName,
+                  publication: evaluation,
+                  recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
+                })
+                return
+              }
+              if (evaluation.kind === "wire-torn") {
                 await writeTerminalThenSettle(ctx, anthropicErrorFrame("api_error", "Recovery publication failed"), () =>
                   ctx?.fail(resolvedName, evaluation.error),
                 )
@@ -1671,7 +1702,20 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         env.ctx.abort(model)
         return true
       }
-      if (publication.kind === "wire-torn" || publication.kind === "commit-failed") {
+      if (publication.kind === "commit-failed") {
+        await settleCommittedRecoveryFailure({
+          driver,
+          env: recovered.env,
+          model,
+          publication,
+          recordForwarded,
+          finalize: async () => {
+            await sink.finalize?.()
+          },
+        })
+        return true
+      }
+      if (publication.kind === "wire-torn") {
         const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
         if (
           settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, { usage: { input_tokens: 0, output_tokens: 0 } }, { cause: publication.error })
