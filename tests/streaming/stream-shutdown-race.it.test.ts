@@ -711,19 +711,28 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
     const controller = new AbortController()
     const iter = stalledIterator<number>()
 
-    // Abort at 30ms, idle timeout at 5000ms
-    setTimeout(() => controller.abort(), 30)
-
-    const start = Date.now()
-    const result = await raceIteratorNext(iter.next(), {
+    const racePromise = raceIteratorNext(iter.next(), {
       idleTimeoutMs: 5000,
       abortSignal: controller.signal,
     })
-    const elapsed = Date.now() - start
 
+    // Not settled before the abort. Unlike the two cases above this one has no lower bound, so it
+    // had no cover at all for "resolves without being aborted" — measured: mutating the
+    // already-aborted fast path to misfire on a live signal left this case fully green.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+
+    const abortedAt = Date.now()
+    controller.abort()
+    const result = await racePromise
+
+    // The idle-timeout leg REJECTS, so getting the sentinel back at all already proves the abort
+    // won the race — this case's causal assertion is stronger than the other two's.
     expect(result).toBe(STREAM_ABORTED)
-    // Should resolve at ~30ms (abort), not ~5000ms (timeout)
-    expect(elapsed).toBeLessThan(200)
+    // Should resolve on the abort, not by outlasting something. Outlier tripwire only, but note the
+    // extra constraint here: it must stay well under `idleTimeoutMs` (5000), or "abort beats the
+    // idle timeout" would degrade into the idle timeout covering for it. A lazy abort that still
+    // beats 5000ms is exactly what this catches — verified at 3039ms against the old bound.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
   })
 })
 

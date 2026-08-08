@@ -517,6 +517,83 @@ C 与 B 分别打红**不同**的探针，正说明两个探针各自覆盖不�
 
 **诚实边界**：本条同样**从未红过**，没有「它会红」的断言。旧上界的余量与第 5 条同源（窗口里含那个 50ms 定时器，实测 57ms/200ms ≈ 3.5x）；新上界的窗口内无定时器。旧写法在更重争用下是否真会红，**未验证**。
 
+## 7. `tests/streaming/stream-shutdown-race.it.test.ts` — `raceIteratorNext: abort signal wins over idle timeout when it fires first`
+
+**它守的不变量**：当 abort 信号与空闲超时**同时在场**且 abort 先到时，abort 必须**赢**——返回 `STREAM_ABORTED`，而不是等到空闲超时并 reject。这是三条里唯一**开着** `idleTimeoutMs`（5000）的一条。
+
+**依据来源**：用例 `:710-727`；因果判据 `:724` `expect(result).toBe(STREAM_ABORTED)`；上界 `:726` `expect(elapsed).toBeLessThan(200)`；**没有**第 6 条那样的下界。
+
+**逐条判定（第三次重新判型，仍未套用前两条）：**
+
+先说与前两条都不同的结构：这里有一条**竞争的 racer**——空闲超时腿会 **reject**（`StreamIdleTimeoutError`）。因此 `result === STREAM_ABORTED` 已经蕴含「空闲超时没赢」（它若赢，`await` 会抛而不是返回 sentinel）。所以本条的因果判据比前两条**更强**。
+
+但**上界仍然不是冗余**，而且这次是**实测**的，不是推的。在**未经修改**的当前用例上跑两个候选 mutation：
+
+| mutation | 当前用例的结果 | 说明 |
+|---|---|---|
+| **A** abort 惰性处理 3s（`stream.ts:272`） | **0 pass / 1 fail**，红在 `:726`，`Expected: < 200 / Received: 3039` | 3s 仍早于 5000ms 空闲超时，故 `result` 照样是 `STREAM_ABORTED`、`:724` 全绿；**只有上界抓住它**。上界确实在干实事。 |
+| **B** 已中止快路径对活信号误触发（`stream.ts:248`） | **1 pass / 0 fail —— 全绿** | 当前用例对这类退化**是盲的**（`elapsed=0` 通过上界、`result` 通过因果判据）。 |
+
+所以本条的结构判定是：**与第 6 条不同**（没有下界、因此没有「不得提前 resolve」的覆盖，B 盲），**与第 5 条同侧**（B 盲），但**因果判据比第 5 条强**（多蕴含了「空闲超时没赢」）。三条各不相同，逐条实测才看得出来。
+
+**处置**：
+
+1. 补上当前缺失的那一类覆盖：加一次微任务 pending 探针（直接把 B 这类「未 abort 却自行 resolve」纳入）。**不加**第 6 条那样的 stall-后第二探针——第 6 条加它是为了接住 `>= 40` 原有的窗口覆盖，本条没有下界、没有对应窗口要接，为此多睡 50ms 属于无据加码。
+2. abort 改显式调用，上界取帧起点移到 `abort()` 前一行（窗口内不含定时器）。
+3. 上界 `200` → `1_000`。**注意本条这个数值有额外约束**：必须**明显小于 `idleTimeoutMs` 的 5000**，否则「abort 赢过空闲超时」这件事就退化成由空闲超时自己兜底了。1000 同时满足「远小于 5000」「远大于无定时器窗口」「小于 5s 默认预算」。
+
+`:724` 的因果判据一字未动。
+
+### 验收证据
+
+**方向二：错误状态仍被拦住（三次 mutation，全部针对本条实跑）**
+
+| mutation | 结果 | 红在哪条 |
+|---|---|---|
+| **B** 已中止快路径误触发 | 0 pass / 1 fail | 新增的 pending 探针 `:722`（**改前对它全绿**——见上表） |
+| **A** abort 惰性处理 3s | 0 pass / 1 fail | outlier 上界 `:735`，`Expected: < 1000 / Received: 3013` |
+| **D** abort 腿在 `idleTimeoutMs > 0` 时根本不注册（`stream.ts:268` 加 `&& idleTimeoutMs <= 0`） | 0 pass / 1 fail | 抛 `StreamIdleTimeoutError: Stream idle timeout: no event received within 5s` —— 即 `:724` 拿不到 sentinel |
+
+D 是**本条独有**的：它针对「abort 必须赢过空闲超时」这条只有本条才测的性质，证明 `:724` 的因果判据确实承载它。
+**D 的口径限制（必须写明）**：D 要跑满 5s 空闲超时才会现形，超过 5s 默认 per-test 预算，因此这一次探测用 `bun test --timeout 20000` 跑；**提交进仓库的用例仍是默认预算**。也就是说 D 在默认预算下会表现为超时而非该断言失败——它证明的是「`:724` 能分辨 sentinel 与 rejection」，不是「默认预算下会红在 `:724`」。
+
+三个 patch 均 `git apply --reverse --check` 后反向恢复；`git status --short -- packages/ src/` 为空。**全程未用整文件 `git checkout`。**
+
+> **残留复核（会话在本条 mutation 环节被服务端错误掐断后补做）**：
+> ```
+> git --no-optional-locks status --short
+>  M docs/tmp/2026-08-08-load-sensitive-test-dispositions.md
+>  M tests/streaming/stream-shutdown-race.it.test.ts
+> git --no-optional-locks diff -- src/ packages/ native/ scripts/     → 空（--stat 行数 0）
+> ```
+> 工作树上**只有**本任务的文档与测试文件；`src/`、`packages/`、`native/`、`scripts/` 一个字节都没变，确认第 7 条的三个 mutation（B/A/D）在中断前**已全部正确反向**，没有「已注入未反向」的残留。恢复一律走冻结 patch 的 `--reverse`，**从未**使用整文件 `git checkout`/`git restore`。
+>
+> **附带记一次自己的编辑事故**：插入上面这段残留复核时，`Edit` 的 `old_string` 圈进了「方向一」那张表却没在 `new_string` 里写回去，**静默删掉了它**（`replacement-must-cover-what-it-restates` 的「旧串多、新串少」方向）。是通读时发现并补回的——`Edit` 只校验 `old_string` 唯一命中，不会因为你漏写了要保留的内容而报错。
+
+**方向一：正确状态不被误拒**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改后，全文件） | **25 pass / 0 fail，0.99s** |
+| 64 spinner 争用（全文件，loadavg 25→30） | **25 pass / 0 fail，4.59s** |
+
+**诚实边界**：本条同样**从未红过**，没有「它会红」的断言。改前上界的窗口含 `setTimeout(30)`，与第 5、6 条同源；新窗口内无定时器。旧写法在更重争用下是否真会红，**未验证**。
+
+**三条同文件用例的结构对照（全部实测，可复核）**
+
+| | 第 5 条 `during blocked next()` | 第 6 条 `during stall` | 第 7 条 `wins over idle timeout` |
+|---|---|---|---|
+| 改前伴随断言 | 无 | `elapsed >= 40` | 无 |
+| `idleTimeoutMs` | 0 | 0 | **5000（开着）** |
+| 改前对 Mutation B | **全绿（盲）** | **变红**（`lowerBound:false`） | **全绿（盲）** |
+| 改前对 Mutation A | 变红 | 变红 | 变红（`Received: 3039`） |
+| 因果判据强度 | 只证「返回了 sentinel」 | 同左 | **额外蕴含「空闲超时没赢」**（该腿 reject） |
+| 处置 | 探针 ×1 + 修帧上界 | 探针 ×2 夹住真实 stall + 修帧上界 | 探针 ×1 + 修帧上界（上界须 ≪ 5000） |
+
+**三条各不相同，而且差异只有逐条实跑才看得出来**——第 6 条有下界所以不盲，第 7 条因果判据更强但仍盲。这张表是「同文件不等于同结构」的完整证据。
+
+
+
 
 
 
