@@ -24,7 +24,7 @@
 - 本报告起草基线`926b2478`相对共享`master@82c0664e`领先9笔本地提交；本报告与临时清单的闭环提交会在其上另增一笔。`git diff --check master..926b2478`通过，候选工作树在起草本报告前除两份新收尾文档外无未提交代码。
 - 尚未执行最终fast-forward；共享`master`仍为`82c0664e`。任何“已集成最终收尾”的结论必须由`git merge-base --is-ancestor <final> master`外部裁决。
 - 未推送、未创建PR、未发布任何ref或artifact。
-- 本会话不删除worktree或分支；最终fast-forward和安装位置复验完成后，分支仍先保留给后续Task 2a启动，除非用户另行要求清理。
+- 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。取证需求结束且收尾提交确认在`master`祖先后，可由用户决定清理本分支／worktree。
 - 共享主树此前观测到`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP；最终fast-forward前须重新冻结共享index并重算碰撞集，不能复用旧快照。
 
 ## 临时证据
@@ -48,6 +48,21 @@
 ## 尚待动作
 
 1. 独立review本终态报告与临时证据清单到0 blocker／major。
-2. 重新冻结共享index并确认候选净路径与共享WIP碰撞集为0。
+2. 重新冻结共享index并确认候选净路径与共享WIP碰撞集为0（对`git diff --name-only master..HEAD`与共享index脏路径求交集，结果必须为空）。
 3. 在共享checkout对`worktree-history-worker-batch-1b-resume`执行`git merge --ff-only`。
-4. 从共享`master`复验HEAD、reviewed-plan硬门、关键测试与工作树WIP保留情况；更新本报告为已集成状态并做最终独立复审。
+4. 从共享checkout（不是本feature worktree）复验安装位置，逐条留证：
+
+   ```bash
+   git -C /home/xp/src/copilot-api-js rev-parse HEAD
+   git -C /home/xp/src/copilot-api-js merge-base --is-ancestor <final-candidate> HEAD
+   git -C /home/xp/src/copilot-api-js rev-parse --verify '22c8e08b^{commit}'
+   git -C /home/xp/src/copilot-api-js merge-base --is-ancestor 22c8e08b HEAD
+   test "$(git -C /home/xp/src/copilot-api-js show 22c8e08b:docs/plan/2026-08-07-history-persistence-worker.md | git hash-object --stdin)" = "$(git -C /home/xp/src/copilot-api-js show HEAD:docs/plan/2026-08-07-history-persistence-worker.md | git hash-object --stdin)"
+   cd /home/xp/src/copilot-api-js && bun run typecheck
+   cd /home/xp/src/copilot-api-js && bun test tests/history/worker/protocol.unit.test.ts tests/history/worker/runtime.it.test.ts tests/history/worker/source-registry.it.test.ts tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/history/worker/pending-overlay.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/config/history-persist-retry-config.unit.test.ts tests/history/v3/transient-retry.unit.test.ts tests/history/v3/transient-retry.it.test.ts
+   git -C /home/xp/src/copilot-api-js --no-optional-locks status --short
+   ```
+
+   要求：ancestry与hash门全部成立；typecheck与上述目标集0 fail；`status`仍保留`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`三处无关WIP且无新增丢失。
+5. 用第4步实际输出把本报告改为已集成状态（写最终`master` SHA、命令结果与WIP保留结论），重新冻结临时证据清单人口，交独立reviewer终审到0 blocker／major。
+6. 终审通过后，用精确pathspec提交更新后的报告与清单，并确认该提交已在`master`祖先中（`git -C /home/xp/src/copilot-api-js merge-base --is-ancestor <report-commit> master`）；此前不得允许临时证据被清理，也不得宣告会话完成。
