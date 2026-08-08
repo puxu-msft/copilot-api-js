@@ -1,6 +1,6 @@
 # 超长驻留 operation 生命周期收敛规格
 
-> **状态：设计已获用户批准，待独立评审与实施计划。**
+> **状态：设计已获用户批准；独立首轮评审 0 blocker／5 major，已全部采纳修订，待复评与实施计划。**
 >
 > **基线：** 当前本地 `master@cfe78b6425fbbaa05fd3d11df1582611c76c0f1f`；待整合的 direct-live pre-content recovery 来源为 `agent-ace4e48572710c13a@b7319c78e41e3059ad2269a8c1014640b016e848`。实施前必须重新读取实际 refs，不得把本段快照当执行期 HEAD。
 >
@@ -96,14 +96,19 @@ interface OperationScopeSnapshot {
 ### 5.3 Delivery state
 
 ```ts
-type DeliveryLifecycleState = "open" | "finalizing" | "finalized"
+type DeliveryLifecycleState =
+  | { state: "open" }
+  | { state: "finalizing" }
+  | { state: "finalized" }
+  | { state: "failed"; error: unknown; failureRegistered: boolean }
 ```
 
 - `open`：永久 owner 尚未开始 `settleFinal()`；
 - `finalizing`：owner 已进入 `settleFinal()`，异步 finalizer 尚未完成；
-- `finalized`：raw delivery finalizer 已完成。
+- `finalized`：raw delivery finalizer 已完成；
+- `failed`：`close()`／`finalize()` reject，原始错误已保留；`failureRegistered` 表示该错误是否已进入 shutdown lifecycle failure barrier。
 
-现有 completion callback 不能同时冒充“开始”与“结束”。Owner 必须在进入和完成 finalization 的真实边界更新状态。
+`finalized` 与 `failed && failureRegistered` 都是可 join 的 delivery terminal。Delivery failure 不能永久停在 `finalizing`，也不能伪装成成功 `finalized`。Owner 必须在进入、成功和失败的真实边界更新状态；现有 completion callback 不能同时冒充“开始”与“结束”。Delivery failure 必须仍然唤醒 canonical finalizer，使其记录 client delivery failure 后生成 terminal record；shutdown barrier 另行保留失败 verdict。
 
 ### 5.4 Canonical finalization state
 
@@ -132,26 +137,26 @@ interface OperationLifecycleSnapshot {
 Snapshot 只读且无 setter。Blocker 由单一 primitive 按以下优先级推导：
 
 1. `!settled` → `request-running`；
-2. `operationScope.childCount > 0` → `operation-body`；
-3. delivery 不为 `finalized` → `delivery-finalization`；
+2. `!operationScope.quiesced`，即 `!sealed || childCount > 0` → `operation-body`；
+3. delivery 尚未到达 `finalized` 或 `failed && failureRegistered` → `delivery-finalization`；
 4. canonical 为 `waiting` 或 `running` → `canonical-finalization`；
 5. canonical 为 `completed` 或错误已登记的 `failed` → `none`。
 
 此优先级用于展示当前首个阻塞阶段，不抹去 snapshot 中其他事实。
 
-## 6．唯一合法终止顺序
+## 6．合法终止偏序
 
-正常完成、失败、客户端中止和 recovery 失败必须满足同一顺序：
+正常完成、失败、客户端中止和 recovery 失败必须满足以下偏序，而不是人为串行化所有独立事实：
 
-1. Candidate owner 对每个 primary／recovery candidate 执行 commit、discard、dispose 或 cancel。
-2. Dispatch owner 等待 iterator cleanup，并完成或拒绝 `quiesced`。
-3. Handler 记录 logical terminal。
-4. 最外层 request delivery owner 进入且仅进入一次 `settleFinal()`。
-5. Operation scope 达到 `sealed && childCount === 0`。
-6. Canonical finalizer seal 并发布 terminal record。
-7. Manager 从 tracked operation registry 删除 context。
+1. Candidate owner 对每个 primary／recovery candidate 执行 commit、discard、dispose 或 cancel；dispatch iterator cleanup 完成或明确失败后，candidate ownership 才算闭合。
+2. Candidate／dispatch ownership 闭合后，handler 才能记录 logical terminal；logical terminal 同步 seal operation scope。
+3. Logical terminal 后，两条独立分支可以并行收敛：
+   - operation scope 等所有已登记 child 退出，达到 `sealed && childCount === 0`；
+   - 最外层 request delivery owner 进入且仅进入一次 `settleFinal()`，最终到达 `finalized` 或错误已登记的 `failed`。
+4. Canonical finalizer 必须 join operation quiescence 与 delivery terminal，随后 seal 并发布 terminal record；delivery failure 作为 terminal record 的诊断事实保留，而不是阻止 canonical join 永久完成。
+5. Canonical completed，或 canonical failure 已登记到 shutdown barrier 后，manager 才从 tracked operation registry 删除 context。
 
-Candidate cleanup 与 recovery settlement 必须先于 request finalization。现有 recovery 分支的 `298b48fc` 是该顺序的已有实现锚；整合后必须通过新 registry 收敛 oracle 重新验证，而不是引用历史提交即判通过。
+Operation quiescence 与 delivery finalization 没有固定先后关系。正确实现不得为了满足规格而延迟 quiescence，也不得把 delivery finalizer登记为 operation child 造成 self-join。Candidate cleanup 与 recovery settlement 必须先于 logical terminal；现有 recovery 分支的 `298b48fc` 是该方向的已有实现锚，整合后仍须用 registry 收敛 oracle 重新验证。
 
 ## 7．错误处理
 
@@ -169,7 +174,17 @@ Candidate、dispatch 和 reservation cleanup 采用 `try/catch/finally`：catch 
 4. candidate owner 在自身 `finally` 释放 candidate 与预算；
 5. 外层 request delivery owner 仍执行 `settleFinal()`。
 
-### 7.3 Canonical finalization reject
+### 7.3 Delivery finalization reject
+
+Delivery `close()`／`finalize()` reject 时：
+
+1. delivery 状态原子发布为 `failed` 并保留原始错误；
+2. 同一临界步骤把错误登记到 lifecycle failure barrier，再将 `failureRegistered` 置为 true；
+3. delivery terminal 唤醒 canonical join，terminal record 记录该 failure；
+4. 外层 owner 继续传播原始错误，但不得让状态永久停在 `finalizing`；
+5. manager 在 canonical 收口后释放 registry；shutdown 因 lifecycle failure barrier 进入失败 verdict。
+
+### 7.4 Canonical finalization reject
 
 Canonical finalizer reject 时：
 
@@ -284,6 +299,7 @@ Operation scope：
 
 - 未 seal 时即使 `childCount=0` 也不提前 quiesce；
 - child resolve／reject 均递减计数；
+- `settled=true、sealed=false、childCount=0` 仍显示 `operation-body`，不能提前跳到 delivery／canonical blocker；
 - seal 后登记 child 抛错；
 - 多 waiter 全部 resolve；
 - snapshot 无 setter。
@@ -314,7 +330,20 @@ Manager：
 - `activeRequests.count` 语义不变；
 - `trackedOperations` 聚合与 registry snapshot 一致。
 
-### 11.4 Recovery 原有验证
+### 11.4 Delivery producer 接线矩阵
+
+Lifecycle 收敛是共享基座，不得只由 direct Anthropic recovery 承重。必须枚举每个生产 `onDeliveryFinalized`／等价 terminal notification 的活路径，并至少覆盖以下四类真实接线：
+
+| 类别 | 正确样本 | 目标缺陷 |
+|---|---|---|
+| 非 recovery SSE | 任一 Chat Completions／Gemini／Responses HTTP streaming handler 完成后 registry 归零 | 删除该 handler 的 delivery notification 后，测试必须停在 `delivery-finalization` |
+| Recovery SSE | direct Anthropic primary→recovery 成功与失败均归零 | 删除 outer `settleFinal()` 或 recovery terminal notification 后转红 |
+| Responses WS | `response.create` 正常 terminal 后 registry 归零 | 删除 WS sink finalization callback 后转红 |
+| 非流式 JSON | middleware／handler delivery boundary 后 registry 归零 | 删除 non-streaming `finalizeModelOperationDelivery()` 接线后转红 |
+
+实施计划必须先用 AST 或 TypeScript resolver 枚举实际生产者，再冻结矩阵；不得靠手写清单假装完备。矩阵既验证错误状态会红，也验证所有合法 producer 不会被 lifecycle gate 误拒。
+
+### 11.5 Recovery 原有验证
 
 整合态重新运行：
 
@@ -337,10 +366,13 @@ Manager：
 关键 gate 必须同时在正确样本上为绿，并在目标缺陷注入后为红。使用只描述目标变换的 exact patch，恢复时反向应用同一冻结 patch。
 
 1. 删除 outer `finally` 的 `settleFinal()` → 回归必须停在 `delivery-finalization` 或稳定超时。
-2. 删除 candidate cleanup `finally` 的 active-slot release → 必须观察到未收敛 candidate／`operation-body`。
-3. 让 manager 在 logical `failed` 时直接删除 registry → shutdown 回归必须识别提前 drain 的 false-green。
-4. 让 canonical reject 不释放 registry → 必须稳定复现 tracked operation 僵尸。
-5. 改错 blocker 映射 → 日志／status 测试必须转红。
+2. 让 `settleFinal()` reject 后永久保留 `finalizing`，或错误标成成功 `finalized` → delivery failure oracle 必须分别识别僵尸与隐藏失败。
+3. 删除 candidate cleanup `finally` 的 active-slot release → 必须观察到未收敛 candidate／`operation-body`。
+4. 删除 logical terminal 的 `operationScope.seal()`，制造 `settled=true、sealed=false、childCount=0` → blocker 与 drain 测试必须停在 `operation-body`。
+5. 让 manager 在 logical `failed` 时直接删除 registry → shutdown 回归必须识别提前 drain 的 false-green。
+6. 让 canonical reject 不释放 registry → 必须稳定复现 tracked operation 僵尸。
+7. 删除非 recovery SSE、Responses WS 或非流式 JSON 中任一 delivery notification → 对应 producer matrix 用例必须转红。
+8. 改错 blocker 映射 → 日志／status 测试必须转红。
 
 Mutation 红必须来自目标机制，不能由另一条异常路径代打。
 
