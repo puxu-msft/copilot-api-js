@@ -497,11 +497,21 @@ async function runRequest(
     return { ok: true, upstream: candidate.upstream, env: candidate.env }
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
-    // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    const terminalDispatch = preflight.ctx.modelOperationSnapshot.dispatches.at(-1)?.handle
+    // caller's explicit B2 recovery decision. No recovery is dispatched from this error path. Legacy and
+    // structural test contexts do not expose the optional canonical snapshot capability, so this metadata
+    // capture must never replace the primary exchange error.
+    const terminalDispatch = readLatestDispatchHandle(preflight.ctx)
     rememberPreReadyFailure({ coordinator, env: preflight, ...(terminalDispatch !== undefined && { terminalDispatch }) })
     throw error
   }
+}
+
+function readLatestDispatchHandle(ctx: RequestEnvelope["ctx"]): DispatchHandle | undefined {
+  // `modelOperationSnapshot` is mandatory on production RequestContext but intentionally absent from
+  // structural/legacy contexts. The B2 diagnostic pin is optional metadata, never a new failure source.
+  if (!("modelOperationSnapshot" in ctx)) return undefined
+  const snapshot = ctx.modelOperationSnapshot
+  return snapshot.dispatches.at(-1)?.handle
 }
 
 async function runPreContentRecovery(
