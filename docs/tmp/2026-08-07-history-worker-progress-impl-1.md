@@ -7,7 +7,7 @@ plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session-32630e1d
 session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
 predecessor_session_id: 529807d9-28f0-4e56-85c8-03adaf016bb7
-status: batch-1a-second-review-major-fixed-awaiting-rereview
+status: batch-1a-complete-awaiting-master-integration
 ---
 
 ## Batch 0 完成项
@@ -31,7 +31,7 @@ status: batch-1a-second-review-major-fixed-awaiting-rereview
 - [x] capacity 热调：调大即时放行；调小允许暂时 over-capacity，直到 `reserved < capacity` 才放行；`0 <= unacked <= reserved`。
 - [x] `history.persistence_queue_capacity` 配置：strictly positive、默认 256、热更新专用 listener、`config.schema.json` 由生成器更新。
 - [x] admission status primitive：capacity/reserved/unacked/waiting/estimatedBytes/overCapacity；不改 HTTP status。
-- [x] 正负控、fast/backend 回归与独立 review 整改已完成；待复审 0 blocker／major 后 fast-forward 合入 master。
+- [x] 正负控、fast/backend 回归与独立 review 整改已完成；复审已达 0 blocker／major，待 fast-forward 合入 master。
 
 ## 在途意图
 
@@ -49,7 +49,8 @@ status: batch-1a-second-review-major-fixed-awaiting-rereview
 - 防御性边界仍处理违约 sink：同步 throw 记录 `sinkEnqueueErrorsTotal/lastSinkEnqueueError` 后调用同一幂等 `onOutcome("failed")`，立即释放 reservation；若 sink throw 前保存了 callback，迟到 callback 被 settlement guard 忽略、不会双释放。默认未配置 sink 自身同步回调 `failed`，不再依赖 controller catch；它在回调后返回正整数占位 ID，而同步 settlement 保证该 ID 不会进入 snapshot。三条 red tests 初始均收到 pending sentinel；实现后 admission+registry 17 pass／0 fail。
 - 两项 exact-patch 正控闭合本轮 major：①删除 catch 的 `onOutcome("failed")` 后 admission 11 pass／2 fail，恰为 throw-before-callback 与 late-callback 两用例，均收到 pending sentinel；②把默认 sink 改回 throw 后 registry 3 pass／1 fail，terminal 仍 fail-closed，但 `sinkEnqueueErrorsTotal` 由 0 变 1，证明测试能区分“端口遵约”与“controller 兜底”。两项均先 reverse-apply check 再恢复，恢复后 admission 13 pass／0 fail、registry 4 pass／0 fail。
 - 结构怪味扫描发现 `runtime.ts` 重复声明 `enqueue()` 且弱于共享 sink 契约（`src/lib/history/worker/runtime.ts:41-44`，重复接口／契约漂移）；本轮让 `HistoryPersistenceRuntime extends HistoryTerminalSink` 并删除重复签名。扫描范围为本轮五个代码／测试文件、所有 `HistoryTerminalSink` 实现及计划中的 legacy adapter；未发现需暂缓的新结构项。修后 Worker 42 pass／0 fail，typecheck／lint／`diff --check` 绿。
-- 本轮最终门禁：定向 regression 490 pass／0 fail（8 files，3.93s）；全 backend 的发现集合以 `tests/**/*.unit|it|http.test.ts` 为边界，Python `Path.rglob` 与 `fd|rg` 两种方法均得 694 files，16 shards 全部退出 0。最终代码态连续两次分别为 5751 pass／0 fail（26.84s）与 5856 pass／0 fail（27.05s）；runner 的 `tests` 字段按源码定义为当次 `pass+fail`、不含运行时 skip，故不把动态 tally 当冻结覆盖数。typecheck、目标 lint、`git diff --check` 绿。当前待同一 reviewer 复审本轮 C 级修法与相邻 sink 契约，收口目标仍是 0 blocker／major。
+- 本轮最终门禁：定向 regression 490 pass／0 fail（8 files，3.93s）；全 backend 的发现集合以 `tests/**/*.unit|it|http.test.ts` 为边界，Python `Path.rglob` 与 `fd|rg` 两种方法均得 694 files，16 shards 全部退出 0。最终代码态连续两次分别为 5751 pass／0 fail（26.84s）与 5856 pass／0 fail（27.05s）；runner 的 `tests` 字段按源码定义为当次 `pass+fail`、不含运行时 skip，故不把动态 tally 当冻结覆盖数。typecheck、目标 lint、`git diff --check` 绿。
+- 同一 reviewer `acf499466aa10c311` 复审 `fb3a969d..9e5ab5a2` 后逐项判定 C1–C7 PASS，`blocker=0`、`major=0`、spec compliance PASS、code quality PASS，并在目标 worktree 独立运行 fast 得 5057 pass／0 fail。转录报告见 `docs/tmp/2026-08-08-history-worker-batch-1a-rereview.md`；Batch 1a 已完成，当前只待安全 fast-forward 合入 `master`。
 - 本轮方案反思：①更好的项目内替代是把 no-throw 契约只维护在 `HistoryTerminalSink`，让 runtime 继承它，而非在两份接口各写一次；已实施。②判据判别力同时覆盖错误状态能否通过与正确状态能否通过：删除 controller settlement 后两条用例红，恢复后绿；默认 sink 改回 throw 后仅契约诊断红，证明没有把 controller 的防御兜底误当 sink 遵约。③未采用第三方方案：这里是项目内十余行同步状态转换和现有 Worker runtime 端口，不存在边界匹配、能减少自研状态或提升可靠性的成熟外部库；引入队列／重试库反而无法裁决 unknown acceptance，也会越过本 batch 契约。
 - tsdown 0.22.3 的 array 多入口实测会保留源目录并破坏 `dist/main.mjs`；已按本地官方类型声明改用 object alias entry，固定两个 basename。
 - Bun 1.3.14 的 `node:worker_threads` fixture 抛错时先发 `error`，随后 `exit` code 可为 0；oracle 锁定 error 内容与 `error→exit` 顺序，不硬编码非零码。
