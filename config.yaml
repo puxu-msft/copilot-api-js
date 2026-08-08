@@ -762,8 +762,9 @@ anthropic:
   # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
   stream_keepalive_ping_sec: 20
 
-  # After this many seconds without a client-visible content_block_delta, upgrade the normal ping heartbeat to an empty content delta. 0 disables. / 距上一个客户端可见 content_block_delta 超过此秒数后，把常规 ping 升级为空 content delta；0 禁用。
-  stream_keepalive_escalate_sec: 200
+  # 距上一个客户端可见 content_block_delta 超过此秒数后，把常规 ping 升级为空 content delta；0 禁用。
+  # After this many seconds without a client-visible content_block_delta, upgrade the normal ping heartbeat to an empty content delta. 0 disables.
+  stream_keepalive_escalate_sec: 0
 
   # Keepalive FRAME type for the client-facing Anthropic stream. `ping` remains the normal default shape;
   # `stream_keepalive_escalate_sec` upgrades it to an empty content delta only near CC's 300s deadline.
