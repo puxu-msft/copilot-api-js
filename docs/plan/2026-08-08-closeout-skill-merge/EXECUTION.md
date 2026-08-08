@@ -18,7 +18,7 @@
 
 **执行中被守卫咬到一次**：doc-sync 那段我写了字面量 `TODO` 作为「陈旧状态词」的例子，撞上 `assertNotRegex(body, r"\b(?:TBD|TODO|FIXME)\b")`。改成描述性措辞后通过——**这正说明那条守卫是有效的，不是形式主义**。
 
-**零内容丢弃的三个落点**：原 `verification-log.md` 的 178 行连同已积累票数原样迁进归档件（加头说明新观测写去全局 log、两套 V 编号不是同一套）；两份含本仓路径的模板迁进 `docs/plan/templates/`；`git` 识别为 rename，历史保留。
+**⚠️ 订正（B 级评审 blocker 1）：把「原日志原样迁档」说成「零内容丢弃的落点」是错的——那保存的是历史证据，不是活的自验契约。** 首版并入确实丢了原 skill 的 V1–V19 行为断言与「用完就记一笔」的触发；已按归属补回（收尾侧 → `closing-a-development-session` 的 V6–V8 + 正文新增触发节；交接／进度文件／接力侧 → `writing-handover-docs` 的 H1–H16 + 新建 `verification-log.md`），旧票明确标为不计入新表毕业票数。三个落点：原 `verification-log.md` 的 178 行连同已积累票数原样迁进归档件（加头说明新观测写去全局 log、两套 V 编号不是同一套）；两份含本仓路径的模板迁进 `docs/plan/templates/`；`git` 识别为 rename，历史保留。
 
 ## 尚未闭合
 
