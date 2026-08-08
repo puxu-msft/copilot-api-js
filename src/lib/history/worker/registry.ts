@@ -16,8 +16,10 @@ import { resolveHistoryWorkerUrl } from "./asset-url"
 import { HistoryPersistenceRuntimeImpl } from "./runtime"
 
 const unconfiguredTerminalSink: HistoryTerminalSink = {
-  enqueue() {
-    throw new Error("History terminal sink is not configured")
+  enqueue(_envelope, onOutcome) {
+    onOutcome("failed")
+    // Synchronous settlement prevents admission from recording this placeholder ID.
+    return 1
   },
 }
 

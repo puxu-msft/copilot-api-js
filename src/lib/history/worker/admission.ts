@@ -8,6 +8,7 @@ import type {
 import { estimateHistoryEnvelopeBytes } from "./protocol"
 
 export interface HistoryTerminalSink {
+  /** Must not throw and must report exactly one terminal outcome. */
   enqueue(envelope: HistoryOperationEnvelope, onOutcome: (outcome: HistoryPersistenceOutcome) => void): HistoryMessageId
 }
 
@@ -158,6 +159,7 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
         if (settlement.done) return
         this.sinkEnqueueErrorsTotal++
         this.lastSinkEnqueueError = asError(error, "History terminal sink failed").message
+        onOutcome("failed")
       }
     })
   }

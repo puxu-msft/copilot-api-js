@@ -138,7 +138,35 @@ describe("HistoryAdmissionControllerImpl", () => {
     await expect(controller.acceptTerminal(envelope("op-1"))).rejects.toThrow(/unknown operation/i)
   })
 
-  test("records the sink messageId and keeps an unknown-acceptance throw unacked until an outcome arrives", async () => {
+  test("fails closed when a contract-violating sink throws before retaining the outcome callback", async () => {
+    const sink: HistoryTerminalSink = {
+      enqueue() {
+        throw new Error("failed before callback registration")
+      },
+    }
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const reservation = await controller.acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId("op-throw-before-callback")
+    const waiting = controller.acquire({ signal: new AbortController().signal })
+
+    const outcome = controller.acceptTerminal(envelope("op-throw-before-callback", 9))
+    const pending = Symbol("pending")
+    expect(await Promise.race([outcome, Promise.resolve(pending)])).toBe("failed")
+    expect(controller.snapshot()).toMatchObject({
+      reserved: 1,
+      unacked: 0,
+      waiting: 0,
+      estimatedBytes: 0,
+      unackedMessageIds: [],
+      sinkEnqueueErrorsTotal: 1,
+      lastSinkEnqueueError: "failed before callback registration",
+    })
+
+    const admitted = await waiting
+    admitted.releaseBeforeBinding("fixture complete")
+  })
+
+  test("a late callback after a contract-violating sink throw cannot settle twice", async () => {
     let onOutcome: ((outcome: HistoryPersistenceOutcome) => void) | undefined
     const sink: HistoryTerminalSink = {
       enqueue(_value, callback) {
@@ -148,22 +176,21 @@ describe("HistoryAdmissionControllerImpl", () => {
     }
     const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
     const reservation = await controller.acquire({ signal: new AbortController().signal })
-    reservation.bindOperationId("op-throw")
+    reservation.bindOperationId("op-late-outcome")
 
-    const outcome = controller.acceptTerminal(envelope("op-throw", 9))
-    await expectPending(outcome)
+    const outcome = controller.acceptTerminal(envelope("op-late-outcome", 9))
+    const pending = Symbol("pending")
+    expect(await Promise.race([outcome, Promise.resolve(pending)])).toBe("failed")
     expect(controller.snapshot()).toMatchObject({
-      reserved: 1,
-      unacked: 1,
-      estimatedBytes: 9,
+      reserved: 0,
+      unacked: 0,
+      estimatedBytes: 0,
       unackedMessageIds: [],
       sinkEnqueueErrorsTotal: 1,
       lastSinkEnqueueError: "transport acceptance unknown",
     })
-    await expect(controller.acceptTerminal(envelope("op-throw"))).rejects.toThrow(/already accepted/i)
 
-    onOutcome?.("failed")
-    await expect(outcome).resolves.toBe("failed")
+    onOutcome?.("persisted")
     expect(controller.snapshot()).toMatchObject({ reserved: 0, unacked: 0, estimatedBytes: 0, unackedMessageIds: [] })
   })
 

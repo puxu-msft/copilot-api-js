@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads"
 
+import type { HistoryTerminalSink } from "./admission"
 import type {
   //
   HistoryDrainResult,
@@ -38,9 +39,8 @@ export interface HistoryWorkerTransport {
   terminate(): Promise<number>
 }
 
-export interface HistoryPersistenceRuntime {
+export interface HistoryPersistenceRuntime extends HistoryTerminalSink {
   start(config: HistoryWorkerStartConfig): Promise<HistoryWorkerReady>
-  enqueue(envelope: HistoryOperationEnvelope, onOutcome: (outcome: HistoryPersistenceOutcome) => void): HistoryMessageId
   updateConfig(revision: number, config: HistoryWorkerHotConfig): Promise<RawTargetDescriptor>
   stopMaintenance(): Promise<void>
   drain(): Promise<HistoryDrainResult>
