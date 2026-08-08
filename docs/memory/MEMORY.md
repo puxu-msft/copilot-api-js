@@ -6,7 +6,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
-- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — 收尾六步 + HANDOVER/KICKOFF 唯一归属
+- [收尾与跨会话交接](session-closeout-and-handover.md) → user-level skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF、进度文件、容量终态接力）— 项目 skill `session-closeout` 已于 2026-08-08 并入两者并删除
 - [审自己测试类型错配派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → `choosing-test-type`
 - [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` — §1 不变量 / §2 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）/ §3 [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱 + model key 成功失败分裂](pattern-extensible-telemetry-registry.md) → `telemetry-architecture` 一/二 — 成功=规范名·失败=别名，见 [key-split](reference-telemetry-model-key-split-success-vs-failure.md)
@@ -63,6 +63,7 @@
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 不用的大 BLOB 白读 + ORDER BY 末项不在索引→temp B-tree
+- [Tantivy 读路径：等值比 ordinal、字符串按段批量解析](methodology-fastfield-ordinal-not-per-doc-dictionary-lookup.md) — 逐文档 `ord_to_str` 让无过滤列表页慢 16 倍（`ord_to_term` 每次从 block 首序号重解码）；基线必须含无过滤场景否则劣化隐身
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；后者可能是 prune orphan，见 [node_modules](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 的隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④命令可能跑错树⑤不同基线 merge 会夹带无关祖先；树向 gate → skill `proving-where-a-command-ran`，集成单元/ancestry/恢复 → skill `git-preference:isolating-from-a-shared-git-worktree`
@@ -74,7 +75,7 @@
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
 - [阻断式 guard 的目的／false-red 成本／粒度未决时先确认](feedback-confirm-guard-purpose-before-hardening.md) — 加固前先确认 guard 守什么，不替用户把未决粒度定死
 - [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态** → skill `reshaping-a-bypassed-guard`；**第三例新增**：信号是「几次 witness 利用同一事实」非次数、推断型判据要**加独立 intent 输入**而非换一种推断、**轴的选择本身也要交未卷入方**；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」
-- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有两解=测试没咬住 vs mutation 根本没生效
+- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有**三**解=测试没咬住 vs mutation 没生效 vs **fixture 造不出被测状态**（排除前两条后先写探针问「这状态真存在吗」，别改断言）
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；**事后归因同形**（diff 只证明结果、区分不了三种机制），分辨判据=我的解释能预测出别的可观测后果吗；编出来的根因会连带产出不防复发的修法
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
@@ -154,5 +155,5 @@
 
 ## 已删除记忆的话题去向
 
-通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
+通用工作原则 → user-rule + CLAUDE.md + user-level skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
 **两个从未存在的 memory 文件已改指正式归属**（2026-08-02，避免制造双源）：语言规则 `feedback-chinese-only-never-japanese` → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec/2026-07-14-unknown-endpoint-logging.md](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

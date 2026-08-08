@@ -47,6 +47,24 @@
 
 下面只记**我的处置 + 此刻可独立核验的证据**，不复述那次未落盘的复评正文。
 
+⚠️ **2026-08-08 晚些时候的后续事实——下表三处 `SKILL.md:<行号>` 引用已需改锚**：`e7a9cadb` 按**用户裁决**（「不保留两个收尾入口」）退役了项目 skill `session-closeout`，`.claude/skills/session-closeout/SKILL.md` 已从主线删除。本分支在合并该退役时**接受了删除**（不复活被用户裁掉的入口）。因此下表的行号要按删除前的最后一个包含它的提交读：
+
+```
+git show 553985f4:.claude/skills/session-closeout/SKILL.md
+```
+
+三处内容当前的归宿（逐条核过）：
+
+| 原引用 | 内容 | 现在在哪 |
+|---|---|---|
+| `SKILL.md:49` | 枚举 → disposition → 持久化 → 提交并验证载体 → 清单过独立评审 → 清理 → 重新枚举；清单须 0 blocker/major；复扫新文件使旧评审作废；禁通配 | **已泛化进全局 skill** `closing-a-development-session/SKILL.md`（`:137`／`:205`／`:209`），且比原版更完备（枚举扩到文件+符号链接、两个 temp 根取并集、事后复列） |
+| `SKILL.md:51` 前半 | 隔离 worktree 里**变量展开 + 管道**被工具判为 `too complex` 而拒绝执行 | ⚠️ **无归宿**：两个全局 skill 均零命中。见下方「未安置项」 |
+| `SKILL.md:51` 后半 | `-maxdepth 2` 与顶层项数不是同一个量 | V19 正文，随 log 迁入 `docs/archive/2026-08-08-session-closeout-verification-log.md`（写全了 42／48／49 三口径） |
+| `SKILL.md:205` | V19 行本身 | 同上，已迁入该 archive |
+| （§3 的 `exp/` gitignore 假绿） | `cp` 进 `exp/` 后 `git status` 仍干净 | 机械判据在全局 `writing-handover-docs/SKILL.md:227`（H10 三谓词）；本项目实例在 `docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md:19` |
+
+**未安置项（提请裁决，未自行处置）**：「隔离 worktree 会话里，`Bash` 对**变量展开 + 管道**的组合会拒绝执行并报 too complex；换字面绝对路径即可跑通，别误读成环境变量没设」——这是 harness 事实，本会话实测撞到两次。它的自然归属是 user-level skill `proving-where-a-command-ran`（该 skill owns Bash 工具在隔离树下的行为），但那是用户的全局配置且属指令文本，需评审，故**不自行写入**，在此登记。
+
 | 发现 | 处置 | 此刻可核验的证据 |
 |---|---|---|
 | **发现 1（阻断级）** 本分支 §3b/V19 是被 master 追平并超越的旧稿 | 按发现建议做**并集合并**（不是二选一）：master 的顺序门与两条安全机制全部采纳，本分支独有的三个实测坑保留 | `.claude/skills/session-closeout/SKILL.md:49` 含 master 的「枚举 → 逐项 disposition → 持久化 → 提交并验证载体 → 清单过独立评审 → 清理 → 重新枚举」全序，以及「清单须 0 blocker/major 才可删」「复扫新文件使先前评审作废」「禁通配/自动清理绕过」。**第三方佐证**：终审 reviewer 在 `2026-08-08-header-deadline-final-merge-review.md` 的 C5 独立比对后确认「merge 增加 master 的独立评审／复扫失效门，同时保留 feature 的枚举坑」，并以 `git show --remerge-diff` 确认无手工吞改 |
