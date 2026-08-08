@@ -288,9 +288,13 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           return { candidate: winner, bufferedFrames: outcome.bufferedFrames, liveFrames: outcome.liveFrames, loserCleanup }
         }
         const runtime = runtimes.get(outcome.candidate.candidate)
-        runtime?.settle({ verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" })
-        if (runtime) candidateReservations.get(runtime.handle)?.release()
+        const ownerErrors = runtime ? settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
         if (outcome.kind === "failure") failures.push({ error: outcome.error, source: outcome.source })
+        if (ownerErrors.length > 0) {
+          const aggregate = new AggregateError([...failures.map((failure) => failure.error), ...ownerErrors], "Generation candidate settlement failed") as HedgeRaceAggregateError
+          Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+          throw aggregate
+        }
       }
       const aggregate = new AggregateError(
         failures.map((failure) => failure.error),
@@ -333,7 +337,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
         return { kind: "failure", error, source: "upstream-transport" }
       }
       const hedgeProbe = probeCandidateResponse({ candidate: hedge, session: asCandidateResponseSession(hedge.processor), upstream: hedge.upstream })
-      return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations })
+      return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations, settleAndRelease })
     },
 
     async settleConsumedReady(candidate, input, verdict, reason) {
@@ -365,8 +369,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
 
     completeCandidate(candidate, verdict = "winner", reason = "generation-complete") {
       const runtime = runtimes.get(candidate)
-      runtime?.settle({ verdict, reason })
-      if (runtime) candidateReservations.get(runtime.handle)?.release()
+      if (runtime) throwCoordinatorFailures(distinctErrors(settleAndRelease(runtime, { verdict, reason })), "Candidate completion settlement failed", false)
     },
 
     releaseCandidate(candidate) {
@@ -390,9 +393,11 @@ async function raceProbePromises<TProcessor>(input: {
   probes: ReadonlyArray<Promise<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>>>
   runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>
   candidateReservations: Map<CandidateHandle, import("./generation-budget").BudgetReservation>
+  settleAndRelease: (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }) => ReadonlyArray<unknown>
 }): Promise<HedgeRaceResult<TProcessor>> {
   const pending = new Map(input.probes.map((probe, index) => [index, probe.then((outcome) => ({ index, outcome }))]))
   const failures: Array<HedgeRaceFailure> = []
+  const ownerErrors: Array<unknown> = []
   let firstTerminal: Extract<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "terminal" }> | undefined
   while (pending.size > 0) {
     const settled = await Promise.race(pending.values())
@@ -408,30 +413,21 @@ async function raceProbePromises<TProcessor>(input: {
         loserCleanup,
       }
     }
-    if (outcome.kind === "failure") {
-      const runtime = input.runtimes.get(outcome.candidate.candidate)
-      runtime?.settle({ verdict: "failed", reason: "response-failure" })
-      if (runtime) input.candidateReservations.get(runtime.handle)?.release()
-      failures.push({ error: outcome.error, source: outcome.source })
-    } else {
-      const runtime = input.runtimes.get(outcome.candidate.candidate)
-      runtime?.settle({ verdict: "failed", reason: "terminal-without-boundary" })
-      if (runtime) input.candidateReservations.get(runtime.handle)?.release()
-      firstTerminal ??= outcome
-    }
+    const runtime = input.runtimes.get(outcome.candidate.candidate)
+    const settlementErrors = runtime ? input.settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
+    ownerErrors.push(...settlementErrors)
+    if (outcome.kind === "failure") failures.push({ error: outcome.error, source: outcome.source })
+    else if (settlementErrors.length === 0) firstTerminal ??= outcome
   }
-  if (firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
-  // Recovery must fail closed for a mixed race: Promise settlement order is scheduling, not source authority.
-  // Only an all-transport set may reach the transport recovery classifier.
-  const aggregate = new AggregateError(
-    failures.map((failure) => failure.error),
-    "No generation candidate produced a complete client block",
-  ) as HedgeRaceAggregateError
+  const uniqueOwnerErrors = [...new Set(ownerErrors)]
+  if (uniqueOwnerErrors.length === 0 && firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
+  // Owner recording failures do not originate at a probe; this empty-probe fallback is classification only, not provenance.
+  const aggregate = new AggregateError([...failures.map((failure) => failure.error), ...uniqueOwnerErrors], "No generation candidate produced a complete client block") as HedgeRaceAggregateError
   Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
   return {
     kind: "failure",
     error: aggregate,
-    source: hedgeFailureSource(failures),
+    source: failures.length === 0 ? "upstream-transport" : hedgeFailureSource(failures),
   }
 }
 

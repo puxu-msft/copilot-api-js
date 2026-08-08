@@ -77,6 +77,7 @@ function runtime(
   candidateNumber: number,
   gate?: Promise<void>,
   onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined,
+  settleError?: unknown,
 ) {
   const candidate = `candidate:${candidateNumber}` as CandidateHandle
   const dispatch = `dispatch:${candidateNumber}` as DispatchHandle
@@ -112,6 +113,7 @@ function runtime(
       cancelled = true
     },
     settle() {
+      if (settleError !== undefined) throw settleError
       settled = true
     },
     recovery(reason) {
@@ -215,6 +217,52 @@ describe("generation coordinator hedge race", () => {
 
     expect(winner.candidate.candidate).toBe(second.candidate)
     expect(failed.settled).toBe(true)
+  })
+
+  test("a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe", async () => {
+    const probeError = new Error("primary failed")
+    const recordingError = new Error("candidate recording failed")
+    const failed = runtime("primary", "failed", 1, undefined, undefined, recordingError)
+    failed.ready.upstream.frames = {
+      // eslint-disable-next-line require-yield -- fault injection: fail before any frame
+      async *[Symbol.asyncIterator]() {
+        throw probeError
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: () => failed.runtime,
+    })
+    const primary = await coordinator.runPrimary()
+
+    const error = await coordinator.raceReadyCandidates([primary]).catch((rejection: unknown) => rejection)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([probeError, recordingError])
+    expect((error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: probeError, source: "upstream-transport" },
+    ])
+  })
+
+  test("a terminal-without-boundary candidate with a recording rejection surfaces an owner-only aggregate", async () => {
+    const recordingError = new Error("candidate recording failed")
+    const terminal = runtime("primary", "terminal", 1, undefined, undefined, recordingError)
+    terminal.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: () => terminal.runtime,
+    })
+    const primary = await coordinator.runPrimary()
+
+    const error = await coordinator.raceReadyCandidates([primary]).catch((rejection: unknown) => rejection)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([recordingError])
+    expect((error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([])
   })
 
   test("all candidate failures surface one aggregate and a race cannot be replayed", async () => {

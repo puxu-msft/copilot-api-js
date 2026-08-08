@@ -531,6 +531,23 @@ describe("P6-T2 generation coordinator", () => {
     }
   })
 
+  test("completeCandidate releases ownership when candidate recording rejects once", async () => {
+    const recordingError = new Error("complete candidate recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+    const coordinator = createGenerationCoordinator({ env: envelope("primary"), createCandidate: candidateFactory({ recording: recording.port, opens, processors }), generationBudget: budget })
+    const primary = await coordinator.runPrimary()
+
+    expect(() => coordinator.completeCandidate(primary.candidate, "failed", "first")).toThrow(recordingError)
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBeUndefined()
+    coordinator.completeCandidate(primary.candidate, "failed", "second")
+    coordinator.completeCandidate(primary.candidate, "failed", "third")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+  })
+
   test("concurrent recovery calls atomically consume one ready parent", async () => {
     const recording = createRecording()
     const opens: Array<string> = []
