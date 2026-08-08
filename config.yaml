@@ -424,6 +424,10 @@ history:
   enabled: false
   db_path: "history.db"
 
+  # 同时持有 History durability reservation 的 operation 上限。只按条数背压；必须为正整数，0 不表示无限。
+  # Maximum concurrently reserved History operations. Count-based only; positive integer, 0 is never unlimited.
+  persistence_queue_capacity: 256
+
   # 保留的最新成功/失败请求数（-1 = 无限制，0 = 临时禁止）。
   # Successful/Failed entries kept in SQLite (-1 = unlimited, 0 = temporarily disabled).
   # success_limit: 1000

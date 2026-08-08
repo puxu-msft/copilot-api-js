@@ -260,6 +260,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
   historyDbPath: "",
+  historyPersistenceQueueCapacity: 256,
   historyRawCaptureEnabled: false,
   historyRawCaptureDbPath: "",
   historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,

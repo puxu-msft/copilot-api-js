@@ -899,6 +899,8 @@ export const HistoryConfigSchema = z
   .object({
     /** Startup-only master switch. false means no History database is opened. */
     enabled: nullableBoolean(),
+    /** Maximum admitted History operations. Strictly positive; 0 is never unlimited. */
+    persistence_queue_capacity: nullablePositiveInt(),
     raw_capture: nullableSection(
       z
         .object({

@@ -12,10 +12,13 @@
 
 `src/lib/shutdown.ts` 实现一次信号启动的 4 步优雅关闭流水线。**4 步是进程内部自动推进的阶段，不是要求用户按 4 次 Ctrl+C。**
 
-信号契约只有两层：
+信号契约分为终止信号与交接信号：
 
-1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、StructuredFileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
-2. 第二次 SIGINT/SIGTERM 是全局逃生舱：只要生命周期尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均直接 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。第二次信号不再用于把流水线逐步推进一格。
+1. idle 时收到 SIGINT/SIGTERM，启动完整关闭流水线，并立即通过独立于 observability、StructuredFileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
+2. 生命周期已经进行时收到 **SIGINT/SIGTERM**，直接走全局逃生舱：只要尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。即使关闭由 SIGUSR2 交接启动，随后第一个 SIGINT/SIGTERM 也属于明确放弃 durability 的强退请求；终止信号不用于把内部流水线逐步推进一格。
+3. SIGUSR2 是幂等的交接请求，不是终止信号：idle 时启动同一套优雅关闭流水线；流水线已经进行时返回已有 shutdown task，不触发强退。否则重复交接，或新实例在旧实例已因 SIGINT/SIGTERM 收尾时补发交接信号，会把正常 graceful shutdown 错杀成 exit 130。
+
+信号必须投递到应用记录的 runtime PID。Bun CLI/Volta shim 可能在 JS runtime 外再包一层 launcher；给 launcher 发 SIGUSR2 会走内核默认动作并杀死进程树，根本到不了 `process.on("SIGUSR2")`。裸接管路径的 pidfile 写入 `process.pid`，因此目标正确；PTY 回归测试也从子进程输出读取 runtime PID 后再发 SIGUSR2，禁止用 `Bun.spawn().pid`/`pty.fork()` 返回的外层 launcher PID 冒充应用 PID。
 
 ### Step 1: Setup（立即）
 - 停止接受新请求

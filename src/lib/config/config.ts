@@ -965,6 +965,7 @@ export async function applyConfigToState(): Promise<Config> {
           )
         }
       }
+      if (h.persistence_queue_capacity !== undefined) setHistoryConfig({ historyPersistenceQueueCapacity: h.persistence_queue_capacity })
       if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
       if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
       if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
