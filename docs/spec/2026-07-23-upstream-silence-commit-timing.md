@@ -1,6 +1,6 @@
 # Spec 草案：上游 pre-response 静默与 delayed-commit 时机 —— A（挂起）vs B（长思考）判别问题
 
-- **状态：草案（draft）。architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）→ Q5 直读实测闭合（2026-07-23，见 §0 ✅ / §3）。核心假设「等 header 判别」现已由直读 `upstreamHeadersAt` **实测证伪**（34 条正样本、header@47-231s ∩ success）。B2 主线既凭「commit 后失去内部恢复能力」的架构问题独立成立、又有实测支撑。需用户裁决方向 + 授权两个待实测门（§8 Q1/Q2）。**
+- **状态：部分实施。** architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）→ Q5 直读实测闭合（2026-07-23，见 §0 ✅ / §3）。direct Anthropic B2 的 pre-ready delayed-commit、ready transport close 和 ready clean EOF before `message_stop` 已实现；buffered/translated 仍未实现且 fail-closed。实现与测试资产已完成，独立复评、C5 mutation evidence replay 与 backend 最终门仍进行中。核心假设「等 header 判别」现已由直读 `upstreamHeadersAt` **实测证伪**（34 条正样本、header@47-231s ∩ success）。B2 主线既凭「commit 后失去内部恢复能力」的架构问题独立成立、又有实测支撑。Q2 事故类 fresh-retry 对真实 GHC 的效力仍未实测，故不能将离线实现覆盖表述为事故根治结论。实施证据见 [Task 4.3b 报告](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)。**
 - **日期：** 2026-07-23
 - **Owner：** 排查会话（起于第二波事故 req_57/58/63 —— 0 帧干挂 126/164/206 秒后 rstCode=0，用户等 2-3 分钟拿硬失败）
 - **前身 / 相关：**

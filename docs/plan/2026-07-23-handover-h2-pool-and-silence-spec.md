@@ -1,10 +1,10 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
-> **状态：进行中**。B2 基础设施已完成到 P4 Task 4.3a，并于 **2026-08-06** 按渐进策略 fast-forward 到 master `9d97c444`；**4.3b recovery dispatch 尚未接线，所以没有用户可观察的 B2 自动恢复行为**。
-> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery` 与 master 同为 `9d97c444`；仅剩未提交的 `.superpowers/sdd/progress.md` ledger，未进入主线。主树仍有并发 peer WIP，后续继续用隔离 worktree + 渐进合并。
-> **本阶段门禁**：typecheck、精确 lint、fast、backend 均通过；聚焦 delivery/reconcile/semantic-gate 36/36。History native 首轮因 worktree 加载主树旧构建产物而 18 fail，执行 `bun run build:history-search` 后全消失；随后一次 rate-limiter 负载时序红单跑 5/5 绿、完整重跑 0 fail。⚠ `parallel-test.ts` 汇总数会漂移，只把退出码/0 fail 当门，精确用例集合用 junit reporter。
+> **状态：实施中。** Task 4 direct Anthropic B2 的实现与测试资产已完成；Task 5 的独立复评、C5 mutation evidence replay 与 `bun run test:backend` 最终门进行中。直接 Anthropic B2 已在 delayed-commit 的 pre-ready 与 ready-live 两个挂载点接线：确定性 HTTP/网络上游死亡且尚无真实语义内容时，执行一次 fresh recovery；non-complete R 一律 discard 并保留原始 terminal。buffered 与 translated 路径仍 fail-closed，未接 B2 publication。
+> **当前实现快照：** 本 worktree 分支 `agent-ace4e48572710c13a`，HEAD `dd79edb3`；其父 `84a84bf5` 完成 evaluator discriminant guard，`aa2620db` 完成 ready-live clean EOF recovery。C4 双读 oracle 已确认 V2 History entry 与 terminal-bus canonical V3 record 在 empty-text R success／fallback 两侧的 terminal、P/R upstream、synthetic client frame 和 strategy 语义；不要用本文早期 `.worktrees/upstream-silence-recovery`、`feat/upstream-silence-recovery` 或 master SHA 判断当前代码。
+> **验证口径：** `parallel-test.ts` 汇总数会漂移，因此本文只记录带 commit 与命令的退出码/失败数；精确测试集合须用命令或 junit reporter 重现。
 >
-> 交接给新会话继续。**最新实施真相在 §0.2（2026-07-28 更新）——先读它**；§0/§0.1 是 2026-07-23 的历史语境，其中「Q1 ≥125s」「B1+B2-P0 可开工」等表述已被 §0.2 supersede。**权威事实以代码 + §0.2 为准**。
+> 本文 §0/§0.1 是历史语境；§0.2 的新状态表与代码是当前实施事实源。正式设计现状另见 `docs/DESIGN.md`，可复现的实现、coverage 与 mutation 证据见 [Task 4.3b 实施报告](2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)。
 
 ## 本轮我犯过的错（写在最前——只给结论会让接手重犯产出结论的错误）
 
@@ -58,7 +58,9 @@
   - **reviewer 挖出的承重缺陷已修**：`unhandledRejection` 探针因 helper 里 `await request` 提供 live awaiter 而**结构上无牙**（三守卫全拆仍绿）→ 已补**真孤儿拓扑**用例、mutation 证其变红并捕获真实爆炸栈；`setAttemptTimingEpoch` 漏的对称守卫已补。seal-race 连跑 10 次 80/80。
   - **现状可达性（别夸大）**：主线 production primary 腿今天已被 operation scope 结构性护住；本守卫覆盖 mock/legacy ctx、candidate-discard/supersede，以及 **P4/P5 将新增的未注册 fresh recovery 腿**。
 
-### 🎯 B2 地基（plan-2）**全部完成**；P4 已开工
+### 🎯 B2 实施状态（plan-2 地基与 P4 direct-live 均已完成）
+
+直接 Anthropic B2 的实现与测试资产已完成：evaluator → owner batch C9 → disposition 的顺序、two mounts、three-mode wire、History terminal projection 和 SDK/mutation coverage 均锚定在 [Task 4.3b 实施报告](2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)。本节只保留当前状态：Task 5 的独立复评与 backend 最终门仍进行中；buffered B2 与 translated publication 继续 deferred/fail-closed。
 
 - ✅ **Task 4.0**（`1c5ea173`）——**ready-态挂载点**（B2 两个挂载点的第二个：上游已 ready、pump 在跑、但在首个真实语义内容前失败）。新增 `driver.runResponseRecovery(upstream, env, reason)`，复用既有 `coordinator.runRecovery`。三条承重：① ready-态**自己**调 `classifyServerExecutionRisk`（不复用 pre-ready 的检查、不碰 `allowServerTools`）② 给 `runRecovery` 加可选 `retryNextStrategy`——**默认仍 `"buffered-retry"`**（既有 buffered 调用方零行为变化，有回归锁），B2 显式传 `"precontent-recovery"` 防 History 诊断混淆 ③ **零 handler 接线**（4.3 才接）。`tests/pipeline` 843 pass。
 - **Task 4.0 的 review findings 已全闭合**（`a125e67e`/`22b04ac0`/`1e39a720`/`9cf8a8ee`/`796ef05b`）。reviewer 做了 4 组 mutation，**M4 存活**暴露一个真缺口：driver 侧的 `"precontent-recovery"` 实参丢掉后**全后端 4709 测试仍全绿**——两端各自被证（coordinator 默认值有锁、coordinator 能接受覆盖参数有锁），**中间那根线没被证**。已补独立 oracle（注入 recording callback 断言 `settleDispatch` 收到的 `nextStrategy`），正样本对照真咬。另：错误消息区分 pre-ready/ready-state、plan 注解订正（真正漂移的是**行号**不是路径）、Task 4.4 加 per-attempt 簿记待核项。
@@ -71,21 +73,21 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 
 ⚠ **验证工具的已知缺陷**：`parallel-test` 汇总在我修掉「恒报 0」后**仍欠计约 25%**（`test:backend` 4749 vs 直接命令 6614/644 文件；发现缺口与其他 CSI 序列均已排除）。**门的退出码是对的**（由各 shard 决定、真失败照样红），坏的是**证据行**——引用「N pass」时别当精确值。已入 backlog，根治方向=改用脚本已有的 junit XML 逐 `<testcase>` 计数。
 
-### P4 进行中（逐 Task 更新，别等最后）
+### P4/Task 5 状态（以 HEAD `dd79edb3` 为准）
 
-| Task | 状态 | 要点 |
+| Task | 状态 | 当前事实 |
 |---|---|---|
-| 4.0 ready-态挂载点 | ✅ 审清 | `driver.runResponseRecovery`；独立 gate；`retryNextStrategy` 覆盖 + driver 侧实参已有独立 oracle |
-| 4.1 三模式 splice | ⚠️ **首版被审掉、已重划范围**（详见下方 4.1′） | 首版 `06dc6c29` 新增 `precontent-recovery-splice.ts` 门面，异模型审判 **MAJOR：多余间接层**——`handler-v4.ts:1251` 的 `liveReconcilingSink` 已是同一 `makeReconcilingSink` 构造，且生产 live 两条腿（`:1361` direct / `:1659` translate）已在用；恢复路径**不存在拿不到该 sink 的层级障碍**（`sink`/`anchorHooks`/`anchorState` 与 catch 块同在 `:1280` 解构的作用域）。主会话逐条 code-read 复核属实 → 采纳 |
-| 4.1′ decorator 边界 + 契约防呆 | ✅ **收口**（`0aa05821`→`b04f282a`→`e82de639`→`469e7adc`） | **定案：改写型 decorator 不得继承 delivery identity**（继承会让 hedge 胜者帧走 `commitWinnerBlock`→写向裸 sink→绕过 reconcile；默认档可达，对照实验坐实）。三道防线由弱到强补齐：TSDoc → 必填 `{ transparency: "write-pass-through" }` → **运行时 `decorator.write === source.write` 等式**（对拼写免疫、主防线）→ 架构 allowlist（已按 `reshaping-a-bypassed-guard` 换轴到 `ts.resolveModuleName`，12 种拼写全 CAUGHT；换轴前漏 9 种，含本目录房屋风格 `./session`）。另修：collision oracle 迁生产 `makeDeliverySseSink`（旧链无 delivery session、对该缺陷结构性失明，是 2319 全绿的原因）、被误删的第二条 keepalive 断言已恢复（实测 `keepalives==ticks−1`，是驱动少一拍不是性质消失）。押后：identity 继承改 session 方法 → backlog `67fc015c` |
-| 4.2 触发判定 | ✅ **收口**（`99e525a9`→`9ff09ebe`→`0625b58b`→`2b25cbca`） | 纯函数、零接线。**MAJOR（fail-open）已从三向封死**：session 必填 + 运行时 fail-closed + plan 前置约束；新增 `.it` 用例用 4.1′ 的真装饰器复现「装饰链解析不到 session」这一真实入口。外层判别式补穷尽 `satisfies never`（原先未知 kind 会放行）。abort 采单源值 `{kind:"abort"; abortKind}`。测试按真相域拆开，三条 never-false-kill 硬约束用例进默认档（4758→4763）。**收尾还抓到一次假加强**：把 fixture 换成 `new Proxy(session,{get})` 看似更严、实测零区分力（`!input.session` 是引用真值判断、不触发 get trap），改用 input 侧 throwing getter 后位置回退 mutation 才真变红 → 记忆 `32c4d79b`。**4.3 挂载点裁决 = A**（gate 留在 abort 块之后；`{kind:"abort"}` 当前无生产构造者，作防御+穷尽锚点；实施者不得自行切 B，需回主会话改判） |
-| 4.3a sink 链上提 | 🔄 **两条 MAJOR 已修**（`33b719a5`→`44488a67`），收口复评中 | 链在 `makeAnchoredSseSink` 后**一次构造**：`createPreContentRecoverySinkChain(rawSink, hooks, state)` → 三端口 `rawSink`(buffered) / `sink`(supervisor，live 终态写) / `liveSink`(reconcile decorator，live 两腿) + 从 **raw** 解析的 `deliverySession`（查不到 loud throw）。**MAJOR-1 终态围栏**：首版让 buffered 与 live 的 `close`/13 处 `finalize` 全变空操作 → 实测「`message_stop` 之后仍发 ping」（窗口含真实异步 I/O、不被微任务天然兜住）。修法=buffered 退回 raw sink（恢复只在 live 腿、这半代价本不该付）+ live 的 supervisor `close` 映射成 `suspendHeartbeat`（可恢复暂停，终态漏斗无定时器）。主会话亲手 mutation 复核：`close(){}` → 2 条红含多余 `ping`。**MAJOR-2 守卫换轴**：首版 `containingFunctionName` 先撞变量声明、返回**变量名**，故两条 `not.toContain(pump)` 黑名单**结构上永不触发**，防的是「多调一次」而非「搬错地方」。改成走 function-like 祖先 + 精确允许名单，三种绕过逐个跑红。另修 `detachClientAbort()` 泄漏（`settleFinal` 写终态帧 reject 会跳过 detach）→ `try/finally`；`ClientSink.finalize` 类型 `void`→`void \| Promise<void>`，全仓 45 处调用点加 `await` |
-| 4.4 History settlement | ⏳ | 含 per-attempt 簿记待核项（`commitAttemptSseEvents`/`finalizeCurrentAttemptDuration`/`resetSseEvents`） |
-| 4.5 协议级回归矩阵 | ⏳ | 三模式 × 5 失败形态 × 两挂载点 |
+| 4.0～4.2 foundation | ✅ | ready recovery capability、three-mode reconciliation 与 deterministic gate 均已接线；所有 abort provenance fail-closed。 |
+| 4.3 direct-live 接线 | ✅ | pre-ready delayed-commit、ready transport close 与 ready clean EOF before semantic content 三种入口复用 isolated evaluator；complete R 经 owner batch 写出。 |
+| 4.4 History/terminal settlement | ✅ | P/R dispatch、candidate 和 pinned terminal projection 按 publication outcome 结算。 |
+| 4.5 协议与 SDK资产 | 🔄 | handler matrix、真实 SDK、clean EOF 与 History oracle 已完成；C5 mutation evidence 尚有标为“待重跑”的项，细节见实施报告。 |
+| Task 5 最终验收 | 🔄 | 实现/测试资产完成；独立复评与 `bun run test:backend` 最终门仍进行中，不能标记整个 Task 完成。 |
+
+实施机制与命令不在本交接表重复，统一指向 [Task 4.3b 实施报告](2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)。 buffered B2 与 translated publication 的长期边界见 deferred backlog。
 
 ### 剩余（依赖序）
 
-**P4 余下**（plan-3：Task 4.1 splice 纯函数 → 4.2 触发判定 → **4.3 handler 接线（最硬）** → 4.4 History settlement → 4.5 协议矩阵；两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
+**P4 direct-live 已收口**：两 mount、三模式、History settlement 和 direct Anthropic SDK oracle 已完成；remaining proof obligations 是 Task 5 的 backend 验证及独立 review/verifier，而非再次接线。**后续特性**分开处理：buffered B2 与 translated publication 见 deferred backlog；B3（plan-4，默认关）仍受 never-false-kill 约束，不能借 Task 4 完成暗中开启。全分支终审/合并取决于这些独立门，不以本文历史 P4 checklist 代替。
 
 ⚠ **P4~P6 接线前务必重读 handler-v4/driver 现状**：master 的 ingress-deadline 重构 + heartbeat 重写已改动 plan-3 假定的接线点（plan-3 的 `file:line` 多半已漂移）。
 
