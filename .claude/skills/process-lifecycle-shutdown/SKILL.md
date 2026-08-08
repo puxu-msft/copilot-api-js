@@ -138,3 +138,5 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 ## 鉴别力正控
 
 已验证三类正控：① SIGUSR2 分类——冻结只删除 `if (!isTerminationSignal(signal)) return shutdownPromise` 的 exact patch，组件／PTY 门变红；② generation registry——production tracker 只保留 lightweight registry 后，真实长流、token refresh 与 recovery 用例在一个事件循环 tick 内观察到 `stopped` 而非 `draining`；③ lightweight registry——production tracker 只保留 `getTrackedOperations()` 后，count_tokens／embeddings 用例观察到 token／History／Telemetry／Diagnostic 在 terminal 前提前关闭。三者均经 reverse-apply check 反向恢复并复绿。它们仍**不证明**重新引入旧 process-global abort、529 改写或 upstream WS early teardown 会被同一组判据全部咬住；未做对应 exact mutation 前不得扩大声称。
+
+②③ 的冻结 patch 已归档，可直接复跑，不必重新构造：`docs/tmp/2026-08-08-lossless-shutdown-mutation-drop-generation.patch` 与 `docs/tmp/2026-08-08-lossless-shutdown-mutation-drop-lightweight.patch`。复跑序列是 `git apply <patch>` → 只跑目标测试确认变红 → `git apply --reverse --check <patch>` → `git apply --reverse <patch>` → 复绿。**注入变异前先确认工作树干净**；patch 只改 `src/lib/shutdown.ts` 的 `getActive()` 一行，若 `--check` 失败说明该行已变，此时应重新构造 patch 而不是强推。①的 patch 未归档，需要时按上述形态自行冻结。
