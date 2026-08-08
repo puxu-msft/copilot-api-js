@@ -918,6 +918,12 @@ function mergeCandidateResponseOpts<T extends RunResponseOpts>(candidate: Candid
       candidate.onFinishResolved?.(result)
     }
   }
+  if (outer?.onRenderedFrame) {
+    merged.onRenderedFrame = (frame) => {
+      const transformed = outer.onRenderedFrame?.(frame)
+      return transformed === undefined ? undefined : candidate.onRenderedFrame?.(transformed)
+    }
+  }
   const bufferedOuter = outer as RunBufferedOpts | undefined
   if (bufferedOuter?.sawMessageStop) {
     ;(merged as RunBufferedOpts).sawMessageStop = () => bufferedOuter.sawMessageStop?.() || candidate.sawMessageStop?.() || false

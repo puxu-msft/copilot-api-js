@@ -85,6 +85,10 @@ export function createResponseProcessor(input: CreateResponseProcessorInput): Re
     stream(upstream, opts) {
       if (consumed) throw new Error("[response-processor] processor already consumed")
       consumed = true
+      // Candidate options contain the Task 3 classification gate. When an outer
+      // caller supplies its own transformation, driver.ts composes it before this
+      // gate; choosing the assembled option avoids classifying a frame twice.
+      const postRender = opts?.onRenderedFrame ?? input.onRenderedFrame
       return processFrames({
         env,
         dispatch: input.dispatch,
@@ -93,7 +97,7 @@ export function createResponseProcessor(input: CreateResponseProcessorInput): Re
         rewrites,
         states,
         renderer,
-        postRender: input.onRenderedFrame ?? opts?.onRenderedFrame,
+        postRender,
         onSettled: input.onSettled,
       })
     },

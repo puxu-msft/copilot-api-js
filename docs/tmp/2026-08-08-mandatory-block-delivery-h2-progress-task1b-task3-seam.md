@@ -33,7 +33,23 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 
 ## 在途意图
 
-- 下一语义单元只补 combined seam 可观察行为测试；不更改Task 4 owner／compatibility边界。已应用的Task 1b净patch尚未提交，必须先完成当前红绿测试组与类型检查，再提交。
+- Task 1b净patch与首次combined seam已在 `74dcdcea` 提交。后续完整目标测试发现 Task 3回归：`candidate-response-session` 将 candidate classifier 置于 processor input callback，并被 processor 的 `input.onRenderedFrame ?? opts.onRenderedFrame` 优先选择遮蔽外层 callback；使外层的工具名恢复不执行。当前修复意图是在 driver 的已组装 opts 中先 outer transform，再调用 candidate唯一classification gate，processor只消费已组装 opts callback。`generation-runtime-baseline` 的 `cc-direct` frame-origin 预期从 `render:client` 更新为 `client-transform:client`，因为 finish frame现在与普通frame同经该唯一gate；这是冻结“finish frame先project+classify+yield”契约的观测更新，不是放宽断言。
+
+## 已处理的失败
+
+- `tests/pipeline/generation-runtime-baseline.http.test.ts` 与 `tests/pipeline/hooks/driver-provenance.unit.test.ts` 首次联合运行失败，均由上述同一callback遮蔽根因导致，非既有失败；其余Task 1b／Task 3目标测试在同轮通过。修复后必须复跑两者并确认恢复。
+
+## Source mapping
+
+| Task 1b source SHA | 本树 SHA | 内容／状态 |
+| --- | --- | --- |
+| `937027bd`…`51286a05` | `74dcdcea` | 按 `c972a946..51286a05` 净patch集成；processor冲突按Task 3唯一post-render gate手工合并。 |
+
+## 结构怪味审计
+
+- `src/lib/pipeline/stream/response-processor.ts:88-96`：callback选择层级不明确会遮蔽外层transform，属于职责错位／双接缝弱一档；本轮修为driver组装外层transform→candidate classifier的单一callback，不在processor重新合并。
+- `src/lib/pipeline/generation/candidate-response-session.ts:169-187`：候选session同时承担hook、外层transform与分类，属于过渡期编排密集；本轮不重构，因为Task 4才替换compatibility projection与owner接线，记录为该阶段边界。
+- 第三方方案：SSE rich carrier／WHATWG framing与项目协议grammar均为项目内契约，无合适第三方库替代。
 
 ## 已作废的路子
 
@@ -41,9 +57,3 @@ continuity: 须连续；Task 1b 与已落地 Task 3 在 response processor 和�
 - 不在 `response-processor` 恢复 Task 1b 已过时的 `yield* finish.frames` 旁路或删除 Task 3 的 `postRender` gate。
 - 不以 ID 值或对象形状推断 rewrite provenance；fresh rewrites own fields，same-value ID 合法但不继承 parser provenance。
 - 不恢复第二 classifier，不提前删除 Task 3 compatibility projections或实施 Task 4 owner migration。
-
-## Source mapping
-
-| Task 1b source SHA | 本树 SHA | 内容／状态 |
-| --- | --- | --- |
-| `937027bd`…`51286a05` | 待集成 | 将按净 patch 语义吸收，不保留一一 cherry-pick 映射。 |
