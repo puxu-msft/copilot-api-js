@@ -59,3 +59,18 @@ job 目录现仍可读（`ls -1 /home/xp/.claude/jobs/149c3057/tmp | wc -l` = 70
 [建议] `docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md:5` —— 「按文件名分类会产出看起来合理、实则错误的结论」目前只有 ndjson 一个实例，措辞却是全称的。预期影响：读者会以为文件名分类整体不可用，而实际教训更窄也更可执行。推荐改成「**只看名字不看内容**的分类，在名字自带 PID／产品前缀这类**看起来携带来源信息**的文件上会错」，并把本轮新增的第二个实例（msg15–msg18 因名字规律被整体略过）并列写上，两个实例才撑得起一句判据。
 
 [建议·minor] `:59` 等处使用了全角 `／`。按 user-rule `10-text-formatting` 的符号表，斜杠应为半角 `/`（仓库内既有文档大量同形，可统一处理或明确豁免）。除此之外，新记忆条目与 manifest 新增段落的中文标点全角规范未见其他违例。
+
+---
+
+## 复评（固定 commit `34d4bec2`）：0 blocker / 0 major，全部闭合
+
+- **B1 FIXED。** `methodology-closeout-summaries-overstate-their-evidence.md:14` 已改为「**3 处、3 份文档**（`plan`、`review.md`、`dispositions.md`）」并引 `closeout-docs-review.md:16`，同格显式写明「八处/十处」属合并后变陈旧的「待合并」断言、**写下时全部正确**、归 stale 条目；第 3 问括注改为「3 处方向反了」；`MEMORY.md:39` 索引行改为「写反方向（3 处）」。三处同改，无残留。
+- **M1 FIXED。** `:13` 改为「**收尾三轮**分别报 0 blocker/3 major、1 blocker/2 major、1 blocker/2 major」，与 `terminal-report.md:7` 的权威口径一致，并在同格点名「本条第一版把三轮压成两轮」；`terminal-report.md:80` 同步订正且注明自相矛盾的成因。
+- **M2 FIXED。** 新增「第三次冻结的账」一节，据实写出 15 个新增（`msg15`–`msg25`、`mp6`–`mp8`、`final-self.log`）并给出 53 + 15 = 68 的闭合；四张表补齐：msg 行扩到 `msg27`（27 个）、merge-preview 行扩到 `mp8`（8 个）、自测日志扩到五份（含 `final-self.log`）、新增 `INVENTORY.txt` 行。逐行清点与 inventory 清单一致。
+- **M3 FIXED（已实际采集，非改措辞）。** `capture-job-tmp.sh` + `job-tmp-inventory.md` 已落盘：71 个常规文件 / 0 链接 / 0 子目录，与我复评时 `ls` 所见一致（原 70 项 + 采集产生的 `INVENTORY.txt`）；27 个 msg 全部命中、0 个 `NO-MATCH`。**实跑抽查 5 条全部成立**：`msg7`→`e5ad10ea`、`msg15`→`9c323128`、`msg19`→`a47d9e11`、`msg25`→`d5e19038`、`msg27`→`1af98a5e`，文件首行与 `git log --no-walk --format=%s` 逐字相等。证据分层表相应两行由「否」升为「是」，并留下「标注不可复核前先确认现在是不是真做不到」的教训。（口径说明：该对照证明的是「存在 subject 与之逐字相等的已落地 commit」，manifest 与 inventory 的措辞正是如此，无过度声称。）
+- **M4 FIXED。** 第 4 问改为「这个全称词，我在什么集合上穷举过？」，失败动作为「说不出搜索范围就降级为存在性表述或标未验证」，并明写**不能用「我举不出反例」通过本问**；第 5 种形态升为并列第 5 问且自带失败动作；抬头由「四问」改为「五问、任一答不上就执行失败动作」。
+- **M5 FIXED。** 分工改为按轴切分（stale 管事实变化后的维护义务，本条管落笔时措辞与证据的差距），3 个共享实例标注「细节归 stale 条目，本条只作形态举例」，并记下「切分两条规则前先读对方正文」的教训；与 `feedback-verify-facts-before-superlative-completeness-verdict` 的触发点差异保留。
+- **建议 FIXED。** 「按文件名分类」的全称判断已收窄为两种具体情形并各配实例（名字看似携带来源信息的 ndjson；名字有规律被整体略过的 `msg15`–`msg18`）。
+- **minor FIXED。** `rg '／'` 在本轮两份文件与两份新增归档件上零命中。
+
+**复评 verdict：0 blocker / 0 major，可定稿。**
