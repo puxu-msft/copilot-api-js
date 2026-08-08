@@ -285,9 +285,11 @@ export function createResponsesToAnthropicStreamTranslator(modelId: string, opts
             closeOpenBlock(out)
             const idx = blockIndexFor(event.output_index)
             const text = webSearchCallToText(event.item)
-            out.push({ frame: anthropicSseFrame({ type: "content_block_start", index: idx, content_block: { type: "text", text: "" } }) })
-            out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: idx, delta: { type: "text_delta", text } }) })
-            out.push({ frame: anthropicSseFrame({ type: "content_block_stop", index: idx }) })
+            out.push(
+              { frame: anthropicSseFrame({ type: "content_block_start", index: idx, content_block: { type: "text", text: "" } }) },
+              { frame: anthropicSseFrame({ type: "content_block_delta", index: idx, delta: { type: "text_delta", text } }) },
+              { frame: anthropicSseFrame({ type: "content_block_stop", index: idx }) },
+            )
             // openBlock stays undefined (this block is already fully closed) — the NEXT block (if any)
             // opens fresh via its own lifecycle event, mirrors closeOpenBlock's own post-close state.
           }

@@ -1,10 +1,18 @@
-import { createHash, randomUUID } from "node:crypto"
+import {
+  //
+  createHash,
+  randomUUID,
+} from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
 import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
-import { compressBytes, decompressBytes } from "~/lib/sqlite/compression"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 import { createDatabase } from "~/lib/sqlite/driver"
 
 const RAW_SCHEMA_VERSION = 1
@@ -182,7 +190,9 @@ export function acquireRawCaptureLease(): RawCaptureLease {
           const prior = decompressBytes(existing.blob_gz)
           if (!Buffer.from(prior).equals(Buffer.from(bytes))) throw new Error(`raw object hash collision: ${hash}`)
         } else {
-          generation.db.prepare("INSERT INTO raw_objects(hash,kind,byte_length,blob_gz) VALUES(?,?,?,?)").run(hash, kind, bytes.byteLength, compressBytes(bytes))
+          generation.db
+            .prepare("INSERT INTO raw_objects(hash,kind,byte_length,blob_gz) VALUES(?,?,?,?)")
+            .run(hash, kind, bytes.byteLength, compressBytes(bytes))
           capturedObjects++
         }
         return { storeId: generation.id, objectHash: hash, byteLength: bytes.byteLength, capability: "available" }
@@ -204,7 +214,7 @@ export function acquireRawCaptureLease(): RawCaptureLease {
             "objectHash" in result ? result.objectHash : null,
             result.capability,
             "status" in result ? result.status : "captured",
-            "error" in result ? result.error ?? null : null,
+            "error" in result ? (result.error ?? null) : null,
           )
       } catch (error) {
         captureGaps++

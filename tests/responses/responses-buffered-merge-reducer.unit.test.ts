@@ -8,7 +8,11 @@ import {
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
 
 import {
   //

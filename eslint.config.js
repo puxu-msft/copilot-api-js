@@ -42,6 +42,10 @@ export default tseslint.config(
     prettier: prettierConfig,
   }),
   {
+    ...tseslint.configs.disableTypeChecked,
+    files: ["contrib/pm2/ecosystem.config.cjs", "hooks/strip-todowrite.ts", "tests/diagnostics/fixtures/sonic-boom-flush-contract.mjs"],
+  },
+  {
     files: ["**/*.json", "**/*.jsonc", "**/package.json", "**/package-lock.json"],
     rules: disableTypescriptRulesForJson,
   },

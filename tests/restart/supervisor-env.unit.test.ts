@@ -1,6 +1,14 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { detectSupervisor, isSupervised } from "../../src/lib/restart/supervisor-env"
+import {
+  //
+  detectSupervisor,
+  isSupervised,
+} from "../../src/lib/restart/supervisor-env"
 
 test("systemd 判别：NOTIFY_SOCKET 或 INVOCATION_ID", () => {
   expect(detectSupervisor({ NOTIFY_SOCKET: "/run/x.sock" })).toBe("systemd")

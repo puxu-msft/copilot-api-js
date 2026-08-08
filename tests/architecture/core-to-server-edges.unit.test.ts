@@ -111,7 +111,10 @@ const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
 /** Every module extension `tsc` compiles. `.ts`-only was the bug: see `SOURCE_GLOB`'s own test. */
 const SOURCE_GLOB = "**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
 
-async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src/lib"): Promise<{
+async function scanCoreLib(
+  root = path.join(REPO_ROOT, "src/lib"),
+  prefix = "src/lib",
+): Promise<{
   edges: Array<{ file: string; specifier: string }>
   opaque: Array<{ file: string; call: string }>
 }> {
@@ -178,13 +181,17 @@ let scanned: ReturnType<typeof scanCoreLib> | undefined
 const coreLib = (): ReturnType<typeof scanCoreLib> => (scanned ??= scanCoreLib())
 
 describe("core → server 边 ratchet", () => {
-  test("src/lib 通往 ~/routes 的边与登记表逐条相等（只许减少）", async () => {
-    const expected = [...KNOWN_CORE_TO_SERVER].sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
-    expect(
-      (await coreLib()).edges,
-      "多出来的边 = core 又依赖了 HTTP 层，spec §7.2 阶段 1 正在专门消除这类边；\n" + "少掉的边 = 阶段 1 落地了一条，把对应行删掉。",
-    ).toEqual(expected)
-  }, SCAN_TIMEOUT_MS)
+  test(
+    "src/lib 通往 ~/routes 的边与登记表逐条相等（只许减少）",
+    async () => {
+      const expected = [...KNOWN_CORE_TO_SERVER].sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
+      expect(
+        (await coreLib()).edges,
+        "多出来的边 = core 又依赖了 HTTP 层，spec §7.2 阶段 1 正在专门消除这类边；\n" + "少掉的边 = 阶段 1 落地了一条，把对应行删掉。",
+      ).toEqual(expected)
+    },
+    SCAN_TIMEOUT_MS,
+  )
 
   test("守卫有效性：植入一条合成边会被抓到（否则「零新增」只证明了扫描没跑到）", () => {
     const planted = parseSource("synthetic.ts", 'import {\n  //\n  a,\n} from "~/routes/responses/ws"\n')
@@ -197,15 +204,19 @@ describe("core → server 边 ratchet", () => {
     expect(allModuleSpecifiers(planted).filter((specifier) => specifier.startsWith("~/routes"))).toEqual(["~/routes/responses/fallback"])
   })
 
-  test("src/lib 里静态不可判定的动态目标与登记表逐条相等", async () => {
-    const expected = [...KNOWN_OPAQUE_TARGETS].sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
-    expect(
-      (await coreLib()).opaque,
-      "多出来的项 = 有一处 import()/require() 的目标是运行时算出来的，静态判据读不到它，\n" +
-        "所以「没有新增 ~/routes 边」这句话对那个文件并不成立。确认它不可能指向 routes 层后登记，\n" +
-        "或者把目标改成静态 specifier。",
-    ).toEqual(expected)
-  }, SCAN_TIMEOUT_MS)
+  test(
+    "src/lib 里静态不可判定的动态目标与登记表逐条相等",
+    async () => {
+      const expected = [...KNOWN_OPAQUE_TARGETS].sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
+      expect(
+        (await coreLib()).opaque,
+        "多出来的项 = 有一处 import()/require() 的目标是运行时算出来的，静态判据读不到它，\n"
+          + "所以「没有新增 ~/routes 边」这句话对那个文件并不成立。确认它不可能指向 routes 层后登记，\n"
+          + "或者把目标改成静态 specifier。",
+      ).toEqual(expected)
+    },
+    SCAN_TIMEOUT_MS,
+  )
 
   test("守卫有效性：合成的不可判定目标会被抓到", () => {
     // 报的是 CallExpression 本身，不含外层 `await`——登记表里的项也按这个形状写。
@@ -256,7 +267,10 @@ describe("core → server 边 ratchet", () => {
       await writeFile(path.join(fixture, "probe.ts"), `import { a } from "${relativeToRoutes}"\nexport const x = a\n`)
 
       const { edges } = await scanCoreLib(fixture, "fixture")
-      expect(edges.map((edge) => edge.file), "解析后落在 src/routes 里，就是一条 core → server 边").toEqual(["fixture/probe.ts"])
+      expect(
+        edges.map((edge) => edge.file),
+        "解析后落在 src/routes 里，就是一条 core → server 边",
+      ).toEqual(["fixture/probe.ts"])
     } finally {
       await rm(fixture, { recursive: true, force: true })
     }
@@ -267,9 +281,15 @@ describe("core → server 边 ratchet", () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "core-target-sweep-"))
     try {
       // callee 拼法刻意选一个所有 callee 启发式都认不出的：只有目标扫描能看见它。
-      await writeFile(path.join(fixture, "probe.ts"), 'declare const lookup: Record<string, (n: string) => unknown>\nexport const x = lookup["load"]("~/routes/responses/fallback")\n')
+      await writeFile(
+        path.join(fixture, "probe.ts"),
+        'declare const lookup: Record<string, (n: string) => unknown>\nexport const x = lookup["load"]("~/routes/responses/fallback")\n',
+      )
       const { edges } = await scanCoreLib(fixture, "fixture")
-      expect(edges.map((edge) => edge.specifier), "接线断了的话这里是空数组，而 callArgumentLiterals 的单测依旧全绿").toEqual(["~/routes/responses/fallback"])
+      expect(
+        edges.map((edge) => edge.specifier),
+        "接线断了的话这里是空数组，而 callArgumentLiterals 的单测依旧全绿",
+      ).toEqual(["~/routes/responses/fallback"])
     } finally {
       await rm(fixture, { recursive: true, force: true })
     }

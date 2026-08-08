@@ -32,15 +32,15 @@ import type {
   ResponsesPayload,
 } from "~/types/api/openai-responses"
 
-import { createAnthropicToResponsesStreamTranslator } from "~/lib/openai/translate/anthropic-to-responses-stream"
 import { translateAnthropicResponseToResponses } from "~/lib/openai/translate/anthropic-to-responses"
+import { createAnthropicToResponsesStreamTranslator } from "~/lib/openai/translate/anthropic-to-responses-stream"
 import { translateResponsesToAnthropicRequest } from "~/lib/openai/translate/responses-to-anthropic-request"
 
 const ctx: TranslateExchangeContext = { responseId: "resp_e2e", itemId: "item_e2e", resolvedModel: "claude-opus-4.8" }
 
 /** A realistic-shaped Claude signature (matches the byte pattern observed in probe (e), FINDINGS.md). */
-const REAL_CLAUDE_SIGNATURE
-  = "EpICCokBCA8YAipAkdxBdM3kLmY5kjjU5zOzASAQcL3DFFfb2jejUZOPjuJrMtaWdV77O5dZQCe6TEwRUbfCexFp39fpi0cd4ykzlDIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiRjZWQxZjk4ZS0wYjUxLTQ2MTAtODI4Mi00ZTVkODgzODQ1NzQSDOs7RCuEB888OvuLNhoM3xA3Q2NqM5+1orROIjCe3TDVg0QV+sqXfUrhxYebYTWPknMSB3iCL160MLikP+K0wU9w6tWedTxyog121S8qNjVdBnPMoozhFNYKLKsPeEyEYB+zdGg05tT61eIEdiwvcsghbPUaikuA3KefU4ufD6pD8xfldxgB"
+const REAL_CLAUDE_SIGNATURE =
+  "EpICCokBCA8YAipAkdxBdM3kLmY5kjjU5zOzASAQcL3DFFfb2jejUZOPjuJrMtaWdV77O5dZQCe6TEwRUbfCexFp39fpi0cd4ykzlDIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiRjZWQxZjk4ZS0wYjUxLTQ2MTAtODI4Mi00ZTVkODgzODQ1NzQSDOs7RCuEB888OvuLNhoM3xA3Q2NqM5+1orROIjCe3TDVg0QV+sqXfUrhxYebYTWPknMSB3iCL160MLikP+K0wU9w6tWedTxyog121S8qNjVdBnPMoozhFNYKLKsPeEyEYB+zdGg05tT61eIEdiwvcsghbPUaikuA3KefU4ufD6pD8xfldxgB"
 
 /** Minimal Anthropic response builder (mirrors anthropic-to-responses.unit.test.ts's fixture). */
 function anthropicResponse(content: AnthropicResponse["content"]): AnthropicResponse {
@@ -152,9 +152,30 @@ describe("Phase 5 END-TO-END F→D round-trip (streaming): createAnthropicToResp
   function renderStreamingF(signature: string): Array<ServerSentEventMessage> {
     const t = createAnthropicToResponsesStreamTranslator("claude-opus-4.8", ctx)
     const events: Array<ServerSentEventMessage> = [
-      { data: JSON.stringify({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-opus-4.8", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } }), event: "message_start" },
-      { data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }), event: "content_block_start" },
-      { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "streamed reasoning" } }), event: "content_block_delta" },
+      {
+        data: JSON.stringify({
+          type: "message_start",
+          message: {
+            id: "msg_r",
+            type: "message",
+            role: "assistant",
+            model: "claude-opus-4.8",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 5, output_tokens: 0 },
+          },
+        }),
+        event: "message_start",
+      },
+      {
+        data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+        event: "content_block_start",
+      },
+      {
+        data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "streamed reasoning" } }),
+        event: "content_block_delta",
+      },
       { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } }), event: "content_block_delta" },
       { data: JSON.stringify({ type: "content_block_stop", index: 0 }), event: "content_block_stop" },
       { data: JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: {} }), event: "message_delta" },

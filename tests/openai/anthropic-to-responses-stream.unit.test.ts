@@ -212,7 +212,9 @@ describe("anthropic-to-responses-stream — tool_use (equivalence zone, native o
     // tool gets output_index 1 — this translator's OWN monotone counter, never the raw Anthropic block index verbatim.
     expect(outputIndexes).toEqual([1])
     // text gets output_index 0 (the leading text message item; it streams via content_part.added / output_text.delta at 0).
-    const textOutputIndexes = frames.filter((f) => data(f).type === "response.content_part.added" || data(f).type === "response.output_text.delta").map((f) => data(f).output_index)
+    const textOutputIndexes = frames
+      .filter((f) => data(f).type === "response.content_part.added" || data(f).type === "response.output_text.delta")
+      .map((f) => data(f).output_index)
     expect(textOutputIndexes.every((i) => i === 0)).toBe(true)
     expect(textOutputIndexes.length).toBeGreaterThan(0)
   })
@@ -281,7 +283,13 @@ describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZON
   })
 
   test("a thinking block with EMPTY plaintext (opus/sonnet convention — real reasoning lives entirely in the signature, probe (e)) still emits a reasoning item carrying the signature — never silently dropped", () => {
-    const frames = renderAll([messageStart(), thinkingBlockStart(0), signatureDelta(0, "ENCRYPTED-ONLY-NO-PLAINTEXT-SIG"), blockStop(0), messageDelta("end_turn")])
+    const frames = renderAll([
+      messageStart(),
+      thinkingBlockStart(0),
+      signatureDelta(0, "ENCRYPTED-ONLY-NO-PLAINTEXT-SIG"),
+      blockStop(0),
+      messageDelta("end_turn"),
+    ])
     const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
     expect(doneEvent).toBeDefined()
     const item = data(doneEvent as ServerSentEventMessage).item as { summary: Array<unknown>; encrypted_content?: string }
@@ -308,7 +316,14 @@ describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZON
 describe("anthropic-to-responses-stream — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
   test("scenario B (stripThinkingSignature=true) NEVER populates encrypted_content — plaintext summary still streams", () => {
     const frames = renderAll(
-      [messageStart(), thinkingBlockStart(0), thinkingDelta(0, "still shown"), signatureDelta(0, "SHOULD-NOT-BE-CARRIED"), blockStop(0), messageDelta("end_turn")],
+      [
+        messageStart(),
+        thinkingBlockStart(0),
+        thinkingDelta(0, "still shown"),
+        signatureDelta(0, "SHOULD-NOT-BE-CARRIED"),
+        blockStop(0),
+        messageDelta("end_turn"),
+      ],
       "claude-opus-4.8",
       { stripThinkingSignature: true },
     )
@@ -319,7 +334,14 @@ describe("anthropic-to-responses-stream — RFC §4.3 scenario A/B (Phase 5 mode
   })
 
   test("scenario A (default, no opts) DOES populate encrypted_content — the default is full round-trip", () => {
-    const frames = renderAll([messageStart(), thinkingBlockStart(0), thinkingDelta(0, "shown"), signatureDelta(0, "REAL-SIG"), blockStop(0), messageDelta("end_turn")])
+    const frames = renderAll([
+      messageStart(),
+      thinkingBlockStart(0),
+      thinkingDelta(0, "shown"),
+      signatureDelta(0, "REAL-SIG"),
+      blockStop(0),
+      messageDelta("end_turn"),
+    ])
     const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
     const item = data(doneEvent as ServerSentEventMessage).item as { encrypted_content?: string }
     expect(extractClaudeSignature(item.encrypted_content)).toBe("REAL-SIG")

@@ -23,42 +23,9 @@
  * and `claude-opus-4-8` match the same entry.
  */
 
-import {
-  //
-  hasGlobMeta,
-  matchesModelKey,
-} from "~/lib/models/model-pattern"
+import { matchesModelKey } from "~/lib/models/model-pattern"
 
-/**
- * Return the value for the most-specific (longest) key whose substring matches
- * `modelName`, falling back to the wildcard "*" entry if no specific key
- * matches. Returns `undefined` when neither applies.
- *
- * Specificity is measured by key length, so `"claude-opus-4.7-high"` wins over
- * `"claude-opus-4.7"` for the model id `claude-opus-4.7-high`. Ties prefer the
- * first key encountered (insertion order), which matches Object.keys behavior.
- */
-export function findMostSpecific<T>(modelName: string, patterns: Record<string, T>): T | undefined {
-  let bestKey: string | undefined
-  let bestIsGlob = false
-  for (const key of Object.keys(patterns)) {
-    if (key === "*") continue
-    if (!matchesModelKey(modelName, key)) continue
-    const isGlob = hasGlobMeta(key)
-    // 定序：literal 压过 glob（种类优先）；同种类按字面 key.length 最长胜；等长 insertion-order 首见胜。
-    const better =
-      bestKey === undefined
-      || (bestIsGlob && !isGlob) // 新 literal 压过旧 glob
-      || (bestIsGlob === isGlob && key.length > bestKey.length)
-    if (better) {
-      bestKey = key
-      bestIsGlob = isGlob
-    }
-  }
-  if (bestKey !== undefined) return patterns[bestKey]
-  if ("*" in patterns) return patterns["*"]
-  return undefined
-}
+export { findMostSpecific } from "~/lib/models/model-pattern"
 
 /**
  * Return values from every key whose substring matches `modelName`, including

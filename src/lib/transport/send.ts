@@ -22,11 +22,8 @@ import type { HeadersCapture } from "~/lib/context/request"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import {
-  //
-  captureHttpHeaders,
-  createResponseHeaderTimeoutSignal,
-} from "~/lib/fetch-utils"
+import { captureHttpHeaders } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
@@ -209,10 +206,10 @@ export interface SendUpstreamHttpParams {
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
   const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, reaperSignal, dispatchSignal } = params
 
-  // Fold only request-owned cancellation sources into the fetch: response-header
-  // timeout, downstream client, request lifecycle, and dispatch ownership. Shutdown
+  // Fold request-owned lifecycle cancellation into the fetch. The response-header
+  // deadline is passed separately so it is disarmed before body consumption. Shutdown
   // contributes no signal because the first process signal must not cancel accepted work.
-  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), clientAbortSignal, reaperSignal, dispatchSignal)
+  const fetchSignal = combineAbortSignals(clientAbortSignal, reaperSignal, dispatchSignal)
 
   // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
   // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
@@ -222,6 +219,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     headers,
     body: JSON.stringify(body),
     signal: fetchSignal,
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
     ...(params.onTrailers && { onTrailers: params.onTrailers }),
   })
 

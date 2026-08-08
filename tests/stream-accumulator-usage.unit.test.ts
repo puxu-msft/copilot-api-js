@@ -1,9 +1,22 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { accumulateOpenAIStreamEvent, createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
-import { accumulateResponsesStreamEvent, createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
+
+import {
+  //
+  accumulateResponsesStreamEvent,
+  createResponsesStreamAccumulator,
+} from "~/lib/openai/responses-stream-accumulator"
+import {
+  //
+  accumulateOpenAIStreamEvent,
+  createOpenAIStreamAccumulator,
+} from "~/lib/openai/stream-accumulator"
 
 test("openai accumulator captures cache_write + modality + prediction (prompt_tokens_details)", () => {
   const acc = createOpenAIStreamAccumulator()
