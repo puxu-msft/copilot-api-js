@@ -46,7 +46,7 @@ Y 的权威 owner 在完成后签发 permit／event，X 由消费该凭据触发
 
 **两个放大这个错误的形态**：
 - **逐行复述**会让它看起来像已有 disposition。本轮那条失效的门被清单**逐行复述了 56 遍**，单看任一行都完整合规，只有回到「分型追链」这一步才暴露。
-- 它是**判据之间留缝**而非某条判据写错：盯「产物有没有进提交」的检查（skill `session-closeout` 自验表 V7）**结构性地**看不到「我设的前置条件在物理上能不能被执行」。逐条核判据核不出来。
+- 它是**判据之间留缝**而非某条判据写错：盯「产物有没有进提交」的检查（当时 `session-closeout` 自验表的 V7；该 skill 2026-08-08 已并入 `closing-a-development-session`，其 verification-log 的 V 编号自 V1 重新起算）**结构性地**看不到「我设的前置条件在物理上能不能被执行」。逐条核判据核不出来。
 
 **Why:** 不可控的平台生命周期事件（job 回收、容器重建、缓存过期、CI 超时终止）被当成受控步骤来排序，是一类会静默失效的设计错误——它在纸面上完全自洽，只在真正发生时丢数据，而那时已经没人在看。
 
@@ -56,6 +56,6 @@ Y 的权威 owner 在完成后签发 permit／event，X 由消费该凭据触发
 - **一条判据若在复审中反复朝相反方向被打回，先怀疑它管了不止一类对象，去分型，别继续调措辞**（前三轮的根因）。
 - **双控必须隔离目标机制**：被测对象有多个前置时，「翻转 Y 后坏事没发生」既可能是目标门起了作用，也可能是兄弟门代咬；不固定其他前置、不核对 provenance，正负控都没有判别力（第四轮的根因，与本仓 [[methodology-verify-the-mutation-actually-applied]] 同源）。
 
-**How to apply:** 每写一条顺序前置，当场①**声明它是 A 型还是 B 型**（都不是就直接走消门）②按该型的条件逐条给出答案③对两型共同验收的四项各给出可判别结果。此形态已记入 skill `session-closeout` 的 `verification-log.md` 2026-08-08 节，标为「新增负样本、建议入表」，待独立评审决定是否升为正式自验条目——**未经评审不得自行改写 SKILL.md 正文**（instruction text 必评）。
+**How to apply:** 每写一条顺序前置，当场①**声明它是 A 型还是 B 型**（都不是就直接走消门）②按该型的条件逐条给出答案③对两型共同验收的四项各给出可判别结果。该形态最初记在项目 skill `session-closeout` 的自验日志（现归档于 `docs/archive/2026-08-08-session-closeout-verification-log.md`）；**其可执行条款已于 2026-08-08 采纳并迁入 user-level skill `closing-a-development-session` 的 `source.json`**——非文件候选发现独立成 `discover_nonfile_candidates` stage 且被 `review_temp_manifest` 依赖，删除放行改由 reviewer 的 positive receipt 把关。该 skill 是**生成产物**：只改 `source.json` 再 `render_skill.py`，直接编辑 `SKILL.md` 会被覆盖并撞守卫（instruction text 仍须评审）。
 
 **Related:** [[methodology-downgrading-a-gate-needs-a-reachable-trigger]]（同族：降级自评闸门时最容易只写成一句陈述、没有可达触发点）、[[feedback-pass-null-clean-not-self-validating]]（通过性结论不自证）。

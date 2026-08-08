@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-写**给未来的自己看的判据**（skill／rule／验收条款）时，我的错误高度集中在**同一族**：**门写出来了，但没有任何东西会去执行它**。2026-08-08 写 `session-closeout` §3b/§4 时，一份 skill 段落被独立 reviewer 连打六轮，其中 **2 个 blocker、十余条 major**，而它们几乎全是这一族的不同形态：
+写**给未来的自己看的判据**（skill／rule／验收条款）时，我的错误高度集中在**同一族**：**门写出来了，但没有任何东西会去执行它**。2026-08-08 写当时的项目 skill `session-closeout` §3b/§4 时（该 skill 同日并入 user-level `closing-a-development-session` 并删除，这批条款已迁入其 `source.json` 的 §2／§5 与 `discover_nonfile_candidates` stage），一份 skill 段落被独立 reviewer 连打六轮，其中 **2 个 blocker、十余条 major**，而它们几乎全是这一族的不同形态：
 
 | 形态 | 当时写成了什么 | 为什么不成立 | 可观察修法 |
 |---|---|---|---|

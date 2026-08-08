@@ -1,0 +1,9 @@
+diff --git a/src/lib/transport/send.ts b/src/lib/transport/send.ts
+--- a/src/lib/transport/send.ts
++++ b/src/lib/transport/send.ts
+@@ -219,5 +219,4 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
+     headers,
+     body: JSON.stringify(body),
+     signal: fetchSignal,
+-    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
+     ...(params.onTrailers && { onTrailers: params.onTrailers }),

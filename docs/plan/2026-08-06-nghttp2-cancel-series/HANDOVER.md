@@ -189,16 +189,16 @@ A1、A2、A3 的已实现部分均已落 `master@fa2bfd2d902af444517b2fed1a44428
 
 ## A.2 A3 在 `fa2bfd2d` 的六条 major
 
-以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象；准确 file:line、反例与建议见 `review-core-a3.md`，接手时须先核 `fa2bfd2d..17a7f612` 增量，再打开最终文件复验行号。
+以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象提出；准确 file:line、反例与建议见 `review-core-a3.md`（该报告是时点记录，不随修复改写）。**六条现已全部处置**，逐条落点如下——其中第 4 条仍在分支上、尚未合并，合并前不得把它算作 master 状态。
 
-1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。
-2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。
-3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。
-4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。
-5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。
-6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。
+1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（`src/lib/history/queries.ts:46`、`:380`）。
+2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。**已闭合**：同上，await 两侧不再各自取快照。
+3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。**已闭合**：`lifecycleStatesForQuery` 成为唯一判定源，冲突谓词返回空集而非放宽（`src/lib/history/lifecycle-state.ts`）。
+4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。**已实现，待合并**（分支 `nghttp2-cancel-a3-next`）：改为按 term ordinal 在列式 fast field 上过滤 + 每段一次批量解析 id；精确 `total`、tuple 顺序、keyset 四项语义均未变（遍历全部命中仍是精确计数的前提，被消除的是评分堆与 stored-doc 物化）。实测与「它没有证明什么」见 `exp/history-search-list-perf/README.md`，条目收口在 `docs/todo/deferred-backlog.md`。
+5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。**已闭合**：`rejectsInvalidListQuery`（`src/routes/history/handler.ts`），按用户 2026-08-08 裁决**只作用于 `/api/entries`**，`/api/search` 保持既有宽松降级契约。
+6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。**已闭合**：cursor 记录 `indexOpstamp`，与 `HistoryIndex.generation()` 比对，不匹配即弃用重新 tail（`src/lib/history/search/daemon.ts`）。
 
-A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport 进展。验收：六条 finding 均有实现修复、目标回归、正确样本与目标缺陷 mutation，独立复评在同一最终 commit 上达到 0 blocker／0 major。证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。正控：分别构造正确 recent/persisted 合并、await 窗口无换态、`state` 与 `success` 一致、有限小命中、合法 query、cursor 与 matching generation，确认修复后的 gate 不误拒正确状态。
+A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。**未闭合的验收项**：六条各自带目标回归与 mutation 对照，但**尚未做过一次覆盖全部六条最终合并态的独立复评**（`0 blocker／0 major` 那道门）；第 4 条另有一处**实测证明当前不可达、因而无测试覆盖**的 `alive_bitset` 分支，保留理由写在代码与用例注释里。证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
 
 ## A.3 文档／流程整改与后续 gate
 
