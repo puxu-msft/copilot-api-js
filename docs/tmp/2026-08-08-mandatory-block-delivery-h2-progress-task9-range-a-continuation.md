@@ -21,7 +21,7 @@ continuity: 须连续；接力自 agent-aefcc691bad9daa35，因为原 transcript
 
 - 只读候选：`/home/xp/src/copilot-api-js/.worktree/agent-aefcc691bad9daa35`，终点 `9f9b0d7b`，实施范围 `e43d08ec..9f9b0d7b`。
 - 第一接力树：`/home/xp/src/copilot-api-js/.worktree/agent-a76fa535d0dc7246e`，在 `993a64a9` 上形成 `c0db13ef`、`7300cd5d`、`9c1dcc6b`、`b2d629cb` 四个 checkpoint。
-- 当前权威执行树：`/home/xp/src/copilot-api-js/.claude/worktrees/continuation`。上述四个 checkpoint 已通过三方 merge 接入 Task37 后的当前树；唯一冲突为 `store.ts` 的窄 `V3TimingSource` re-export 与 manifest/schema/journal 版本常量，解法保留两边意图。
+- 当前权威执行树：`/home/xp/src/copilot-api-js/.claude/worktrees/continuation`。上述四个 checkpoint 已通过三方 merge 接入 Task37 后的当前树并提交为 `f3299c86`；唯一冲突为 `store.ts` 的窄 `V3TimingSource` re-export 与 manifest/schema/journal 版本常量，解法保留两边意图。
 - 旧 `docs/tmp/2026-08-07-mandatory-block-delivery-h2-progress-t9.md` 已标记由本文件取代；本文件是当前唯一可写进度源。
 
 ## 当前合并门
