@@ -1,6 +1,6 @@
 # History Worker Batch 1b 评审转录与处置
 
-> 状态：全部代码与判据复审已达 0 blocker／major；D1／D2 文档 major 已整改、待原 reviewer 复审；主线尚未集成。
+> 状态：全部代码、判据与文档复审已达 0 blocker／major；主线尚未集成。
 > 评审基线：`661e1792`；合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；当前候选：`94205e89`，基于 `master@44457047`。
 > 来源：生命周期 reviewer、overlay／判据 reviewer、lossless shutdown 合并态 reviewer 的工具回传；主会话转录并按 C 级代码裁定处置。
 
@@ -37,3 +37,4 @@
 2. Overlay／判据 reviewer：R2、R3、R3.1、R2.1及`df0c7bf4`重写可合，0 blocker／major。
 3. 合并态 reviewer：M1与lossless shutdown handoff可合，0 blocker／major。
 4. B4 floor校准：两次正确样本、独立JUnit求和与边界双控均成立；原reviewer复审判可合、0 blocker／major。
+5. D1／D2及同形全站点文档同步：原reviewer复审判可合、0 blocker／major；独立复跑DESIGN路径守卫与REST／summary in-flight行为测试共69 pass／0 fail。
