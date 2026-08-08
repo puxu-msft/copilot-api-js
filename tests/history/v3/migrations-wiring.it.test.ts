@@ -49,6 +49,7 @@ import {
   initHistory,
   shutdownHistory,
 } from "~/lib/history/state"
+import { SUMMARY_PROJECTION_FIELDS } from "~/lib/history/v3/summary-schema"
 import { setStateForTests } from "~/lib/state"
 
 function tableExists(name: string): boolean {
@@ -76,7 +77,11 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     expect(tableExists("history_meta")).toBe(true)
     expect(tableExists("v3_operation_summaries")).toBe(true)
     expect(Boolean(getDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection", "001-transport-evidence-schema"])
+    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
+      "001-operation-summary-projection",
+      "001-transport-evidence-schema",
+      "002-summary-integrity-invalidation",
+    ])
   })
 
   test("a non-empty injected MIGRATIONS array runs REAL DDL against the initHistory-opened V3 db, ledgers it, and idempotently no-ops on rerun", async () => {
@@ -99,6 +104,7 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
       "001-operation-summary-projection",
       "001-transport-evidence-schema",
+      "002-summary-integrity-invalidation",
       "001-wiring-probe",
     ])
 
@@ -120,6 +126,16 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
       INSERT INTO history_meta(key,value) VALUES('schema_migrations','["001-operation-summary-projection"]');
       CREATE TABLE v3_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       INSERT INTO v3_meta(key,value) VALUES('schema_version','5');
+      CREATE TABLE v3_operations(
+        operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL,
+        kind TEXT NOT NULL, created_at INTEGER NOT NULL, terminal_sequence INTEGER NOT NULL,
+        ended_at INTEGER, timing_source TEXT NOT NULL DEFAULT 'storage-commit-upper-bound',
+        manifest_gz BLOB NOT NULL, summary_json TEXT, pinned INTEGER NOT NULL DEFAULT 0,
+        committed_at INTEGER NOT NULL
+      );
+      CREATE TABLE v3_operation_summaries(
+        ${SUMMARY_PROJECTION_FIELDS.map((field) => `${field.column} ${field.sqlType}`).join(",")}
+      );
       CREATE TABLE v3_journal(
         operation_id TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL,
         phase TEXT NOT NULL, payload_gz BLOB NOT NULL, created_at INTEGER NOT NULL,
@@ -161,7 +177,11 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     ]
     await expect(applyForwardMigrations(getDatabase(), failing)).rejects.toThrow("boom")
     // Failed migration must stay unlogged (pending) so it retries next start.
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection", "001-transport-evidence-schema"])
+    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual([
+      "001-operation-summary-projection",
+      "001-transport-evidence-schema",
+      "002-summary-integrity-invalidation",
+    ])
   })
 
   test("shutdownHistory + reopen: the ledgered migration is not re-applied across a real restart", async () => {

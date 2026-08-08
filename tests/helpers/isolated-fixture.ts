@@ -53,7 +53,9 @@ import {
   //
   drainV3Writer,
   resetV3WriterForTests,
+  setV3TransactionBFailureInjectorForTests,
 } from "~/lib/history/v3/store"
+import { setSummarySnapshotObserverForTests } from "~/lib/history/v3/summary-store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetRawModelsForTests } from "~/lib/models/cache"
@@ -125,6 +127,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "setV3TransactionBFailureInjectorForTests", reset: () => setV3TransactionBFailureInjectorForTests(null) },
+  { name: "setSummarySnapshotObserverForTests", reset: () => setSummarySnapshotObserverForTests(undefined) },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "setHistorySearchClientForTests", reset: () => setHistorySearchClientForTests(undefined) },

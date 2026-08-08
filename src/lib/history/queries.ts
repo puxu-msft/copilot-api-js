@@ -38,8 +38,8 @@ import {
   getPersistedSummariesByIds,
   getPersistedSummary,
   hasPersistedSummaryMatching,
-  isSummaryProjectionReady,
   querySummaryPage,
+  withValidatedSummarySnapshot,
 } from "./v3/summary-store"
 import {
   //
@@ -188,58 +188,88 @@ function persistedCandidates(
   return { rows, total }
 }
 
-function resolveSummaryCursor(
-  options: QueryOptions,
-  operationKind: NonNullable<QueryOptions["operationKind"]>,
-  deferPersistedSearch = false,
-): EntrySummary | undefined {
+interface TransientCursorResolution {
+  persisted: boolean
+  summary?: EntrySummary
+}
+
+function resolveTransientSummaryCursor(options: QueryOptions, operationKind: NonNullable<QueryOptions["operationKind"]>): TransientCursorResolution {
   const cursor = options.cursor
-  if (!cursor) return undefined
+  if (!cursor) return { persisted: false }
 
   const inFlight = getInFlight(cursor)
   if (inFlight) {
     const summary = toEntrySummary(inFlight)
-    if (summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options) && inFlightMatchesSearch(inFlight, options.search))
-      return summary
+    if (summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options) && inFlightMatchesSearch(inFlight, options.search)) {
+      return { persisted: false, summary }
+    }
     throw new InvalidSummaryCursorError(cursor)
   }
 
   const recent = getRecentModelOperationTerminal(cursor)
   if (recent) {
     const entry = recordToHistoryEntry(recent)
-    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recentRecordToSummary(recent)
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) {
+      return { persisted: false, summary: recentRecordToSummary(recent) }
+    }
     throw new InvalidSummaryCursorError(cursor)
   }
 
-  const db = getDatabase()
-  const projectionReady = isSummaryProjectionReady(db)
-  const persisted = projectionReady ? getPersistedSummary(db, cursor) : undefined
+  return { persisted: true }
+}
+
+function resolveReadySummaryCursor(
+  db: ReturnType<typeof getDatabase>,
+  options: QueryOptions,
+  operationKind: NonNullable<QueryOptions["operationKind"]>,
+  resolution: TransientCursorResolution,
+  deferPersistedSearch = false,
+): EntrySummary | undefined {
+  if (!resolution.persisted) return resolution.summary
+  const cursor = options.cursor
+  if (!cursor) return undefined
+  const persisted = getPersistedSummary(db, cursor)
   if (
     persisted
     && summaryMatchesOperationKind(persisted, operationKind)
     && summaryMatchesFilters(persisted, options)
     && (deferPersistedSearch || !options.search)
-  )
+  ) {
     return persisted
-  if (!projectionReady) {
-    const stored = getV3StoredOperation(cursor)
-    if (stored && recordMatchesQuery(stored.record, { ...options, operationKind }) && !options.search) return recordToEntrySummary(stored.record, stored)
   }
   throw new InvalidSummaryCursorError(cursor)
 }
 
-function persistedSummaryCandidates(
+function resolveCanonicalSummaryCursor(
+  options: QueryOptions,
+  operationKind: NonNullable<QueryOptions["operationKind"]>,
+  resolution: TransientCursorResolution,
+): EntrySummary | undefined {
+  if (!resolution.persisted) return resolution.summary
+  const cursor = options.cursor
+  if (!cursor) return undefined
+  const stored = getV3StoredOperation(cursor)
+  if (stored && recordMatchesQuery(stored.record, { ...options, operationKind }) && !options.search) return recordToEntrySummary(stored.record, stored)
+  throw new InvalidSummaryCursorError(cursor)
+}
+
+function queryReadySummaryCandidates(
+  db: ReturnType<typeof getDatabase>,
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   capacity: number,
   cursor: EntrySummary | undefined,
 ): { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null } {
-  const db = getDatabase()
-  if (isSummaryProjectionReady(db)) {
-    const page = querySummaryPage(db, { ...options, operationKind }, capacity, cursor)
-    return { rows: page.entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
-  }
+  const page = querySummaryPage(db, { ...options, operationKind }, capacity, cursor)
+  return { rows: page.entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
+}
 
+function queryCanonicalSummaryCandidates(
+  options: QueryOptions,
+  operationKind: NonNullable<QueryOptions["operationKind"]>,
+  capacity: number,
+  cursor: EntrySummary | undefined,
+): { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null } {
   const all: Array<EntrySummary> = []
   visitV3Summaries(
     (summary) => {
@@ -261,6 +291,48 @@ function persistedSummaryCandidates(
   }
 }
 
+function buildSummaryResult(
+  db: ReturnType<typeof getDatabase>,
+  options: QueryOptions,
+  operationKind: NonNullable<QueryOptions["operationKind"]>,
+  limit: number,
+  terminalOnly: boolean | undefined,
+  inFlightSummaries: Array<EntrySummary>,
+  recentSummaries: Array<EntrySummary>,
+  cursorSummary: EntrySummary | undefined,
+  stored: { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null },
+  useReadyProjection: boolean,
+): SummaryResult {
+  const seen = new Set<string>()
+  const merged: Array<EntrySummary> = []
+  for (const summary of [...inFlightSummaries, ...recentSummaries, ...stored.rows]) {
+    if (!seen.has(summary.id)) {
+      seen.add(summary.id)
+      merged.push(summary)
+    }
+  }
+
+  const visible = terminalOnly ? merged.filter((summary) => !isInFlightSummary(summary)) : merged
+  const direction = options.direction ?? "older"
+  const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
+  const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
+  const persistedIds = useReadyProjection ? undefined : new Set(stored.rows.map((summary) => summary.id))
+  const transientCount = visible.filter((summary) =>
+    useReadyProjection ? !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind }) : !persistedIds?.has(summary.id),
+  ).length
+  const total = stored.total + transientCount
+  const newest = entries.at(0)
+  const oldest = entries.at(-1)
+  const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
+  const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
+  return {
+    entries,
+    total,
+    nextCursor: oldest && (hasOlderCandidate || stored.nextCursor !== null) ? oldest.id : null,
+    prevCursor: newest && (hasNewerCandidate || stored.prevCursor !== null) ? newest.id : null,
+  }
+}
+
 export function getEntry(id: string): HistoryEntry | undefined {
   const inflight = getInFlight(id)
   if (inflight) return inflight
@@ -276,7 +348,8 @@ export function getSummary(id: string): EntrySummary | undefined {
   const recent = getRecentModelOperationTerminal(id)
   if (recent) return recentRecordToSummary(recent)
   const db = getDatabase()
-  if (isSummaryProjectionReady(db)) return getPersistedSummary(db, id)
+  const snapshot = withValidatedSummarySnapshot(db, () => getPersistedSummary(db, id))
+  if (snapshot.ready) return snapshot.value
   const stored = getV3StoredOperation(id)
   return stored ? recordToEntrySummary(stored.record, stored) : undefined
 }
@@ -336,20 +409,20 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
     .filter((record) => inFlightMatchesSearch(recordToHistoryEntry(record), options.search))
     .map((record) => recentRecordToSummary(record))
-  const cursorSummary = resolveSummaryCursor(options, operationKind, true)
+  const cursorResolution = resolveTransientSummaryCursor(options, operationKind)
   const db = getDatabase()
-  if (!isSummaryProjectionReady(db)) {
+  const targetSnapshot = withValidatedSummarySnapshot(db, () => ({
+    cursorSummary: resolveReadySummaryCursor(db, options, operationKind, cursorResolution, true),
+    target: freezeHistorySearchTarget(db),
+  }))
+  if (!targetSnapshot.ready) {
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
-  const target = freezeHistorySearchTarget(db)
-  let persistedRows: Array<EntrySummary> = []
-  let persistedTotal = 0
-  let persistedHasOlder = false
-  let persistedHasNewer = false
+  const { cursorSummary, target } = targetSnapshot.value
+  let response: Awaited<ReturnType<NonNullable<ReturnType<typeof getHistorySearchClient>>["listSearch"]>> | undefined
   if (target) {
     const client = getHistorySearchClient()
     if (!client) throw new HistorySearchUnavailableError("History search sidecar client is unavailable")
-    let response: Awaited<ReturnType<typeof client.listSearch>>
     try {
       response = await client.listSearch({
         query: options.search,
@@ -388,40 +461,39 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
       response.attestation.committedAt !== null
       && (response.attestation.committedAt > target.committedAt
         || (response.attestation.committedAt === target.committedAt
-          && target.operationIdsAtBoundary.every((operationId) => response.attestation.indexedAtBoundaryMs.includes(operationId))))
+          && target.operationIdsAtBoundary.every((operationId) => response?.attestation.indexedAtBoundaryMs.includes(operationId))))
     if (!boundaryCovered) throw new HistorySearchUnavailableError("History search sidecar attestation does not cover the frozen target")
     if (response.attestation.poison.length > 0) {
       throw new HistorySearchUnavailableError(
         `History search sidecar skipped ${response.attestation.poison.length} operation(s) inside the frozen target: ${response.attestation.poison.map((entry) => entry.operationId).join(", ")}`,
       )
     }
-    try {
-      persistedRows = getPersistedSummariesByIds(db, response.operationIds)
-    } catch (error) {
-      throw new HistorySearchUnavailableError("History search sidecar returned a stale summary reference", { cause: error })
-    }
-    persistedTotal = response.total
-    persistedHasOlder = response.hasOlder
-    persistedHasNewer = response.hasNewer
   }
 
-  const merged = new Map<string, EntrySummary>()
-  for (const summary of [...inFlightSummaries, ...recentSummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
-  const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
-  const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
-  const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
-  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
-  const total = persistedTotal + transientCount
-  const newest = entries.at(0)
-  const oldest = entries.at(-1)
-  const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
-  const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
-  return {
-    entries,
-    total,
-    nextCursor: oldest && (hasOlderCandidate || persistedHasOlder) ? oldest.id : null,
-    prevCursor: newest && (hasNewerCandidate || persistedHasNewer) ? newest.id : null,
+  const resultSnapshot = withValidatedSummarySnapshot(db, () => {
+    const persistedRows = response ? getPersistedSummariesByIds(db, response.operationIds) : []
+    const merged = new Map<string, EntrySummary>()
+    for (const summary of [...inFlightSummaries, ...recentSummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
+    const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
+    const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
+    const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
+    const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
+    const total = (response?.total ?? 0) + transientCount
+    const newest = entries.at(0)
+    const oldest = entries.at(-1)
+    const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
+    const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
+    return {
+      entries,
+      total,
+      nextCursor: oldest && (hasOlderCandidate || response?.hasOlder) ? oldest.id : null,
+      prevCursor: newest && (hasNewerCandidate || response?.hasNewer) ? newest.id : null,
+    }
+  })
+  if (!resultSnapshot.ready) {
+    throw new HistorySearchUnavailableError("History summary projection is not ready after persisted full-text search")
   }
+  return resultSnapshot.value
 }
 
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
@@ -432,51 +504,19 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
-  const cursorSummary = resolveSummaryCursor(options, operationKind)
-  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
-  const persistedSummaries = [
-    ...listRecentModelOperationTerminals()
-      .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-      .map((record) => recentRecordToSummary(record)),
-    ...stored.rows,
-  ]
-
-  const seen = new Set<string>()
-  const merged: Array<EntrySummary> = []
-  for (const summary of inFlightSummaries) {
-    if (!seen.has(summary.id)) {
-      seen.add(summary.id)
-      merged.push(summary)
-    }
-  }
-  for (const summary of persistedSummaries) {
-    if (!seen.has(summary.id)) {
-      seen.add(summary.id)
-      merged.push(summary)
-    }
-  }
-
-  // terminalOnly: drop active in-flight rows so streaming requests stay out of
-  // the History list (consumers like ui-v4 show them in a dedicated Live lane).
-  // Source-agnostic by state — catches both the live in-flight map and any
-  // eager-persisted `streaming` SQLite head row, and keeps terminal entries
-  // regardless of which source they came from.
-  const visible = terminalOnly ? merged.filter((summary) => !isInFlightSummary(summary)) : merged
-  const direction = options.direction ?? "older"
-  const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
-  const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
-
+  const recentSummaries = listRecentModelOperationTerminals()
+    .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
+    .map((record) => recentRecordToSummary(record))
+  const cursorResolution = resolveTransientSummaryCursor(options, operationKind)
   const db = getDatabase()
-  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
-  const total = stored.total + transientCount
-  const newest = entries.at(0)
-  const oldest = entries.at(-1)
-  const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
-  const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
-  let nextCursor: string | null = null
-  if (oldest && (hasOlderCandidate || stored.nextCursor !== null)) nextCursor = oldest.id
-  let prevCursor: string | null = null
-  if (newest && (hasNewerCandidate || stored.prevCursor !== null)) prevCursor = newest.id
+  const readySnapshot = withValidatedSummarySnapshot(db, () => {
+    const cursorSummary = resolveReadySummaryCursor(db, options, operationKind, cursorResolution)
+    const stored = queryReadySummaryCandidates(db, options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
+    return buildSummaryResult(db, options, operationKind, limit, terminalOnly, inFlightSummaries, recentSummaries, cursorSummary, stored, true)
+  })
+  if (readySnapshot.ready) return readySnapshot.value
 
-  return { entries, total, nextCursor, prevCursor }
+  const cursorSummary = resolveCanonicalSummaryCursor(options, operationKind, cursorResolution)
+  const stored = queryCanonicalSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
+  return buildSummaryResult(db, options, operationKind, limit, terminalOnly, inFlightSummaries, recentSummaries, cursorSummary, stored, false)
 }

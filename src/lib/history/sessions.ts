@@ -17,15 +17,16 @@ import {
 } from "./v3/store"
 import {
   //
-  isSummaryProjectionReady,
   querySessionEntryPage,
   querySessionSummaries,
+  withValidatedSummarySnapshot,
 } from "./v3/summary-store"
 
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
   const db = getDatabase()
-  if (isSummaryProjectionReady(db)) return querySessionSummaries(db, limit)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionSummaries(db, limit))
+  if (snapshot.ready) return snapshot.value
 
   const grouped = new Map<string, Array<EntrySummary>>()
   visitV3Summaries((summary) => {
@@ -145,8 +146,9 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
   const db = getDatabase()
-  if (isSummaryProjectionReady(db)) {
-    const page = querySessionEntryPage(db, sessionId, cursor, limit)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionEntryPage(db, sessionId, cursor, limit))
+  if (snapshot.ready) {
+    const page = snapshot.value
     const stored = getV3StoredOperations(page.operationIds, db)
     const entries = page.operationIds.map((operationId) => {
       const operation = stored.get(operationId)

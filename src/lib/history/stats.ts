@@ -19,8 +19,8 @@ import { recordToEntrySummary } from "./v3/projection"
 import { visitV3Summaries } from "./v3/store"
 import {
   //
-  isSummaryProjectionReady,
   queryPersistedStats,
+  withValidatedSummarySnapshot,
 } from "./v3/summary-store"
 import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
@@ -104,12 +104,11 @@ export function getStats(): HistoryStats {
   const sessions = new Set<string>()
   const seen = new Set<string>()
   const db = getDatabase()
-  const projectionReady = isSummaryProjectionReady(db)
-  if (projectionReady) {
-    const persisted = queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))])
-    Object.assign(stats, persisted.stats)
-    totalDurationMs = persisted.totalDurationMs
-    for (const sessionId of persisted.sessionIds) sessions.add(sessionId)
+  const persistedSnapshot = withValidatedSummarySnapshot(db, () => queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))]))
+  if (persistedSnapshot.ready) {
+    Object.assign(stats, persistedSnapshot.value.stats)
+    totalDurationMs = persistedSnapshot.value.totalDurationMs
+    for (const sessionId of persistedSnapshot.value.sessionIds) sessions.add(sessionId)
   }
   const consume = (summary: ReturnType<typeof toEntrySummary>): void => {
     if (seen.has(summary.id)) return
@@ -150,7 +149,7 @@ export function getStats(): HistoryStats {
     stats.endpointDistribution[summary.endpoint] = (stats.endpointDistribution[summary.endpoint] ?? 0) + 1
   }
   for (const summary of overlay) consume(summary)
-  if (!projectionReady) visitV3Summaries(consume)
+  if (!persistedSnapshot.ready) visitV3Summaries(consume)
   stats.averageDurationMs = stats.totalRequests === 0 ? 0 : totalDurationMs / stats.totalRequests
   stats.activeSessions = sessions.size
   return stats

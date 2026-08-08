@@ -79,6 +79,7 @@ function seedRows(db: Database): void {
     }
   })
   seed()
+  db.prepare("UPDATE v3_operation_summaries SET projection_status='ready',projection_error=NULL").run()
   setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
 }
 
@@ -130,6 +131,8 @@ describe("History summary read performance", () => {
     const db = getDatabase()
     const small = await measure(readBundle)
     db.prepare("UPDATE v3_operations SET manifest_gz=zeroblob(?)").run(LARGE_MANIFEST_BYTES)
+    db.prepare("UPDATE v3_operation_summaries SET projection_status='ready',projection_error=NULL").run()
+    setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
     const large = await measure(readBundle)
     const legacy = await measure(() => {
       const rows = db.prepare("SELECT manifest_gz FROM v3_operations").all() as Array<{ manifest_gz: Uint8Array }>

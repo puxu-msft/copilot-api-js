@@ -452,6 +452,23 @@ export interface SummaryProjectionReadiness {
   poisoned: number
 }
 
+export type ValidatedSummarySnapshot<T> = { ready: false } | { ready: true; value: T }
+
+let summarySnapshotObserverForTests: (() => void) | undefined
+
+export function setSummarySnapshotObserverForTests(observer: (() => void) | undefined): void {
+  summarySnapshotObserverForTests = observer
+}
+
+export function withValidatedSummarySnapshot<T>(db: Database, read: () => T): ValidatedSummarySnapshot<T> {
+  const transaction = db.transaction<ValidatedSummarySnapshot<T>>(() => {
+    if (!isSummaryProjectionReady(db)) return { ready: false }
+    summarySnapshotObserverForTests?.()
+    return { ready: true, value: read() }
+  })
+  return transaction()
+}
+
 export function isSummaryProjectionReady(db: Database): boolean {
   const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('history_meta','v3_operation_summaries')").all() as Array<{
     name: string
