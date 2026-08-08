@@ -2,7 +2,7 @@
 
 - 评审范围：`995c1047..399bb802`
 - 首轮 reviewer：异模型对抗审
-- 状态：前九轮累计 39/39 个独立 findings 已采纳；第十轮局部复评待完成（重复上报已合并进原 ID）
+- 状态：前九轮累计 39/39 个独立 findings 已采纳；第十轮 header／evidence／persistence／mechanics 四项复评全部 PASS，无未决 blocker／major（重复上报已合并进原 ID）
 - peer wire oracle：公开 `stream.destroy(error)` 实测产生 `rstCode=2`，用于真实 wire→Bun production 接线；collector 单测独立验证 `code=8` 字段保真。已撤销私有 `kHandle` 必过门。
 - 评审运行备注：第二轮计划执行 reviewer 连续两次因 `Server error mid-response` 中断，未形成 finding/verdict；当前稿已再次重写，旧轮不再适用。
 
