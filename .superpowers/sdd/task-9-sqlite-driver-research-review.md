@@ -27,3 +27,22 @@
 - **仍需用户授权的 dynamic probes：**精确 tarball 在隔离 `/tmp` 下由 Node 24 与 Bun 1.3.14 加载并执行；不得写项目 `node_modules`，并记录 integrity、entry、JSON 输出与 error。**本轮未执行第三方包代码。**
 
 **复核计数：Critical 0，Important 2，Minor 0。**
+
+## Manifest 终审（`ab549b60`）
+
+- **已闭合 — 候选报告:214、218-220。**manifest 现在明确允许异步 bootstrap，且逐项检验 bootstrap 后 UDF／statement／transaction 的同步性；WAL 保持 A/B 并发，双向提交可见，并以 C 复开验证 durability。此前两个 Important 均已修复。
+- **完整性：通过。**manifest 同时覆盖精确 tarball、两运行时、host-closure trigger、普通 SQL 非伪造控制、rollback、并发 WAL、existing-schema migration／narrow-read，以及 authorizer 正反控制；结论分级也可区分 bootstrap、API、authority、同步、WAL 与迁移失败。
+- **Research coverage verdict：可进入动态验证。**
+- **Recommendation quality verdict：可作为授权 probe 的执行基线；在得到运行结果前，仍只能维持“尚无候选被实证满足全部约束”。**
+- **动态 probe 仍待用户明确授权：**它会下载、加载并执行第三方 tarball／WASM／native addon；应仅在唯一隔离 `/tmp` 目录执行，不写项目 `node_modules`。本轮未执行第三方代码。
+
+**终审计数：Critical 0，Important 0，Minor 0。**
+
+## 精确提交复核（`ab549b601ea73020d894ae6f31ebdbeb6f12ebb2`）
+
+- **已闭合 — async bootstrap 与并发 WAL 两项 Important。**bootstrap 可异步完成，之后才对同步 DB 操作断言；A/B 同时保持打开并双向写读，C 重开验证 `wal` 和 durability。
+- **Manifest 完整性：通过。**覆盖精确 tarball、Node/Bun、UDF authority、普通 SQL setter 控制、rollback、并发 WAL、migration/narrow-read、authorizer 正反控制及分级失败分类。
+- **最终 static verdict：可进入动态验证。**
+- **仍需用户明确授权：**从精确 tarball 下载、加载和执行第三方 WASM／native addon；只在隔离 `/tmp` 目录运行，不写项目 `node_modules`。本轮未执行第三方代码。
+
+**精确提交复核计数：Critical 0，Important 0，Minor 0。**

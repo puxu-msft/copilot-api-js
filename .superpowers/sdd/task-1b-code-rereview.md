@@ -19,3 +19,31 @@
 双向判据：正确样本均绿；fresh rewrite与 NUL ID 两个错误样本当前也绿／可产出错误结果，构成 false-green，故不能放行。未发现 false-red：合法 multiline、retry 0、bare reset及 direct identity均通过生产 parser或route正样本。
 
 结构怪味：`parsed-sse-frame.ts:39-50` 的“rewrite结果一律wrapper化”是阶段边界抽象泄漏，处置：本轮修；`sse-encoder.unit.test.ts:41-43` 是命名与实际 oracle 不符，处置：本轮修。第三方方案：无需引入库；现有窄 encoder＋独立 WHATWG oracle合适，问题在边界规则未闭合。
+
+
+## Final rereview — `04081b60`
+
+最终 verdict：Spec FAIL；Quality CHANGES_REQUIRED；blocker 0；major 1；minor 0。
+
+已执行：最终聚焦套件 40 pass／0 fail；public `createResponses` HTTP／WS contract 2 pass／0 fail；typecheck通过；原 fresh synthetic、NUL ID、非法 retry反例均已转红或产出正确结果。
+
+[major] `/home/xp/src/copilot-api-js/.worktree/agent-a5c59dd66952edb78/src/lib/transport/parsed-sse-frame.ts:42-51` — fresh frame的合法自有 ID若恰好等于source current ID会被误删 — 只读探针 `mapSemanticSseFrame(parsedCurrentAlpha, () => ({event:"synthetic",data:"own",id:"alpha"}))` 实得 `{event:"synthetic",data:"own"}`。实现以值相等猜来源，无法区分“spread继承”与“fresh producer自有同值”，违反fresh frame owns its own fields，并给Task 3 classification seam留下false-red。修复应把identity-preserving／same-event rewrite与fresh constructed output做显式 typed action，而非按ID值猜测；fresh output必须原样保留自身字段与origin且不携wrapper/idField。
+
+已确认关闭：fresh synthetic output现在plain且保留自身`refusal-recovery` origin、不继承wrapper/idField；NUL ID fail closed；retry负数／小数／NaN／±Infinity／超safe integer全拒，0／1／MAX_SAFE_INTEGER接受；测试名已准确；public `createResponses`恢复flat `ServerSentEventMessage`，internal transport仍保留rich parsed frame。
+
+双向结论：原错误样本已被修复，但“fresh own ID与current同值”正确样本被误删，构成确定性false-red，因此仍不可放行。
+
+
+## Final rereview — `51286a057510b9e9cbe223a624e5f860119825ac`
+
+最终 verdict：Spec PASS；Quality APPROVED；blocker 0；major 0；minor 0。
+
+闭合上一轮 major：`FrameAction.provenance` 现在显式区分 `preserve`／`fresh`；正确样本 fresh own same-value `id:"alpha"` 保留，fresh `refusal-recovery` 保持 plain＋自身 origin，identity preserve返回原 wrapper，错误 preserve-new-object会throw。
+
+Production audit：全部7个production response rewrite均改用`preserveFrame`／`freshFrames`，hook fresh路径亦显式；未发现依赖裸emit默认而漏标。裸emit默认fresh仅存在26处测试fixture，符合兼容注释，不升级为Minor。
+
+相邻边界复核：public `createResponses`继续返回flat `ServerSentEventMessage`；internal transport保留rich `ParsedSseFrame`；NUL ID fail closed、retry完整非法表、History rich raw/type、ordinary-event reset均保持通过。
+
+执行证据：综合接受套件109 pass／0 fail；production refusal provenance 2 pass／0 fail；typecheck exit 0；独立只读正反例探针全部符合预期。
+
+结构怪味扫描：范围为rewrite registry、所有production response rewrites、parser projection与public adapter；判据为重复分类、隐式provenance、按值猜来源、双encoder；未发现新增怪味。成熟第三方方案不适用，现有typed action是更清晰的项目内边界。

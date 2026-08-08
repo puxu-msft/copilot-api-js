@@ -28,3 +28,28 @@
 临时独立 oracle：`/tmp/task1b-rereview-aa6dd772/tests/pipeline/sse-encoder.acceptance.unit.test.ts`；route bare-id增强在同snapshot的`generation-runtime-baseline.http.test.ts`。未提交。报告为本文件。
 
 结构怪味：`src/lib/transport/send.ts`＋public Responses client是“内部rich carrier泄漏公开契约”；处置为Important。更佳方案是分离internal rich iterator与legacy plain iterator；判据已由baseline A/B和真实public consumer交叉验证；无第三方库可替代该契约边界修复。
+
+---
+
+## 最终复验：HEAD `04081b6041e6676053323795aea6a8430d5304ba`
+
+**Acceptance PASS；Critical 0、Important 0、Minor 0。** 上一轮 I1 已由 public boundary projection关闭，internal transport/pipeline仍保留rich carrier。
+
+- Public `createResponses` 普通HTTP、WS、fallback、abort、shutdown TOCTOU完整文件：`9 pass / 0 fail`；移除HTTP/WS两处`projectPublicSseMessages`的正控使普通stream目标测试按预期红，恢复后`1 pass / 0 fail`。
+- Fresh rewrite、refusal-recovery origin、NUL ID、retry 0/invalid、parser ID：4文件`48 pass / 0 fail`；fresh rewrite不继承source ID/provenance，identity direct仍保rich carrier到显式projection。
+- 已闭合History、真实route absent/reset/inherit、bare ordinary `id:`、origin：5文件`33 pass / 0 fail`；原C1四文件仍全绿。
+- `bun run typecheck`通过。Task3 classifier/delivery文件在`980eaf09..04081b60`无改动，未以public兼容降级internal rich carrier。
+- 结构怪味处置更新：`src/lib/openai/responses-client.ts`现在是明确anti-corruption boundary；上一轮泄漏已消失，无新增怪味。
+
+---
+
+## 最终增量验收：HEAD `51286a057510b9e9cbe223a624e5f860119825ac`
+
+**Acceptance PASS；Critical 0、Important 0、Minor 0。**
+
+- Explicit provenance四态：fresh own same-value ID保留；fresh inherited current ID由producer删除；identity preserve保wrapper/idField；错误preserve constructed output fail loud。`parsed-sse-frame + response-processor`：`18 pass / 0 fail`。
+- 正控：删除preserve identity guard后“constructed preserve must throw”目标测试红；恢复后`1 pass / 0 fail`。
+- Public `createResponses` HTTP/WS/fallback/abort/shutdown：`9 pass / 0 fail`，internal rich/public flat边界保持。
+- History四文件＋真实route ID三态/origin：`33 pass / 0 fail`；NUL ID/retry/parser：`32 pass / 0 fail`。
+- `04081b60..51286a05`未改Task3 classifier/delivery/architecture guard；显式`fresh|preserve`只接rewrite→wire seam。
+- 结构怪味：`src/lib/codec/anthropic/response-rewrite-adapters.ts`由producer显式删除 inherited ID，消除值相等启发式；本轮已正确处置，无新增发现。
