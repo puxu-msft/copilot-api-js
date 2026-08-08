@@ -127,6 +127,62 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
   })
 
+  // Task 5 mode/mount coverage SSOT. Each row drives the actual heartbeat clock before P fails;
+  // the expected first recovery-visible frame encodes the frozen three-mode wire contract.
+  test.each([
+    { mode: "ping" as const, mount: "pre-ready" as const, injectedAnchor: false, expectedFirstRealIndex: 0 },
+    { mode: "enveloped_ping" as const, mount: "pre-ready" as const, injectedAnchor: false, expectedFirstRealIndex: 0 },
+    { mode: "empty_text" as const, mount: "pre-ready" as const, injectedAnchor: true, expectedFirstRealIndex: 1 },
+  ])("pre-ready mode=$mode emits the recovery success wire contract", async ({ mode, mount, injectedAnchor, expectedFirstRealIndex }) => {
+    const clock = new FakeClock()
+    let firstFetchStarted!: () => void
+    const firstFetchStartedP = new Promise<void>((resolve) => (firstFetchStarted = resolve))
+    let releasePrimary!: () => void
+    const primaryP = new Promise<Response>((resolve) => {
+      releasePrimary = () => resolve(new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: `primary ${mode} failed` } }), { status: 529 }))
+    })
+    let calls = 0
+
+    clock.install()
+    try {
+      setStateForTests({ streamCommitAfterSec: 2, streamKeepalivePingSec: 2, streamKeepaliveMode: mode, maxReactiveRetries: 0 })
+      applyFetchMock(
+        mock(() => {
+          calls += 1
+          if (calls === 1) firstFetchStarted()
+          return calls === 1 ? primaryP : Promise.resolve(createSseResponse(completeFrames(`msg_recovery_${mode}`)))
+        }),
+      )
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const responseP = request(createFullTestApp(), `precontent-mode-${mode}-${mount}`)
+      await firstFetchStartedP
+      await clock.advance(4_000)
+      await drain()
+      releasePrimary()
+      const text = await (await responseP).text()
+      const types = frameTypesInOrder(text)
+
+      expect(calls).toBe(2)
+      expect(types.filter((type) => type === "message_start")).toHaveLength(1)
+      expect(types.filter((type) => type === "message_stop")).toHaveLength(1)
+      const blockIndices = [...text.matchAll(/"index":(\d+)/g)].map((match) => Number(match[1]))
+      expect(blockIndices.at(-1)).toBe(expectedFirstRealIndex)
+      if (mode === "ping") expect(types.filter((type) => type === "ping").length).toBeGreaterThan(0)
+      if (mode === "enveloped_ping") expect(types.indexOf("message_start")).toBeGreaterThan(types.indexOf("ping"))
+      if (injectedAnchor) {
+        expect(blockIndices[0]).toBe(0)
+        expect(types.indexOf("content_block_stop")).toBeLessThan(types.lastIndexOf("content_block_start"))
+      } else {
+        expect(blockIndices[0]).toBe(0)
+      }
+      await drainV3Writer()
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `precontent-mode-${mode}-${mount}` }).entries[0]
+      expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
+    } finally {
+      clock.restore()
+    }
+  })
+
   test("pre-ready 529 exhausts primary retry budget then publishes the complete direct recovery as winner", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     let calls = 0
