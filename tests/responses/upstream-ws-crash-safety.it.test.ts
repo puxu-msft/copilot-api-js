@@ -2,8 +2,19 @@ import {
   //
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
+
+// Both cases spend their time spawning a fresh `bun` process (module resolution + transpile) and
+// waiting out the child's 250ms uncaughtException window — roughly 0.6s isolated, and nothing here
+// is timed. Bun's per-test budget is a wall-clock quantity, not one of this file's criteria: under
+// the 16-shard runner (`scripts/parallel-test.ts`) CPU starvation stretched the guarded case past
+// the 5s default and the shard log killed the still-running child ("killed 1 dangling process").
+// Measured under deliberate contention it stays "slower but completes" (4.1s at 48 spinners, 3.9s
+// at 64) — it does not wedge — so budget the file rather than weaken the exit-code/stderr oracles.
+// 30s clears both 10x the isolated worst case and 3x the (censored) worst seen under sharding.
+setDefaultTimeout(30_000)
 
 /**
  * Subprocess crash-safety proof for the upstream-WS lifecycle callbacks.

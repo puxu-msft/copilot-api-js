@@ -180,5 +180,83 @@ mutation 打在**生产代码**上：**取消跨 operation 的 CAS 去重**—�
 
 也就是说，**只有 `physicalRatio` 咬住了这次的 mutation，`liveRatio` 单独会 false-green**（10.54 险险过关）。这不是本轮引入的问题，两条断言也都该保留（它们量的是不同的东西：物理页 vs 逻辑字节）。但「`liveRatio >= 10` 对去重丢失几乎没有鉴别力」是一条应当被记下来的事实——登记在文末「未处置」节。
 
+---
+
+## 3. `tests/responses/upstream-ws-crash-safety.it.test.ts` — guarded 腿（**B 类**）
+
+**它守的不变量**：`createUpstreamWsConnection` 的生命周期回调（`onClose`）抛出时，`guardCallback` 必须**吸收**它（warn + 标记不可用 + fail request），**不得**升级成 `uncaughtException` 从而被 main.ts 的崩溃策略变成 `process.exit(1)`。
+
+这条只能用子进程证：抛出的 WHATWG `EventTarget` 监听器**不会**从 `dispatchEvent` 同步抛出，而是**异步**逃逸成 `uncaughtException`——落在进程内 `expect(...).not.toThrow()` 通过之后。同文件 header `:8-17` 与 fixture `tests/responses/fixtures/ws-crash-probe.ts:1-17` 都把这个理由写死了。
+
+**依据来源**：
+- 断言现场 `tests/responses/upstream-ws-crash-safety.it.test.ts:52-60`（`exitCode === 0` + stderr 匹配 `/\[upstream-ws\] onClose callback threw .*onClose-boom/`）。
+- 为什么 exit 0 不够：同文件 `:22-26` 明写「exit 0 alone is vacuity-prone（一次让回调未绑定的重构同样会 exit 0）」，所以加 stderr 断言证明 guard **真被走到**。
+- 正样本对照在 `:45-50`（`raw-control` 腿必须 exit 42），证明这套 harness 真的检测得到崩溃。
+- 失败原文：`run-02.log:1115-1117` —— `(fail) ... [5006.47ms]` / `^ this test timed out after 5000ms.`（其上 `:1113` 还有一行 `killed 1 dangling process`，即预算到点时子进程仍在跑、被 bun 收尾杀掉。）
+
+**先做「只是慢 vs 真的挂住」的分型（不能用放宽预算盖过真缺陷）**
+
+| 探针 | 观测 |
+|---|---|
+| 子进程直接跑 `bun tests/responses/fixtures/ws-crash-probe.ts guarded` | wall **0.53s**，rc=0，stderr 出现目标 WARN |
+| 同上 `raw-control` | wall **0.03s**，rc=**42** |
+| 隔离 + **收紧**预算 `bun test --timeout 700 <file>` | **2 pass / 0 fail**，文件 920ms → 最慢用例 **< 700ms**，稳定 |
+| 48 spinner 争用 + 宽预算 `--timeout 120000` | **2 pass / 0 fail**，文件 **4.12s** —— 完成，未卡住 |
+| 64 spinner 争用 + 宽预算 | **2 pass / 0 fail**，文件 **3.90s** —— 完成，未卡住 |
+
+结论：**争用下是「变慢但完成」，不是「卡在某一步不动」**。放大倍数约 4–5x，与耗时构成也吻合——该用例的成本几乎全是 `Bun.spawn` 一个新 bun 进程（模块解析 + 转译），正是 CPU 饥饿最敏感的那类工作；子进程自身的 250ms `setTimeout` 窗口在拿不到 CPU 时同样被拉长。分片日志里 `killed 1 dangling process` 也指向同一解释：预算到点时子进程只是还没跑完，而不是死锁。**判为 B 类成立。**
+
+**处置**：**断言一个字不动**（`exitCode`、stderr 正则、raw-control 正样本对照全部保留），只加文件级 `setDefaultTimeout(30_000)` + 注释。
+
+取值 `30_000` 的算术：规则 1 给 0.7s × 10 = 7s；规则 2 给 5.006s × 3 = 15.0s（分片下那次是**被截断的观测**——只知道它需要 >5.006s，因为 5000ms 到点就被杀了，所以这是下界）；取较大者 15s，向上到档位 **30s**，相当于隔离最慢的 43x、被截断观测的 6x。**这里恰好落回 `30_000`，而第 2 条落在 `60_000`——数字是算出来的，不是套的。**
+
+**同族复查（同一把尺子扫全文件）**：全文件**没有**任何 wall-clock 或单次耗时断言。两条用例的判据分别是 `exitCode`（42 / 0）与 stderr 文本匹配，都是因果事实。无需处置。
+
+**这一条现在由谁守**：仍然由它自己守——`:49` `expect(exitCode).toBe(42)`、`:56` `expect(exitCode).toBe(0)`、`:59` stderr 正则，全部未改。
+
+### 验收证据
+
+**方向一：正确状态不被误拒**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改前） | 2 pass / 0 fail，1.54s |
+| 隔离单跑（改后） | **2 pass / 0 fail，984ms** |
+| 48 spinner 争用（宽预算） | **2 pass / 0 fail，4.12s** |
+| 64 spinner 争用（宽预算） | **2 pass / 0 fail，3.90s** |
+| 隔离 + **收紧**到 `--timeout 700` | **2 pass / 0 fail** —— 反向证明最慢用例真的 < 700ms，不是「勉强压线」 |
+
+**方向二：错误状态仍被拦住（mutation）**
+
+这条用例的 oracle 有**两半**（`:56` exit code + `:59` stderr 匹配），所以做了**两次**递进 mutation，分别证明两半都咬得住。
+
+**先记一次「mutation 没生效」的失败尝试**——按 [[methodology-verify-the-mutation-actually-applied]]，「没变红」有两解，必须分清：
+
+- 第一次 mutation 打在 `src/lib/transport/crash-safety.ts:114` 的 `guardCallback`（加 `throw error`）。结果 **2 pass / 0 fail —— 没变红**。
+- 直接跑子进程 `bun tests/responses/fixtures/ws-crash-probe.ts guarded` → rc **0**，确认**不是测试假绿，是 mutation 根本没打到被走到的那条路径**。
+- 根因：`opts.onClose()` 的第一层吸收器**不是** `guardCallback`，而是 `src/lib/openai/upstream-ws-connection.ts:164-173` `notifyClosed` **自己的 try/catch**；测试断言的那条 WARN 正来自 `:169`。该 mutation 已 `git apply --reverse` 撤回。
+
+**Mutation A —— 拆掉第一层吸收器**（冻结件 `/tmp/mut-item3-onclose-not-absorbed.patch`，删 `notifyClosed` 的 `catch` 块）：
+
+- 子进程直跑：rc **0**，但 WARN 变成 `[upstream-ws] callback threw; failing request + dropping connection` —— 说明外层 `guardCallback` 兜住了（**防御纵深**）。
+- 测试：**1 pass / 1 fail**，红在 `:70` `expect(stderr).toMatch(/\[upstream-ws\] onClose callback threw .*onClose-boom/)`，`Received: "[warn] [upstream-ws] callback threw; failing request + dropping connection (model=gpt-5.5): onClose-boom\n"`。
+- 即：**stderr 那一半（反空洞的那一半）有真实鉴别力**——它确实分得清「哪一层吸收的」，不是随便什么 WARN 都算数。
+
+**Mutation B —— 在 A 之上再拆掉第二层**（叠加 `/tmp/mut-item3-guard-does-not-absorb.patch`）：
+
+- 子进程直跑：rc **42**（崩溃）。
+- 测试：**1 pass / 1 fail**，红在 `:67` `expect(exitCode).toBe(0)`，`Expected: 0 / Received: 42`。
+- 即：**exit code 那一半也有真实鉴别力**。
+
+恢复：两个 patch 按相反顺序 `git apply --reverse --check` + `git apply --reverse`；`git status --short -- src/` 为空，确认 `src/` 完全干净。**全程未用整文件 `git checkout`。** 恢复后重跑 `2 pass / 0 fail`，`bun run typecheck` 绿，`eslint` 该文件无问题。
+
+**mutation 顺带查出的第二件事（本轮不改，待裁决）**
+
+测试文件 header `:52-54` 写的是「A real `createUpstreamWsConnection` onClose callback throws; **`guardCallback` must absorb it**」，fixture header `tests/responses/fixtures/ws-crash-probe.ts:15-17` 同样写「**`guardCallback` must absorb it**」。上面的 Mutation A 证明这**与代码不符**：第一层吸收器是 `notifyClosed` 的 try/catch（`upstream-ws-connection.ts:164-173`），`guardCallback` 是**第二层**；测试断言的 WARN 文本也来自第一层。用例内注释 `:57-58` 用的措辞（"the current onClose ownership-boundary WARN"）反而是准确的。
+
+这是注释层的 doc-vs-code 漂移，不影响断言正确性（无论哪层吸收，「不崩溃且 guard 被走到」都成立），但会误导下一个读者。**不在本轮静默改**——它是对生产行为的事实性更正（「防御纵深两层」这个描述本身需要复核），登记在「未处置」节交裁决。
+
+
+
 
 
