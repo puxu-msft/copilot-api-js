@@ -21,8 +21,24 @@ describe("operation lifecycle", () => {
     expect(deriveOperationBlocker(input)).toBe(expected)
   })
 
-  test("delivery failure is terminal only after registration", () => {
-    expect(isDeliveryTerminal({ state: "failed", error: new Error("x"), failureRegistered: false })).toBe(false)
-    expect(isDeliveryTerminal({ state: "failed", error: new Error("x"), failureRegistered: true })).toBe(true)
+  test.each([
+    [{ state: "open" }, false],
+    [{ state: "finalizing" }, false],
+    [{ state: "finalized" }, true],
+    [{ state: "failed", error: new Error("x"), failureRegistered: false }, false],
+    [{ state: "failed", error: new Error("x"), failureRegistered: true }, true],
+  ] as const)("recognizes delivery terminal %#", (delivery, expected) => {
+    expect(isDeliveryTerminal(delivery)).toBe(expected)
+  })
+
+  test("canonical failure after terminal delivery does not block an operation", () => {
+    expect(
+      deriveOperationBlocker({
+        settled: true,
+        operationScope: scope(true, 0),
+        delivery: { state: "finalized" },
+        canonical: "failed",
+      }),
+    ).toBe("none")
   })
 })

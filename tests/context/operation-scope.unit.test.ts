@@ -61,6 +61,7 @@ describe("operation-scope", () => {
     scope.seal() // root finally seals after starting the pump
     await Promise.resolve()
     expect(resolved).toBe(false) // sealed but pump still in flight
+    expect(scope.snapshot).toEqual({ sealed: true, childCount: 1, quiesced: false })
     releasePump()
     await scope.whenOperationQuiesced()
     expect(resolved).toBe(true)
@@ -72,7 +73,8 @@ describe("operation-scope", () => {
 
     expect(Object.isFrozen(snapshot)).toBe(true)
     expect(() => {
-      ;(snapshot as { sealed: boolean }).sealed = true
+      // @ts-expect-error OperationScopeSnapshot is readonly.
+      snapshot.sealed = true
     }).toThrow()
     expect(scope.snapshot).toEqual({ sealed: false, childCount: 0, quiesced: false })
   })

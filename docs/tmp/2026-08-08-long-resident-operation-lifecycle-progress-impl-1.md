@@ -28,6 +28,7 @@ status: in-progress — Task 1 complete; Task 2～3 and B1 merged-state review r
 
 ## 在途意图
 
+- Task 1 已完成 reviewer 修复：sealed 且 child 未退出时 snapshot 保持 `quiesced: false`；delivery terminal 覆盖全部 state；canonical `failed` 是已登记终态。三项精确 mutation 均已按目标断言转红后恢复，Task 1 仍 complete。
 - Task 2 将把 Task 1 的 `OperationScopeSnapshot` 与 lifecycle pure types 接入 `RequestContext`，发布 logical／operation／delivery／canonical 四事实。
 - `failureRegistered` 的权威含义是 process shutdown lifecycle failure barrier 已同步持有错误；不得改成 context-local ledger。
 - Candidate reservation 的真实 owner 是 `coordinator.ts`；scheduler 只拥有 dispatch active slot，candidate 只拥有 verdict。
