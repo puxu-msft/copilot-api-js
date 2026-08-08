@@ -22,6 +22,7 @@ import {
   //
   ensureV3Schema,
   validateAndMarkSummaryProjectionReady,
+  visitV3Summaries,
 } from "~/lib/history/v3/store"
 import { SUMMARY_PROJECTION_READY_KEY } from "~/lib/history/v3/summary-store"
 import { compressBytes } from "~/lib/sqlite/compression"
@@ -117,6 +118,32 @@ describe("History V3 canonical operation DML final states", () => {
 
     expect(projection("direct-insert")?.projection_status).toBe("pending")
     expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+  })
+
+  test("the marker-absent fallback publishes the canonical reprojection, never the tampered cached summary", async () => {
+    await seedReady()
+    const db = getDatabase()
+
+    // Every readiness criterion fires correctly here: the protected-update
+    // trigger poisons the derived row and revokes the marker. What this guards
+    // is the next question — what the read path actually hands the client once
+    // the marker says the cached projection is not to be trusted.
+    db.prepare("UPDATE v3_operations SET summary_json=? WHERE operation_id=?").run(
+      JSON.stringify({ id: "dml-op", endpoint: "ATTACKER-CONTROLLED", previewText: "FABRICATED PREVIEW" }),
+      "dml-op",
+    )
+    expect(projection()?.projection_status).toBe("poisoned")
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+
+    const published: Array<{ id: string; endpoint: string; previewText?: string }> = []
+    visitV3Summaries((summary) => {
+      published.push({ id: summary.id, endpoint: summary.endpoint, previewText: summary.previewText })
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].endpoint).toBe("anthropic-messages")
+    expect(published[0].endpoint).not.toBe("ATTACKER-CONTROLLED")
+    expect(published[0].previewText ?? "").not.toBe("FABRICATED PREVIEW")
   })
 
   test("plain existing-key insert aborts without changing canonical or derived state", async () => {

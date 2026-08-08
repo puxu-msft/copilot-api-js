@@ -35,6 +35,7 @@ import {
   backfillExistingSummaryRows,
   getSummaryProjectionReadiness,
   inspectSummaryProjectionReadiness,
+  isSummaryProjectionReady,
   markSummaryProjectionPoisoned,
   publishValidatedOperationSummary,
   type SummaryProjectionReadiness,
@@ -887,7 +888,11 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
       transactionA()
       const committedAt = Date.now()
       const transactionB = db.transaction(() => {
-        const restoreReadyMarker = getSummaryProjectionReadiness(db).ready
+        // Only the marker matters here, and it is an O(1) primary-key lookup.
+        // The readiness aggregate scans all of v3_operation_summaries with no
+        // usable index, so calling it per commit made write cost grow with
+        // history length while both of its counts were discarded.
+        const restoreReadyMarker = isSummaryProjectionReady(db)
         for (const object of prepared.objects) insertObject(db, object)
         for (const node of prepared.sequenceNodes) insertSequenceNode(db, node)
         db.prepare(
