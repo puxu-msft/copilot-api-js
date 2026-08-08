@@ -140,3 +140,30 @@
 - 新缺陷在补审后的接收载体闭环缺失，而非删除门本身。
 - Blocker：1。Major：1。总体 verdict：**存在 blocker**。
 - 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`，将发现、裁决、持久化、验证、删除写成单向依赖链。
+
+# 复审轮五（`2853f437`）
+
+## 评审范围与证据
+
+- 范围：`git diff 7a5430f7..2853f437`、最终 `.claude/skills/session-closeout/SKILL.md:45-86`，以及调用方提供的父 transcript、job tmp 根和候选清单。
+- 独立枚举：按关键词与末段时间窗切片父 transcript，定位本轮提出候选、六轮整改与复审事件；用 Python `Path.iterdir()` 独立确认 job tmp 为 56 个普通文件。`fd -H` 只返回 42 项，因为仍忽略 14 个 gitignored 文件；本轮没有拿该错误查询否定冻结人口。
+
+## 总体 verdict
+
+**存在 blocker。Blocker：2。**
+
+## 事实性发现
+
+[blocker] `.claude/skills/session-closeout/SKILL.md:53,65-71` — 回流只覆盖“tmp 项被重新判定承重”，没有覆盖“非文件 provisional 候选经补审判定应持久化” — §4 的中心对象正是非文件知识；补审若判一条被纠正的因果或死路值得留，第 53 行不会触发，流程也没有要求写入 memory／skill／正式文档、提交并验证载体，随后即可进入清单评审与删除。核心目标仍可形式合规地丢失。修复建议：回流条件改为“补审令任一 disposition 的接收载体／最终动作发生变化，或批准任一非文件候选持久化”；统一回到持久化／提炼 → 提交并验证**全部**更新载体 → 完整 manifest 重审，不能只写 tmp 项。
+
+[blocker] `.claude/skills/session-closeout/SKILL.md:49,71` — 明知拿不出独立事件源时，文本只要求标“形式复核”，却没有禁止该结果满足删除前的 0 blocker／0 major 门 — 一份无 oracle 的形式报告完全可能写 0 major，第 49 行随后允许删除；而候选完整性正决定 tmp patch／日志是否是唯一承重证据。这是确定的未核验删除路径。修复建议：事件源不可独立枚举时 fail-closed：该轮不得给候选完整性放行票、不得删除任何 tmp 项；只能先持久化所有可能承重项，或取得可审事件源后再闭环。
+
+[major] `.claude/skills/session-closeout/SKILL.md:71,75-86` — 双向对账要求本身可执行，而且本次实跑已发现调用方候选清单漏项 — 父 transcript `:11444` 之后除 ff-only／ls-tree 外，还明确发生并被纠正：伪“两轴”与双源裁决、不可达补审点、自证空清单、`status 干净` false-red、先删后发现、审出承重无回流、reviewer 无独立 oracle。这些分别命中第 1／2／3 类，但调用方只列 ff-only memory 与既有标定／mutation 承接。多数内容已由本评审报告、最终 skill 或 `methodology-ordering-gate-needs-a-trigger-that-reads-it.md` 承接，所以不是新增数据丢失；但仍须逐项进入候选 manifest，写明“已有载体／无需新增”，否则当前“清单已完整”结论不成立。
+
+## 复审轮五结论
+
+- 回流条款对“tmp 项重新判承重”这一条路径闭合，更新行、提交验证载体、旧评审作废、完整清单重审均已写明；缺口是非文件候选与无 oracle 分支。
+- 独立事件源方案实际可用：无需整读 transcript，按末段时间窗、六类关键词和 review task notifications 可重建事件集合；本轮双向 diff 确实咬出多项漏列，证明它不是走过场。
+- 结构怪味：`.claude/skills/session-closeout/SKILL.md:53,65-71`，类型为“统一 disposition 的回流条件仍按 tmp／非文件对象分叉，且 oracle 缺失时 fail-open”；处置为本轮修，因为两条都能越过删除门。
+- Blocker：2。Major：1。总体 verdict：**存在 blocker**。
+- 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`；用统一的“disposition 是否变化”驱动回流，并让无独立 oracle 的删除门 fail-closed。
