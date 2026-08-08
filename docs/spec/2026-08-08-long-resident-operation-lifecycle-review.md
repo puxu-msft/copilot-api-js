@@ -47,3 +47,19 @@ Reviewer 判断 0 blocker／5 major，修复 major 后可进入实施计划。�
 4. Translated B2 backlog 是否成为稳定可达入口；
 5. Producer 矩阵是否覆盖 SSE、WS、recovery 和非流式，并具有目标 mutation；
 6. 修订本身是否引入新的 blocker／major。
+
+## 复评结果
+
+- 冻结 commit：`b1d7aa5c526b43ef09f6335927c24e236d6b8eb7`
+- Reviewer：新的 Claude `reviewer` 只读复评。原 reviewer 由无持久会话的子进程启动，无法恢复；本轮没有伪称复用同一 reviewer。
+- Verdict：**0 blocker／0 major，可进入实施计划。**
+
+| ID | 复评结论 | 证据摘要 |
+|---|---|---|
+| R1 | closed | Delivery 联合新增 `failed {error,failureRegistered}`；失败可 join、唤醒 canonical、保留 shutdown failure，并有永久 `finalizing`／伪装 `finalized` 双 mutation |
+| R2 | closed | Quiescence 与 blocker 均包含 `sealed`；`settled=true,sealed=false,childCount=0` 有明确测试与漏 `seal()` mutation |
+| R3 | closed | Candidate／dispatch 先闭合；operation 与 delivery 并行；canonical join 两者；manager 最后 release，未再要求错误总序 |
+| R4 | closed | Translated B2 已在 `docs/todo/deferred-backlog.md` 建立根因、现状、理想架构、暂缓理由与触发条件完整条目 |
+| R5 | closed | Producer 矩阵覆盖非 recovery SSE、recovery SSE、Responses WS、非流式 JSON；每类均有正确样本与漏 notification 目标缺陷 |
+
+复评还确认双向判据成立：错误 delivery outcome、漏 `seal()`、提前删除、canonical reject 僵尸与漏 notification 均有 mutation；正确短暂 cleanup、两种合法并行次序与全部合法 producer 不会被规格误拒。未发现修订引入的新 blocker／major。

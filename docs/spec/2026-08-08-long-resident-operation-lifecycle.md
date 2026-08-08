@@ -1,6 +1,6 @@
 # 超长驻留 operation 生命周期收敛规格
 
-> **状态：设计已获用户批准；独立首轮评审 0 blocker／5 major，已全部采纳修订，待复评与实施计划。**
+> **状态：设计已获用户批准；独立首轮评审的 5 条 major 已全部采纳，复评 0 blocker／0 major；可进入实施计划。**
 >
 > **基线：** 当前本地 `master@cfe78b6425fbbaa05fd3d11df1582611c76c0f1f`；待整合的 direct-live pre-content recovery 来源为 `agent-ace4e48572710c13a@b7319c78e41e3059ad2269a8c1014640b016e848`。实施前必须重新读取实际 refs，不得把本段快照当执行期 HEAD。
 >
