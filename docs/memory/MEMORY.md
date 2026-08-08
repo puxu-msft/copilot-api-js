@@ -6,7 +6,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
-- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — 收尾六步 + HANDOVER/KICKOFF 唯一归属
+- [收尾与跨会话交接](session-closeout-and-handover.md) → user-level skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF、进度文件、容量终态接力）— 项目 skill `session-closeout` 已于 2026-08-08 并入两者并删除
 - [审自己测试类型错配派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → `choosing-test-type`
 - [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` — §1 不变量 / §2 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）/ §3 [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱 + model key 成功失败分裂](pattern-extensible-telemetry-registry.md) → `telemetry-architecture` 一/二 — 成功=规范名·失败=别名，见 [key-split](reference-telemetry-model-key-split-success-vs-failure.md)
@@ -154,5 +154,5 @@
 
 ## 已删除记忆的话题去向
 
-通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
+通用工作原则 → user-rule + CLAUDE.md + user-level skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
 **两个从未存在的 memory 文件已改指正式归属**（2026-08-02，避免制造双源）：语言规则 `feedback-chinese-only-never-japanese` → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec/2026-07-14-unknown-endpoint-logging.md](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

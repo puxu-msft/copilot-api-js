@@ -26,6 +26,6 @@ metadata:
 
 **接力结果**：第二个实例中，旧 agent 被停止；新 agent 先读原 transcript，核对 commit lineage 与旧 worktree，恢复七个提交和两个未提交文件，随后产出 `61bc05e3`、`0da98fda`、`fd129ffd`，无需用户重述任务。
 
-**How to apply:** 两类故障的可执行诊断、恢复与接力动作只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 和项目 skill `session-closeout` §6b。本 memory 保存版本化证据，不复制操作步骤。
+**How to apply:** 两类故障的可执行诊断、恢复与接力动作只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 和 user-level skill `writing-handover-docs` 的「容量终态」节。本 memory 保存版本化证据，不复制操作步骤。
 
 **Related:** [[methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth]] [[feedback-resume-agent-always-sendmessage-never-agent-tool]] [[methodology-background-agent-result-surfacing-failure]]
