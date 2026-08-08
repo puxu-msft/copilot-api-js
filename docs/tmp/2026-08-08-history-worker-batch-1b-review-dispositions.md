@@ -1,7 +1,7 @@
 # History Worker Batch 1b 评审转录与处置
 
-> 状态：Batch 1b 代码、判据与文档已复审至 0 blocker／major，并于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；合入最新 `master@d59a622c` 后发现的 M2 四字段重试契约漂移已整改，当前候选待原合并态 reviewer 复审，Task 2a 暂禁开工。
-> 评审基线：`661e1792`；原合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；Batch 1b 实现候选：`94205e89`；原文档闭合与主线落地：`d3b4ac77`；最新主线合并候选：`da1b6cc5`，其 M2 整改尚待复审。
+> 状态：Batch 1b 代码、判据与文档已复审至 0 blocker／major，并于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；合入最新 `master@d59a622c` 后发现的 M2 四字段重试契约漂移已由 `22c8e08b` 整改，原合并态 reviewer 复审判 0 blocker／major，Task 2a 可在新版 kickoff 硬门通过后开工。
+> 评审基线：`661e1792`；原合并态基线：`51f0e57e`；最终代码复审基线：`df0c7bf4`；Batch 1b 实现候选：`94205e89`；原文档闭合与主线落地：`d3b4ac77`；最新主线合并：`da1b6cc5`；M2 整改与计划候选：`22c8e08b`。
 > 来源：生命周期 reviewer、overlay／判据 reviewer、lossless shutdown 合并态 reviewer 的工具回传；主会话转录并按 C 级代码裁定处置。
 
 ## 发现与处置
@@ -41,3 +41,4 @@
 3. 合并态 reviewer：M1与lossless shutdown handoff可合，0 blocker／major。
 4. B4 floor校准：两次正确样本、独立JUnit求和与边界双控均成立；原reviewer复审判可合、0 blocker／major。
 5. D1／D2及同形全站点文档同步：原reviewer复审判可合、0 blocker／major；独立复跑DESIGN路径守卫与REST／summary in-flight行为测试共69 pass／0 fail。
+6. M2四字段重试契约：原合并态reviewer逐条核验共享类型owner、protocol正负控、现有fixtures、Task 2a真实消费正控与旧anchor fail-closed状态；独立复跑79 pass／0 fail，typecheck、精确lint、`diff --check`通过，判候选可合、0 blocker／major。
