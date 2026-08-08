@@ -1178,7 +1178,14 @@ async function runResponseSink(
       }
     : effectiveOpts
   try {
-    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
+    // `effectiveOpts` has already combined outer callbacks with this upstream's candidate once.
+    // Re-entering `runResponse()` with a generation binding would merge it again and invoke
+    // candidate onUpstreamFrame twice, corrupting upstream-only accumulators and History bodies.
+    const responseFrames =
+      unhedgedBinding ?
+        runAssembledCandidateResponse(deps, upstream, env, responseOpts as AssembledCandidateResponseOpts<RunBufferedOpts>, generation)
+      : runResponse(deps, upstream, env, responseOpts, generation)
+    for await (const frame of responseFrames) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
