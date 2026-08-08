@@ -4,16 +4,24 @@
 
 ## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
 
-- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。ready 态 driver 能力 `runResponseRecovery` 已就位，但只供后续 live handler 接线使用，buffered 旁路尚未接入。
+- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
 - **当前行为**：buffered 路径耗尽透明重试预算后直接以 `"exhausted"` 降级，不发起 B2 fresh dispatch。
-- **理想架构 / 若做需改什么**：在 `!committedAny` 分支耗尽预算、即将走向 `degradeOutcome = "exhausted"` 之前，组合 semantic-content gate 与 server-tool gate，并外挂恰好一次 recovery。buffered 场景的 splice 目标不是“接进同一 live sink”，而是让 fresh attempt 重新进入 buffered 缓冲循环；失败 attempt 的原始帧与 duration 簿记仍须在切换前提交并重置。
+- **理想架构 / 若做需改什么**：在 `!committedAny` 分支耗尽预算、即将走向 `degradeOutcome = "exhausted"` 前，组合 semantic-content gate 与 server-tool gate，并外挂恰好一次 recovery。fresh attempt 必须重入 buffered 循环，不可挪用 direct-live evaluator/owner batch；失败 attempt 的原始帧、duration、dispatch/candidate settlement 须在切换前提交并重置。
 - **已裁决语义**：用户已拍板尊重 `max_retries=0`；buffered B2 旁路必须额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才能生效。用户明确表达“不要任何重试”时，连 B2 这一次也不得发起。
-- **为何暂缓**：live 路径 Task 4.1～4.5 尚未接线，此刻确定 buffered fresh attempt 如何重入循环、如何复用 splice 与簿记，缺少实际语境，容易提前固化错误形态。
-- **触发条件**：live 路径接线完成，即 Task 4.3/4.5 之后。**发现方**：Task 4.0 review（reviewer，2026-07-28）。
+- **为何暂缓**：direct-live 的 C9 publication 已提供可对照的生命周期合同，但 buffered re-entry、retry budget 与历史逐 attempt 簿记仍是独立结构设计，不能用 live 成功路径假装等价。
+- **触发条件**：为 buffered Anthropic 路径请求 B2 行为，或需要在 `max_retries>0` 耗尽后给尚未交付语义内容的 stream 再尝试一次。**发现方**：Task 4.0 review（reviewer，2026-07-28）；2026-08-08 更新为 live 已完成后的真实 deferred 边界。
 
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
 >
 > **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
+
+## translated Anthropic B2 recovery publication（2026-08-08）
+
+- **根因 / 现状**：direct Anthropic B2 依赖 Anthropic frame evaluator、three-mode anchor reconciliation 和 `publishRecoveryBatch` 的 owner wire contract；翻译腿的 R 虽可经 evaluator/disposition 识别和 discard，但没有等价的 translated client-wire publication path。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
+- **当前行为**：当 `/v1/messages` 请求实际路由到非 Anthropic target 时，R 不会作为 direct Anthropic recovery 写入；无法被安全完成/处置时保持 fail-closed，绝不把不完整或错误格式的 R 拼进 client stream。
+- **理想架构 / 若做需改什么**：按 client format × target endpoint 建立 cell-aware recovery publication contract，复用 generation lifecycle/disposition，但由对应 renderer 生成目标 client wire；明确每种格式的 complete predicate、synthetic terminal、History terminal attribution 与 anchor/keepalive 规则。必须补真实客户端或独立 parser oracle，不能复用 Anthropic wire 断言冒充覆盖。
+- **为何暂缓**：这是跨协议 public wire/terminal 契约扩展，不是把 direct helper 接到 translate branch 的局部改动；目前 direct Anthropic 的 B2 已能正确服务目标事故路径，错误地复用其 frame/anchor 规则会制造协议损坏。
+- **触发条件**：需要 Anthropic 客户端通过 `@responses`/`@cc` 等翻译 target 获得同等 B2 能力，或为其他客户端格式实现 post-commit pre-content recovery。改动面至少包括 `cell-assembly`、相关 codec renderer、`driver`、各 handler terminal/History projection 与对应 client e2e。
 
 ## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
 

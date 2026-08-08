@@ -38,8 +38,10 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
+import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -395,6 +397,53 @@ describe("driver.runExchange — error-driven retry", () => {
         decideRoute: (e) => codec.decideRoute(e),
         transport,
         strategies: buildOpenAiCcStrategies({ originalPayload: env.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
+      })
+
+      const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
+      for (let i = 0; i < 50 && clock.liveTimerCount === 0; i++) await Promise.resolve()
+      expect(clock.liveTimerDelaysMs).toEqual([1000])
+      await clock.advance(1000)
+      const result = await resultPromise
+
+      expect(result.ok).toBe(true)
+      expect(attempts).toBe(2)
+      expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "network-retry", waitMs: 1000 }])
+    } finally {
+      clock.restore()
+    }
+  })
+
+  test("retries a GHC request-body read timeout once through the production Responses strategy stack", async () => {
+    const clock = new FakeClock()
+    clock.install()
+    try {
+      const { ctx, calls } = makeCtx()
+      const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+      const env = makeEnv(ctx, payload)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) {
+          throw new HTTPError(
+            "Failed to create responses",
+            408,
+            JSON.stringify({
+              error: {
+                code: "user_request_timeout",
+                message: "Timed out reading request body. Try again, or use a smaller request size.",
+              },
+            }),
+          )
+        }
+        return okStream()
+      })
+      const driver = createPipelineDriver({
+        ...BASE,
+        codec,
+        decideRoute: (e) => codec.decideRoute(e),
+        transport,
+        strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
       })
 
       const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
@@ -901,6 +950,119 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     expect(out.map((f) => f.data)).toEqual(["[x]"])
   })
 
+  test("network-shaped onUpstreamFrame failure is codec-render rather than transport", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const callbackError = new Error("Stream closed with error code NGHTTP2_CANCEL")
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink, {
+      onUpstreamFrame() {
+        throw callbackError
+      },
+    })
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+  })
+
+  test("finally flush rewrite failure retains the superseded upstream error with its source", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("flush rewrite failed")
+    const upstreamError = new Error("upstream failed first")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-upstream-error",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+    async function* upstreamThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "buffered" }
+      throw upstreamError
+    }
+
+    const outcome = await driver.runResponseSink({ frames: upstreamThenThrow(), headers: new Headers() }, env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ supersededError: upstreamError, supersededSource: "upstream-transport", flushError })
+  })
+
+  test("finally flush rewrite failure retains a prior codec error as codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const firstCodecError = new Error("first codec failure")
+    const flushError = new Error("flush codec failure")
+    const rewrite: ResponseRewrite = {
+      name: "two-codec-failures",
+      order: 100,
+      appliesTo: () => true,
+      transform: () => {
+        throw firstCodecError
+      },
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [rewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ supersededError: firstCodecError, supersededSource: "codec-render", flushError })
+  })
+
+  test("natural drain flush rewrite failure is codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("natural flush failed")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-natural-drain",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "buffered" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toBeUndefined()
+  })
+
   test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
@@ -1140,8 +1302,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     const outcome = await driver.runResponseSink(okStream([{ data: "1" }, { data: "2" }, { data: "3" }]), makeEnv(ctx), sink)
 
     // The disconnect must NOT be swallowed into `complete`.
-    expect(outcome.kind).not.toBe("complete")
-    expect(outcome.kind).toBe("stream-error")
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
     // Frame 0 was written before the reject at frame 1.
     expect(sunk).toEqual([{ data: "1" }])
   })
@@ -1182,7 +1343,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(frames).toEqual([{ data: "1" }])
   })
 
-  test("stream-error carries the RAW thrown error (richest-data-flow), not a {type,message} summary", async () => {
+  test("stream-error carries the RAW upstream error and upstream-transport provenance", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
@@ -1194,9 +1355,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     }
     const { sink } = makeArraySink()
     const outcome = await driver.runResponseSink({ frames: throwRaw(), headers: new Headers() }, makeEnv(ctx), sink)
-    expect(outcome.kind).toBe("stream-error")
-    // The handler is the consumer that classifies/formats/logs — it gets the SAME error object.
-    if (outcome.kind === "stream-error") expect(outcome.error).toBe(raw)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport", error: raw })
   })
 
   test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {

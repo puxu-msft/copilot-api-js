@@ -36,7 +36,7 @@ export function isActiveRequestState(state: RequestState): boolean {
   return state !== "completed" && state !== "failed"
 }
 
-export function summarizeRequestContext(context: RequestContext): RequestActivitySnapshot {
+export function summarizeRequestContext(context: RequestContext, attempt = context.currentAttempt): RequestActivitySnapshot {
   // Defensive fallbacks: the RequestContext interface declares these fields
   // as non-nullable, but consumers (tests, partial mocks, event payloads from
   // external sources) sometimes pass incomplete shapes. Keeping the fallbacks
@@ -57,8 +57,8 @@ export function summarizeRequestContext(context: RequestContext): RequestActivit
     model: context.originalRequest?.model,
     stream: context.originalRequest?.stream,
     attemptCount: context.attempts?.length ?? 0,
-    ...(context.currentAttempt?.startTime !== undefined ? { currentAttemptStartedAt: context.currentAttempt.startTime } : {}),
-    currentStrategy: context.currentAttempt?.strategy,
+    ...(attempt?.startTime !== undefined ? { currentAttemptStartedAt: attempt.startTime } : {}),
+    currentStrategy: attempt?.strategy,
     queueWaitMs: context.queueWaitMs ?? 0,
     ...(context.transport ? { transport: context.transport } : {}),
   }
@@ -67,18 +67,7 @@ export function summarizeRequestContext(context: RequestContext): RequestActivit
 
 export function buildHistoryActivityPatch(
   context: RequestContext,
-): Pick<
-  HistoryEntry,
-  | "rawPath"
-  | "startedAt"
-  | "state"
-  | "active"
-  | "lastUpdatedAt"
-  | "queueWaitMs"
-  | "durationMs"
-  | "transport"
-  | "multiplier"
-> {
+): Pick<HistoryEntry, "rawPath" | "startedAt" | "state" | "active" | "lastUpdatedAt" | "queueWaitMs" | "durationMs" | "transport" | "multiplier"> {
   const snapshot = summarizeRequestContext(context)
   // Resolve the per-request billing multiplier from the SAME source as
   // snapshotWithSummary (state.modelIndex billing) so history records the
@@ -112,7 +101,7 @@ export function buildHistoryActivityPatch(
  * doesn't have to (and so it stays correct if the model is unregistered
  * mid-flight). Reads only the public `RequestContext` getters.
  */
-export function snapshotWithSummary(context: RequestContext): RequestContextSnapshot {
+export function snapshotWithSummary(context: RequestContext, attempt = context.currentAttempt): RequestContextSnapshot {
   const billing = context.resolvedModel ? state.modelIndex.get(context.resolvedModel)?.billing : undefined
   return {
     id: context.id,
@@ -128,6 +117,6 @@ export function snapshotWithSummary(context: RequestContext): RequestContextSnap
     queueWaitMs: context.queueWaitMs,
     ...(context.requestBodySize !== undefined && { requestBodySize: context.requestBodySize }),
     ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
-    summary: summarizeRequestContext(context),
+    summary: summarizeRequestContext(context, attempt),
   }
 }

@@ -1,10 +1,10 @@
 /**
  * Centralized graceful shutdown management.
  *
- * One termination signal stops ingress, losslessly drains every accepted
- * operation, and then closes runtime resources behind durability barriers. It
- * never cancels request work. A second termination signal is the process-wide
- * escape hatch and exits immediately.
+ * SIGINT, SIGTERM, or SIGUSR2 received while idle stops ingress, losslessly
+ * drains every accepted operation, and then closes runtime resources behind
+ * durability barriers. Shutdown never cancels request work. While lifecycle is
+ * active, SIGUSR2 is idempotent; SIGINT or SIGTERM is the immediate escape hatch.
  */
 
 import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
@@ -524,7 +524,13 @@ interface HandleShutdownSignalOptions {
   exitFn?: (code: number) => void
 }
 
-function forcedExitCode(signal: string): number {
+type TerminationSignal = "SIGINT" | "SIGTERM"
+
+function isTerminationSignal(signal: string): signal is TerminationSignal {
+  return signal === "SIGINT" || signal === "SIGTERM"
+}
+
+function forcedExitCode(signal: TerminationSignal): number {
   return signal === "SIGTERM" ? 143 : 130
 }
 
@@ -545,6 +551,8 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   if (shutdownPhase === "stopped") return shutdownPromise ?? shutdownCompletion.promise
 
   if (shutdownPhase !== "idle") {
+    if (!isTerminationSignal(signal)) return shutdownPromise ?? undefined
+
     // Deliberately bypass consola → observability bus → FileSink → History. The
     // escape hatch must remain visible and must not wait for any subsystem it is
     // intended to escape from.

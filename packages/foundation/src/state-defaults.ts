@@ -258,6 +258,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   requestDeadline: 0,
   modelRefreshInterval: 600,
   historyDbPath: "",
+  historyPersistenceQueueCapacity: 256,
   historyRawCaptureEnabled: false,
   historyRawCaptureDbPath: "",
   historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,

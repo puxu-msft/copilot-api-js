@@ -605,6 +605,8 @@ export interface State {
    * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Maximum admitted History operations; strictly positive and hot-reloadable. */
+  readonly historyPersistenceQueueCapacity: number
   /** Optional raw capture is hot-reloadable through artifact generations. */
   readonly historyRawCaptureEnabled: boolean
   readonly historyRawCaptureDbPath: string
@@ -1500,18 +1502,35 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 
 export function setHistoryConfig(
   patch: Partial<
-    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+    Pick<
+      MutableState,
+      | "historyEnabled"
+      | "historyDbPath"
+      | "historyPersistenceQueueCapacity"
+      | "historyRawCaptureEnabled"
+      | "historyRawCaptureDbPath"
+      | "historyRawCaptureMaxObjectBytes"
+    >
   >,
 ): void {
+  const queueCapacityChanged =
+    patch.historyPersistenceQueueCapacity !== undefined && patch.historyPersistenceQueueCapacity !== mutableState.historyPersistenceQueueCapacity
   const rawCaptureChanged =
     (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
     || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
     || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
+  if (queueCapacityChanged) for (const listener of historyPersistenceQueueCapacityListeners) listener()
   if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
 }
 
+const historyPersistenceQueueCapacityListeners = new Set<() => void>()
 const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryPersistenceQueueCapacityChange(listener: () => void): () => void {
+  historyPersistenceQueueCapacityListeners.add(listener)
+  return () => historyPersistenceQueueCapacityListeners.delete(listener)
+}
 
 export function onHistoryRawCaptureChange(listener: () => void): () => void {
   historyRawCaptureListeners.add(listener)
@@ -2016,6 +2035,7 @@ export function resetConfigManagedState(): void {
   })
   setHistoryConfig({
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
     historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
     historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
     historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
@@ -2174,6 +2194,7 @@ const mutableState: MutableState = {
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
   historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
   historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,

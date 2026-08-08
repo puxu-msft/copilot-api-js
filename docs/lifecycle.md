@@ -10,10 +10,13 @@
 
 `src/lib/shutdown.ts` 实现首信号无损排空。shutdown 只拥有进程入口和资源生命周期，不拥有请求终止权。
 
-信号契约只有两层：
+信号契约分为终止信号与交接信号：
 
-1. 第一次 SIGINT／SIGTERM／SIGUSR2 同步认领 lifecycle，停止 ingress，并等待已接纳 operation 自行终态。
-2. 第二次终止信号是全局逃生舱：任何非 `stopped` 状态立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
+1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，并等待已接纳 operation 自行终态。
+2. lifecycle 已经进行时收到 SIGINT／SIGTERM，立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
+3. lifecycle 已经进行时收到 SIGUSR2，幂等返回已有 shutdown task，不强退、不重复 handoff-only 副作用。
+
+信号必须投递到应用记录的 runtime PID。Bun CLI／Volta shim 可能在 JS runtime 外再包一层 launcher；给 launcher 发 SIGUSR2 会走内核默认动作，根本到不了 `process.on("SIGUSR2")`。裸接管 pidfile 写入 `process.pid`；PTY 回归也从子进程输出读取 runtime PID 后发信号。
 
 ### Stop ingress（立即）
 
@@ -121,7 +124,7 @@ systemctl enable  copilot-api@$NEXT
 ### 路径三：pm2
 
 pm2 fork 模式 `pm2 reload` = 重启（有 drain 间隙、非零停机）；cluster 模式 + Bun 兼容性不稳。故 pm2 也**复用 reusePort 接管**，不依赖 pm2 原生 reload：
-- 样例 `ecosystem.config.cjs`：`wait_ready:true` + `listen_timeout` 保证新槽就绪；SIGINT／SIGTERM 触发无损 drain。pm2 的有限 `kill_timeout` 是 supervisor 强退上限，不是应用级请求 deadline；它必须大于部署配置的 `timeouts.request_deadline` 加 durability 余量，否则 pm2 会破坏无损契约。
+- 样例 `ecosystem.config.cjs`：`wait_ready:true` + `listen_timeout` 保证新槽就绪；SIGINT／SIGTERM 触发无损 drain。pm2 只能配置有限 `kill_timeout`，而 bundled request deadline 为 0，因此它不构成严格的无损保证；部署脚本应先确认旧槽 `activeRequests.count=0` 再删除。
 - **零停机换代（脚本/操作者显式发信号，非新实例自动接管）**：⚠️ pm2 托管的旧实例 `isSupervised()`=true → **不写 pidfile**（pidfile 机制仅裸手动路径），故新实例**读不到** pidfile、无法自动发现前任并自发 SIGUSR2——「起个 --restart 新实例自动接管」在 pm2 下**发不出信号、两实例永久并存**（一半流量打旧码）。正确形态同 systemd：**双 app 条目（blue/green）+ 操作者/脚本显式发信号**：`pm2 start ecosystem --only copilot-api-green`（reusePort 绑 :4141、`wait_ready` 等 `READY=1`）→ `pm2 sendSignal SIGUSR2 copilot-api-blue`（旧实例 drain）→ `pm2 delete copilot-api-blue`。overlap 期数据安全由 ①⑤ 的**进程存活性判据**自动保证（与 pidfile/信号无关）。
 - `process.send('ready')` 与 sd_notify `READY=1` 共用 `notifyReady()` 钩子。
 
@@ -169,16 +172,15 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 
 ### Stale Request Reaper
 
-- `state.staleRequestMaxAge`：活跃请求最大存活秒数（默认 600，0 = 禁用）
-- 超时的请求由 reaper 强制清理，防止泄漏
-- 安全网机制：正常情况下请求应通过 stream 完成或超时自然终结
+- `state.staleRequestMaxAge`：活跃请求最大存活秒数（bundled 默认 0，即禁用）。
+- 运维显式设正值时，reaper 超龄会取消并清理请求；该选项会对合法长思考施加 wall-clock 上界，因此启动时显式告警。
 
 ### Hard Request Deadline（`request_deadline`，2026-07-14 新增，RC2 治根）
 
-- `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 900s，0 = 禁用）：单请求**硬总时长上限**，是用户可依赖的 SLA。
+- `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 0，即禁用）：运维显式设正值时，它是单请求硬总时长上限。默认禁用避免仅凭 wall-clock 误杀无上界合法思考。
 - **由 per-request 精确 `setTimeout` 强制**（`manager.create` 武装、`onSettled` 清除、`unref`），到点调用与 reaper 同款 `reapInFlight()`（取消在飞上游）+ `fail()`（记终态）。
 - **为何独立于 stale reaper**：reaper 是**周期扫描**（`staleRequestMaxAge/3` clamp 到 [250ms,60s]），实测会**迟到**（一次迟 198s，age 1398s vs max 1200s）——候选机制：config 热重载改阈值但 scan cadence 冻结、或**进程/WSL2 suspend** 让所有 timer 一起冻结（诊断见 `reaper-diagnostics.ts`，坐实判据 = 墙钟 gap vs 单调 gap）。per-request timer 按 T 精确触发、**绕过**这个迟到。
-- **两旋钮关系**：`request_deadline`（精确、主上限）应 < `stale_request_max_age`（周期、泄漏兜底），reaper 只兜底越过 deadline 仍未静止的异常。
+- 两个 wall-clock guard 默认都禁用；运维同时显式启用时，`request_deadline`（精确主上限）应小于 `stale_request_max_age`（周期泄漏兜底）。
 - **dry-run 豁免**：capturing manager（`withCapturingManager`）传 `armDeadlineTimers:false`，inspection ctx 不武装 deadline。
 
 相关代码：`src/lib/shutdown.ts`、`src/lib/context/`、`src/lib/observability/reaper-diagnostics.ts`

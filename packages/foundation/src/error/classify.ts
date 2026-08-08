@@ -20,7 +20,7 @@ export type ApiErrorType =
   | "content_filtered" // 422 — Responsible AI Service filtering
   | "quota_exceeded" // 402 — free tier / premium quota exceeded
   | "auth_expired" // Token expired
-  | "network_error" // Retryable transport failure, including an upstream 499 with an empty body
+  | "network_error" // Retryable transport failure, including an empty upstream 499 or GHC request-body read timeout
   | "aborted" // Operation cancelled via AbortSignal (shutdown, client cancel, internal timeout)
   | "server_error" // 5xx (non-503-upstream)
   | "upstream_rate_limited" // 503 — upstream provider rate limited
@@ -177,6 +177,17 @@ export function classifyError(error: unknown): ApiError {
 function classifyHTTPError(error: HTTPError): ApiError {
   const { status, responseText, message } = error
 
+  // GHC accepted the HTTP/2 stream but its edge timed out while reading the request body. This is a transient upload/transport failure rather than an application-level rejection: replaying the unchanged request once is the only path to a response. Match both the structured code and the specific message so unrelated 408 deadlines remain terminal.
+  if (status === 408 && isRequestBodyReadTimeout(responseText)) {
+    return {
+      type: "network_error",
+      status,
+      message,
+      responseHeaders: error.responseHeaders,
+      raw: error,
+    }
+  }
+
   // An upstream 499 with no body carries no actionable rejection detail. Treat it like a pre-response transport failure so the shared network strategy retries it once.
   // A non-empty 499 remains a terminal bad_request below because its body may describe an intentional cancellation that must not be replayed.
   if (status === 499 && responseText.trim() === "") {
@@ -308,6 +319,20 @@ function classifyHTTPError(error: HTTPError): ApiError {
     message,
     responseHeaders: error.responseHeaders,
     raw: error,
+  }
+}
+
+/** Match the structured GHC error for a timeout while reading our request body. */
+function isRequestBodyReadTimeout(responseText: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(responseText)
+    if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return false
+    const error = (parsed as { error: unknown }).error
+    if (!error || typeof error !== "object") return false
+    const { code, message } = error as { code?: unknown; message?: unknown }
+    return code === "user_request_timeout" && typeof message === "string" && message.startsWith("Timed out reading request body.")
+  } catch {
+    return false
   }
 }
 

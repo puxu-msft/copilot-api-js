@@ -47,7 +47,7 @@ export interface DispatchSettlement {
 }
 
 export interface DispatchRecordingPort {
-  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }): CandidateHandle
   settleCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   beginDispatch(input: {
     candidate: CandidateHandle
@@ -105,8 +105,12 @@ export interface ScheduledDispatch {
 }
 
 export interface DispatchScheduler {
-  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal }): Promise<ScheduledDispatch>
+  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal; initialStrategy?: string }): Promise<ScheduledDispatch>
+  /** Dispose the one ready-but-unconsumed dispatch while preserving the caller's terminal settlement. */
+  disposeActiveWithSettlement(input: DispatchSettlement): Promise<void>
   cancelActive(reason: string): Promise<void>
+  /** Assert a fully consumed response no longer occupies an active scheduler slot. */
+  assertNoActiveReadyDispatch(dispatch: DispatchHandle): void
   settle(dispatch: DispatchHandle, input: DispatchSettlement): Promise<void>
 }
 
@@ -167,10 +171,10 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   }
 
   const scheduler: DispatchScheduler = {
-    async run({ candidate, env, signal }) {
+    async run({ candidate, env, signal, initialStrategy }) {
       let current = env
       let reason: DispatchReason = "initial"
-      let strategy: string | undefined
+      let strategy: string | undefined = initialStrategy
       let forceHttp = false
       let acceptedResolution: ((env: RequestEnvelope) => void | Promise<void>) | undefined
       let dispatchNumber = 0
@@ -300,6 +304,18 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
       }
     },
 
+    async disposeActiveWithSettlement(settlement) {
+      const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
+      if (entries.length !== 1) throw new Error(`[dispatch-scheduler] expected exactly one active ready dispatch, found ${entries.length}`)
+      const results = await Promise.allSettled(entries.map(([dispatch, owned]) => disposeDispatch(dispatch, owned.lifecycle, settlement, true)))
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+      if (errors.length > 0)
+        throw new AggregateError(
+          errors.map((error) => asError(error)),
+          "Ready dispatch disposal failed",
+        )
+    },
+
     async cancelActive(reason) {
       const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
       const cancellationErrors: Array<unknown> = []
@@ -321,12 +337,30 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         )
     },
 
+    assertNoActiveReadyDispatch(dispatch) {
+      if (active.has(dispatch)) throw new Error(`[dispatch-scheduler] consumed dispatch ${dispatch} remains active`)
+    },
+
     async settle(dispatch, settlement) {
       if (settled.has(dispatch)) return
       const owned = active.get(dispatch)
+      let quiesceError: unknown
       if (owned) {
-        await owned.lifecycle.quiesced
-        active.delete(dispatch)
+        try {
+          await owned.lifecycle.quiesced
+        } catch (error) {
+          quiesceError = error
+        } finally {
+          active.delete(dispatch)
+        }
+      }
+      if (quiesceError !== undefined) {
+        recordSettlement(dispatch, {
+          verdict: "failed",
+          reason: "settlement-quiesce-failed",
+          ...(settlement.error === undefined && { error: quiesceError }),
+        })
+        throw asError(quiesceError)
       }
       recordSettlement(dispatch, settlement)
     },

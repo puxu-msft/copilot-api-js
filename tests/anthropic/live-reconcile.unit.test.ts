@@ -118,6 +118,22 @@ describe("reconcileLiveFrame", () => {
     expect(state).toMatchObject({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
   })
 
+  test("NOT injected + a recovery message_start → drops only the duplicate while preserving the one client turn", () => {
+    const state: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
+    const h = hooks()
+    const primary = f("message_start", { message: { id: "primary" } })
+    const recovery = f("message_start", { message: { id: "recovery" } })
+
+    expect(reconcileLiveFrame(primary, state, h)).toEqual([primary])
+    expect(reconcileLiveFrame(recovery, state, h)).toEqual([])
+  })
+
   test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
     const state: AnchorState = {
       wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
