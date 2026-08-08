@@ -117,3 +117,26 @@
 - 结构怪味：`.claude/skills/session-closeout/SKILL.md:49,63-78`，类型为“发现依赖晚于不可逆消费”；处置为本轮修，因为会删除后来才被证明承重的唯一证据。
 - Blocker：1。Major：1。总体 verdict：**存在 blocker**。
 - 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`，重点重排 §3b／§4 的动作依赖，而非再补局部例外。
+
+# 复审轮四（`7a5430f7`）
+
+## 评审范围与证据
+
+- 范围：`git diff 185236d1..7a5430f7` 及最终 `.claude/skills/session-closeout/SKILL.md:45-82`；按“§4 新发现 tmp patch 承重，评审决定保留”与“六类均为空”两条路径第一人称走查。
+
+## 总体 verdict
+
+**存在 blocker。Blocker：1。**
+
+## 事实性发现
+
+[blocker] `.claude/skills/session-closeout/SKILL.md:49,63-67,77` — 删除已正确后移，但 §4 新候选经评审判定应保留后，没有回到“持久化／提交并验证接收载体”的动作 — 第 49 行只在 §4 **之前**执行持久化与验证，之后是补审 → 清单评审 → 删除；具体正确样本中，§4 发现 mutation 记录粒度不足、tmp patch 承重，补审同意保留，但流程没有要求把 patch 接收到项目、提交并验证，仍可直接进入删除。修复建议：把顺序写成 inventory／初始 disposition → §4 发现 → 候选补审并更新 disposition → **按更新后的完整 manifest 持久化／提炼、提交并验证全部接收载体** → 完整 manifest 独立评审 → 删除；或明确补审后必须回跳第 49 行的持久化门且重新审更新后的完整清单。
+
+[major] `.claude/skills/session-closeout/SKILL.md:61,65-67` — “六类逐项说明为何为空”不足以让独立 reviewer 判出漏项，因为候选事实只在父会话对话里，而 reviewer 默认看不到该对话 — 作者可以漏掉一次被纠正的因果，再在空清单写“第 2 类：无”；若评审输入只有该清单与仓库，独立方没有 oracle，仍只能审作者自述。修复建议：补审 prompt 必须提供可检查的本轮事件源，例如父 transcript 绝对路径（或完整导出的相关 transcript／tool-call 时间线）及六类扫描范围；reviewer 要从该来源独立枚举，再与清单双向 diff。确实无法提供事件源时，空结论只能标“未验证”，不得授权删除可能承载该知识的 tmp 项。
+
+## 复审轮四结论
+
+- §3b 等 §4、§4 不等删除，不构成互等死锁；“§4 补审前一个文件都不删”本身不过严，补审完成后仍可按 manifest 精确删除并复扫。
+- 新缺陷在补审后的接收载体闭环缺失，而非删除门本身。
+- Blocker：1。Major：1。总体 verdict：**存在 blocker**。
+- 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`，将发现、裁决、持久化、验证、删除写成单向依赖链。
