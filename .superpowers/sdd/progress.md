@@ -48,6 +48,7 @@ Independent-oracle findings now binding on implementation/review:
 
 ## Global constraints
 
+- Trust-first threat modeling: absent concrete anomaly evidence, assume participants are non-malicious and cover data corruption, program bugs, and operator mistakes only; do not add anti-malicious authority, signing, tamper resistance, or parallel tracks. Task 9 range A is the current application of this user decision.
 - Mandatory block/item delivery; boundaryless protocols are response-terminal.
 - No production live/cap-retreat bypass; no oversize-block spool fallback.
 - HTTP/2 DATA callback unchanged; no extra work in that callback.
