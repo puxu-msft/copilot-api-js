@@ -235,9 +235,13 @@ describe("Task 4.3b pre-content recovery matrix", () => {
   test("post-C9 recovery publication failure does not fall back to the primary error", async () => {
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     const rejectRecoveryWrite = true
+    const settlementError = new Error("wire torn terminal settlement rejected")
     setDeliverySessionTestHooksForTests({
       onWrite() {
         if (rejectRecoveryWrite) throw new Error("recovery wire torn")
+      },
+      onRecoveryPostCommitSettlement(kind) {
+        if (kind === "wire-torn") throw settlementError
       },
     })
     let calls = 0
@@ -269,8 +273,11 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
     await drainV3Writer()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-torn" }).entries[0]
-    expect(entry?._index?.derived?.failureReason).toBe("recovery wire torn")
+    expect(entry?._index?.derived?.failureReason).toContain("Recovery publication settlement failed")
+    expect(entry?._index?.derived?.failureReason).toContain("recovery wire torn")
+    expect(entry?._index?.derived?.failureReason).toContain("wire torn terminal settlement rejected")
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    setDeliverySessionTestHooksForTests(undefined)
   })
 
   test("post-C9 client-gone publication aborts without appending the primary terminal", async () => {
@@ -378,9 +385,15 @@ describe("Task 4.3b pre-content recovery matrix", () => {
 
   test("commit rejection after full recovery publication preserves R wire and records its cleanup error", async () => {
     const quiesceError = new Error("recovery commit quiesce rejected")
+    const settlementError = new Error("commit settlement finalize rejected")
     setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
     let exchanges = 0
     let recoveryQuiesceObserved = false
+    setDeliverySessionTestHooksForTests({
+      onRecoveryPostCommitSettlement(kind) {
+        if (kind === "commit-failed") throw settlementError
+      },
+    })
     const { setUpstreamHookForTests } = await import("~/lib/pipeline/hooks/loader")
     setUpstreamHookForTests({
       async exchange(_wire, _env, next) {
@@ -434,10 +447,13 @@ describe("Task 4.3b pre-content recovery matrix", () => {
       expect(dataFramesOfType(text, "error")).toHaveLength(0)
       await drainV3Writer()
       const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-publication-commit-rejected" }).entries[0]
-      expect(entry?._index?.derived?.failureReason).toBe("recovery commit quiesce rejected")
+      expect(entry?._index?.derived?.failureReason).toContain("Recovery publication settlement failed")
+      expect(entry?._index?.derived?.failureReason).toContain("recovery commit quiesce rejected")
+      expect(entry?._index?.derived?.failureReason).toContain("commit settlement finalize rejected")
       expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
     } finally {
       setUpstreamHookForTests(undefined)
+      setDeliverySessionTestHooksForTests(undefined)
     }
   })
 

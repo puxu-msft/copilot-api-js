@@ -64,6 +64,8 @@ export interface DeliverySessionTestHooks {
   onCommittedAllocation?: (operation: "allocate-anchor" | "allocate-real-block") => void | Promise<void>
   /** Runs after recovery-batch staging and before its C9 commit; a throw leaves the session reusable. */
   onBeforeRecoveryBatchCommit?: () => void | Promise<void>
+  /** Rejects a real post-C9 recovery settlement callback to test fail-closed handler behavior. */
+  onRecoveryPostCommitSettlement?: (kind: "wire-torn" | "commit-failed") => void | Promise<void>
   /** Observes the actual driver terminal outcome on the production handler path. */
   onResponseOutcome?: (outcome: { kind: "stream-error"; source: import("../types").ResponseFailureSource }) => void
 }
@@ -96,6 +98,11 @@ export function setDeliverySessionObserverForTests(observer: ((session: Downstre
 /** Test-only production-path fault injection; hooks run inside the real delivery session. */
 export function setDeliverySessionTestHooksForTests(hooks: DeliverySessionTestHooks | undefined): void {
   deliverySessionTestHooks = hooks
+}
+
+/** Test-only post-C9 callback fault injection, called after client-visible publication. */
+export function runRecoveryPostCommitSettlementForTests(kind: "wire-torn" | "commit-failed"): Promise<void> {
+  return Promise.resolve(deliverySessionTestHooks?.onRecoveryPostCommitSettlement?.(kind))
 }
 
 /** Test-only outcome observer; called only from the driver's typed failure funnel. */

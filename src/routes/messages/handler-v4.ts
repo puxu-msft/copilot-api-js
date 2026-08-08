@@ -40,7 +40,6 @@ import type {
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
-import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -153,6 +152,11 @@ import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
+import {
+  //
+  runRecoveryPostCommitSettlementForTests,
+  type DownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
@@ -393,36 +397,70 @@ type DirectRecoveryPublication =
   | { readonly kind: "commit-failed"; readonly evaluation: CompleteDirectRecoveryEvaluation; readonly error: unknown }
 
 interface DirectRecoveryPublicationHandlers {
-  readonly published: (evaluation: CompleteDirectRecoveryEvaluation) => Promise<boolean> | boolean
-  readonly fallback: () => Promise<boolean> | boolean
-  readonly clientGone: () => Promise<boolean> | boolean
-  readonly wireTorn: (error: Error) => Promise<boolean> | boolean
-  readonly commitFailed: (publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>) => Promise<boolean> | boolean
+  readonly published: (evaluation: CompleteDirectRecoveryEvaluation) => Promise<void> | void
+  readonly clientGone: () => Promise<void> | void
+  readonly wireTorn: (error: Error) => Promise<void> | void
+  readonly commitFailed: (publication: Extract<DirectRecoveryPublication, { kind: "commit-failed" }>) => Promise<void> | void
+  readonly settlePostCommitException: (
+    publication: Extract<DirectRecoveryPublication, { kind: "wire-torn" | "commit-failed" }>,
+    callbackError: unknown,
+  ) => Promise<void> | void
 }
 
-/** Exhaustively dispatch every publication outcome; only the explicit fallback branch may return control to P. */
-async function settleDirectRecoveryPublication(publication: DirectRecoveryPublication, handlers: DirectRecoveryPublicationHandlers): Promise<boolean> {
+type DirectRecoveryPublicationSettlement = "handled" | "fallback"
+
+/** Exhaustively dispatch every publication outcome; only the explicit fallback branch may continue to P. */
+async function settleDirectRecoveryPublication(
+  publication: DirectRecoveryPublication,
+  handlers: DirectRecoveryPublicationHandlers,
+): Promise<DirectRecoveryPublicationSettlement> {
   switch (publication.kind) {
     case "published": {
-      return handlers.published(publication.evaluation)
+      await handlers.published(publication.evaluation)
+      return "handled"
     }
     case "fallback": {
-      return handlers.fallback()
+      return "fallback"
     }
     case "client-gone": {
-      return handlers.clientGone()
+      await handlers.clientGone()
+      return "handled"
     }
     case "wire-torn": {
-      return handlers.wireTorn(publication.error)
+      try {
+        await runRecoveryPostCommitSettlementForTests("wire-torn")
+        await handlers.wireTorn(publication.error)
+      } catch (callbackError) {
+        await handlers.settlePostCommitException(publication, callbackError)
+      }
+      return "handled"
     }
     case "commit-failed": {
-      return handlers.commitFailed(publication)
+      try {
+        await runRecoveryPostCommitSettlementForTests("commit-failed")
+        await handlers.commitFailed(publication)
+      } catch (callbackError) {
+        await handlers.settlePostCommitException(publication, callbackError)
+      }
+      return "handled"
     }
     default: {
       publication satisfies never
       throw new Error("[Anthropic:v4] unreachable direct recovery publication outcome")
     }
   }
+}
+
+function recoveryPublicationError(publication: Extract<DirectRecoveryPublication, { kind: "wire-torn" | "commit-failed" }>): unknown {
+  return publication.error
+}
+
+function aggregateRecoverySettlementError(publicationError: unknown, callbackError: unknown): AggregateError {
+  const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+  return new AggregateError(
+    [publicationError, callbackError],
+    `Recovery publication settlement failed: ${message(publicationError)}; ${message(callbackError)}`,
+  )
 }
 
 /** A full recovery batch has already reached the client; only logical settlement remains. */
@@ -959,11 +997,14 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
             config: state.preContentRecovery,
           })
         ) {
+          let publication: DirectRecoveryPublication | undefined
+          let recoveryEnv: RequestEnvelope | undefined
           try {
             const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
             if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
             if (recovered.env.targetEndpoint === ENDPOINT.MESSAGES) {
-              const evaluation = await evaluateAndPublishDirectAnthropicRecovery(
+              recoveryEnv = recovered.env
+              publication = await evaluateAndPublishDirectAnthropicRecovery(
                 driver,
                 recovered.upstream,
                 recovered.env,
@@ -973,44 +1014,38 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
                 anchorHooks,
                 () => sinkChain.sink.resumeHeartbeat?.(),
               )
-              const recoverySettled = await settleDirectRecoveryPublication(evaluation, {
-                published: (published) => {
-                  ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
-                  ctx?.complete(published.response)
-                  return true
-                },
-                fallback: () => false,
-                clientGone: () => {
-                  ctx?.abort(resolvedName)
-                  return true
-                },
-                commitFailed: async (commitFailed) => {
-                  await settleCommittedRecoveryFailure({
-                    driver,
-                    env: recovered.env,
-                    model: resolvedName,
-                    publication: commitFailed,
-                    recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
-                  })
-                  return true
-                },
-                wireTorn: async (wireTorn) => {
-                  await writeTerminalThenSettle(ctx, anthropicErrorFrame("api_error", "Recovery publication failed"), () => ctx?.fail(resolvedName, wireTorn))
-                  return true
-                },
-              })
-              if (recoverySettled) return
-              // The only publication outcome allowed to continue to P's terminal path is explicit fallback.
             } else {
-              // The direct evaluator's exhaustive accumulator contract excludes translate candidates.
-              // Task #3 must still close this unpublishable candidate; Task #4 may define its translator-specific publish contract.
               await driver.disposeUnconsumedCandidateResponse(recovered.upstream)
               consola.debug("[Anthropic:v4] pre-ready recovery evaluator is unavailable for a translate leg")
             }
           } catch (recoveryError) {
-            // The failed rescue is diagnostic-only. The original upstream error remains the client-facing
-            // terminal because it is the failure the caller asked us to process.
             consola.error("[Anthropic:v4] pre-content recovery after post-commit pre-ready failure failed", recoveryError)
+          }
+          if (publication && recoveryEnv) {
+            const recoverySettled = await settleDirectRecoveryPublication(publication, {
+              published: (published) => {
+                ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+                ctx?.complete(published.response)
+              },
+              clientGone: () => ctx?.abort(resolvedName),
+              commitFailed: (commitFailed) =>
+                settleCommittedRecoveryFailure({
+                  driver,
+                  env: recoveryEnv,
+                  model: resolvedName,
+                  publication: commitFailed,
+                  recordForwarded: () => ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }),
+                }),
+              wireTorn: (wireTorn) =>
+                writeTerminalThenSettle(ctx, anthropicErrorFrame("api_error", "Recovery publication failed"), () => ctx?.fail(resolvedName, wireTorn)),
+              settlePostCommitException: (postCommit, callbackError) => {
+                ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+                ctx?.fail(resolvedName, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, {
+                  upstreamSucceeded: true,
+                })
+              },
+            })
+            if (recoverySettled === "handled") return
           }
         }
         if (error instanceof HTTPError) {
@@ -1669,10 +1704,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       })
     )
       return false
+    let publication: DirectRecoveryPublication | undefined
+    let recoveryEnv: RequestEnvelope | undefined
     try {
       const recovered = await driver.runResponseRecovery(upstream, env, "stream-error-before-content")
       if (!recovered.ok) throw new Error("[Anthropic:v4] ready-state recovery unexpectedly rejected routing")
-      const publication = await evaluateAndPublishDirectAnthropicRecovery(
+      recoveryEnv = recovered.env
+      publication = await evaluateAndPublishDirectAnthropicRecovery(
         driver,
         recovered.upstream,
         recovered.env,
@@ -1682,48 +1720,45 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         anchorHooks,
         opts.resumeRecoveryHeartbeat,
       )
-      return await settleDirectRecoveryPublication(publication, {
-        published: (published) => {
-          recordForwarded()
-          env.ctx.complete(published.response)
-          return true
-        },
-        fallback: () => false,
-        clientGone: () => {
-          recordForwarded()
-          env.ctx.abort(model)
-          return true
-        },
-        commitFailed: async (commitFailed) => {
-          await settleCommittedRecoveryFailure({
-            driver,
-            env: recovered.env,
-            model,
-            publication: commitFailed,
-            recordForwarded,
-            finalize: async () => {
-              await sink.finalize?.()
-            },
-          })
-          return true
-        },
-        wireTorn: async (wireTorn) => {
-          const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
-          if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, { usage: { input_tokens: 0, output_tokens: 0 } }, { cause: wireTorn }))
-            return true
-          await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed")).catch(() => undefined)
-          recordForwarded()
-          env.ctx.fail(model, wireTorn)
-          await sink.finalize?.()
-          return true
-        },
-      })
     } catch (recoveryError) {
-      // Recovery is internal best-effort. Preserve the primary error on wire while retaining the rescue
-      // failure in diagnostics for operators.
       consola.error("[Anthropic:v4] pre-content recovery evaluation failed", recoveryError)
       return false
     }
+    const settlement = await settleDirectRecoveryPublication(publication, {
+      published: (published) => {
+        recordForwarded()
+        env.ctx.complete(published.response)
+      },
+      clientGone: () => {
+        recordForwarded()
+        env.ctx.abort(model)
+      },
+      commitFailed: (commitFailed) =>
+        settleCommittedRecoveryFailure({
+          driver,
+          env: recoveryEnv,
+          model,
+          publication: commitFailed,
+          recordForwarded,
+          finalize: async () => {
+            await sink.finalize?.()
+          },
+        }),
+      wireTorn: async (wireTorn) => {
+        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
+        if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, { usage: { input_tokens: 0, output_tokens: 0 } }, { cause: wireTorn }))
+          return
+        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", "Recovery publication failed")).catch(() => undefined)
+        recordForwarded()
+        env.ctx.fail(model, wireTorn)
+        await sink.finalize?.()
+      },
+      settlePostCommitException: (postCommit, callbackError) => {
+        recordForwarded()
+        env.ctx.fail(model, aggregateRecoverySettlementError(recoveryPublicationError(postCommit), callbackError), undefined, { upstreamSucceeded: true })
+      },
+    })
+    return settlement === "handled"
   }
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
