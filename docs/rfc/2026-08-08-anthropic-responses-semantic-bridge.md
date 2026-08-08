@@ -156,7 +156,15 @@ type FallbackBoundaryUpdate = Readonly<{
 
 ```ts
 type ItemKey = string & { readonly __itemKey: unique symbol }
-type ItemKind = "reasoning" | "text" | "function-call" | "server-tool-call" | "degraded-text" | "drop"
+type ItemKind =
+  | "reasoning"
+  | "text"
+  | "function-call"
+  | "function-result"
+  | "server-tool-call"
+  | "server-tool-result"
+  | "degraded-text"
+  | "drop"
 type ItemPhase = "declared" | "streaming" | "done" | "discarded"
 
 type SourceRef = Readonly<{
@@ -171,6 +179,16 @@ type SemanticItem =
   | Readonly<{ key: ItemKey; ordinal: number; kind: "reasoning"; reasoning: ReasoningExchangeItem }>
   | Readonly<{ key: ItemKey; ordinal: number; kind: "text" | "degraded-text"; text: string; correlationId?: string }>
   | Readonly<{ key: ItemKey; ordinal: number; kind: "function-call" | "server-tool-call"; callId: string; name: string; arguments: string }>
+  | Readonly<{
+      key: ItemKey
+      ordinal: number
+      kind: "function-result" | "server-tool-result"
+      callId: string
+      output: string
+      isError: boolean
+      name?: string
+      sourcePayload?: unknown
+    }>
   | Readonly<{ key: ItemKey; ordinal: number; kind: "drop"; reason: DegradationReason }>
 
 type PerOutputItemState = Readonly<{
