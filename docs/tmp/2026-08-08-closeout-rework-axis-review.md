@@ -64,3 +64,31 @@
 - 结构怪味：`.claude/skills/session-closeout/SKILL.md:47,61,73`，类型为“通用 disposition 与文件专用 schema 混层，导致声明单源但实际双判”；处置为本轮修，因为它直接使非文件候选流程不可执行。
 - Blocker：0。Major：3。总体 verdict：**修复 major 后可进入下一阶段**。
 - 修复路由建议：instruction text 交 `gpt-souls:instruction-smith` 整改；Git 命令行为继续用临时仓库正反探针复核。
+
+# 复审轮二（`a60ce4ac`）
+
+## 评审范围与证据
+
+- 范围：`git diff 4f3a10ed..a60ce4ac` 的四份改动，并 grep 最终 skill／memory／MEMORY／CLAUDE.md 的同源表述。
+- 已复用的独立实测：Git `2.43.0` 临时仓库中，`status` 含不重叠 staged 修改时 `merge --ff-only` 可成功；resolved-but-uncommitted merge 时 `ls-files -u` 为 0 但命令因 `MERGE_HEAD` 拒绝。
+
+## 总体 verdict
+
+**修复 major 后可进入下一阶段。Blocker：0。**
+
+## 事实性发现
+
+[major] `.claude/skills/session-closeout/SKILL.md:61,74` — §4 产出的 provisional 候选没有可达的独立裁决时点 — 收尾固定顺序是 §1 → §3b → §4；第 61／74 行要求这些在 §4 才生成的行“进 §1 独立评审”，但 §1 已经执行完，也没明确要求回跳。因此执行者可以走完整个顺序，却留下未裁决候选并进入 §5 提交／§6 交接。修复建议：在 §4 末尾加机械闭环“候选行全部写入同一 manifest → 回到 §1 对本轮新增行评审 → 0 blocker／0 major 后更新 disposition → 才进入 §5”；同时说明是否需要重审既有 tmp 行，避免把非破坏性新增候选误写成清理清单全量作废。
+
+[major] `.claude/skills/session-closeout/SKILL.md:70` — 第 6 类仍在独立评审之前用“无法……廉价重建”做作者自评式过滤，遗漏项永远进不了 provisional 清单 — “廉价”没有外部阈值；同一个运行态探针，作者可凭“规范里能推”不列，而接手者可能因版本／环境条件仍必须重跑。它与第 61 行“本步只产出候选、不判值不值得留”冲突。修复建议：候选边界改成可观察事件，例如“本轮实跑且其结果支撑了实现、裁决或交付断言的运行态／外部探针”全部列 provisional；是否可由代码／规范／canonical artifact 重建，作为通用 disposition 的“不可变替代证据”字段交独立评审裁决，而不是候选前置过滤。
+
+[major] `docs/memory/methodology-ff-only-refusal-is-not-a-conflict.md:10-15,37`、`docs/memory/MEMORY.md:35` — “判据是 status 干净／状态干净后才按 stderr 分流”是 false-red，普通 dirty status 并不阻止 fast-forward — 独立探针中，当前分支有与候选改动不重叠的 staged 文件时，`git merge --ff-only candidate` rc=0，快进成功且 staged 修改保留。若另有不重叠 dirt 同时发生拓扑分叉，当前文本会因 status 不干净而卡在前置状态，读不到真正的 `Not possible to fast-forward`。修复建议：`status` 只用于识别并确认归属“正在进行且会阻止新 merge 的操作”，不是 clean gate；随后始终执行／读取这次 `--ff-only` 的实际 stderr。`would be overwritten` 再定位重叠 dirty path，`Not possible...` 再判分叉；不重叠 dirt 不处置。同步修改 MEMORY 钩子的“判据是 status 干净”。
+
+## 复审轮二结论
+
+- 通用 schema 与文件追加字段的分层已闭合；非文件候选现在能填写全部通用字段及来源／复现方式，未发现新的双源裁决。
+- “不自行解决前置状态”本身正确且不会无故卡死；问题是把任何 dirty `status` 都当成必须先处理的阻断门。正确下一步应是确认 in-progress operation 归属，同时仍按本次命令实际 stderr 行动。
+- 三处一致性：ff-only memory 与 MEMORY 钩子同步，但同步复制了 `status 干净` 的过严判据；skill 第 6 类与同段“全部 provisional”存在内部冲突。
+- 结构怪味：`.claude/skills/session-closeout/SKILL.md:61,70,74`，类型为“候选发现后回跳评审缺失 + 筛选职责泄漏到发现层”；处置为本轮修，因为会分别产生未裁决交付与静默漏项。
+- Blocker：0。Major：3。总体 verdict：**修复 major 后可进入下一阶段**。
+- 修复路由建议：instruction text 交 `gpt-souls:instruction-smith`；Git 判据继续保持“读实际命令输出”，避免再新增全局 clean gate。
