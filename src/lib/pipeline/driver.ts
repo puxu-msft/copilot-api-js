@@ -667,11 +667,13 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
     role,
     parentCandidate,
     metadata,
+    initialStrategy,
     env,
   }: {
     role: CandidateRole
     parentCandidate?: CandidateHandle
     metadata?: { recoveryReason?: string }
+    initialStrategy?: string
     env: RequestEnvelope
   }): CandidateRuntime<CandidateResponseSession> => {
     const retry = createSemanticRetryPolicy(deps)
@@ -689,6 +691,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       role,
       ...(parentCandidate !== undefined && { parentCandidate }),
       ...(metadata !== undefined && { metadata }),
+      ...(initialStrategy !== undefined && { initialStrategy }),
       env,
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })

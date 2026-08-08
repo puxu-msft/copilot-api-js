@@ -60,6 +60,8 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
   readonly metadata?: { recoveryReason?: string }
+  /** Strategy attached to this candidate's initial physical dispatch. */
+  readonly initialStrategy?: string
   readonly env: RequestEnvelope
   /** Fork request/response state only after the canonical candidate handle exists. */
   readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
@@ -98,7 +100,12 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
       started = true
       runPromise = (async () => {
         try {
-          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal })
+          const ready = await input.scheduler.run({
+            candidate: handle,
+            env: latestEnv,
+            signal,
+            ...(input.initialStrategy !== undefined && { initialStrategy: input.initialStrategy }),
+          })
           latestEnv = ready.env
           return {
             candidate: handle,

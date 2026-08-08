@@ -42,6 +42,8 @@ export interface CoordinatorCandidateInput {
   readonly env: RequestEnvelope
   /** Structured trigger retained on the recovery candidate instead of overloading retryNextStrategy. */
   readonly metadata?: { recoveryReason?: string }
+  /** Strategy attached to this candidate's initial physical dispatch. */
+  readonly initialStrategy?: string
 }
 
 export interface CoordinatedCandidate<TProcessor> extends CandidateReady<TProcessor> {
@@ -174,7 +176,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       if (recoveryFromPreReadyStarted) throw new Error("[generation-coordinator] recovery from pre-ready failure already started")
       recoveryFromPreReadyStarted = true
       // The primary never became ready and has already settled itself as failed in candidate.ts, so there is no ready parent to settle here.
-      return start({ role: "recovery", env, metadata: { recoveryReason: _reason } })
+      return start({ role: "recovery", env, metadata: { recoveryReason: _reason }, initialStrategy: "precontent-recovery" })
     },
 
     async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
@@ -198,7 +200,13 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
         }
         if (disposalError !== undefined)
           throw disposalError instanceof Error ? disposalError : new Error("Ready parent disposal failed", { cause: disposalError })
-        return await start({ role: "recovery", parentCandidate: parent.candidate, env, metadata: { recoveryReason: reason } })
+        return await start({
+          role: "recovery",
+          parentCandidate: parent.candidate,
+          env,
+          metadata: { recoveryReason: reason },
+          initialStrategy: retryNextStrategy,
+        })
       } finally {
         recoveryParentsInProgress.delete(parent.candidate)
       }

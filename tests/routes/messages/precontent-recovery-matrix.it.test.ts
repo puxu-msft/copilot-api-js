@@ -16,10 +16,13 @@ import {
   test,
 } from "bun:test"
 
+import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { tagTransportError } from "~/lib/error/transport-reason"
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
+import { subscribeModelOperationTerminals } from "~/lib/history/v3/terminal-bus"
 import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
@@ -83,6 +86,15 @@ async function drain(n = 120): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve()
 }
 
+function frameValues(record: ModelOperationRecord, handles: ReadonlyArray<string>): ReadonlyArray<{ event?: string; data?: string }> {
+  return handles.map((handle) => record.arena.frames.find((frame) => frame.handle === handle)?.value as { event?: string; data?: string })
+}
+
+function clientFrames(record: ModelOperationRecord): ReadonlyArray<{ value: { event?: string; data?: string }; synthetic?: string }> {
+  const track = record.egress?.client
+  return frameValues(record, track?.frames ?? []).map((value, index) => ({ value, synthetic: track?.frameObservations?.[index]?.synthetic }))
+}
+
 describe("Task 4.3b pre-content recovery matrix", () => {
   useIsolatedRuntime()
   beforeEach(() => {
@@ -130,6 +142,172 @@ describe("Task 4.3b pre-content recovery matrix", () => {
 
   // Task 5 mode/mount coverage SSOT. Each row drives the actual heartbeat clock before P fails;
   // the expected first recovery-visible frame encodes the frozen three-mode wire contract.
+  test("canonical terminal record and V2 entry agree when empty-text recovery wins", async () => {
+    const canonical: Array<ModelOperationRecord> = []
+    const unsubscribe = subscribeModelOperationTerminals((record) => {
+      canonical.push(record)
+    })
+    const clock = new FakeClock()
+    let firstFetchStarted!: () => void
+    const firstFetchStartedP = new Promise<void>((resolve) => (firstFetchStarted = resolve))
+    let releasePrimary!: () => void
+    const primaryP = new Promise<Response>((resolve) => {
+      const primaryError = { type: "error", error: { type: "overloaded_error", message: "canonical primary failed" } }
+      const primaryFailure = new Response(JSON.stringify(primaryError), { status: 529 })
+      releasePrimary = () => resolve(primaryFailure)
+    })
+    let calls = 0
+    clock.install()
+    try {
+      setStateForTests({ streamCommitAfterSec: 2, streamKeepalivePingSec: 2, streamKeepaliveMode: "empty_text", maxReactiveRetries: 0 })
+      applyFetchMock(
+        mock(() => {
+          calls += 1
+          if (calls === 1) firstFetchStarted()
+          return calls === 1 ? primaryP : Promise.resolve(createSseResponse(completeFrames("msg_canonical_recovery")))
+        }),
+      )
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const responseP = request(createFullTestApp(), "precontent-canonical-success")
+      await firstFetchStartedP
+      await clock.advance(4_000)
+      await drain()
+      releasePrimary()
+      await (await responseP).text()
+      await drainV3Writer()
+
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-canonical-success" }).entries[0]
+      const record = canonical.find((candidate) => candidate.identity.sessionId === "precontent-canonical-success")
+      const primary = record?.dispatches[0]
+      const recovery = record?.dispatches[1]
+      const recoveryCandidate = record?.candidates.find((candidate) => candidate.handle === recovery?.candidate)
+      const frames = record ? clientFrames(record) : []
+
+      const realRecoveryFrames = frames.filter((frame) => frame.value.data?.includes("recovered response"))
+
+      expect(calls).toBe(2)
+      expect(entry?._index?.derived?.currentStrategy).toBe("precontent-recovery")
+      expect(entry?._index?.derived?.failureReason).toBeUndefined()
+      expect(entry?.attempts?.[0]).toMatchObject({
+        candidateRole: "primary",
+        candidateVerdict: "failed",
+        dispatchVerdict: "failed",
+        upstreamResponse: { status: 529 },
+      })
+      expect(entry?.attempts?.[0]?.upstreamResponse?.rawBody).toContain("canonical primary failed")
+      expect(entry?.attempts?.[1]).toMatchObject({
+        candidateRole: "recovery",
+        candidateVerdict: "winner",
+        dispatchVerdict: "committed",
+        strategy: "precontent-recovery",
+      })
+      expect(entry?.attempts?.[1]?.upstreamResponse?.sseEvents?.some((event) => event.raw.includes("msg_canonical_recovery"))).toBe(true)
+      expect(entry?.clientResponse?.sseEvents?.some((event) => event.synthetic === "keepalive")).toBe(true)
+      expect(entry?.clientResponse?.sseEvents?.some((event) => event.synthetic === "anchor")).toBe(true)
+      expect(
+        entry?.clientResponse?.sseEvents?.filter((event) => event.raw.includes("recovered response")).every((event) => event.synthetic === undefined),
+      ).toBe(true)
+      expect(record?.terminal).toMatchObject({ outcome: "completed", winnerCandidate: recoveryCandidate?.handle, committedDispatch: recovery?.handle })
+      expect(primary?.verdict).toBe("failed")
+      expect(primary?.upstreamResponse?.status).toBe(529)
+      expect(recovery).toMatchObject({ verdict: "committed", strategy: "precontent-recovery" })
+      expect(frameValues(record!, recovery?.upstreamResponse?.frames ?? []).some((frame) => frame.data?.includes("msg_canonical_recovery"))).toBe(true)
+      expect(frames.some((frame) => frame.synthetic === "keepalive")).toBe(true)
+      expect(frames.some((frame) => frame.synthetic === "anchor")).toBe(true)
+      expect(realRecoveryFrames.length).toBeGreaterThan(0)
+      expect(realRecoveryFrames.every((frame) => frame.synthetic === undefined)).toBe(true)
+    } finally {
+      unsubscribe()
+      clock.restore()
+    }
+  })
+
+  test("canonical terminal record and V2 entry retain the primary when empty-text recovery falls back", async () => {
+    const canonical: Array<ModelOperationRecord> = []
+    const unsubscribe = subscribeModelOperationTerminals((record) => {
+      canonical.push(record)
+    })
+    const clock = new FakeClock()
+    let firstFetchStarted!: () => void
+    const firstFetchStartedP = new Promise<void>((resolve) => (firstFetchStarted = resolve))
+    let releasePrimary!: () => void
+    const primaryP = new Promise<Response>((resolve) => {
+      releasePrimary = () =>
+        resolve(
+          new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "canonical fallback primary failed" } }), { status: 529 }),
+        )
+    })
+    let calls = 0
+    clock.install()
+    try {
+      setStateForTests({ streamCommitAfterSec: 2, streamKeepalivePingSec: 2, streamKeepaliveMode: "empty_text", maxReactiveRetries: 0 })
+      applyFetchMock(
+        mock(() => {
+          calls += 1
+          if (calls === 1) firstFetchStarted()
+          if (calls === 1) return primaryP
+          return Promise.resolve(
+            createSseResponse([
+              messageStartFrame({ id: "msg_canonical_fallback_recovery", model: MODEL, inputTokens: 5 }),
+              `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "canonical recovery failed" } })}\n\n`,
+            ]),
+          )
+        }),
+      )
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const responseP = request(createFullTestApp(), "precontent-canonical-fallback")
+      await firstFetchStartedP
+      await clock.advance(4_000)
+      await drain()
+      releasePrimary()
+      await (await responseP).text()
+      await drainV3Writer()
+
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-canonical-fallback" }).entries[0]
+      const record = canonical.find((candidate) => candidate.identity.sessionId === "precontent-canonical-fallback")
+      const primary = record?.dispatches[0]
+      const recovery = record?.dispatches[1]
+      const primaryCandidate = record?.candidates.find((candidate) => candidate.handle === primary?.candidate)
+      const frames = record ? clientFrames(record) : []
+
+      const realRecoveryFrames = frames.filter((frame) => frame.value.data?.includes("canonical recovery failed"))
+
+      expect(calls).toBe(2)
+      expect(entry?._index?.derived?.currentStrategy).toBe("precontent-recovery")
+      expect(entry?._index?.derived?.failureReason).toBe("Failed to create messages")
+      expect(entry?.attempts?.[0]).toMatchObject({
+        candidateRole: "primary",
+        candidateVerdict: "failed",
+        dispatchVerdict: "failed",
+        upstreamResponse: { status: 529 },
+      })
+      expect(entry?.attempts?.[0]?.upstreamResponse?.rawBody).toContain("canonical fallback primary failed")
+      expect(entry?.attempts?.[1]).toMatchObject({
+        candidateRole: "recovery",
+        candidateVerdict: "failed",
+        dispatchVerdict: "failed",
+        strategy: "precontent-recovery",
+      })
+      expect(entry?.attempts?.[1]?.upstreamResponse?.sseEvents?.some((event) => event.raw.includes("canonical recovery failed"))).toBe(true)
+      expect(entry?.clientResponse?.sseEvents?.some((event) => event.synthetic === "keepalive")).toBe(true)
+      expect(entry?.clientResponse?.sseEvents?.some((event) => event.synthetic === "anchor")).toBe(true)
+      expect(entry?.clientResponse?.sseEvents?.filter((event) => event.raw.includes("canonical recovery failed"))).toHaveLength(0)
+      expect(record?.terminal).toMatchObject({ outcome: "failed" })
+      expect(record?.terminal?.winnerCandidate).toBeUndefined()
+      expect(record?.terminal?.committedDispatch).toBeUndefined()
+      expect(primary).toMatchObject({ verdict: "failed", upstreamResponse: { status: 529 } })
+      expect(primaryCandidate?.verdict).toBe("failed")
+      expect(recovery).toMatchObject({ verdict: "failed", strategy: "precontent-recovery" })
+      expect(frameValues(record!, recovery?.upstreamResponse?.frames ?? []).some((frame) => frame.data?.includes("canonical recovery failed"))).toBe(true)
+      expect(frames.some((frame) => frame.synthetic === "keepalive")).toBe(true)
+      expect(frames.some((frame) => frame.synthetic === "anchor")).toBe(true)
+      expect(realRecoveryFrames).toHaveLength(0)
+    } finally {
+      unsubscribe()
+      clock.restore()
+    }
+  })
+
   test.each([
     { mode: "ping" as const, mount: "pre-ready" as const, injectedAnchor: false, expectedFirstRealIndex: 0 },
     { mode: "enveloped_ping" as const, mount: "pre-ready" as const, injectedAnchor: false, expectedFirstRealIndex: 0 },

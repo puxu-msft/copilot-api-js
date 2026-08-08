@@ -105,7 +105,7 @@ export interface ScheduledDispatch {
 }
 
 export interface DispatchScheduler {
-  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal }): Promise<ScheduledDispatch>
+  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal; initialStrategy?: string }): Promise<ScheduledDispatch>
   /** Dispose the one ready-but-unconsumed dispatch while preserving the caller's terminal settlement. */
   disposeActiveWithSettlement(input: DispatchSettlement): Promise<void>
   cancelActive(reason: string): Promise<void>
@@ -171,10 +171,10 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   }
 
   const scheduler: DispatchScheduler = {
-    async run({ candidate, env, signal }) {
+    async run({ candidate, env, signal, initialStrategy }) {
       let current = env
       let reason: DispatchReason = "initial"
-      let strategy: string | undefined
+      let strategy: string | undefined = initialStrategy
       let forceHttp = false
       let acceptedResolution: ((env: RequestEnvelope) => void | Promise<void>) | undefined
       let dispatchNumber = 0
