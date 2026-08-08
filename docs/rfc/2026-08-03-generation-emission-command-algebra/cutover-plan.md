@@ -135,11 +135,11 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 | 约束 | 脚本位置 | 后果 |
 |---|---|---|
-| **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:77` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
-| **脏树硬拒 rc=3** | `:115-122` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.0f** |
-| **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:106-113` | 重跑要换目录，别往同一个目录里混批次 |
+| **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:80` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
+| **脏树硬拒 rc=3** | `:124-131` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.0f** |
+| **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:113-122` | 重跑要换目录，别往同一个目录里混批次 |
 
-`MIN_TESTS` 无默认值、缺失即 rc=2（`:84-90`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:80`）。
+`MIN_TESTS` 无默认值、缺失即 rc=2（`:92-98`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:83`）。**`MIN_TESTS` 比较的是 summary 行的 executed 口径**（缺失时才回退 `N tests`）：producer 传的是 baseline `minimum_executed`，而 runner 的 `N tests` 是调度单元数、与 executed 不是同一个量（实测同一 commit 出现过 6719 tests / 7255 executed）。同理，wrapper 取 summary 行必须挑带计数的那一行——runner 在 summary **之后**还会打印 `[parallel-test] artifacts=<dir>`。
 
 ### 0.4 准备 commit（1～3）的越界判据
 
