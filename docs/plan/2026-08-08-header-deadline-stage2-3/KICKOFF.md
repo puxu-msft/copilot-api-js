@@ -19,7 +19,7 @@
 - **合并主线后必须重跑 `bun run test:backend` 重取 `minimum_executed`**，两侧冻结数字都不可信；JUnit 交叉验证**只数 `<testcase>` 叶节点**（第 2、3 条）。
 - CodeGraph 若打出「索引来自另一个 worktree」警告，**改用磁盘 Read**（第 5 条）。
 
-**第一步动作**：按 HANDOVER 的 **T1** 开工——在 `packages/foundation` 定义 `TransportTerminationEvidence`（六个 kind）与 `TransportTerminationObservation`（`firstObserved`/`attribution`/`evidence`），core 不复制类型。验收 = `tests/architecture/package-boundaries.unit.test.ts` 绿；证伪 = 在 core 里另抄一份同名类型，边界守卫必须变红。
+**第一步动作**：按 HANDOVER 的 **T1** 开工——在 `packages/foundation` 定义 `TransportTerminationEvidence`（六个 kind）与 `TransportTerminationObservation`（`firstObserved`/`attribution`/`evidence`），core／server 只通过包导入消费。验收 = `tests/architecture/package-boundaries.unit.test.ts` 绿；证伪 = 把定义搬进 core、再让 foundation 反向 `import ... from "~/lib/..."`，该守卫必须变红。⚠️ 该守卫只匹配 import specifier，**不会**因为「core 里另抄一份同名类型」变红——防复制需另加 AST 检查，见 HANDOVER 的 T1 边界说明。
 
 **已裁决、不要重开的**：
 - 事实（`TransportTerminationObservation`）与策略（`TransportErrorReason`）**不合并成一个枚举**（spec §3.2）。
@@ -29,6 +29,6 @@
 
 **需要用户先定的**：无。阶段 2 的范围与不变量已在 spec 冻结；**若发现 spec 与实现无法同时满足，停下来问，不要自行改冻结不变量**。
 
-**测试门禁现状（核验于 2026-08-08，`master` = `d1011fe7`）**：`typecheck` / `lint:all` / `test:backend`（`7279 executed / 30 skipped / 0 fail`）均可正常跑。`test:backend` 是交付前必跑档位。依赖 native history-search 产物的测试**没有产物就显式 skip、不算红**。**复验触发器**：出现真实失败、矛盾证据、transport／test 基础设施路径变化、异常 merge 结果，或用户要求时才重验；仅仅 `master` 前进不触发。
+**测试门禁现状（核验于 2026-08-08）**：`typecheck` / `lint:all` / `test:backend` 均可正常跑。`test:backend` 的 `7279 executed / 30 skipped / 0 fail` **实测锚点是阶段 1 代码终点 `bea1dfa3`**（不是当时的 `master` `d1011fe7`——后者只是把 `bea1dfa3` 作祖先、另含无关 History worker 提交）。`test:backend` 是交付前必跑档位。依赖 native history-search 产物的测试**没有产物就显式 skip、不算红**。**复验触发器**：出现真实失败、矛盾证据、transport／test 基础设施路径变化、异常 merge 结果，或用户要求时才重验；仅仅 `master` 前进不触发。
 
 **每个阶段做完就合并 `master`**（定向测试 + typecheck + 架构守卫 + `test:backend` + 独立 subagent review 全绿后），不要把阶段 2 和 3 攒成一次大合并。

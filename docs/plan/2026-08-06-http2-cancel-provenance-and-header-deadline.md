@@ -1,6 +1,6 @@
 # HTTP/2 CANCEL 来源归因与 Header Deadline 实施计划
 
-> **实施状态：部分完成**（核验于 2026-08-08，`master` = `bea1dfa3d61896bf2089958676bd1236269877d9`）
+> **实施状态：部分完成**（核验于 2026-08-08；核验基线 `master` = `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`，阶段 1 代码终点 = `bea1dfa3d61896bf2089958676bd1236269877d9`，后者是前者的祖先）
 >
 > - **阶段 1（response-header deadline 作用域）：已完成并合入 `master`。** 落地提交 `0f9023b2`、`b1a0f6e6`、`88bb1039`、`7cf1e896`（+ lint/baseline 校准 `bae83f01`、`a0ad0f1a`、`da584116`，主线合并 `0732fc76`、`b0d9dbf0`、`bea1dfa3`，评审整改 `03a84bcb`）。合并态全门：typecheck、`lint:all`、`test:backend` `7279 executed / 30 skipped / 0 fail`；独立 code reviewer 与 verifier 均 PASS。
 > - **阶段 2（termination provenance 生产与策略接线）：未实施。** 无 `TransportTerminationEvidence`／`TransportTerminationObservation` 生产代码或测试（`rg 'TransportTerminationEvidence|TransportTerminationObservation' src tests packages` 零命中，核验于同一 `master`）。
