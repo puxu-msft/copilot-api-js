@@ -7,10 +7,12 @@ plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session-0ff74836
 session_id: 0ff74836-c889-4e6b-9aaa-72ba9fe985fd
 predecessor_session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
-status: batch-1b-candidate-verified-awaiting-master-integration
+status: batch-1b-integrated-master-d3b4ac77-superseded-by-plan
 continuity: tightly-coupled
 continuity_reason: route admission, terminal publication, shutdown and pending overlay share one reservation lifecycle; splitting before the shared contract is green would force each executor to reconstruct and potentially diverge that lifecycle.
 ---
+
+> **状态：已完成并停止更新。** Batch 1b 已于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；活跃状态写入权已转交正式计划 [`docs/plan/2026-08-07-history-persistence-worker.md`](../plan/2026-08-07-history-persistence-worker.md) 的 Batch 1b 状态行。本文件保留接力、验证与作废路线的历史证据。
 
 ## Context-window 终态接力
 
@@ -29,7 +31,7 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - [x] shutdown Step 1 停止新 admission waiter，并在 History close 前 drain waiter／reservation barrier。
 - [x] pending durability 全量 overlay 与独立 256 acknowledged-recent cache；status／metrics／telemetry 接线。
 - [x] 定向门禁、两方向 mutation 正控、backend、独立复审到 0 blocker／major。
-- [ ] fast-forward 合入 `master`，回填正式计划的最终完成 SHA。
+- [x] fast-forward 合入 `master@d3b4ac77`，并回填正式计划的最终完成 SHA。
 
 ## Red 阶段证据
 
@@ -59,7 +61,7 @@ continuity_reason: route admission, terminal publication, shutdown and pending o
 - 最终backend在`df0c7bf4`连续两次得到`7255 executed／30 skipped`，旧`minimum_executed=7258`已成为合法当前人口过不了的false-red。独立解析两组16份JUnit均得到7285 testcase－30 skipped＝7255 executed；7256负控返回非零、7255正控返回零。`94205e89`仅校准该floor为7255，不改files、allowed_skipped或runner blob。校准后精确计划门44 pass／0 fail、typecheck绿、完整backend 0 fail（16 shards，7255 executed，30 skipped，52.45s）。`pass`汇总在相同executed下会漂移，故不拿它作为人口口径；原reviewer最终复审判可合、0 blocker／major。
 - `bun run build`在`94205e89`候选上成功生成`dist/main.mjs`与`dist/history-worker.mjs`；tsdown把动态`bun:ffi`视为external并给出既有warning，不影响构建退出码。
 
-## 在途意图
+## 冻结的实现边界
 
 - Batch 1b 原始起点为已集成的 `master@cfe78b64`；context-window 接力基线先更新为 `master@90e777bc`，最终又合入含 lossless shutdown 重写的 `master@44457047`。只执行 plan Task 1b，不接 Batch 2a Worker semantic backend、restart policy、SQLite Worker owner 或 query RPC。
 - `RequestContextManager.create()` 保持同步；route 在 parse／dispatch 前 await reservation，再显式传入 context／lightweight producer。

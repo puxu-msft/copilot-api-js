@@ -6,6 +6,7 @@ import type {
   ModelOperationRecord,
   OperationTrack,
 } from "~/lib/context/model-operation-record"
+import type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
 import type { EntrySummary } from "~/lib/history/types"
 
 import {
@@ -160,12 +161,7 @@ let draining = false
  * cannot wedge the drain — and therefore shutdown — indefinitely. `0` disables
  * the time cap; `maxAttempts` still bounds the loop.
  */
-export interface V3PersistRetryConfig {
-  maxAttempts: number
-  backoffMs: number
-  maxBackoffMs: number
-  maxTotalMs: number
-}
+export type V3PersistRetryConfig = HistoryPersistRetryConfig
 
 export const DEFAULT_V3_PERSIST_RETRY_CONFIG: Readonly<V3PersistRetryConfig> = Object.freeze({
   maxAttempts: 10,

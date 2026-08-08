@@ -1,4 +1,7 @@
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+import type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
+
+export type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
 
 export const HISTORY_WORKER_PROTOCOL_VERSION = 1 as const
 
@@ -45,12 +48,6 @@ export interface HistoryWorkerRawConfig {
   readonly enabled: boolean
   readonly dbPath: string
   readonly maxObjectBytes: number
-}
-
-export interface HistoryPersistRetryConfig {
-  readonly maxAttempts: number
-  readonly backoffMs: number
-  readonly maxTotalMs?: number
 }
 
 export interface HistoryWorkerHotConfig {
@@ -359,9 +356,8 @@ function assertHistoryWorkerStartConfig(value: unknown, label: string): asserts 
   assertObject(value.persistRetry, `${label}.persistRetry`)
   assertPositiveInteger(value.persistRetry.maxAttempts, `${label}.persistRetry.maxAttempts`)
   assertNonNegativeInteger(value.persistRetry.backoffMs, `${label}.persistRetry.backoffMs`)
-  if (value.persistRetry.maxTotalMs !== undefined) {
-    assertNonNegativeInteger(value.persistRetry.maxTotalMs, `${label}.persistRetry.maxTotalMs`)
-  }
+  assertNonNegativeInteger(value.persistRetry.maxBackoffMs, `${label}.persistRetry.maxBackoffMs`)
+  assertNonNegativeInteger(value.persistRetry.maxTotalMs, `${label}.persistRetry.maxTotalMs`)
 }
 
 function assertHistoryWorkerHotConfig(value: unknown, label: string): asserts value is HistoryWorkerHotConfig {
