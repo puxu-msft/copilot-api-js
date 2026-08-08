@@ -40,6 +40,8 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
     resolveQuiesced = resolve
     rejectQuiesced = reject
   })
+  // Observe internally so external-abort cleanup cannot create an unhandled rejection when no caller joins quiesced.
+  void quiesced.catch(() => {})
   let onExternalAbort = (): void => {}
 
   const complete = (error?: unknown): void => {

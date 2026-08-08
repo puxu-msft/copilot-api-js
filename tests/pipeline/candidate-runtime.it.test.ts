@@ -41,6 +41,7 @@ interface DispatchRow {
   openedKind?: PhysicalTransportResponse["kind"]
   verdict?: DispatchVerdict
   settlementReason?: string
+  settlementError?: unknown
 }
 
 function recordingPort() {
@@ -72,6 +73,7 @@ function recordingPort() {
       const row = dispatches.get(handle)!
       row.verdict = input.verdict
       row.settlementReason = input.reason
+      row.settlementError = input.error
     },
   }
   return { port, candidates, dispatches }
@@ -200,15 +202,22 @@ describe("P6-T1 candidate dispatch runtime", () => {
     await candidate.cancel("test-cleanup")
   })
 
-  test("cleanup rejection releases the ready dispatch before preserving the original error", async () => {
+  test("cleanup rejection releases the ready dispatch while preserving all phase errors", async () => {
     const recording = recordingPort()
-    const cleanupError = new Error("ready cleanup failed")
+    const upstreamError = new Error("upstream failure")
+    const cancelError = new Error("cancel cleanup failed")
+    const disposeError = new Error("dispose cleanup failed")
+    const quiesceError = new Error("quiesce cleanup failed")
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
     const lifecycle: UpstreamDispatchLifecycle = {
-      cancel() {},
-      async dispose() {
-        throw cleanupError
+      cancel() {
+        throw cancelError
       },
-      quiesced: Promise.reject(cleanupError),
+      async dispose() {
+        throw disposeError
+      },
+      quiesced,
     }
     const candidate = runtime({
       env: envelope("cleanup-rejection"),
@@ -217,10 +226,18 @@ describe("P6-T1 candidate dispatch runtime", () => {
     })
 
     const ready = await candidate.run()
-    const disposal = candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "cleanup-rejection" })
-    await expect(disposal).rejects.toBeInstanceOf(AggregateError)
+    const rejection = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "cleanup-rejection", error: upstreamError }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors[0]).toBeInstanceOf(AggregateError)
+    expect(((rejection as AggregateError).errors[0] as AggregateError).errors).toEqual([cancelError, disposeError, quiesceError])
+    // Propagation deliberately contains cleanup errors only: `settlement.error` is diagnostic input, not a cleanup failure.
     await expect(ready.settleDispatch({ verdict: "failed", reason: "after-cleanup" })).resolves.toBeUndefined()
-    expect(recording.dispatches.get(ready.dispatch)?.verdict).toBe("discarded")
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "cleanup-rejection" })
+    expect((recording.dispatches.get(ready.dispatch)?.settlementError as AggregateError).errors).toEqual([upstreamError, cancelError, disposeError, quiesceError])
     expect(recording.candidates.get(candidate.handle)?.verdict).toBeUndefined()
   })
 

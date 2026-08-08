@@ -321,7 +321,7 @@ describe("P6-T2 generation coordinator", () => {
     expect((rejection as AggregateError).errors).toContain(disposeError)
     expect(opens).toEqual(["primary"])
     expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
-      verdict: "discarded",
+      verdict: "failed",
       settlementReason: "dispose-failed",
       settlementError: disposeError,
       retryNextStrategy: "precontent-recovery",

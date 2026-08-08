@@ -132,6 +132,12 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     input.recording.settleDispatch(dispatch, settlement)
   }
 
+  const distinctErrors = (errors: ReadonlyArray<unknown>): Array<unknown> => {
+    const unique: Array<unknown> = []
+    for (const error of errors) if (!unique.includes(error)) unique.push(error)
+    return unique
+  }
+
   const disposeDispatch = (
     dispatch: DispatchHandle,
     lifecycle: UpstreamDispatchLifecycle,
@@ -141,33 +147,37 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     const pending = cleanup.get(dispatch)
     if (pending) return pending
     const task = (async () => {
-      let disposalError: unknown
+      const cleanupErrors: Array<unknown> = []
       if (cancelFirst) {
         try {
           lifecycle.cancel(settlement.reason)
         } catch (error) {
-          disposalError = error
+          cleanupErrors.push(error)
         }
       }
       try {
-        try {
-          await lifecycle.dispose(settlement.reason)
-        } catch (error) {
-          disposalError = error
-        }
-        try {
-          await lifecycle.quiesced
-        } catch (error) {
-          disposalError ??= error
-        }
-      } finally {
-        active.delete(dispatch)
+        await lifecycle.dispose(settlement.reason)
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      try {
+        await lifecycle.quiesced
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      const uniqueCleanupErrors = distinctErrors(cleanupErrors)
+      const settlementErrors = distinctErrors([...(settlement.error === undefined ? [] : [settlement.error]), ...uniqueCleanupErrors])
+      const cleanupFailure = uniqueCleanupErrors.length === 0 ? undefined : uniqueCleanupErrors.length === 1 ? uniqueCleanupErrors[0] : new AggregateError(uniqueCleanupErrors, "Dispatch cleanup failed")
+      try {
         recordSettlement(dispatch, {
           ...settlement,
-          ...(disposalError !== undefined && settlement.error === undefined && { error: disposalError }),
+          ...(cleanupFailure !== undefined && { verdict: "failed" as const }),
+          ...(settlementErrors.length === 1 ? { error: settlementErrors[0] } : settlementErrors.length > 1 ? { error: new AggregateError(settlementErrors, "Dispatch settlement errors") } : {}),
         })
+      } finally {
+        active.delete(dispatch)
       }
-      if (disposalError !== undefined) throw asError(disposalError)
+      if (cleanupFailure !== undefined) throw cleanupFailure
     })()
     cleanup.set(dispatch, task)
     return task

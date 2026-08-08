@@ -80,6 +80,34 @@ describe("physical dispatch lifecycle", () => {
     await expect(quiescedResult).resolves.toBe(cleanupError)
   })
 
+  test("external abort catches internal disposal while public quiesced preserves the cleanup error", async () => {
+    const cleanupError = new Error("external iterator return failed")
+    const external = new AbortController()
+    const lifecycle = createDispatchLifecycle(external.signal)
+    lifecycle.ownFrames({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => new Promise<IteratorResult<string>>(() => {}),
+          return: async () => {
+            throw cleanupError
+          },
+        }
+      },
+    })
+    let unhandled: unknown
+    const onUnhandled = (reason: unknown) => {
+      unhandled = reason
+    }
+    process.once("unhandledRejection", onUnhandled)
+
+    external.abort(new Error("candidate lost"))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(unhandled).toBeUndefined()
+    await expect(lifecycle.quiesced).rejects.toBe(cleanupError)
+    process.removeListener("unhandledRejection", onUnhandled)
+  })
+
   test("dispose aborts and returns the owned pending body iterator before its barrier resolves", async () => {
     const fixture = pendingSource()
     const lifecycle = createDispatchLifecycle()
