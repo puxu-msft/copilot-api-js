@@ -619,6 +619,8 @@ git commit -m "feat: record HTTP2 termination evidence"
 
 **Files:**
 - Modify: `src/lib/pipeline/types.ts:77-89,141-149`
+- Modify: `src/lib/transport/upstream-fetch.ts:43-103`
+- Modify: `src/lib/transport/http2-client.ts:1025-1050`
 - Modify: `src/lib/transport/http-transport.ts:63-127`
 - Modify: `src/lib/transport/responses-transport.ts:114-171`
 - Modify: `src/lib/transport/send.ts`
@@ -666,7 +668,7 @@ Expected: PASS。
 - [ ] **Step 6：提交 Task 6**
 
 ```bash
-git add -- src/lib/pipeline/types.ts src/lib/transport/http-transport.ts src/lib/transport/responses-transport.ts src/lib/transport/send.ts src/lib/transport/physical-transport.ts tests/transport/http-transport.it.test.ts tests/transport/responses-transport.it.test.ts
+git add -- src/lib/pipeline/types.ts src/lib/transport/upstream-fetch.ts src/lib/transport/http2-client.ts src/lib/transport/http-transport.ts src/lib/transport/responses-transport.ts src/lib/transport/send.ts src/lib/transport/physical-transport.ts tests/transport/http-transport.it.test.ts tests/transport/responses-transport.it.test.ts
 git commit -m "feat: expose live transport termination provenance"
 ```
 
@@ -688,7 +690,7 @@ git commit -m "feat: expose live transport termination provenance"
 
 - [ ] **Step 2：写六类 attribution 的双向 recovery tests**
 
-使用相同buffer/预算分别构造：local、ambiguous、unknown均`sendCount()===0`；peer、session在`!committedAny && attempt<cap`时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。关键竞态case：accessor初始snapshot为peer，iterator `lifecycle.quiesced`先resolve但`terminationQuiesced`仍pending；随后physical close追加local/session使snapshot变ambiguous并resolve第二道barrier。helper必须等待两道barrier后返回false且不retry。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
+使用相同buffer/预算分别构造：local、ambiguous、unknown均`sendCount()===0`；peer、session在`!committedAny && attempt<cap`时发生一次recovery；无observation的clean-EOF truncation保持既有recovery。关键竞态case：accessor初始snapshot为peer，iterator `lifecycle.quiesced`先resolve但`terminationQuiesced`仍pending；随后physical close追加local/session使snapshot变ambiguous并resolve第二道barrier。helper必须等待两道barrier后返回false且不retry；返回的最终`stream-error.transportTermination`必须deep-frozen、attribution=ambiguous且包含完整late evidence。另断言committed block后peer/session仍走continuation/partial-degrade，不扩大透明retry窗口。
 
 - [ ] **Step 3：运行六类recovery测试确认红**
 
@@ -724,7 +726,7 @@ async function isBufferedTransportCut(error: unknown, upstream: UpstreamStream):
 
 Run: `bun test tests/pipeline/buffered-sink.unit.test.ts tests/pipeline/continuation-retry.it.test.ts --timeout 30000`
 
-Mutation A：让local/ambiguous返回true，负样本红。Mutation B：让peer/session返回false，正样本红。Mutation C：让explicit unknown落legacy fallback，unknown测试红。Mutation D：error snapshot优先于live accessor，后到session/ambiguous测试红。
+Mutation A：让local/ambiguous返回true，负样本红。Mutation B：让peer/session返回false，正样本红。Mutation C：让explicit unknown落legacy fallback，unknown测试红。Mutation D：error snapshot优先于live accessor，后到session/ambiguous测试红。Mutation E：`streamErrorOutcome`不附`transportTermination`，frozen outcome生产接线断言必须红。
 
 - [ ] **Step 7：提交 Task 7**
 
