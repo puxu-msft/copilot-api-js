@@ -84,6 +84,7 @@
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md)
 - [交用户前先 subagent review（含 in-chat 提案）/ 用户对齐只证方向非细节最优](feedback-subagent-review-before-any-user-facing-proposal.md)
 - [后台 agent 运维两条：抖动只 SendMessage resume / 等待期用 stat mtime 判活](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md)
+- [网络失败强制原会话恢复，但完整成功样本不追溯失效](feedback-network-failure-resume-does-not-invalidate-success.md)
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md)
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md)
