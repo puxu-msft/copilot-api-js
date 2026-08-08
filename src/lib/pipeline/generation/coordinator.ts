@@ -287,9 +287,8 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           const loserCleanup = observeLoserCleanup(candidates, pending, winner, runtimes, candidateReservations)
           return { candidate: winner, bufferedFrames: outcome.bufferedFrames, liveFrames: outcome.liveFrames, loserCleanup }
         }
-        const runtime = runtimes.get(outcome.candidate.candidate)
-        const ownerErrors = runtime ? settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
-        if (outcome.kind === "failure") failures.push({ error: outcome.error, source: outcome.source })
+        const { failure, ownerErrors } = settleRaceOutcome(outcome, runtimes, settleAndRelease)
+        if (failure) failures.push(failure)
         if (ownerErrors.length > 0) {
           const aggregate = new AggregateError([...failures.map((failure) => failure.error), ...ownerErrors], "Generation candidate settlement failed") as HedgeRaceAggregateError
           Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
@@ -388,6 +387,23 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   }
 }
 
+/**
+ * Settle a non-boundary race outcome (terminal-without-boundary or failure) against its owning
+ * runtime and split the result into probe-provenance failure vs. recorder/owner settlement errors.
+ * Shared by {@link raceReadyCandidates} and {@link raceProbePromises} so a defect in owner-error
+ * collection or release timing shows up in both race paths' mutation controls, not just one.
+ */
+function settleRaceOutcome<TProcessor>(
+  outcome: Exclude<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "boundary" }>,
+  runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>,
+  settleAndRelease: (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }) => ReadonlyArray<unknown>,
+): { failure: HedgeRaceFailure | undefined; ownerErrors: ReadonlyArray<unknown> } {
+  const runtime = runtimes.get(outcome.candidate.candidate)
+  const ownerErrors = runtime ? settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
+  const failure = outcome.kind === "failure" ? { error: outcome.error, source: outcome.source } : undefined
+  return { failure, ownerErrors }
+}
+
 async function raceProbePromises<TProcessor>(input: {
   candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>
   probes: ReadonlyArray<Promise<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>>>
@@ -413,10 +429,9 @@ async function raceProbePromises<TProcessor>(input: {
         loserCleanup,
       }
     }
-    const runtime = input.runtimes.get(outcome.candidate.candidate)
-    const settlementErrors = runtime ? input.settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
+    const { failure, ownerErrors: settlementErrors } = settleRaceOutcome(outcome, input.runtimes, input.settleAndRelease)
     ownerErrors.push(...settlementErrors)
-    if (outcome.kind === "failure") failures.push({ error: outcome.error, source: outcome.source })
+    if (outcome.kind === "failure") failures.push(failure as HedgeRaceFailure)
     else if (settlementErrors.length === 0) firstTerminal ??= outcome
   }
   const uniqueOwnerErrors = [...new Set(ownerErrors)]

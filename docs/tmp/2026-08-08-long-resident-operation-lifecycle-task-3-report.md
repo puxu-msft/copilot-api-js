@@ -194,7 +194,20 @@ B1 verifier Findings 1～3 的实现与 focused tests 已进入 checkpoint：can
 
 `bun run test:backend` → `bun scripts/parallel-test.ts unit it http`：`16 shards · 6681 tests · 6681 pass · 0 fail · 31.47s`。全绿，无需分类失败（既无本轮改动引入的失败，也无 master 既有／环境性失败需要 skip）。
 
+## B1 merged-state review closure + race owner logic unification
+
+B1 merged-state review 已闭合：reviewer approved（0 Critical／0 Important／1 Minor），verifier 0 findings、B1 可独立验证。
+
+reviewer 对协调者提交的结构问题（M7 显示 `raceReadyCandidates()` 与 standalone `raceProbePromises()` 各自内联同型「settle → 收集 owner error → 释放 → 聚合」逻辑，守卫已分裂）作出裁决：本轮应消除，不阻断。已抽出共用的 `settleRaceOutcome()`（settle 目标 runtime、按 `outcome.kind` 分类 probe failure 与 owner error、返回两者），`raceReadyCandidates()` 与 standalone `raceProbePromises()` 均改用它；未改变任何可观察行为（错误 identity、聚合顺序、`hedgeFailures` provenance、release 时机、`raceReadyCandidates` 对无错误 terminal-without-boundary 仍 throw 的既有语义）。
+
+### 双向 mutation 证据
+
+冻结 exact patch，把 `settleRaceOutcome()` 的 owner-error 收集回退为「settle 后丢弃、不进聚合」：`bun test tests/pipeline/coordinator-hedge.unit.test.ts --test-name-pattern='owner-only|recording rejection'` 4 fail／0 pass——`raceReadyCandidates` 一侧的两条测试（`a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe`、`a terminal-without-boundary candidate with a recording rejection surfaces an owner-only aggregate`）与 `racePrimaryWithDelayedHedge` 一侧的两条测试（`delayed hedge: an owner-only terminal recording rejection surfaces failure, not terminal success`、`delayed hedge: a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe`）**全部同时变红**，证明共享 primitive 抽取后单点缺陷会同时击中两条路径的 owner 测试。失败断言：`raceReadyCandidates` 一侧 `expect((error as AggregateError).errors).toEqual([...])` 缺 `recordingError`；`racePrimaryWithDelayedHedge` 一侧 `expect(result.kind).toBe("failure")` 收到 `"terminal"`。
+
+`git apply --reverse --check` 后精确反向恢复该 mutation patch，重跑同一目标命令回到绿：`bun test tests/pipeline/coordinator-hedge.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/candidate-runtime.it.test.ts`：58 pass／0 fail／244 expect；`bun run typecheck` exit 0；`git diff --check` exit 0；`git diff HEAD --stat` 只剩 `settleRaceOutcome()` 抽取本身的净改动。
+
+顺带 minor：`docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-3-report.md`（本文件的存档副本）原有多余 EOF 空行，已修剪为单一尾随换行；`...-b1-verification.md` 检查后本就只有单一尾随换行，无需改动。
+
 ## Concerns
 
-B1 merged-state review 尚未闭合。未执行 Task 4。
-
+B1 merged-state review 已闭合（reviewer approved 0/0/1、verifier 0 findings）。未执行 Task 4。
