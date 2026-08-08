@@ -54,6 +54,32 @@ describe("physical dispatch lifecycle", () => {
     await expect(lifecycle.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
   })
 
+  test("iterator return rejection rejects quiesced and dispose with the original error", async () => {
+    const cleanupError = new Error("iterator return failed")
+    const lifecycle = createDispatchLifecycle()
+    const frames = lifecycle.ownFrames({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => new Promise<IteratorResult<string>>(() => {}),
+          return: async () => {
+            throw cleanupError
+          },
+        }
+      },
+    })
+    frames[Symbol.asyncIterator]()
+
+    const quiescedResult = lifecycle.quiesced.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const first = lifecycle.dispose("test cleanup")
+    const second = lifecycle.dispose("repeat cleanup")
+    expect(first).toBe(second)
+    await expect(first).rejects.toBe(cleanupError)
+    await expect(quiescedResult).resolves.toBe(cleanupError)
+  })
+
   test("dispose aborts and returns the owned pending body iterator before its barrier resolves", async () => {
     const fixture = pendingSource()
     const lifecycle = createDispatchLifecycle()

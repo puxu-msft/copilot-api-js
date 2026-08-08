@@ -200,6 +200,30 @@ describe("P6-T1 candidate dispatch runtime", () => {
     await candidate.cancel("test-cleanup")
   })
 
+  test("cleanup rejection releases the ready dispatch before preserving the original error", async () => {
+    const recording = recordingPort()
+    const cleanupError = new Error("ready cleanup failed")
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        throw cleanupError
+      },
+      quiesced: Promise.reject(cleanupError),
+    }
+    const candidate = runtime({
+      env: envelope("cleanup-rejection"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "cleanup-rejection"),
+    })
+
+    const ready = await candidate.run()
+    const disposal = candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "cleanup-rejection" })
+    await expect(disposal).rejects.toBeInstanceOf(AggregateError)
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-cleanup" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)?.verdict).toBe("discarded")
+    expect(recording.candidates.get(candidate.handle)?.verdict).toBeUndefined()
+  })
+
   test("429 admission replay creates a fresh dispatch in the same candidate", async () => {
     const recording = recordingPort()
     const log: Array<string> = []

@@ -27,6 +27,7 @@ import type {
 import { createCandidateRuntime } from "~/lib/pipeline/generation/candidate"
 import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
 import { createDispatchScheduler } from "~/lib/pipeline/generation/dispatch-scheduler"
+import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
@@ -269,6 +270,7 @@ describe("P6-T2 generation coordinator", () => {
     const opens: Array<string> = []
     const processors: Array<symbol> = []
     const disposeError = new Error("unread parent dispose failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
     const coordinator = createGenerationCoordinator({
       env: envelope("primary"),
       createCandidate: ({ role, parentCandidate, env }) => {
@@ -307,12 +309,16 @@ describe("P6-T2 generation coordinator", () => {
           },
         })
       },
+      generationBudget: budget,
     })
     const primary = await coordinator.runPrimary()
 
-    await expect(coordinator.runRecovery(primary, "dispose-failed", envelope("recovery"), "precontent-recovery")).rejects.toThrow(
-      "Ready dispatch disposal failed",
+    const rejection = await coordinator.runRecovery(primary, "dispose-failed", envelope("recovery"), "precontent-recovery").then(
+      () => undefined,
+      (error: unknown) => error,
     )
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors).toContain(disposeError)
     expect(opens).toEqual(["primary"])
     expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
       verdict: "discarded",
@@ -321,6 +327,7 @@ describe("P6-T2 generation coordinator", () => {
       retryNextStrategy: "precontent-recovery",
     })
     expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
     await expect(coordinator.runRecovery(primary, "dispose-failed-again", envelope("recovery-again"), "precontent-recovery")).rejects.toThrow(
       "expected exactly one active ready dispatch, found 0",
     )

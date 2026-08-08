@@ -150,20 +150,23 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         }
       }
       try {
-        await lifecycle.dispose(settlement.reason)
-      } catch (error) {
-        disposalError = error
+        try {
+          await lifecycle.dispose(settlement.reason)
+        } catch (error) {
+          disposalError = error
+        }
+        try {
+          await lifecycle.quiesced
+        } catch (error) {
+          disposalError ??= error
+        }
+      } finally {
+        // mutation: leave active dispatch registered
+        recordSettlement(dispatch, {
+          ...settlement,
+          ...(disposalError !== undefined && settlement.error === undefined && { error: disposalError }),
+        })
       }
-      try {
-        await lifecycle.quiesced
-      } catch (error) {
-        disposalError ??= error
-      }
-      active.delete(dispatch)
-      recordSettlement(dispatch, {
-        ...settlement,
-        ...(disposalError !== undefined && settlement.error === undefined && { error: disposalError }),
-      })
       if (disposalError !== undefined) throw asError(disposalError)
     })()
     cleanup.set(dispatch, task)

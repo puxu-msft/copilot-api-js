@@ -6,7 +6,7 @@ worktree: /home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations
 plan: docs/plan/2026-08-08-long-resident-operation-lifecycle.md
 agent_id: a-impl-1
 session_id: pending
-status: in-progress — Task 1～2 complete; Task 3 and B1 merged-state review remain
+status: in-progress — Task 1～3 complete; B1 merged-state review remains
 ---
 
 # B1 lifecycle 实施进度
@@ -19,8 +19,6 @@ status: in-progress — Task 1～2 complete; Task 3 and B1 merged-state review r
 
 ## 剩余项
 
-- Task 3：dispatch cleanup rejection 可见；scheduler／candidate／coordinator 所有权释放。
-  - 验收：transport、candidate、driver、coordinator focused tests 通过，typecheck exit 0。
 - B1 合并态 review。
   - 验收：独立 reviewer 0 blocker／0 major。
 
@@ -28,7 +26,8 @@ status: in-progress — Task 1～2 complete; Task 3 and B1 merged-state review r
 
 - Task 1 已完成 reviewer 修复：sealed 且 child 未退出时 snapshot 保持 `quiesced: false`；delivery terminal 覆盖全部 state；canonical `failed` 是已登记终态。三项精确 mutation 均已按目标断言转红后恢复，Task 1 仍 complete。
 - Task 2 已完成并采纳 reviewer 修复：RequestContext 发布 logical／operation／delivery／canonical snapshot；delivery outcome 与 canonical join 分离，首次 delivery outcome 不可覆盖；delivery/canonical failure 仅在 process shutdown lifecycle failure barrier callback 返回 true 后终结；两种合法 operation/delivery 先后、canonical commit failure 四种 barrier 结果均已覆盖；canonical failure tests 配置独立 in-memory raw capture fixture，正样本断言 ctx 创建后 lease 增一、reject 后恢复各例基线。
-- Task 3 将处理 dispatch cleanup rejection、scheduler／candidate／coordinator 所有权释放。
+- Task 3 已完成：iterator `return()` cleanup error 以同一 identity reject `dispose()` 与 `quiesced`；scheduler active slot、candidate verdict、coordinator reservation 与 active runtime 均在 release-first finally 路径收口后传播原始 cleanup error。
+- B1 合并态 review 仍未开始。
 - `failureRegistered` 的权威含义是 process shutdown lifecycle failure barrier 已同步持有错误；不得改成 context-local ledger。
 - Candidate reservation 的真实 owner 是 `coordinator.ts`；scheduler 只拥有 dispatch active slot，candidate 只拥有 verdict。
 
