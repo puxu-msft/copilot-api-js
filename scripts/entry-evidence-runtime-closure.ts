@@ -1,4 +1,9 @@
-import { readFileSync, realpathSync, statSync } from "node:fs"
+import {
+  //
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs"
 import path from "node:path"
 
 export interface RuntimeClosureFile {
@@ -15,11 +20,11 @@ export interface RuntimePackageIdentity {
   packageJsonPath: string
 }
 
-export function bytewiseSort(values: string[]): string[] {
+export function bytewiseSort(values: Array<string>): Array<string> {
   return values.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
 }
 
-export function runtimeImportSpecifiers(source: string, loader: "ts" | "js"): string[] | undefined {
+export function runtimeImportSpecifiers(source: string, loader: "ts" | "js"): Array<string> | undefined {
   try {
     return bytewiseSort([...new Set(new Bun.Transpiler({ loader }).scan(source).imports.map((imported) => imported.path))])
   } catch {
@@ -59,7 +64,7 @@ export function resolveRuntimeImport(specifier: string, importer: string): strin
   }
 }
 
-export async function discoverRuntimePackageClosure(entrySpecifier: string, importer: string): Promise<RuntimeClosureFile[] | undefined> {
+export async function discoverRuntimePackageClosure(entrySpecifier: string, importer: string): Promise<Array<RuntimeClosureFile> | undefined> {
   const entry = resolveRuntimeImport(entrySpecifier, importer)
   if (entry === undefined) return undefined
   let build: Awaited<ReturnType<typeof Bun.build>>
@@ -69,7 +74,7 @@ export async function discoverRuntimePackageClosure(entrySpecifier: string, impo
     return undefined
   }
   if (!build.success || build.metafile === undefined) return undefined
-  const files: RuntimeClosureFile[] = []
+  const files: Array<RuntimeClosureFile> = []
   for (const input of Object.keys(build.metafile.inputs)) {
     const resolvedPath = realpathSync(path.resolve(input))
     const identity = packageIdentity(resolvedPath)

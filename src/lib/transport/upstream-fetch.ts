@@ -37,8 +37,10 @@ import {
   getUpstreamDispatcher,
   getUpstreamH2Favor,
 } from "~/lib/proxy"
+import { combineAbortSignals } from "~/lib/stream"
 
 import { http2Fetch } from "./http2-client"
+import { createResponseHeaderDeadline } from "./response-header-deadline"
 
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
 export interface UpstreamFetchInit {
@@ -46,6 +48,8 @@ export interface UpstreamFetchInit {
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignal | undefined
+  /** Maximum time to receive response headers. Disarmed as soon as the transport resolves. */
+  responseHeaderTimeoutMs?: number
   /**
    * Best-effort HTTP/2 response-trailers callback. Invoked (h2 path only) when the
    * upstream sends a trailing HEADERS frame — fired AFTER the body's data frames and
@@ -91,7 +95,19 @@ let activeUpstreamFetch: UpstreamFetchFn = productionUpstreamFetch
 
 /** Issue an upstream HTTP request — HTTP/2 for https, undici for plaintext http. */
 export function upstreamFetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
-  return activeUpstreamFetch(url, init)
+  const { responseHeaderTimeoutMs = 0, signal, ...transportInit } = init
+  if (responseHeaderTimeoutMs <= 0) return activeUpstreamFetch(url, { ...transportInit, signal })
+
+  const deadline = createResponseHeaderDeadline(responseHeaderTimeoutMs)
+  try {
+    return activeUpstreamFetch(url, {
+      ...transportInit,
+      signal: combineAbortSignals(signal, deadline.signal),
+    }).finally(() => deadline.complete())
+  } catch (error) {
+    deadline.complete()
+    throw error
+  }
 }
 
 /**

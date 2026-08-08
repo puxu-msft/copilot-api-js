@@ -7,6 +7,11 @@ import {
 } from "bun:test"
 
 import { createRequestContextManager } from "~/lib/context/manager"
+import {
+  //
+  initHistory,
+  shutdownHistory,
+} from "~/lib/history/state"
 import { HistoryAdmissionControllerImpl } from "~/lib/history/worker/admission"
 import {
   //
@@ -14,11 +19,6 @@ import {
   resetHistoryAdmissionLifecycleForTests,
   withHistoryAdmission,
 } from "~/lib/history/worker/http-admission"
-import {
-  //
-  initHistory,
-  shutdownHistory,
-} from "~/lib/history/state"
 import { setHistoryAdmissionControllerForTests } from "~/lib/history/worker/registry"
 import {
   //

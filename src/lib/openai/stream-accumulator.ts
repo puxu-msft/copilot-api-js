@@ -4,8 +4,12 @@
  */
 
 import type { BaseStreamAccumulator } from "~/lib/stream"
+import type {
+  //
+  GhcCompletionTokensDetails,
+  GhcPromptTokensDetails,
+} from "~/types/api/ghc-usage"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
-import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 
 import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
@@ -88,7 +92,12 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
     }
     const cw = nonNegOrUndef(pd?.cache_write_tokens)
     if (cw !== undefined) acc.cacheWriteTokens = cw
-    acc.inputDetails = { text: nonNegOrUndef(pd?.text_tokens), audio: nonNegOrUndef(pd?.audio_tokens), image: nonNegOrUndef(pd?.image_tokens), video: nonNegOrUndef(pd?.video_tokens) }
+    acc.inputDetails = {
+      text: nonNegOrUndef(pd?.text_tokens),
+      audio: nonNegOrUndef(pd?.audio_tokens),
+      image: nonNegOrUndef(pd?.image_tokens),
+      video: nonNegOrUndef(pd?.video_tokens),
+    }
     const cd = parsed.usage.completion_tokens_details as GhcCompletionTokensDetails | undefined
     if (cd?.reasoning_tokens !== undefined && cd.reasoning_tokens !== null) {
       acc.reasoningTokens = cd.reasoning_tokens

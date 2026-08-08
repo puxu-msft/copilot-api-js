@@ -107,9 +107,7 @@ function request(leg: Leg, stream: boolean): Promise<Response> {
       }),
     )
   if (leg === "responses")
-    return Promise.resolve(
-      app.request("/responses", { method: "POST", headers, body: JSON.stringify({ model: `${MODEL}@messages`, input: "probe", stream }) }),
-    )
+    return Promise.resolve(app.request("/responses", { method: "POST", headers, body: JSON.stringify({ model: `${MODEL}@messages`, input: "probe", stream }) }))
   return Promise.resolve(
     app.request(`/v1beta/models/${MODEL}@messages:${stream ? "streamGenerateContent" : "generateContent"}`, {
       method: "POST",

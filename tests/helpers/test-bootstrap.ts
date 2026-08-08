@@ -10,9 +10,9 @@ import {
   initHistory,
   setHistoryPublisher,
 } from "~/lib/history"
+import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { setHistoryAdmissionControllerForTests } from "~/lib/history/worker/registry"
-import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import {
   //
   initBus,

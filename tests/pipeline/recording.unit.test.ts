@@ -88,8 +88,7 @@ describe("buildAnthropicResponseData", () => {
   })
 
   test("preserves raw stop_details without normalizing category:null", () => {
-    const expectedBytes =
-      '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals...","recommended_model":"future-model"}'
+    const expectedBytes = '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals...","recommended_model":"future-model"}'
     const acc = makeAnthropicAcc({
       stopReason: "refusal",
       stopDetails: JSON.parse(expectedBytes),

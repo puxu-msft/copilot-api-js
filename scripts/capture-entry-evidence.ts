@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
-import { createHash, randomUUID } from "node:crypto"
+import { Glob } from "bun"
 import {
+  //
+  createHash,
+  randomUUID,
+} from "node:crypto"
+import {
+  //
   closeSync,
   constants,
   existsSync,
@@ -17,10 +23,17 @@ import {
 } from "node:fs"
 import path from "node:path"
 
-import { Glob } from "bun"
-
-import { parseDiscoveryBaseline, type SuiteSkip, type TestcaseSkip } from "./entry-evidence-schema"
-import { parseJUnit, type SkippedIdentity } from "./parallel-test-artifacts"
+import {
+  //
+  parseDiscoveryBaseline,
+  type SuiteSkip,
+  type TestcaseSkip,
+} from "./entry-evidence-schema"
+import {
+  //
+  parseJUnit,
+  type SkippedIdentity,
+} from "./parallel-test-artifacts"
 
 interface Options {
   tree: string
@@ -57,21 +70,27 @@ function sha256(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex")
 }
 
+function requireMapValue<K, V>(map: ReadonlyMap<K, V>, key: K, message: string): V {
+  const value = map.get(key)
+  if (value === undefined) throw new Error(message)
+  return value
+}
+
 function parseOptions(argv: Array<string>): Options {
   const values = new Map<string, string>()
   for (let index = 0; index < argv.length; index += 2) {
-    const flag = argv[index]
-    const value = argv[index + 1]
-    if (!flag?.startsWith("--") || value === undefined || values.has(flag)) fail(2, "CLI arguments are invalid")
+    const flag = argv.at(index)
+    const value = argv.at(index + 1)
+    if (flag === undefined || !flag.startsWith("--") || value === undefined || values.has(flag)) fail(2, "CLI arguments are invalid")
     values.set(flag, value)
   }
-  if (values.size !== 5 || [...values.keys()].some((flag) => !["--tree", "--entry-sha", "--out", "--runs", "--discovery-baseline"].includes(flag)))
+  if (values.size !== 5 || [...values.keys()].some((flag) => !["--discovery-baseline", "--entry-sha", "--out", "--runs", "--tree"].includes(flag)))
     fail(2, "CLI arguments are invalid")
-  const tree = values.get("--tree")!
-  const entrySha = values.get("--entry-sha")!
-  const out = values.get("--out")!
-  const runs = Number(values.get("--runs"))
-  const discoveryBaseline = values.get("--discovery-baseline")!
+  const tree = requireMapValue(values, "--tree", "CLI tree argument is missing")
+  const entrySha = requireMapValue(values, "--entry-sha", "CLI entry SHA argument is missing")
+  const out = requireMapValue(values, "--out", "CLI output argument is missing")
+  const runs = Number(requireMapValue(values, "--runs", "CLI runs argument is missing"))
+  const discoveryBaseline = requireMapValue(values, "--discovery-baseline", "CLI discovery baseline argument is missing")
   if (!path.isAbsolute(tree) || !path.isAbsolute(out) || !/^[0-9a-f]{40}$/.test(entrySha) || !Number.isSafeInteger(runs) || runs !== 15)
     fail(2, "CLI arguments are invalid")
   return { tree, entrySha, out, runs, discoveryBaseline }
@@ -85,7 +104,7 @@ function git(tree: string, args: Array<string>): string {
 
 function canonicalPathWithExistingAncestor(value: string): string | undefined {
   let candidate = path.resolve(value)
-  const unresolvedSegments: string[] = []
+  const unresolvedSegments: Array<string> = []
   while (!existsSync(candidate)) {
     const parent = path.dirname(candidate)
     if (parent === candidate) return undefined
@@ -144,25 +163,33 @@ function formatIdentity(identity: TestcaseSkip | SuiteSkip | SkippedIdentity): s
 }
 
 function baselineSkipKey(skip: TestcaseSkip | SuiteSkip): string {
-  return skip.kind === "testcase"
-    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+  return skip.kind === "testcase" ?
+      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
     : [skip.kind, skip.file, skip.suite_name].join("\0")
 }
 
 function runtimeSkipKey(skip: SkippedIdentity): string {
-  return skip.kind === "testcase"
-    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+  return skip.kind === "testcase" ?
+      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
     : [skip.kind, skip.file, skip.suite_name].join("\0")
 }
 
 function assertSkippedMultiset(expected: Array<TestcaseSkip | SuiteSkip>, actual: Array<SkippedIdentity>): void {
   const expectedByKey = new Map(expected.map((skip) => [baselineSkipKey(skip), skip]))
   const actualByKey = new Map(actual.map((skip) => [runtimeSkipKey(skip), skip]))
-  const missing = [...expectedByKey.keys()].filter((key) => !actualByKey.has(key)).map((key) => formatIdentity(expectedByKey.get(key)!))
-  const unexpected = [...actualByKey.keys()].filter((key) => !expectedByKey.has(key)).map((key) => formatIdentity(actualByKey.get(key)!))
-  const mismatchedCounts = [...expectedByKey.keys()]
-    .filter((key) => actualByKey.has(key) && expectedByKey.get(key)!.count !== actualByKey.get(key)!.count)
-    .map((key) => `${formatIdentity(expectedByKey.get(key)!)} expected_count=${expectedByKey.get(key)!.count} actual_count=${actualByKey.get(key)!.count}`)
+  const missing = [...expectedByKey.keys()]
+    .filter((key) => !actualByKey.has(key))
+    .map((key) => formatIdentity(requireMapValue(expectedByKey, key, "expected skip identity is missing")))
+  const unexpected = [...actualByKey.keys()]
+    .filter((key) => !expectedByKey.has(key))
+    .map((key) => formatIdentity(requireMapValue(actualByKey, key, "actual skip identity is missing")))
+  const mismatchedCounts = [...expectedByKey.keys()].flatMap((key) => {
+    const expectedSkip = requireMapValue(expectedByKey, key, "expected skip identity is missing")
+    const actualSkip = actualByKey.get(key)
+    return actualSkip !== undefined && expectedSkip.count !== actualSkip.count ?
+        [`${formatIdentity(expectedSkip)} expected_count=${expectedSkip.count} actual_count=${actualSkip.count}`]
+      : []
+  })
   if (missing.length > 0 || unexpected.length > 0 || mismatchedCounts.length > 0)
     throw new Error(
       `skipped identity multiset mismatch: missing=[${missing.join(", ")}] unexpected=[${unexpected.join(", ")}] count_mismatch=[${mismatchedCounts.join(", ")}]`,

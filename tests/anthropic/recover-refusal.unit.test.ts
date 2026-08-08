@@ -49,7 +49,10 @@ const ERROR_RENDERED = "denied: category=unknown"
 
 /** Drive a sequence of plain event objects through a suppression rewriter; return forwarded data strings. */
 function run(events: Array<Record<string, unknown>>): Array<string> {
-  const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: SUPPRESS_TEXT, errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
+  const recoverer = createRefusalRewriter({
+    policy: { mode: "end_turn", endTurnText: SUPPRESS_TEXT, errorMessage: "", errorType: "api_error" },
+    staticVars: STATIC,
+  })
   const out: Array<string> = []
   for (const ev of events) {
     const { parsed, raw } = frame(ev)
@@ -118,7 +121,10 @@ describe("createRefusalRecoverer (streaming)", () => {
   })
 
   test("renders {thinking_tokens} as `unknown` when the upstream sent no breakdown, and {model}", () => {
-    const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: "t={thinking_tokens} m={model}", errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
+    const recoverer = createRefusalRewriter({
+      policy: { mode: "end_turn", endTurnText: "t={thinking_tokens} m={model}", errorMessage: "", errorType: "api_error" },
+      staticVars: STATIC,
+    })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = recoverer.processEvent(parsed, raw)
     // synthetic text delta (index 0) carries the rendered template
@@ -220,7 +226,10 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   })
 
   test("renders a custom message template + custom error type into the error frame", () => {
-    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: "denied m={model} t={thinking_tokens}", errorType: "custom_type" }, staticVars: STATIC })
+    const emitter = createRefusalRewriter({
+      policy: { mode: "error", endTurnText: "", errorMessage: "denied m={model} t={thinking_tokens}", errorType: "custom_type" },
+      staticVars: STATIC,
+    })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = emitter.processEvent(parsed, raw)
     expect(out).toHaveLength(1)
