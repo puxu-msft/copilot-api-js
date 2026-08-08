@@ -1204,3 +1204,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
 - **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
 - **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。
+
+## shutdown drain source 仍由协调器手工枚举（2026-08-08，无损排空评审整改期间发现）
+
+- **根因 / 现状**：`src/lib/shutdown.ts` 的 production `ShutdownDrainSource.getActive()` 手工拼接 `RequestContextManager.getTrackedOperations()` 与 `listInFlightLightweightModelOperations()`。本轮正是因为旧实现只枚举前者，才漏掉 count_tokens／embeddings；修复后当前两类 operation 已闭合，但模式本身仍要求每新增一种不建 `RequestContext` 的旁路 operation 都记得回来改 shutdown 协调器。
+- **结构怪味**：职责错位 + 开放集合手工枚举。operation producer 决定“什么算已接纳”，shutdown 却在外部维护第二份成员清单；下一位复用者仍会踩同类漏接。
+- **理想架构 / 若做需改什么**：建立单一 accepted-operation registry／registration port，让 generation 与 lightweight producer 都向同一个只读 drain view 注册；shutdown 只消费该 view，不知道 operation 种类。迁移时保留每类日志投影，补“新增第三种测试 operation 不改 shutdown 也会被 drain”的正控，并保留本轮两个 omission mutation。
+- **为何暂缓**：当前只有两类 producer，现有 union 已由真实 HTTP 测试与双 mutation 锁住；抽统一 registry 会改动 `RequestContextManager` 所有权、test bootstrap 与日志类型，是独立架构重构，不影响本轮无损关闭正确性。
+- **触发条件**：新增第三种不建 `RequestContext` 的模型 operation，或下一次需要改 `ShutdownActiveOperation` 联合类型时，先做该收敛，禁止继续追加第三个 spread。

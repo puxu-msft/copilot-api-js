@@ -4,14 +4,14 @@
 
 **目标：** 首个终止信号只封闭 ingress 并等待所有已接纳 operation 自行终态，不再由 shutdown deadline 或资源拆除制造请求失败；第二信号继续立即强退。
 
-**架构：** `RequestContextManager.getTrackedOperations()` 继续作为 shutdown 的唯一 drain oracle，但 drain 改为无 deadline 的 condition wait。首信号只停止 listener 和后台维护 producer；rate limiter、token runtime、上游 transport、History、Telemetry、Diagnostic 与观察者资源全部保留到 operation registry 清零。旧 process-global shutdown abort、529 改写、`aborting`／`forcing` 阶段和两个 shutdown 时间旋钮随契约一起删除。
+**架构：** `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成 shutdown drain oracle，drain 使用无 deadline 的 condition wait。首信号只停止 listener 和后台维护 producer；rate limiter、token runtime、上游 transport、History、Telemetry、Diagnostic 与观察者资源全部保留到 generation 和 lightweight 两个 registry 均清零。旧 process-global shutdown abort、529 改写、`aborting`／`forcing` 阶段和两个 shutdown 时间旋钮随契约一起删除。
 
 **技术栈：** TypeScript、Bun、Hono、Zod、Bun test、现有 observability bus 与 RequestContextManager operation registry。
 
 ## 全局约束
 
 - 首个 `SIGINT`、`SIGTERM`、`SIGUSR2` 不得主动中止已接纳 operation。
-- “已接纳”以 `RequestContextManager.getTrackedOperations()` 为机械边界。
+- “已接纳”以 `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 的并集为机械边界。
 - 请求级 `request_deadline`、stream idle、response header timeout、客户端取消和正常协议错误保持原语义。
 - 第二信号在任何非 `stopped` 状态立即退出；SIGINT=130，SIGTERM=143。
 - `waitForShutdown()` 只在 durability barrier 全部成功并进入 `stopped` 后 resolve。
@@ -287,9 +287,9 @@ git commit -m "refactor: remove obsolete shutdown deadlines"
 
 - [x] **Step 2：更新 supervisor 样例**
 
-- pm2 和 systemd 不再声明固定 drain 上界。
-- `kill_timeout`／`TimeoutStopSec` 的注释明确：有限 supervisor hard timeout 会破坏无损契约；若 supervisor 不能无限等待，应设为大于 `timeouts.request_deadline` 加 durability 余量，并把真正立即放弃留给第二信号／人工强退。
-- 不新增一个替代 shutdown timeout 配置。
+- systemd 单元使用 `TimeoutStopSec=infinity`；部署脚本的 3600 秒轮询上限只停止换代并保留双槽，不向旧槽发送额外终止信号。
+- pm2 的 `kill_timeout=1300s` 是 supervisor 无法取消的运维强退上限，不构成严格无损保证；README 要求等待旧槽正常 exit 0 后再 delete，并以 `stop_exit_codes:[0]` 防止 clean handoff exit 被 autorestart。
+- 不新增应用内替代 shutdown timeout；真正立即放弃仍由第二终止信号／人工强退表达。
 
 - [x] **Step 3：将规格状态改为已实施并完整通读所有文档**
 
@@ -346,4 +346,5 @@ git log --oneline --decorate -5
 - Task 2：提交 `d254d8ae`，删除 process-global shutdown cancellation、stream shutdown kind 和 529 改写。
 - Task 3：提交 `c6a5f72c`，删除两个 shutdown deadline 配置、state 字段与阶段类型。
 - Task 4：live docs、instruction skill 与 supervisor 样例已同步；最终提交见分支 HEAD。
-- 验证：typecheck 绿；改动 TypeScript 定向 ESLint 绿；架构守卫 29/29；PTY 16/16；生命周期定向 111/111；rate limiter lossless drain 1/1。`bun run test:backend` 的最终单独运行枚举 4826 条，4825 pass、1 fail：`tests/history/worker/packaged-runtime.it.test.ts` 固定 5 秒环境门在 16-shard 负载下 5006ms 超时；该文件连同其余并发失败候选隔离重跑 24/24 通过。完整 backend 命令因此仍为非零，不记作全绿。
+- Review 整改：补齐 count_tokens／embeddings lightweight in-flight registry、真实 `/v1/messages` 长流／token refresh／pre-content recovery shutdown 交叉测试、systemd／PM2 handoff、旧 Vue 配置表面与 entry-evidence discovery baseline；最终提交见分支 HEAD。
+- 最终验证（整改 worktree，2026-08-08）：`bun run test:backend` 为 16 shards、7228 tests、7228 pass、0 fail（7231 executed、30 skipped）；`bun run test:fast` 为 16 shards、3969 tests、3969 pass、0 fail（5184 executed、1 skipped）；root typecheck、改动 backend TypeScript 定向 ESLint、架构／discovery guards、PTY 19/19、旧 Vue Bun 249/249、Vitest 78/78、vue-tsc 与 Vite build 均通过。`bun run lint:all` 在当前 `master@44457047` 仍因另一个尚未合并的 entry-evidence／header-deadline 并发分支对应的仓库级 lint 变更缺失而失败（120 文件、637 errors、5 warnings）；该分支同时含功能改动，未夹带进本 shutdown 整改。完整评审记录见 `docs/tmp/2026-08-08-lossless-shutdown-review.md`。

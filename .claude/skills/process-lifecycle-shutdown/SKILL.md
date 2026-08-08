@@ -19,7 +19,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 如果 shutdown 由 SIGUSR2 启动，随后第一个 SIGINT／SIGTERM 已经是强退请求；反过来，SIGINT／SIGTERM 启动 shutdown 后再收到 SIGUSR2，SIGUSR2 仍只是幂等交接。
 
-`stopped` 只表示 operation registry 清零、History terminal、Telemetry outbox、Diagnostic WAL／sink、终态通知和资源 close 全部成功。持久化失败进入 `failed` 并 exit 1，不能 resolve 成功 latch。
+`stopped` 只表示 generation 与 lightweight 两个 in-flight registry 均清零、History terminal、Telemetry outbox、Diagnostic WAL／sink、终态通知和资源 close 全部成功。持久化失败进入 `failed` 并 exit 1，不能 resolve 成功 latch。
 
 活实现：`src/lib/shutdown.ts`；活文档：`docs/lifecycle.md`；冻结规格：`docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md`。
 
@@ -45,7 +45,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 内部状态为 `idle/stopping/draining/finalizing/notifying/stopped/failed`。不允许把 `finalizing` 提前广播成完成：
 
-1. `RequestContextManager.getTrackedOperations()` 已清零。
+1. `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 均已清零。
 2. generation finalizer registry 已 join，且 canonical terminal 失败已显式暴露。
 3. token runtime 与上游 WS／h2 已关闭。
 4. History、Telemetry、Diagnostic durability barrier 完成。
@@ -56,7 +56,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 ## 首信号停的是 ingress，不是在途请求能力
 
-“已接纳”以 `RequestContextManager.getTrackedOperations()` 为机械边界。context 从创建起进入 registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开。
+“已接纳”以 `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 的并集为机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开；count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 后注销。
 
 首信号阶段只允许：
 
@@ -89,7 +89,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 - 必须贯穿 drain：已接纳请求的 History terminal、Telemetry delta、Diagnostic、token refresh、rate-limit admission、上游 transport。
 - 首信号可停：History maintenance、Telemetry rollup 等可恢复且不服务已接纳 operation 的后台 producer。
-- History DB 必须保持打开，直到 operation registry 清零且 canonical terminal finalizer join 完成。
+- History DB 必须保持打开，直到 generation 与 lightweight 两个 in-flight registry 均清零，且 generation canonical terminal finalizer join 完成。
 - Telemetry 先 seal config callback／timer producer，再 flush serialized outbox，最后 close。
 
 ## 错误与退出码
@@ -101,14 +101,20 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 ## 测试与实证 oracle
 
-### 组件测试
+### 组件与集成测试
 
-- 首信号调用 `server.close(false)`，跨过旧 deadline 后仍停在 `draining`，且不调用 rate limiter reject、token close、WS／h2 close 或 `server.close(true)`。
-- operation registry 清零后，token、upstream transport、History、Telemetry、Diagnostic 和 finalized 通知按序执行。
-- `request_deadline` 独立测试仍能终止运维显式设限的 context。
-- 以 SIGINT 和 SIGUSR2 两种入口启动 held shutdown，再发 SIGUSR2：两次都返回同一个 promise，`exitFn` 不被调用。
-- 以 SIGUSR2 启动 held shutdown，再发 SIGINT／SIGTERM：立即 exit 130／143。
-- controllable durability barriers 精确断言顺序；barrier 前 `waitForShutdown` 不 resolve。
+当前已有证据的范围：
+
+- `shutdown.unit`：首信号只调用 `server.close(false)`；fake tracked operation 清零前不关闭 token／observer，清零后 durability 顺序成立。
+- `rate-limiter-lossless-drain.it`：真实 rate-limit queue 中已接纳项在首信号后仍取得 permit 并完成。
+- `shutdown-h2-pool-drain.it`：首信号后仍可完成真实 h2 session acquisition；提前 close pool 会咬红。
+- `model-operation-bypass.http`：真实 count_tokens／embeddings 入口在 terminal publish 前留在 lightweight in-flight registry，shutdown 不提前关闭 token／History／Telemetry／Diagnostic。
+- `shutdown-messages-lossless.http`：真实 `/v1/messages` 长流在 drain 中继续产帧并以 History `completed` 终态收口；已建 context 的 401 经真实 token-refresh strategy 在 drain 中完成 refresh 与第二次 exchange；pre-content clean EOF 在 drain 中发起 fresh recovery exchange。token runtime 与 durability 资源只在这些请求 terminal publish 后关闭。
+- `request-deadline.it`：显式正值能终止，0 不误杀。
+- `shutdown-sigusr2` 与 PTY：SIGUSR2 幂等、SIGINT／SIGTERM 强退、runtime PID 信号路由与 raw-mode 恢复。
+- controllable durability barriers：barrier 前 `waitForShutdown` 不 resolve。
+
+尚未由 shutdown 交叉测试直接证明：首信号后新建 upstream WS。已建 context 的 token refresh、新建 h2 与 pre-content recovery 均有直接证据；不得把 h2 证据扩大成所有 transport 实现均已覆盖。
 
 ### PTY 真终端
 
@@ -117,7 +123,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 - 随后的 Ctrl+C 在硬超时内 exit 130。
 - 连跑 8–25 次证时序确定性；waitpid 必须有硬 deadline，并保存中途已 reap 的 status。
 
-活测试：`tests/shutdown/shutdown.unit.test.ts`、`tests/shutdown/shutdown-signals.pty.test.ts`、`tests/shutdown/fixtures/two_signal_pty.py`。
+活测试：`tests/shutdown/{shutdown.unit,rate-limiter-lossless-drain.it,shutdown-h2-pool-drain.it,shutdown-messages-lossless.http,shutdown-signals.pty}.test.ts`、`tests/history/model-operation-bypass.http.test.ts`、`tests/context/request-deadline.it.test.ts`、`tests/shutdown-sigusr2.unit.test.ts`、`tests/shutdown/fixtures/two_signal_pty.py`。
 
 ## 常见 false-green
 
@@ -131,4 +137,4 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 ## 鉴别力正控
 
-冻结一份只删除 `if (!isTerminationSignal(signal)) return shutdownPromise` 的 exact patch：注入后，组件测试应观测到错误 exit 130，真实 PTY 应观测到 SIGUSR2 后 runtime／launcher 至少一方提前死亡；反向恢复后两者重新变绿。
+已验证三类正控：① SIGUSR2 分类——冻结只删除 `if (!isTerminationSignal(signal)) return shutdownPromise` 的 exact patch，组件／PTY 门变红；② generation registry——production tracker 只保留 lightweight registry 后，真实长流、token refresh 与 recovery 用例在一个事件循环 tick 内观察到 `stopped` 而非 `draining`；③ lightweight registry——production tracker 只保留 `getTrackedOperations()` 后，count_tokens／embeddings 用例观察到 token／History／Telemetry／Diagnostic 在 terminal 前提前关闭。三者均经 reverse-apply check 反向恢复并复绿。它们仍**不证明**重新引入旧 process-global abort、529 改写或 upstream WS early teardown 会被同一组判据全部咬住；未做对应 exact mutation 前不得扩大声称。
