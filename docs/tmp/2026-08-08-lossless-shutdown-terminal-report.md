@@ -65,17 +65,26 @@
 
 两条 major 同样成立并已处置：backend 计数字段不可复现（改锚稳定字段）、自有测试「12 文件 98 pass」取自未写明的文件集（重定义为显式 12 文件清单，实测 100 tests）。
 
-评审报告落盘在 `docs/tmp/2026-08-08-closeout-instruction-review.md` 与 `docs/tmp/2026-08-08-closeout-docs-review.md`（后者的 reviewer 运行环境禁用 `Write`，报告由主会话逐字转录，已在文件开头标明）。
+评审报告落盘在 `docs/tmp/2026-08-08-lossless-shutdown-closeout-instruction-review.md` 与 `docs/tmp/2026-08-08-lossless-shutdown-closeout-docs-review.md`（后者的 reviewer 运行环境禁用 `Write`，报告由主会话逐字转录，已在文件开头标明）。
+
+> **文件名撞车的处置：** 这两份报告原名 `2026-08-08-closeout-{instruction,docs}-review.md`，与另一并发会话在 master 上创建的同名文件冲突（`git merge-tree` 报 add/add）。已加任务前缀重命名避开；对方文件内容与本任务无关，未做任何改动。
 
 ## 5. 分支与 worktree 状态
 
 - 分支 `worktree-fix-shutdown-review-findings`，worktree 干净（`git status --short` 无输出），HEAD 全部已提交。
 - **未推送**，也不会推送——发布是用户的决定。
-- 已把 `master@d47492a6` 合入本分支（`85642352`），合回 master 无冲突：`git merge-tree --write-tree master HEAD` 退出 0。master 此后又前进到 `d1011fe7`（peer 的 history-worker 批次），与本任务**零路径重叠**，故仍是普通三方合并、无冲突。
+- 已把 `master@d47492a6` 合入本分支（`85642352`）。**master 在本会话期间由多个并发会话持续前进**（观察窗口内从 `d47492a6` → `d1011fe7` → `b936a8e9`），因此这里不钉死某个 tip——合并前请就地复核，不要引用本报告的快照值：
+
+  ```
+  git -C /home/xp/src/copilot-api-js merge-tree --write-tree master worktree-fix-shutdown-review-findings >/dev/null && echo "no conflict"
+  git -C /home/xp/src/copilot-api-js diff --name-only master...worktree-fix-shutdown-review-findings
+  ```
+
+  截至冻结时刻，对 `master@d1011fe7` 与 `master@b936a8e9` 两次实测 `merge-tree` 均退出 0、无冲突；本分支改动集中在 `src/lib/shutdown.ts`、`src/lib/context/lightweight-model-operation.ts`、`tests/`、`docs/`、`contrib/`、`ui/`，与近期 peer 批次（history worker、header deadline）无同文件冲突。
 - **worktree 保留，不删除**——它是整改提交的唯一持有者。
 - 主检出树（`/home/xp/src/copilot-api-js`）本会话全程未触碰；其它会话的未提交工作未受影响。
 
-**合并本任务需要用户在主检出树执行**（本会话被 worktree 隔离守卫限制，无法操作共享检出）：
+**合并本任务需要用户在主检出树执行**（本会话被 worktree 隔离守卫限制，无法操作共享检出，这也是本报告不代为合并的原因）：
 
 ```
 git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-findings
@@ -89,7 +98,7 @@ git -C /home/xp/src/copilot-api-js merge --no-ff worktree-fix-shutdown-review-fi
 - 实施计划：`docs/plan/2026-08-07-lossless-graceful-shutdown-drain.md`，已转终态记录，状态头含「整改待合并」判定命令。
 - live docs：`docs/DESIGN.md`、`docs/lifecycle.md` 已反映两个 registry 的并集边界与资源关闭顺序。
 - 操作性知识：skill `process-lifecycle-shutdown`（含证据边界与正控复跑协议）。
-- 评审与证据：`docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`、两份变异 patch、`-timings.xml`、`-shard-timeouts.md`、两份收尾评审报告。
+- 评审与证据：`docs/tmp/2026-08-08-lossless-shutdown-review{,-dispositions}.md`、两份变异 patch、`-timings.xml`、`-shard-timeouts.md`、三份收尾评审报告（`-closeout-instruction-review.md`、`-closeout-docs-review.md`、`-closeout-final-review.md`）。
 - 结构性待办：`docs/todo/deferred-backlog.md:1208`「shutdown drain source 仍由协调器手工枚举」——长期形状是统一的 accepted-operation registry，本轮不夹带架构重写。
 - 临时证据清单：`docs/tmp/2026-08-08-lossless-shutdown-temp-manifest.md`（35 个文件逐条处置，有长期价值的三项已逐字持久化进仓库，未删除任何临时文件）。
 - 记忆：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` + `MEMORY.md` 索引行。
