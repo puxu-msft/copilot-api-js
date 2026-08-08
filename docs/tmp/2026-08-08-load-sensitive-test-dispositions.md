@@ -370,6 +370,19 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
    **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
+5. **`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。** 实测（第 8 条 Mutation F）：放宽到 2000 就抓不到「deadline 实际等待时长 = 请求值的 6 倍」这一类了，因为因果 oracle 断言的 message 里嵌的是**请求值**、不是实际时长。所以本轮**保持 200 不变**。放宽 = 放弃该覆盖，属放宽既有 guard，须独立裁决。若要既保覆盖又降敏感，需改生产契约（把**实际**等待时长放进 failure）或注入可控时钟 seam——**两条都未实施、未验证**。
+
+## 工具性教训：`Edit` 的替换覆盖面（本轮踩中一次，写成机械判据）
+
+本轮在插入第 7 条的残留复核段时，`Edit` 的 `old_string` 圈进了「方向一」那张表，却没在 `new_string` 里写回去，**静默删掉了它**（通读时才发现并补回）。`Edit` 只校验 `old_string` 唯一命中，**不会**因为你漏写了打算保留的内容而报错。
+
+**机械判据（比记住这次有用）**：把 `old_string` 与 `new_string` 各自**按行拆开**，只有「本次有意删除」和「本次有意新增」的行允许出现在差集里。差集里出现任何你说不出意图的行，就落在这两个方向之一：
+
+- **新串多、旧串少 → 重复**：`new_string` 里「顺手带上」了 `old_string` 没圈进来的邻近内容，那段会留一份再插一份。
+- **旧串多、新串少 → 静默删除**（本轮这次）：拿一段上下文当锚点圈进 `old_string`，却忘了写回 `new_string`。
+
+**表头、小节标题、列表行首最危险**——它们看起来像定位符、不像内容。
+
 
 ## 收口验收（四条全部落地后）
 
@@ -591,6 +604,85 @@ D 是**本条独有**的：它针对「abort 必须赢过空闲超时」这条�
 | 处置 | 探针 ×1 + 修帧上界 | 探针 ×2 夹住真实 stall + 修帧上界 | 探针 ×1 + 修帧上界（上界须 ≪ 5000） |
 
 **三条各不相同，而且差异只有逐条实跑才看得出来**——第 6 条有下界所以不盲，第 7 条因果判据更强但仍盲。这张表是「同文件不等于同结构」的完整证据。
+
+> **给未来想「统一这三条」的人**：上表每一格都是实跑得出的，复现方式在各条的验收证据节（mutation 冻结件路径 + 红在哪一行 + 具体数值）。**判据是「改前对 Mutation B 的反应」**：第 6 条红、第 5/7 条绿——这不是风格差异，是鉴别力结构差异。想把三条合并成一个 helper 之前，先让候选 helper 在 B/A/C/D 四个 mutation 下重跑一遍，**四条红线要一条不少**，否则合并就是净减弱。
+
+## 8. `tests/observability/bus.unit.test.ts` — `publishAndFlush respects deadlineMs`
+
+**它守的不变量**：`publishAndFlush(event, { deadlineMs })` 在异步 handler 迟迟不结束时，必须**按给定的 deadline 放弃等待并返回**，而不是一直等 handler。
+
+**依据来源**：用例 `:181-197`；handler 睡 500ms（`:185`，注释 "intentionally past the deadline"）；`deadlineMs: 50`（`:191`）；`:194` `expect(elapsed).toBeLessThan(200) // deadline fired well before handler finished`；`:195` `expect(done).toBe(0) // handler still in-flight`。
+
+**逐条判定（第四次重新判型）：**
+
+这条的结构与前三条**都不同**，而且协调方的怀疑是对的——**上界确实承载着实质性质，不是纯兜底**：
+
+- `done === 0` 只蕴含「返回发生在 handler 的 500ms 之前」。它**不蕴含**「按 50ms 的 deadline 返回」。
+- 于是存在一个两条断言**都抓不到**的退化：deadline 被实现成别的值（比如硬编码 300ms）→ `elapsed=300` 时 `< 200` 才红；而若实现成 **完全不等待、立刻返回**（deadline 被忽略成 0）→ `elapsed≈0`、`done===0`，**两条断言全绿，是盲的**。后者与第 5、7 条的「无下界 → 对『过早 resolve』盲」是同一形态。
+- 还有一条**硬结构约束**：任何 ≥ 500 的上界都比 `done === 0` 更弱（`done===0` 已经隐含 <500），因此**不能靠单纯放大数值来消除敏感性**——放大到无害就等于删掉它。这条与前三条根本不同，前三条可以把上界放到 1000 而仍有意义。
+
+**关键发现：这条有一个完全时间无关的因果 oracle，只是原用例没用它。**
+
+读实现 `src/lib/observability/bus.ts:168-195`：deadline 触发时会把一条 failure 推进结果里——
+
+```ts
+failures.push({ subscriber: "publishAndFlush", phase: "async-handler", eventKind: event.kind,
+  error: new Error(`Observability flush deadline exceeded after ${deadlineMs}ms`) })
+```
+
+而 `publishAndFlush` **返回** `FlushResult`（`:59-62`，含 `failures?`）。也就是说「deadline 真的触发了、而且用的正是我们请求的那个值」**可以直接断言，不必读时钟**——错误消息里嵌着 `deadlineMs` 本身。原用例把返回值丢掉了（`await systemPub.publishAndFlush(...)` 未接收），所以只能退而用 elapsed 去推断。
+
+**处置（换成因果 oracle + 消除 fixture 里的时间竞速）**：
+
+1. **接住返回值并断言那条 deadline failure 的完整形状**（subscriber / phase / eventKind / 精确 message 含 `50ms`）。这一条同时覆盖了上界原本承载的两件事：deadline 触发了、且用的是请求值。**完全不读时钟。**
+2. **把 handler 从「睡 500ms」改成「等一个手动闸门」**。原注释的意图是 "intentionally past the deadline"，闸门是这个意图的极限形态（永远不结束），因此**意图不变而更强**：
+   - `done === 0` 从「跑赢一个 500ms 定时器」变成**无条件成立**（闸门不开就永远不会 ++），不再是时间竞速；
+   - 顺带解除了上面那条「上界必须 < 500」的硬约束——handler 不再自行结束，任何上界都仍有信息量；
+   - 收尾的 `await bus.flush()` 从「干等 500ms」变成开闸即返回，用例更快。
+   - 「实现改成死等 handler」这一退化，在闸门下表现为**永不返回 → 撞 per-test 预算**（由预算守，不是由断言守，如实写明）。
+3. 上界保留为**纯 outlier 兜底**，取 `2_000`——因为第 2 步解除了 <500 的约束，这个值既宽松到对争用免疫，又仍然有信息量。
+
+`:195` 的 `done === 0` 一字未动（语义反而变强）。
+
+### 验收证据
+
+**方向二：错误状态仍被拦住（两次 mutation，均针对本条实跑）**
+
+**Mutation E —— deadline 被完全忽略、立刻返回**（冻结件 `/tmp/mut-item8-deadline-ignored.patch`：`bus.ts:173` `if (pending.length > 0)` → `if (false as boolean)`）：
+
+- 新写法：**0 pass / 1 fail**，红在 `:207` `expect(result.failures).toHaveLength(1)`（`Received value does not have a length property: undefined`）。
+- **旧写法对它完全是盲的**——把改前的用例体逐字并跑（临时块，跑完即撤）：
+  ```
+  REVERSE CONTROL legacy elapsed = 0 verdict = {"upperBound":true,"doneIsZero":true}
+  ```
+  两条旧断言**全绿**。这正是协调方让我先判「`done === 0` 是否已蕴含上界」时暴露出来的第三种可能：**两条都不蕴含它，而且两条一起也漏掉了「根本没等」这一类**。
+
+**Mutation F —— deadline 腿的实际时长是请求值的 6 倍**（冻结件 `/tmp/mut-item8-wrong-deadline-duration.patch`：`bus.ts:177` `setTimeout(..., deadlineMs)` → `setTimeout(..., deadlineMs * 6)`）：
+
+- 这一条**改变了我的处置**，值得完整记下来。我最初把上界放宽到 `2_000`（照前三条的思路），实跑 F：**1 pass / 0 fail —— 放宽后抓不到了**。
+- 原因：新增的因果 oracle 断言的是 failure 里那条 message，而**message 里嵌的是「请求值」而非「实际等待时长」**——一个「等待时长与自报值不一致」的实现照样满足它。所以因果 oracle **并不覆盖**上界原本承载的全部内容。
+- 把上界改回 `DEADLINE_MS * 4`（= 200，与改前**数值相同**）后重跑 F：**0 pass / 1 fail**，红在 `:224`，`Expected: < 200 / Received: 303`。**覆盖保住了。**
+
+两个 patch 均 `git apply --reverse --check` 后反向恢复；`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数为 **0**。**全程未用整文件 `git checkout`。**
+
+**方向一：正确状态不被误拒**
+
+| 条件 | 结果 |
+|---|---|
+| 隔离单跑（改前，全文件） | 11 pass / 0 fail，1.19s |
+| 隔离单跑（改后，全文件） | **11 pass / 0 fail，0.60s**（闸门取代 500ms 睡眠，收尾不再干等） |
+| 64 spinner 争用 | **11 pass / 0 fail，2.63s** |
+| 96 spinner 争用（loadavg 20→28） | **11 pass / 0 fail，3.52s** |
+
+**必须写明的诚实结论：本条的上界数值一点没放宽（仍是 200），因此这一行的负载敏感度没有改善。**
+
+本条真正被消除的是**另一处**敏感性：`done === 0` 原本是在跟一个 500ms 定时器竞速（返回必须早于它），闸门化之后它**无条件成立**，不再是时间竞速。而上界那一行之所以不能放宽，是上面 Mutation F 实测出来的硬约束，不是我保守。
+
+**这构成一个待裁决项（不由我自决）**：放宽该上界会交换掉「deadline 实际时长与自报值不一致」这一类覆盖，属于放宽既有 guard，按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 须交独立裁决。已登记进「未处置」清单。若要既保覆盖又降敏感，可行方向（**均未实施、未验证**）：让 `publishAndFlush` 把**实际**等待时长也放进 failure（那样 oracle 就能覆盖时长而无需读时钟），或注入可控时钟 seam。前者要改生产代码契约，超出本轮范围。
+
+**诚实边界**：本条同样**从未在 `run-02.log` 里红过**。上面没有「它会红」的断言；96 spinner 下四次运行全绿是目前仅有的正面数据，旧写法在更重争用下是否会红，**未验证**。
+
+
 
 
 
