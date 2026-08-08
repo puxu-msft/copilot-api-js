@@ -70,6 +70,7 @@ export interface RequestContextSnapshot {
   state: RequestState
   startTime: number
   queueWaitMs: number
+  historyAdmissionWaitMs?: number
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number

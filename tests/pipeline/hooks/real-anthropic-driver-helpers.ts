@@ -11,6 +11,7 @@
  * sink) is production code, mirroring `handler-v4.ts`'s `runMessagesDriver` wiring.
  */
 
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   RawHttpRequest,
@@ -50,8 +51,14 @@ export function anthropicToolBody(model: string): MessagesPayload {
   } as unknown as MessagesPayload
 }
 
-export function anthropicRawRequest(body: MessagesPayload): RawHttpRequest {
-  return { body, headers: new Headers({ "content-length": "1" }), method: "POST", path: ENDPOINT.MESSAGES } as unknown as RawHttpRequest
+export function anthropicRawRequest(body: MessagesPayload, historyReservation?: HistoryReservation): RawHttpRequest {
+  return {
+    body,
+    headers: new Headers({ "content-length": "1" }),
+    method: "POST",
+    path: ENDPOINT.MESSAGES,
+    historyReservation,
+  }
 }
 
 /**

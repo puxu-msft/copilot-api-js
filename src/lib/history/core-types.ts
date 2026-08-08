@@ -80,6 +80,7 @@ export interface EntrySummary {
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
+  historyAdmissionWaitMs?: number
   attemptCount?: number
   currentStrategy?: string
   pid?: number

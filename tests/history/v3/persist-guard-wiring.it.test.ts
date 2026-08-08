@@ -71,7 +71,7 @@ afterEach(async () => {
   closeDatabase()
   resetV3WriterForTests()
   resetHistoryPersistErrorStats()
-  setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 10 })
+  setV3PersistRetryConfig({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000 })
 })
 
 describe("persist-guard wired into V3 write path (Phase 4c)", () => {

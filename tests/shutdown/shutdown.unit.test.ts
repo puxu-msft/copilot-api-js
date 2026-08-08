@@ -24,6 +24,7 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { createBus } from "~/lib/observability"
 import {
   //
@@ -54,6 +55,7 @@ import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
 })
 
 /** Shared fast polling overrides for deterministic tests. */
@@ -70,6 +72,8 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
     drainModelOperationFinalizationsFn: mock(async () => {}),
+    stopHistoryAdmissionFn: mock(() => {}),
+    drainHistoryAdmissionFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     shutdownDiagnosticLoggingFn: mock(async () => {}),

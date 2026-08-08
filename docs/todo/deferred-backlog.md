@@ -255,7 +255,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## History V3 缺口（History V2 removal 2026-07-18 暴露/收敛）
 
-### D-2 —— 生产 History list 只显示已终结请求（in-flight 不落库）
+### D-2 —— 在线 in-flight 可见，但进程崩溃后不可恢复发现
 
 - **根因**：History V3 由**终端总线单写者**驱动——只在请求 terminal（completed/failed/aborted）时经 `subscribeModelOperationTerminals` → `enqueueModelOperation` 落一条不可变 operation record，**无 ingress/中间态写入**。这与已移除的 V2 不同：V2 请求一进来即 eager 写 `entries_v2` head 行（`status=pending`）+ 逐 attempt 增量 stage，故进行中请求与崩溃残留都在 SQLite 可发现（崩溃行经 `reclaimOrphanedActiveRows` 标 `interrupted`）。
 - **当前行为**：进行中请求仅经 in-flight 内存映射 + WebSocket 实时可见；REST `GET /history/api/entries` 合并 in-flight（在前）+ V3 持久（在后）故**在线时**列表完整，但**进程崩溃/被 SIGKILL 时进行中请求零落盘、不留可发现记录**（V2 会留 `pending`/`interrupted` 半截行）。诊断「卡住/被杀的在途请求」的能力较 V2 退化。

@@ -8,21 +8,19 @@ import {
   resolveResponseUsage,
   resolveStopReason,
 } from "./entry-view"
+import { toEntrySummary } from "./in-flight"
 import {
   //
-  listInFlight,
-  toEntrySummary,
-} from "./in-flight"
-import { getHistory } from "./queries"
+  getHistory,
+  listHistoryOverlaySummaries,
+} from "./queries"
 import { getDatabase } from "./sqlite/connection"
-import { recordToEntrySummary } from "./v3/projection"
 import { visitV3Summaries } from "./v3/store"
 import {
   //
   isSummaryProjectionReady,
   queryPersistedStats,
 } from "./v3/summary-store"
-import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
 function formatLocalTimestamp(ts: number): string {
   const date = new Date(ts)
@@ -96,10 +94,7 @@ export function getStats(): HistoryStats {
     recentActivity: [],
     activeSessions: 0,
   }
-  const overlay = [
-    ...listInFlight().map((entry) => toEntrySummary(entry)),
-    ...listRecentModelOperationTerminals().map((record) => recordToEntrySummary(record)),
-  ]
+  const overlay = listHistoryOverlaySummaries()
   let totalDurationMs = 0
   const sessions = new Set<string>()
   const seen = new Set<string>()

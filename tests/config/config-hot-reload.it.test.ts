@@ -1117,6 +1117,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     reason: "DI-5 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
   },
   {
+    configKey: "history.persist_retry.max_backoff_ms",
+    reason: "DI-5 exponential-backoff cap — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
+  },
+  {
     configKey: "history.persist_retry.max_total_ms",
     reason: "DI-5-followup-2 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
   },

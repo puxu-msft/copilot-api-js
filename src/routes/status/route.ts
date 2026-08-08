@@ -21,15 +21,17 @@ import {
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { PATHS } from "~/lib/config/paths"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { listHistoryOverlaySummaries } from "~/lib/history/queries"
 import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import { pingHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import { getHistorySearchClient } from "~/lib/history/state"
 import { listInFlightEntries } from "~/lib/history/store"
 import {
   //
-  countV3Operations,
+  countV3StoredOperationsExcluding,
   getV3StoreStatus,
 } from "~/lib/history/v3/store"
+import { getHistoryPersistenceStatus } from "~/lib/history/worker/status"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
   //
@@ -82,6 +84,7 @@ const ServerStatusSchema = z
     thinking_blocks: z.record(z.string(), z.unknown()),
     history_raw_capture: z.record(z.string(), z.unknown()),
     history_search: z.record(z.string(), z.unknown()),
+    history_persistence: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -128,7 +131,8 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
   let historyEntryCount = 0
   let summaryProjection = { ready: false, pending: 0, poisoned: 0 }
   try {
-    historyEntryCount = countV3Operations()
+    const overlayOperationIds = listHistoryOverlaySummaries().map((summary) => summary.id)
+    historyEntryCount = overlayOperationIds.length + countV3StoredOperationsExcluding(overlayOperationIds)
     const historyStatus = getV3StoreStatus()
     summaryProjection = {
       ready: historyStatus.summaryProjectionReady,
@@ -221,6 +225,10 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       requestTelemetry,
 
       history_raw_capture: getRawCaptureStatus(),
+      history_persistence: (() => {
+        const snapshot = getHistoryPersistenceStatus()
+        return { ...snapshot, unackedMessageIds: [...snapshot.unackedMessageIds] }
+      })(),
       history_search: await (async () => {
         const client = getHistorySearchClient()
         if (!client) return { enabled: false }

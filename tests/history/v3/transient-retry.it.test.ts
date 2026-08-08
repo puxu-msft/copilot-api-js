@@ -35,6 +35,8 @@ import {
   setAbortableDelayScaleForTests,
 } from "~/lib/util/abortable-delay"
 
+import { historyTestReservation } from "../../helpers/history-terminal-publication"
+
 // DI-5 end-to-end: prove the drain is ACTUALLY wired to runWithTransientRetry
 // (not just that the helper exists). We fail the operation transaction once with
 // a transient (WAL "database is locked") error and check the entry survives —
@@ -54,7 +56,7 @@ function injectTransientTxFailures(n: number): { remaining: () => number } {
 }
 
 async function enqueueOneTerminal(): Promise<string> {
-  const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  const ctx = createRequestContext({ endpoint: "anthropic-messages", historyReservation: historyTestReservation() })
   ctx.beginAttempt({})
   ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: "ok" })
   ctx.finalizeModelOperationDelivery({ clientPayload: { role: "assistant", content: "ok" } })
@@ -67,7 +69,8 @@ beforeEach(() => {
   openInMemoryDatabase()
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
-  subscribeModelOperationTerminals(enqueueModelOperation)
+  subscribeModelOperationTerminals(async (publication) => await enqueueModelOperation(publication.record))
+  setV3PersistRetryConfig({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000 })
   setAbortableDelayScaleForTests(0) // backoff instant
 })
 
@@ -78,7 +81,7 @@ afterEach(async () => {
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
   resetAbortableDelayScaleForTests()
-  setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 10 })
+  setV3PersistRetryConfig({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000 })
 })
 
 describe("DI-5 drain transient retry (end-to-end)", () => {
@@ -107,14 +110,13 @@ describe("DI-5 drain transient retry (end-to-end)", () => {
     expect(getV3StoreStatus().persistedOperations).toBe(1)
   })
 
-  test("a persistent transient storm past the cap is bounded and counted failed (not an infinite spin)", async () => {
-    setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 0 })
-    const injected = injectTransientTxFailures(10) // more failures than the cap
+  test("the default persistent transient storm is bounded at exactly 10 attempts", async () => {
+    const injected = injectTransientTxFailures(20) // more failures than the default cap
     const id = await enqueueOneTerminal()
     await drainModelOperationTerminalSubscribers()
     await drainV3Writer()
 
-    expect(injected.remaining()).toBe(7) // exactly 3 attempts consumed, then gave up
+    expect(injected.remaining()).toBe(10) // exactly 10 attempts consumed, then gave up
     expect(getV3Operation(id)).toBeUndefined()
     expect(getV3StoreStatus().failedOperations).toBe(1)
   })

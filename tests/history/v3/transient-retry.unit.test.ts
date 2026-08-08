@@ -6,7 +6,11 @@ import {
   test,
 } from "bun:test"
 
-import { runWithTransientRetry } from "~/lib/history/v3/store"
+import {
+  //
+  retryBackoffMs,
+  runWithTransientRetry,
+} from "~/lib/history/v3/store"
 import {
   //
   resetAbortableDelayScaleForTests,
@@ -26,6 +30,18 @@ afterEach(() => setAbortableDelayScaleForTests(0))
 function outcome(ok: boolean, transient: boolean, conflict = false) {
   return { ok, transient, conflict }
 }
+
+describe("retryBackoffMs", () => {
+  test("doubles from 10ms and caps each wait at 5s", () => {
+    expect(Array.from({ length: 10 }, (_, failedAttempts) => retryBackoffMs(10, 5000, failedAttempts))).toEqual([
+      10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5000,
+    ])
+  })
+
+  test("a zero initial backoff remains zero", () => {
+    expect(retryBackoffMs(0, 5000, 100)).toBe(0)
+  })
+})
 
 describe("runWithTransientRetry", () => {
   test("transient failures are retried until success", async () => {
@@ -153,21 +169,21 @@ describe("runWithTransientRetry", () => {
     expect(calls).toBe(6)
   })
 
-  test("the predicted next backoff is included so the loop never sleeps PAST the budget", async () => {
+  test("the predicted exponential backoff is included so the loop never sleeps past the budget", async () => {
     // Clock frozen at 0 (attempts instant); only the predictive `elapsed + nextBackoff`
-    // term can trip the cap. backoff 1000,2000,3000,4000; cap 3000 → the 4th (4000)
-    // would overshoot (3rd's 3000 is not > 3000), so it gives up at attempt 4.
+    // term can trip the cap. Backoff 1000,2000,4000; cap 3000 means the third
+    // failure returns immediately rather than sleeping 4000ms.
     let calls = 0
     const res = await runWithTransientRetry(
       () => {
         calls++
         return Promise.resolve(outcome(false, true))
       },
-      { maxAttempts: 100, backoffMs: 1000, maxTotalMs: 3000, now: () => 0 },
+      { maxAttempts: 100, backoffMs: 1000, maxBackoffMs: 5000, maxTotalMs: 3000, now: () => 0 },
     )
-    expect(res.attempts).toBe(4)
+    expect(res.attempts).toBe(3)
     expect(res.capReason).toBe("max-total-ms")
-    expect(calls).toBe(4)
+    expect(calls).toBe(3)
   })
 
   test("maxTotalMs: 0 disables the time cap (only maxAttempts bounds)", async () => {

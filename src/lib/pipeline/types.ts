@@ -19,6 +19,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
@@ -282,6 +283,7 @@ export interface RawHttpRequest {
    */
   readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Non-HTTP operation identity supplied by transport entry points such as Responses WS. */
+  readonly historyReservation?: HistoryReservation
   readonly operationIdentity?: {
     readonly kind: OperationKind
     readonly connectionId?: string

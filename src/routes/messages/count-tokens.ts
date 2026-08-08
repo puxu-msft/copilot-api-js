@@ -4,6 +4,7 @@ import consola from "consola"
 import pc from "picocolors"
 
 import type { LightweightModelOperation } from "~/lib/context/lightweight-model-operation"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import {
@@ -14,6 +15,7 @@ import {
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { calibrate } from "~/lib/models/calibration"
 import {
   //
@@ -117,6 +119,10 @@ async function countTokensViaGhc(
 
 /** Anthropic-compatible token counting with a standalone History V3 operation. */
 export async function handleCountTokens(c: Context) {
+  return await withHistoryAdmission(c.req.raw, "count_tokens", async (historyReservation) => await handleCountTokensAdmitted(c, historyReservation))
+}
+
+async function handleCountTokensAdmitted(c: Context, historyReservation: HistoryReservation) {
   const startTime = Date.now()
   const method = c.req.method
   const reqPath = c.req.path
@@ -150,6 +156,7 @@ export async function handleCountTokens(c: Context) {
       semanticRequest: semanticInput,
       format: "anthropic-messages",
       requestedModel: parsedPayload.model,
+      historyReservation,
       metadata: { source: "anthropic", requestedModel: parsedPayload.model },
     })
 

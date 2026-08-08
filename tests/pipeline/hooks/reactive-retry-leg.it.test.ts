@@ -34,6 +34,7 @@ import {
 } from "~/lib/pipeline/hooks/loader"
 import { mockUpstreamError } from "~/lib/pipeline/hooks/toolkit"
 
+import { historyTestReservation } from "../../helpers/history-terminal-publication"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { okStream } from "./driver-test-helpers"
 import {
@@ -69,7 +70,7 @@ describe("Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFiel
     const { transport, sendCount } = makeCountingTransport(() => okStream())
     const driver = makeRealAnthropicDriver(transport)
 
-    const result = await driver.runRequest(anthropicRawRequest(anthropicToolBody("claude-x")))
+    const result = await driver.runRequest(anthropicRawRequest(anthropicToolBody("claude-x"), historyTestReservation()))
 
     expect(result.ok).toBe(true)
     if (!result.ok) return

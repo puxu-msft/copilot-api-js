@@ -130,7 +130,7 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 - **持久化** —— V3 只在请求**终结**时经终端总线落一条不可变 operation record。读取透明合并两源：REST 查询在前拼 in-flight、在后拼 V3 持久，按 `startedAt` DESC 排序、按 id 去重；`getEntry` 优先 in-flight，故 active 请求恒读内存全量。
 - `GET /history/api/entries?terminalOnly=true` 按 state 剔除 active 在飞行（pending/executing/streaming），只返回终态条目——给有独立 Live 泳道的消费者（ui-v4）用。过滤作用于 merge 后结果，故 `total`/游标分页保持正确。
 
-> **已知产品缺口（backlog）**：V3 终端总线只在 terminal 触发、无 ingress 阶段写入，故生产 History list 只显示已终结请求（进行中仅经 WS 实时可见、不落 V3）；这与 V2 的「请求一进来即 eager 落 pending head 行、崩溃留 `interrupted` 可发现记录」不同。取舍与「若做需改什么」见 [deferred-backlog.md](todo/deferred-backlog.md)（D-2 in-flight 可见性）。
+> **已知产品缺口（backlog）**：V3 终端总线只在 terminal 触发、无 ingress 阶段写入。在线时 REST list 合并内存 in-flight、WebSocket 也实时推送，列表可见性完整；但进程崩溃或被 SIGKILL 时，在途 operation 不落 V3、不会留下 `interrupted` 可发现记录。这与 V2 的「请求一进来即 eager 落 pending head 行、崩溃留 `interrupted` 可发现记录」不同。取舍与「若做需改什么」见 [deferred-backlog.md](todo/deferred-backlog.md)（D-2 崩溃可发现性）。
 
 ## Debug-pin（豁免语义）
 
@@ -154,7 +154,7 @@ History Web UI 是 ui-v4（React）应用，前端类型统一从后端 re-expor
 
 历史系统相关的边界项（非缺陷，记录以备后续决策）统一收敛到 [deferred-backlog.md](todo/deferred-backlog.md)，含：
 
-- **D-2 in-flight 可见性**——V3 终端总线只在 terminal 写入，进行中请求不落库、崩溃不留可发现记录（见上文「进行中 vs 持久化」）。
+- **D-2 崩溃可发现性**——在线 REST／WebSocket 可见内存 in-flight；V3 终端总线只在 terminal 写入，故进程崩溃时在途 operation 不落库、不留可恢复记录（见上文「进行中 vs 持久化」）。
 - **V3 projection 非承重字段缺口**——`requestBytes`/`responseBytes`/`max_tokens`/`temperature`/`thinking`/`effectiveSource.pipeline`/上游首包时序等字段已在 `HistoryEntry` 类型声明但 projection 尚未产出。
 
 > 客户端断连记 `aborted` 已统一覆盖**所有**流式 endpoint：Anthropic Messages 经 `processAnthropicStream`，其余（Chat Completions / Responses / Responses-WS / Gemini）经通用 `guardSseIterable`——两者均 shutdown 优先、client-abort 抛 `StreamClientAbortError`，handler 据此记 `aborted` 并跳过向已关闭流写错误帧。此机制在 stream/handler 层、与 history 存储无关，V3 下不变。
