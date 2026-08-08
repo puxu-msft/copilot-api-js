@@ -17,4 +17,4 @@ metadata:
 
 **How to apply:** 错误分类、`SendMessage` 强制路径、不得因 ROI 停止恢复，以及 context-window 接力例外，只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 与项目 skill `session-closeout` §6b。
 
-**Related:** [[feedback-resume-agent-always-sendmessage-never-agent-tool]] [[reference-subagent-transcript-5mib-gate-blocks-resume]]
+**Related:** [[feedback-resume-agent-always-sendmessage-never-agent-tool]] [[reference-subagent-transcript-5mib-gate-blocks-resume]] [[feedback-user-alignment-confirms-direction-not-detail-optimality]]
