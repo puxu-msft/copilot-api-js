@@ -294,7 +294,7 @@ type CarrierV2Envelope = Readonly<{
 }>
 ```
 
-- 使用项目已锁定的 `safe-stable-stringify@2.5.0` 生成 canonical JSON；只接受普通 JSON 值，拒绝 bigint、function、symbol、cycle 与非有限数字。
+- 先用独立递归 validator 证明输入只含普通 JSON 值，再调用项目已锁定的 `safe-stable-stringify@2.5.0` 生成 canonical JSON。不得依赖库自行拒绝：实测该库会把 Infinity/NaN 变为 `null`、省略 `undefined`、把 bigint 数值化、把 cycle 写成 `"[Circular]"`。validator 遇 bigint、function、symbol、undefined、cycle 与非有限数字必须 fail-closed，并在测试中逐项正控。
 - 编码为无 padding base64url。解码前校验字符集与长度；解码后按 schema 验证，再 canonical stringify + base64url re-encode，必须与原 payload 字节相等。
 - `source.model` 是 final resolved model ID，不是客户端 alias；provider/protocol由实际上游腿填写。
 - opaque只存在于carrier和request-local ledger；observation/History只存carrier version、source、boundary、hash/presence，不复制正文。
@@ -345,7 +345,7 @@ Capability table 穷举：
 
 Anthropic→Responses：
 
-1. 使用项目已锁定的 `safe-stable-stringify@2.5.0` 序列化 schema；它递归稳定对象 key并保留数组顺序。输入只允许普通 JSON 值；bigint、function、symbol、cycle与非有限数字fail-closed。
+1. 先用共享 JSON-value validator 拒绝 bigint、function、symbol、undefined、cycle与非有限数字，再使用项目已锁定的 `safe-stable-stringify@2.5.0` 序列化 schema；仅使用其递归稳定对象 key并保留数组顺序的能力，不采信其有损容错输出。
 2. 对 canonical UTF-8 bytes 计算 SHA-256，取前32个lowercase hex；name固定为 `json_schema_<32hex>`（总长44，仅含允许字符）。hash只提供稳定命名/诊断关联，不能替代schema内容校验。
 3. 将原schema映射到 Responses `text.format`，name按上条生成，设`strict:true`。
 4. 先以目标协议／模型支持的schema dialect验证；验证基于完整schema而非hash。失败返回translation error，不删除keyword。
