@@ -161,7 +161,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           disposalError ??= error
         }
       } finally {
-        // mutation: leave active dispatch registered
+        active.delete(dispatch)
         recordSettlement(dispatch, {
           ...settlement,
           ...(disposalError !== undefined && settlement.error === undefined && { error: disposalError }),
