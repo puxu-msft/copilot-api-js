@@ -35,7 +35,7 @@
 
 ## 最终验证快照
 
-验证树：`worktree-fix-shutdown-review-findings`。**方向说明：本分支已把 `master@d47492a6` 合入自身（`85642352`）；本分支尚未合回 master，整改仍待合并**——判定命令 `git branch -a --contains 954a1bff`（只输出本分支即未合并）。执行日期 2026-08-08。
+验证树：`worktree-fix-shutdown-review-findings`。**合并状态：整改已由 `ad8128ad` 合入 master**（判定命令 `git branch -a --contains 954a1bff` 应同时列出 `master`）。下列快照在该合并之前、于本分支上执行，执行日期 2026-08-08。
 
 - `bun run test:backend`：16 shards，`executed=7287`、`skipped=30`、`fail=0`、退出码 0。**计数口径：** runner 打印的 `N tests · N pass` 字段在同一棵树上跨运行不稳定（同树四次运行观测到 5334／6044／6384／7287），而 `executed=7287`／`skipped=30` 四次完全一致，故基线只锚 `executed`／`skipped`／`fail`／退出码／shard 数。
 - **一次并发负载下的 false-red（已排除）：** 与独立 reviewer 同树并发跑 `test:backend` 时，`tests/history/v3/store-performance.it.test.ts` 的「prepare and commit do not depend on prior session history length」失败一次。单独复跑 3/3 全绿，随后无并发的完整 backend 也 0 fail。该用例断言的是耗时比值，对 CPU 争用敏感；与本任务改动无路径关系（本任务未触碰 History V3 store）。
