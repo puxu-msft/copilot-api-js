@@ -473,7 +473,10 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (unavailable) return unavailable
         let specs: ReadonlyArray<WireWriteSpec>
         try {
-          specs = build({ envelope, openAnchorIndex: wireState?.openAnchorIndex })
+          const staged = build(envelope)
+          specs = staged.specs
+          const openAnchorIndex = wireState?.openAnchorIndex
+          if (openAnchorIndex !== undefined && staged.closeOpenAnchorBefore) specs = [staged.closeOpenAnchorBefore(openAnchorIndex, envelope), ...specs]
           if (specs.length === 0) throw new Error("[delivery] recovery batch build produced no wire frames")
           await deliverySessionTestHooks?.onBeforeRecoveryBatchCommit?.()
         } catch (error) {

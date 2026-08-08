@@ -317,6 +317,12 @@ export interface WireEnvelopeFactory {
   keepalive(frame: ClientFrame): WireWriteSpec
 }
 
+export interface RecoveryBatchBuild {
+  readonly specs: ReadonlyArray<WireWriteSpec>
+  /** Owner-only callback: invoked inside the serializer if an anchor is actually open. */
+  readonly closeOpenAnchorBefore?: (index: number, envelope: Pick<WireEnvelopeFactory, "anchor">) => WireWriteSpec
+}
+
 export interface WireBlockAllocationPort {
   readonly wireState?: GenerationWireState
   allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
@@ -326,10 +332,7 @@ export interface WireBlockAllocationPort {
   ): Promise<OwnerResult<WireBlockMapping>>
   beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
   /** Stages a completed recovery's client-shaped frames, then publishes the whole batch at one C9 point. */
-  publishRecoveryBatch(
-    source: LegSource,
-    build: (ctx: { envelope: WireEnvelopeFactory; openAnchorIndex?: number }) => ReadonlyArray<WireWriteSpec>,
-  ): Promise<OwnerResult<"published">>
+  publishRecoveryBatch(source: LegSource, build: (envelope: WireEnvelopeFactory) => RecoveryBatchBuild): Promise<OwnerResult<"published">>
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",

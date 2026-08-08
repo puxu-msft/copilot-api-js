@@ -565,9 +565,9 @@ async function evaluateAndPublishDirectAnthropicRecovery(
   try {
     publication = await deliverySession.allocationPort.publishRecoveryBatch(
       { candidateId: evaluation.candidate, dispatchId: evaluation.dispatch },
-      ({ envelope, openAnchorIndex }) => {
-        staged = stageDirectRecoveryBatch(evaluation.frames, anchorState, anchorHooks, openAnchorIndex)
-        return staged.specs(envelope)
+      (envelope) => {
+        staged = stageDirectRecoveryBatch(evaluation.frames, anchorState, anchorHooks)
+        return staged.build(envelope)
       },
     )
   } catch (error) {
@@ -585,7 +585,11 @@ async function evaluateAndPublishDirectAnthropicRecovery(
     if (cleanupError !== undefined) throw cleanupError
     return { kind: "fallback" }
   }
-  if (staged) Object.assign(anchorState, staged.state)
+  if (staged) {
+    // The owner is the sole writer of `anchorClosed`; publish only reconciliation bridge state.
+    const { anchorClosed: _ownerOwnedAnchorClosed, ...bridgeState } = staged.state
+    Object.assign(anchorState, bridgeState)
+  }
   try {
     await evaluation.disposition.commit()
   } catch (error) {

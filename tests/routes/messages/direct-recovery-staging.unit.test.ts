@@ -53,25 +53,25 @@ test("staging marks only the synthetic anchor stop when leading candidate pings 
     ],
     state,
     hooks,
-    0,
   )
 
-  expect(result.entries.map(({ kind, frame: entry }) => `${kind}:${JSON.parse(entry.data ?? "{}").type}`)).toEqual([
-    "real:ping",
-    "real:ping",
-    "anchor:content_block_stop",
-    "real:content_block_start",
-    "real:content_block_delta",
-    "real:content_block_stop",
-    "real:message_delta",
-    "real:message_stop",
+  expect(result.entries.map(({ frame: entry }) => JSON.parse(entry.data ?? "{}").type)).toEqual([
+    "ping",
+    "ping",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
   ])
-  expect(JSON.parse(result.entries[3]?.frame.data ?? "{}").index).toBe(1)
-  const specs = result.specs({
+  expect(JSON.parse(result.entries[2]?.frame.data ?? "{}").index).toBe(1)
+  const batch = result.build({
     anchor: (entry) => ({ kind: "anchor", frame: entry }),
     real: (entry) => ({ kind: "real", frame: entry }),
+    keepalive: (entry) => ({ kind: "keepalive", frame: entry }),
   })
-  expect(specs.map((entry) => entry.kind)).toEqual(["real", "real", "anchor", "real", "real", "real", "real", "real"])
-  expect(result.state.anchorClosed).toBeTrue()
+  expect(batch.specs.map((entry) => entry.kind)).toEqual(["real", "real", "real", "real", "real", "real", "real"])
+  expect(batch.closeOpenAnchorBefore?.(0, { anchor: (entry) => ({ kind: "anchor", frame: entry }) }).kind).toBe("anchor")
+  expect(result.state.anchorClosed).toBeFalse()
   expect(state.anchorClosed).toBeFalse()
 })

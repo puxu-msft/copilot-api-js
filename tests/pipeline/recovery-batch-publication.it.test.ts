@@ -61,7 +61,14 @@ function setup(sink: OwnerRawSink = { write: async () => {}, close() {} }) {
 }
 
 function publish(port: WireBlockAllocationPort, source: LegSource, frames: ReadonlyArray<ClientFrame>) {
-  return port.publishRecoveryBatch(source, ({ envelope }) => frames.map((entry) => envelope.real(entry)))
+  return port.publishRecoveryBatch(source, (envelope) => ({ specs: frames.map((entry) => envelope.real(entry)) }))
+}
+
+function publishWithAnchorClose(port: WireBlockAllocationPort, source: LegSource, frames: ReadonlyArray<ClientFrame>) {
+  return port.publishRecoveryBatch(source, (envelope) => ({
+    specs: frames.map((entry) => envelope.real(entry)),
+    closeOpenAnchorBefore: (index, ownerEnvelope) => ownerEnvelope.anchor(anchorStop(index)),
+  }))
 }
 
 afterEach(() => setDeliverySessionTestHooksForTests(undefined))
@@ -98,14 +105,7 @@ test("compound recovery batch closes an open anchor before writing the staged re
   const { delivery, port, writes } = setup()
   expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
 
-  expect(
-    ownerValue(
-      await port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [
-        envelope.anchor(anchorStop(0)),
-        envelope.real(frame("content_block_delta", "remapped recovery")),
-      ]),
-    ),
-  ).toBe("published")
+  expect(ownerValue(await publishWithAnchorClose(port, RECOVERY, [frame("content_block_delta", "remapped recovery")]))).toBe("published")
 
   expect(writes.map((entry) => JSON.parse(entry.data ?? "{}").type)).toEqual(["content_block_start", "content_block_stop", "content_block_delta"])
   expect(delivery.allocationPort.wireState?.openAnchorIndex).toBeUndefined()
@@ -122,7 +122,7 @@ test("anchor stop first-write failure leaves the owner anchor open", async () =>
   expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
   fail = true
 
-  await expect(port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [envelope.anchor(anchorStop(0))])).rejects.toMatchObject({ committed: true })
+  await expect(publishWithAnchorClose(port, RECOVERY, [])).rejects.toMatchObject({ committed: true })
   expect(delivery.allocationPort.wireState?.openAnchorIndex).toBe(0)
 })
 
@@ -139,9 +139,7 @@ test("anchor stop successful before an R write failure closes the owner anchor",
   expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
   failRecovery = true
 
-  await expect(
-    port.publishRecoveryBatch(RECOVERY, ({ envelope }) => [envelope.anchor(anchorStop(0)), envelope.real(frame("content_block_delta", "partial recovery"))]),
-  ).rejects.toMatchObject({ committed: true })
+  await expect(publishWithAnchorClose(port, RECOVERY, [frame("content_block_delta", "partial recovery")])).rejects.toMatchObject({ committed: true })
   expect(delivery.allocationPort.wireState?.openAnchorIndex).toBeUndefined()
 })
 
@@ -218,7 +216,7 @@ test("first non-client recovery batch write tears the frontier while terminal er
   expect((failure as DeliveryOwnerError).committed).toBeTrue()
   expect(writes).toHaveLength(1)
   expect(await port.beginLeg("primary", PRIMARY)).toEqual({ ok: false, reason: "wire-torn", committed: false })
-  expect(await port.publishRecoveryBatch(PRIMARY, ({ envelope }) => [envelope.real(frame("content_block_delta", "primary"))])).toEqual({
+  expect(await publish(port, PRIMARY, [frame("content_block_delta", "primary")])).toEqual({
     ok: false,
     reason: "wire-torn",
     committed: false,
@@ -254,7 +252,7 @@ test("Nth non-client recovery batch write leaves only the written prefix and tea
   expect(failure).toBeInstanceOf(DeliveryOwnerError)
   expect((failure as DeliveryOwnerError).committed).toBeTrue()
   expect(writes.map((entry) => JSON.parse(entry.data ?? "{}").type)).toEqual(["message_start", "content_block_delta"])
-  expect(await port.publishRecoveryBatch(PRIMARY, ({ envelope }) => [envelope.real(frame("error", "primary terminal"))])).toEqual({
+  expect(await publish(port, PRIMARY, [frame("error", "primary terminal")])).toEqual({
     ok: false,
     reason: "wire-torn",
     committed: false,
