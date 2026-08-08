@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test"
 import { createOpenAI } from "@ai-sdk/openai"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 describe("@ai-sdk/openai smoke (Phase 5 delta-sensitive-consumer e2e dependency)", () => {
   test("createOpenAI(...).responses(modelId) returns a LanguageModelV4-shaped model", () => {

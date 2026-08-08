@@ -54,8 +54,8 @@ import {
   raceIteratorNext,
 } from "~/lib/stream"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── The single production knob under test (spec R5.3) ────────────────────────
 // Both the SSE guard and the WS racer derive their ceiling from this ONE state field, exactly like

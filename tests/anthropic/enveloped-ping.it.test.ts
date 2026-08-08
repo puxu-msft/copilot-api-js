@@ -45,8 +45,8 @@ import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []

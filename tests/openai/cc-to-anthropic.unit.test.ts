@@ -67,7 +67,9 @@ describe("translateCCResponseToAnthropic — top-level envelope", () => {
 describe("translateCCResponseToAnthropic — tool_use", () => {
   test("tool_calls → tool_use block with input = JSON.parse(arguments)", () => {
     const { response } = translateCCResponseToAnthropic(
-      ccResponse([choice({ tool_calls: [{ id: "toolu_01SRN", type: "function", function: { name: "get_weather", arguments: '{"city":"SF"}' } }] }, "tool_calls")]),
+      ccResponse([
+        choice({ tool_calls: [{ id: "toolu_01SRN", type: "function", function: { name: "get_weather", arguments: '{"city":"SF"}' } }] }, "tool_calls"),
+      ]),
     )
     expect(response.content).toEqual([{ type: "tool_use", id: "toolu_01SRN", name: "get_weather", input: { city: "SF" } }])
     expect(response.stop_reason).toBe("tool_use")
@@ -151,7 +153,9 @@ describe("translateCCResponseToAnthropic — finish_reason → stop_reason", () 
     expect(translateCCResponseToAnthropic(ccResponse([choice({ content: "x" }, "stop")])).response.stop_reason).toBe("end_turn")
   })
   test("tool_calls → tool_use", () => {
-    const { response } = translateCCResponseToAnthropic(ccResponse([choice({ tool_calls: [{ id: "t", type: "function", function: { name: "f", arguments: "{}" } }] }, "tool_calls")]))
+    const { response } = translateCCResponseToAnthropic(
+      ccResponse([choice({ tool_calls: [{ id: "t", type: "function", function: { name: "f", arguments: "{}" } }] }, "tool_calls")]),
+    )
     expect(response.stop_reason).toBe("tool_use")
   })
   test("length → max_tokens", () => {
@@ -175,7 +179,12 @@ describe("translateCCResponseToAnthropic — usage", () => {
   })
 
   test("cache tokens (GHC extensions) forwarded when present", () => {
-    const usage = { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140, prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 } } as unknown as ChatCompletionUsage
+    const usage = {
+      prompt_tokens: 100,
+      completion_tokens: 40,
+      total_tokens: 140,
+      prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 },
+    } as unknown as ChatCompletionUsage
     const { response } = translateCCResponseToAnthropic(ccResponse([choice({ content: "x" })], { usage }))
     expect(response.usage).toEqual({ input_tokens: 60, output_tokens: 40, cache_read_input_tokens: 30, cache_creation_input_tokens: 10 })
   })

@@ -37,8 +37,8 @@ import {
 } from "~/lib/pipeline/client-sink"
 import { runResponseBufferedSink } from "~/lib/pipeline/driver"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { makeBufferedHarness } from "./helpers/buffered-harness"
 
 const PING: ClientFrame = { event: "ping", data: '{"type":"ping"}' }

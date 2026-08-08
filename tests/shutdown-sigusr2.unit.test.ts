@@ -5,9 +5,18 @@
  *   1. handleShutdownSignal 对 SIGUSR2 与其它 signal 一样透传标签给 gracefulShutdown。
  *   2. setupShutdownHandlers 额外注册了 SIGUSR2 监听（与既有 SIGINT/SIGTERM 并存）。
  */
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { _resetShutdownState, handleShutdownSignal, setupShutdownHandlers } from "~/lib/shutdown"
+import {
+  //
+  _resetShutdownState,
+  handleShutdownSignal,
+  setupShutdownHandlers,
+} from "~/lib/shutdown"
 
 test("SIGUSR2 经 handleShutdownSignal 触发 gracefulShutdown 且透传 signal 标签", async () => {
   _resetShutdownState()

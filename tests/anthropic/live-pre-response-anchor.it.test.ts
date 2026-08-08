@@ -47,8 +47,8 @@ import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []

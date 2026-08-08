@@ -70,8 +70,8 @@ import {
   type DriverDeps,
 } from "~/lib/pipeline/driver"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
 

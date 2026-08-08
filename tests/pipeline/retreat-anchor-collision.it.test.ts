@@ -60,8 +60,8 @@ import {
   type DriverDeps,
 } from "~/lib/pipeline/driver"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
 
@@ -246,7 +246,11 @@ function buildAnchoredSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
     lastInjectResult = did
     return did
   }
-  const sink = makeDeliverySseSink(stream, { wireState, legacyAnchorMirror: anchorState, heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+  const sink = makeDeliverySseSink(stream, {
+    wireState,
+    legacyAnchorMirror: anchorState,
+    heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor },
+  })
   sinkHolder.current = sink
   void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }

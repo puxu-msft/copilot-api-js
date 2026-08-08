@@ -21,14 +21,12 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import consola from "consola"
 
+import type { UsageData } from "~/lib/history/types"
 import type {
   //
   GenerateContentResponse,
 } from "~/types/api/gemini"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
-
-import type { UsageData } from "~/lib/history/types"
-import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 
 import {
   //
@@ -36,6 +34,7 @@ import {
   accumulateOpenAIStreamEvent,
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 
 import {
   //
@@ -99,7 +98,15 @@ export function createGeminiStreamTranslator(modelId: string): GeminiStreamTrans
    * prediction details are preserved (the Gemini-shaped usageMetadata drops them).
    */
   const accUsage = (): UsageData =>
-    usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails })
+    usageFromTotalInput({
+      totalInput: acc.inputTokens,
+      output: acc.outputTokens,
+      cacheRead: acc.cachedTokens,
+      cacheCreation: acc.cacheWriteTokens,
+      reasoning: acc.reasoningTokens,
+      inputDetails: acc.inputDetails,
+      outputDetails: acc.outputDetails,
+    })
 
   const getMeta = (): GeminiStreamMeta => ({
     usageMetadata:

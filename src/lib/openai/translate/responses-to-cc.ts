@@ -57,7 +57,7 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
     }
 
     if (item.type === "reasoning") {
-      for (const s of item.summary) if (s.type === "summary_text" && s.text) reasoningParts.push(s.text)
+      for (const summary of item.summary) if (summary.text) reasoningParts.push(summary.text)
       if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) reasoningEncrypted = item.encrypted_content
     }
 
@@ -106,15 +106,17 @@ function mapIncompleteFinishReason(incompleteDetails?: { reason: string } | null
 }
 
 function mapUsage(usage: ResponsesUsage) {
+  const cachedTokens = usage.input_tokens_details?.cached_tokens
+  const cacheWriteTokens = usage.input_tokens_details?.cache_write_tokens
   return {
     prompt_tokens: usage.input_tokens,
     completion_tokens: usage.output_tokens,
     total_tokens: usage.total_tokens,
-    ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens != null) && {
+    ...((cachedTokens !== undefined || cacheWriteTokens !== undefined) && {
       prompt_tokens_details: {
-        ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+        ...(cachedTokens !== undefined && { cached_tokens: cachedTokens }),
         // GHC extension: forward cache_write so the client sees it (spec §7).
-        ...(usage.input_tokens_details?.cache_write_tokens != null && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+        ...(cacheWriteTokens !== undefined && { cache_write_tokens: cacheWriteTokens }),
       },
     }),
     ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {

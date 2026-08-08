@@ -64,7 +64,7 @@ export function mayContainDecoded(text: string, needle: string): boolean {
     // `getTokenValue()` is the DECODED text for the kinds that can carry an escape; for anything
     // else it is the raw token, which tier 1 already ruled out. Checking it unconditionally means a
     // token kind added to the language later cannot silently fall out of this filter.
-    if (scanner.getTokenValue()?.includes(needle) === true) return true
+    if (scanner.getTokenValue()?.includes(needle)) return true
   }
   return false
 }
@@ -229,7 +229,7 @@ export function moduleLoadSites(sourceFile: ts.SourceFile): Array<ModuleLoadSite
     if (ts.isCallExpression(node) && couldLoadModule(node, sourceFile, loaderNames)) {
       const [argument] = node.arguments
       sites.push({
-        text: node.getText(sourceFile).replace(/\s+/g, " "),
+        text: node.getText(sourceFile).replaceAll(/\s+/g, " "),
         specifier: argument !== undefined && ts.isStringLiteralLike(argument) ? argument.text : undefined,
       })
     }
@@ -291,7 +291,7 @@ export function callArgumentLiterals(sourceFile: ts.SourceFile): Array<{ text: s
     if (ts.isCallExpression(node)) {
       const [argument] = node.arguments
       if (argument !== undefined && ts.isStringLiteralLike(argument)) {
-        literals.push({ text: node.getText(sourceFile).replace(/\s+/g, " "), argument: argument.text })
+        literals.push({ text: node.getText(sourceFile).replaceAll(/\s+/g, " "), argument: argument.text })
       }
     }
     ts.forEachChild(node, visit)
@@ -325,13 +325,18 @@ export function moduleCapabilityAcquisitions(sourceFile: ts.SourceFile): Array<s
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
-      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      acquisitions.push(node.getText(sourceFile).replaceAll(/\s+/g, " "))
     }
     if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
-      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      acquisitions.push(node.getText(sourceFile).replaceAll(/\s+/g, " "))
     }
-    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression) && isModuleSpecifier(node.moduleReference.expression.text)) {
-      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    if (
+      ts.isImportEqualsDeclaration(node)
+      && ts.isExternalModuleReference(node.moduleReference)
+      && ts.isStringLiteralLike(node.moduleReference.expression)
+      && isModuleSpecifier(node.moduleReference.expression.text)
+    ) {
+      acquisitions.push(node.getText(sourceFile).replaceAll(/\s+/g, " "))
     }
     if (ts.isCallExpression(node)) {
       // The CALLEE has to be a loader too, otherwise `console.log("module")` counts as acquiring the
@@ -344,7 +349,7 @@ export function moduleCapabilityAcquisitions(sourceFile: ts.SourceFile): Array<s
       const isLoaderCallee = node.expression.kind === ts.SyntaxKind.ImportKeyword || LOADER_CALLEE.test(calleeText)
       const isProcessBuiltinGetter = /(?:^|[^\p{ID_Continue}$])process\.getBuiltinModule$/u.test(calleeText)
       if (target !== undefined && isModuleSpecifier(target) && (isLoaderCallee || isProcessBuiltinGetter)) {
-        acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+        acquisitions.push(node.getText(sourceFile).replaceAll(/\s+/g, " "))
       }
     }
     ts.forEachChild(node, visit)
@@ -573,7 +578,10 @@ export function createSpecifierResolver(repoRoot: string): (fromFile: string, sp
   const configPath = path.join(repoRoot, "tsconfig.json")
   const raw = ts.readConfigFile(configPath, ts.sys.readFile)
   const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
-  if (converted.errors.length > 0) throw new Error(`tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => error.messageText).join("; ")}`)
+  if (converted.errors.length > 0)
+    throw new Error(
+      `tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, "; ")).join("; ")}`,
+    )
   return (fromFile, specifier) => ts.resolveModuleName(specifier, fromFile, converted.options, ts.sys).resolvedModule?.resolvedFileName
 }
 
@@ -597,7 +605,7 @@ export function createSpecifierResolver(repoRoot: string): (fromFile: string, sp
 export function ambientRequireReferences(sourceFile: ts.SourceFile): Array<string> {
   const references: Array<string> = []
   const record = (node: ts.Node): void => {
-    references.push(node.getText(sourceFile).replace(/\s+/g, " ").slice(0, 80))
+    references.push(node.getText(sourceFile).replaceAll(/\s+/g, " ").slice(0, 80))
   }
   const visit = (node: ts.Node): void => {
     // `import.meta.require` — a loader that exists without any import, like the ambient global.
@@ -605,7 +613,8 @@ export function ambientRequireReferences(sourceFile: ts.SourceFile): Array<strin
       record(node)
     } else if (ts.isIdentifier(node) && node.text === "require") {
       const isMemberName = ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
-      const isDeclarationName = (ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node
+      const isDeclarationName =
+        (ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node
       if (!isMemberName && !isDeclarationName) record(node.parent)
     }
     ts.forEachChild(node, visit)

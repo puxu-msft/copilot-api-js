@@ -21,7 +21,7 @@ function recoveredFrames(
   recorder: ReturnType<typeof createModelOperationRecorder>,
   events: ReadonlyArray<SseEventRecord> | undefined,
   track: "upstream" | "client",
-  attempt?: Parameters<ReturnType<typeof createModelOperationRecorder>["registerFrame"]>[1]["origin"]["attempt"],
+  dispatch?: Parameters<ReturnType<typeof createModelOperationRecorder>["registerFrame"]>[1]["origin"]["dispatch"],
 ): Pick<OperationTrackInput, "frames" | "frameObservations"> {
   const frames: Array<FrameNodeHandle> = []
   const frameObservations: Array<OperationFrameObservation> = []
@@ -39,7 +39,7 @@ function recoveredFrames(
         origin: {
           stage: "recovery-projection",
           track,
-          ...(attempt === undefined ? {} : { attempt }),
+          ...(dispatch === undefined ? {} : { dispatch }),
           detail: "wire event name/id/retry and original offset were unavailable in the projected backup",
         },
         mediaType: "text/event-stream",
@@ -121,8 +121,10 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
   })
 
   let lastUpstreamTrack: OperationTrackInput | undefined
-  let committedAttempt: ReturnType<typeof recorder.beginAttempt> | undefined
-  for (const [index, projected] of (entry.attempts ?? []).entries()) {
+  let committedDispatch: ReturnType<typeof recorder.beginDispatch> | undefined
+  const projectedAttempts = entry.attempts ?? []
+  const candidate = projectedAttempts.length === 0 ? undefined : recorder.beginCandidate({ role: "primary", metadata: { recovery: true } })
+  for (const [index, projected] of projectedAttempts.entries()) {
     const effectiveBody = projected.effectiveSource?.body
     const wireBody = projected.upstreamRequest?.body
     const effectivePayload =
@@ -139,7 +141,9 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
           mediaType: "application/json",
         })
       )
-    const handle = recorder.beginAttempt({
+    if (candidate === undefined) throw new Error("[history/v3] missing recovery candidate")
+    const handle = recorder.beginDispatch({
+      candidate,
       strategy: projected.strategy,
       ...(projected.transport === "http" || projected.transport === "upstream-ws" || projected.transport === "upstream-ws-fallback" ?
         { transport: projected.transport }
@@ -178,14 +182,20 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
     const finalAttempt = index === (entry.attempts?.length ?? 0) - 1
     let verdict: "committed" | "discarded" | "failed" = "discarded"
     if (finalAttempt) verdict = entry.state === "completed" ? "committed" : "failed"
-    recorder.settleAttempt(handle, {
+    recorder.settleDispatch(handle, {
       verdict,
       upstreamResponse: lastUpstreamTrack,
       ...(projected.error === undefined ? {} : { error: { message: projected.error } }),
       reason: "recovered from projected History V3 entry",
       extensions: { "history-v3.recovery": { projectedAttemptIndex: index } },
     })
-    if (verdict === "committed") committedAttempt = handle
+    if (verdict === "committed") committedDispatch = handle
+  }
+  if (candidate !== undefined) {
+    recorder.settleCandidate(candidate, {
+      verdict: committedDispatch === undefined ? "failed" : "winner",
+      reason: "recovered from projected History V3 entry",
+    })
   }
 
   const clientBodyResponse = entry.clientResponse?.body
@@ -213,7 +223,8 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
   const failureReason = entry._index?.derived?.failureReason
   return recorder.commitTerminal({
     outcome: terminalOutcome(entry.state),
-    ...(committedAttempt === undefined ? {} : { committedAttempt }),
+    ...(candidate === undefined ? {} : { winnerCandidate: candidate }),
+    ...(committedDispatch === undefined ? {} : { committedDispatch }),
     ...(failureReason === undefined ? {} : { error: { message: failureReason } }),
     extensions: { "history-v3.recovery": { projected: true, originalState: entry.state } },
   })

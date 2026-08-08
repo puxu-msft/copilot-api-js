@@ -27,8 +27,8 @@ import type { SseEventRecord } from "~/lib/history"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 describe("responsesKeepaliveFrame", () => {
   test("is a data-bearing SSE frame with a valid-JSON, synthetic (non-real) type", () => {

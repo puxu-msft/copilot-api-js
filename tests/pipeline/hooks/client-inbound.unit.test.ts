@@ -43,7 +43,12 @@ afterEach(() => {
 
 describe("hooks — client.inbound mount point (Phase 4)", () => {
   test("the hook receives a DEFENSIVE body clone, not the parse env's own body (reference-independent — §3.5 snapshot)", async () => {
-    const originalBody = { messages: [{ role: "system", content: "boilerplate" }, { role: "user", content: "hi" }] }
+    const originalBody = {
+      messages: [
+        { role: "system", content: "boilerplate" },
+        { role: "user", content: "hi" },
+      ],
+    }
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, originalBody)
     const { codec } = makeCodec({ env })
@@ -60,7 +65,12 @@ describe("hooks — client.inbound mount point (Phase 4)", () => {
   })
 
   test("in-place mutation + `undefined` return is DISCARDED — downstream sees the original parsed body", async () => {
-    const originalBody = { messages: [{ role: "system", content: "boilerplate" }, { role: "user", content: "hi" }] }
+    const originalBody = {
+      messages: [
+        { role: "system", content: "boilerplate" },
+        { role: "user", content: "hi" },
+      ],
+    }
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, originalBody)
     const { codec } = makeCodec({ env })

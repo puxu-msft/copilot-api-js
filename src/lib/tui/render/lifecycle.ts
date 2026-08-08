@@ -2,6 +2,7 @@ import pc from "picocolors"
 
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/refusal-detail"
 import {
   //
   deriveResponseBytes,
@@ -16,8 +17,6 @@ import {
   resolveDurationColorMs,
 } from "~/lib/observability/projections/format"
 import { formatLogLine } from "~/lib/observability/projections/log-line"
-
-import { refusalCategoryForDiagnostics } from "~/lib/anthropic/refusal-detail"
 
 import type { RequestDisplayEffect } from "../active-request-store"
 
@@ -96,8 +95,7 @@ function renderTerminal(effect: Extract<RequestDisplayEffect, { kind: "terminal"
   const durationMs = options.now - ctx.startTime
   const final = attempts?.at(-1)?.upstreamResponse
   const tags = entry.thinking ? [formatThinkingTag(entry.thinking), ...entry.tags] : entry.tags
-  const refusalToken =
-    isError && final?.stopReason === "refusal" ? `refusal:${refusalCategoryForDiagnostics(final.stopDetails)}` : undefined
+  const refusalToken = isError && final?.stopReason === "refusal" ? `refusal:${refusalCategoryForDiagnostics(final.stopDetails)}` : undefined
   const extra =
     `${refusalToken ? ` ${refusalToken}` : ""}${!isError && tags.length > 0 ? pc.dim(` (${tags.join(", ")})`) : ""}${isError && effect.error ? `: ${sanitizeTerminalText(effect.error)}` : ""}`
     || undefined

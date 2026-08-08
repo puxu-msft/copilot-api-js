@@ -72,8 +72,8 @@ import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
 import { StreamClientAbortError } from "~/lib/stream"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── fixtures (mirroring buffered-anchor-golden.test.ts) ──────────────────────
 

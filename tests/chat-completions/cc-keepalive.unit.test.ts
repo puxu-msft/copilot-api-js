@@ -23,8 +23,8 @@ import type { SseEventRecord } from "~/lib/history"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 describe("ccKeepaliveFrame", () => {
   test("is a data-bearing SSE frame, valid JSON, real chat.completion.chunk empty-delta shape", () => {

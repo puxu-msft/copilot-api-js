@@ -21,8 +21,8 @@ import type { ClientFrame } from "~/lib/pipeline/types"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
-import { decodeSseWrite } from "../helpers/sse-write-stream"
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 function stubStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []

@@ -67,18 +67,7 @@ export function summarizeRequestContext(context: RequestContext): RequestActivit
 
 export function buildHistoryActivityPatch(
   context: RequestContext,
-): Pick<
-  HistoryEntry,
-  | "rawPath"
-  | "startedAt"
-  | "state"
-  | "active"
-  | "lastUpdatedAt"
-  | "queueWaitMs"
-  | "durationMs"
-  | "transport"
-  | "multiplier"
-> {
+): Pick<HistoryEntry, "rawPath" | "startedAt" | "state" | "active" | "lastUpdatedAt" | "queueWaitMs" | "durationMs" | "transport" | "multiplier"> {
   const snapshot = summarizeRequestContext(context)
   // Resolve the per-request billing multiplier from the SAME source as
   // snapshotWithSummary (state.modelIndex billing) so history records the
