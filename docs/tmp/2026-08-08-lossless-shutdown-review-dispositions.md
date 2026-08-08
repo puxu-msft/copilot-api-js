@@ -1,6 +1,6 @@
 # 首信号无损排空评审处置
 
-> 状态：三路复评均已 PASS，可合并。首轮评审范围为 `14974488..4c555ef9`；整改已合入 `master@d59a622ce1afc21587fb692457574ba84d9cabaa`，合并态 admission capture finding 在 `954a1bff` 修复。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
+> 状态：三路复评均已 PASS。**整改尚未合回 master，仍待合并**——本分支 `worktree-fix-shutdown-review-findings` 已把 `master@d47492a6` 合入自身（`85642352`），但反方向没做；判定命令 `git branch -a --contains 954a1bff` 只输出本分支即为未合并，`git show master:src/lib/shutdown.ts | grep -n getActive` 仍为单 registry 亦可佐证。首轮评审范围为 `14974488..4c555ef9`（该段已随 peer 的 `0732fc76` 进入 master）；合并态 admission capture finding 在 `954a1bff` 修复。本文件记录评审发现、裁定级别、处置与复评结果；最终事实以当前代码、冻结规格 `docs/spec/2026-08-07-lossless-graceful-shutdown-drain.md` 和本文件列出的实测为准。
 
 ## 首轮发现
 
@@ -46,7 +46,7 @@
 1. **更好的内部替代方案：** 长期更优的是统一 accepted-operation registry，而不是在 shutdown 再追加 producer spread；它能让第三类旁路无需修改 shutdown。但当前只有两类 producer，且统一会重塑 manager 所有权与 test bootstrap，故按“不静默丢弃”记入 backlog，不在 review 整改中夹带架构重写。
 2. **判据判别力：** 当前 generation 与 lightweight omission mutation 分别证明两类 registry 缺失会红；真实长流、token refresh、recovery 与 bypass HTTP 测试覆盖客户端／History／资源顺序。未做 process-global abort、529 与 upstream WS early-teardown exact mutation，因此 skill 明确不声称这些已被同一门完整覆盖。
 3. **成熟第三方方案：** 进程内 accepted-operation ownership 没有可直接替代项目 registry 的成熟库；systemd 与 PM2 已分别复用其原生 lifecycle/restart 能力，不自研 supervisor。引入通用 graceful-shutdown 库反而无法表达 canonical terminal／History durability 边界。
-4. **未采纳方案：** 不把并发 `worktree-nghttp2-header-deadline` 的 140 文件 lint／header-deadline 提交链 cherry-pick 进本任务；它包含独立功能并正在另一 worktree 完成。当时 master 的 `lint:all` 红如实保留，所有本轮改动 TypeScript 走定向 ESLint，全 backend／fast／typecheck／架构／PTY／旧 Vue 门均独立通过。**收尾复测（2026-08-08）：** 该 peer 分支已自行合入 master（`0732fc76`／`a0ad0f1a`／`bae83f01`），本分支合入 `master@d47492a6` 后 `bun run lint:all` 通过——不 cherry-pick 的判断成立，阻塞由其自身合并消解。
+4. **未采纳方案：** 不把并发 `worktree-nghttp2-header-deadline` 的 140 文件 lint／header-deadline 提交链 cherry-pick 进本任务；它包含独立功能并正在另一 worktree 完成。当时 master 的 `lint:all` 红如实保留，所有本轮改动 TypeScript 走定向 ESLint，全 backend／fast／typecheck／架构／PTY／旧 Vue 门均独立通过。**收尾复测（2026-08-08）：** 该 peer 分支的改动已自行进入 master（`0732fc76` 把 shutdown 基线 `44457047` 与 peer lint 提交 `bae83f01` 一并合入 master，另有 `a0ad0f1a`），把 `master@d47492a6` 合入本分支后 `bun run lint:all` 通过——不 cherry-pick 的判断成立，阻塞由其自身合并消解。
 
 ## 复评状态
 

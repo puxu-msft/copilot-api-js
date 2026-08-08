@@ -35,18 +35,19 @@
 
 ## 最终验证快照
 
-验证树：`worktree-fix-shutdown-review-findings`，已合入 `master@d47492a6`（含 peer 的 header-deadline 与全仓 lint 修复批次），执行日期 2026-08-08。
+验证树：`worktree-fix-shutdown-review-findings`。**方向说明：本分支已把 `master@d47492a6` 合入自身（`85642352`）；本分支尚未合回 master，整改仍待合并**——判定命令 `git branch -a --contains 954a1bff`（只输出本分支即未合并）。执行日期 2026-08-08。
 
-- `bun run test:backend`：16 shards，6384 tests，6384 pass，0 fail；7287 executed，30 skipped。
-- 本任务自有测试（`tests/shutdown/`、`lightweight-model-operation.unit`、`supervisor-lossless-handoff.unit`）：12 文件 98 pass，0 fail。
+- `bun run test:backend`：16 shards，`executed=7287`、`skipped=30`、`fail=0`、退出码 0。**计数口径：** runner 打印的 `N tests · N pass` 字段在同一棵树上跨运行不稳定（同树观测到 5334／6384／7287），故基线只锚 `executed`／`skipped`／`fail`／退出码／shard 数。
+- 本任务自有测试集（12 个 backend 档文件，清单见 [plan 的实施结果节](../plan/2026-08-07-lossless-graceful-shutdown-drain.md)）：连跑两次均为 `Ran 100 tests across 12 files`、退出码 0。
 - `bun run typecheck`：通过。
-- `bun run lint:all`：**通过**（见下节，先前的红已随 peer lint 批次合入而消解）。
+- `bun run lint:all`：**通过**（见下节，先前的红已随 peer lint 批次合入 master 而消解）。
 - 架构与 discovery guards：34/34 通过。
-- `bun run test:pty`：19 pass，0 fail（合入 master 前的最后一次执行）。
-- 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过（同上）。
+- `bun run test:pty`：19 pass，0 fail（`shutdown-signals.pty.test.ts` 属 pty 档，不计入上面的自有测试集）。
+- 旧 Vue：Bun 249 pass、Vitest 78 pass、vue-tsc 通过、Vite build 通过（在把 `master@d47492a6` 合入本分支之前执行，此后无前端路径改动）。
 - `git diff --check`：通过。
 
-> 合入 master 前在 `master@d59a622c` 基线上的快照为 backend 6641 pass、fast 3180 pass，均 0 fail；用例总数下降来自 peer 的 `da584116 test: stabilize header deadline acceptance gates` 等改动，非本任务删减。
+> 把 `master@d47492a6` 合入本分支之前，在 `master@d59a622c` 基线上另有一次全量快照：backend `executed=7267`、`skipped=30`、`fail=0`；fast `executed=5211`、`skipped=1`、`fail=0`。**这些是不同基线的快照，不与上面的数字直接可比**，不得据此计算「用例增减」。
+
 
 
 ## 三路复评结论
@@ -58,4 +59,4 @@
 
 ## 全仓 lint 状态
 
-**已消解（2026-08-08 收尾时复测）。** 先前 `bun run lint:all` 在 `master@44457047` 上失败（120 文件、637 errors、5 warnings），根源是并发分支 `worktree-nghttp2-header-deadline` 已提交但未合并的 140 文件变更。该分支随后经 `0732fc76`（把 shutdown 基线并入）、`a0ad0f1a`（close repository lint gates）、`bae83f01`（apply repository lint fixes）合入 master。本分支合入 `master@d47492a6` 后 `bun run lint:all` 退出码 0，仅剩一条与代码无关的 `baseline-browser-mapping` 数据过期提示。本任务全程未 cherry-pick 该 peer 分支，此项作为外部阻塞记录到此闭合。
+**已消解（2026-08-08 收尾时复测）。** 先前 `bun run lint:all` 在 `master@44457047` 上失败（120 文件、637 errors、5 warnings），根源是并发分支 `worktree-nghttp2-header-deadline` 已提交但未合并的 140 文件变更。该分支的改动随后经 `0732fc76`（把 shutdown 基线 `44457047` 与 peer lint 提交 `bae83f01` 一并合入 master）、`a0ad0f1a`（close repository lint gates）进入 master。把 `master@d47492a6` 合入本分支后 `bun run lint:all` 退出码 0，仅剩一条与代码无关的 `baseline-browser-mapping` 数据过期提示。本任务全程未 cherry-pick 该 peer 分支，此项作为外部阻塞记录到此闭合。
