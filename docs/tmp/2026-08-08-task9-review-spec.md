@@ -108,3 +108,48 @@
 **建议边界：** 在修复 F5 后，最佳长期形状是趁分支尚未发布重写本地历史，把 `756a1b30` 拆成至少四个语义 commits：① `style: integrate repository lint baseline`，仅eslint配置、import/order、format与机械无语义lint；② `refactor(history): migrate projected recovery to candidate dispatch APIs`，含四态lifecycle回归；③ `refactor(translation): align usage mapping with provider type contracts`，含cache null／0与rich-field测试；④ `refactor(pipeline): make retry endpoint handling exhaustive`；测试diagnostic可并入相应guard commit或独立 `test: preserve structured TypeScript diagnostics`。这样每个commit可独立review／bisect，message与内容一致。
 
 **为何推荐重写而非旁注：** `git branch --contains 756a1b30` 当前只返回 `worktree-placeholder`，用户明确说明尚未push；追加文档或后续commit无法修正原commit在blame／bisect中的错误分类，Git notes也不随普通clone可靠传播。代价是重写其后的本地SHA并同步所有进度／评审文档里的SHA引用，因此应由协调方在确认无其他会话基于该lineage写入后，在隔离worktree中一次完成并重跑现有门禁；若并发基线已使安全重写不可行，次优方案是保留历史、追加一个显眼的 `docs:` commit列出 `756a1b30` 的semantic inventory与正确分类，但这只能缓解、不能修复提交边界。建议修复方按代码／历史整理分别由 `gpt-souls:implementer` 与协调方处理。
+
+## 最终复评（HEAD `0935acd8`）
+
+### F7 — MAJOR — F5 的 winner 修复正确，但 recovery 尚未恢复与旧 adapter 的逐字等价
+
+**位置：** `src/lib/history/v3/recovery.ts:123-162,217-239`、`src/lib/context/model-operation-record.ts:1002-1009,1164-1198`、`tests/history/v3/recovery-script.it.test.ts:81-116`。
+
+**已闭合部分：** `winnerCandidate` 与 `committedDispatch` 现同出同没（`recovery.ts:229-239`），失败／aborted／interrupted不再伪造winner；candidate settle已回到egress之后、terminal之前（`:204-239`）。四态期望值正确：旧代码的最终attempt明确以 `entry.state === "completed" ? "committed" : "failed"` 决定，因此 aborted／interrupted 的dispatch确实是 `failed`，candidate相应为`failed`，terminal无winner；completed为 committed／winner。`captureTimestamps:false` 下旧、新 candidate settledAt与terminal occurredAt也都为undefined：旧adapter在`commitTerminal`里只在`captureTimestamps`为true时补now（`model-operation-record.ts:1164-1176`），新显式settle与terminal均未传occurredAt。
+
+**残余非等价：** 旧实现先注册本attempt的effective／wire payload，随后调用`beginAttempt()`；adapter在该点才隐式创建candidate，再创建dispatch（旧 `recovery.ts` 顺序由 `git show 756a1b30^` 的 `:126-145` 与 `model-operation-record.ts:1002-1009` 共同确定）。当前实现却在进入loop前创建candidate（`recovery.ts:125-126`），再注册payload（`:128-142`），所以candidate.sequence相对payloads前移，timeline与manifest digest仍不同。candidate元数据也从旧 `{ compatibility: "attempt-adapter" }` 变成 `{ recovery: true }`，settlement reason从`attempt adapter terminal`变成`recovered from projected History V3 entry`；这些字段进入canonical manifest。故“sequence／timeline／digest逐字一致”仍不成立。
+
+**测试缺口：** 四态回归只断言 `candidate.settledSequence > egress.sequence` 与 `terminal.sequence > candidate.settledSequence`，能抓settle位置和winner，却不比较candidate创建位置、metadata、reason或完整prepared manifest digest；因此对上述残余差异假绿。它覆盖了F5点名的四种terminal状态／verdict／winner与settle相对顺序，但没有覆盖“严格等价”的全部维度。
+
+**影响与修复建议：** 这是canonical History timeline／manifest的行为变化，不是style重排；当前未证明新形状更正确，且提交说明声称恢复旧adapter等价。最小修复是在首次attempt已完成payload注册、即将`beginDispatch`时惰性创建candidate，并使用旧adapter相同的candidate metadata与settlement reason；更强回归应在测试内用一个冻结的旧adapter oracle构造同一entry，断言当前record（包括sequences、candidate fields、terminal fields）与其深相等，并断言`prepareModelOperation(...).digest`相等。若项目决定有意采用新recovery provenance，则不能再声称严格等价，应将其拆成明确的行为变更并冻结新的canonical契约。建议合并前处置；修复方建议 `gpt-souls:implementer`。
+
+### F8 — MAJOR — `execDml` 去掉 `m` 修复 trigger false-positive，却引入多语句脚本 false-negative
+
+**位置：** `tests/history/v3/store-performance.it.test.ts:145-194`。
+
+**问题与证据：** 当前 `execDml = execed.filter((sql) => /^\s*(?:SELECT|UPDATE|DELETE|INSERT)/i.test(sql))` 只检查整个script的第一条statement。它正确忽略了以 `CREATE TRIGGER` 开头、trigger body内含DML的schema脚本，但也会放过 `CREATE TEMP TABLE ...; SELECT * FROM v3_operations`、`PRAGMA ...; UPDATE v3_operation_summaries ...` 等“首条DDL／PRAGMA，后续顶层DML”的真实 `db.exec`。这些后续statement绕过`prepare` observer，也不会进入EXPLAIN／SCAN检查，正是注释 `:184-190` 声称要封闭的入口。
+
+**影响：** 新增的确定性write-path guard仍可被合法的多statement `exec` 写法绕过；未来重新引入history-length scan时测试可全绿。它是刚用于替代已删除wall-clock门的承重gate，不能以当前生产尚未这样写为由放任已知false-green。
+
+**修复建议：** 不要恢复逐行`m`正则。优先对commit期间允许的`exec`调用做精确allowlist（例如当前唯一schema reconcile脚本及必要transaction control），任何新script先失败并要求作者把DML改走`prepare`，从而自然进入EXPLAIN门；若确需允许混合script，则使用SQLite-aware statement splitter／parser识别trigger `BEGIN…END`边界，再逐条对顶层DML做EXPLAIN。补双控：`CREATE TRIGGER ... BEGIN UPDATE ... END`必须绿；`CREATE TEMP TABLE ...; SELECT * FROM v3_operations`必须红。修复方建议 `gpt-souls:implementer`。
+
+### 最终 verdict
+
+- **BLOCKER：0。** F1、F2、F3与F5的原始数据完整性blocker均已修复；本轮定向命令 `bun test tests/history/v3/recovery-script.it.test.ts tests/history/v3/store-performance.it.test.ts` 为 `9 pass / 0 fail`。
+- **合并结论：修复 MAJOR 后可合并。** F7的严格等价仍未闭合，F8的承重guard仍有确定false-green；两者应在合入master前处置。F6的commit边界由用户裁决，status count的正交加固仍为非阻断测试债。
+
+## 收口确认（HEAD `540ca320`）
+
+### R1 — 通过 — F7 已恢复旧 adapter 的 canonical 逐字等价
+
+`candidate ??= beginCandidate(...)` 现在位于首个attempt的effective／wire payload注册之后、`beginDispatch()`之前（`src/lib/history/v3/recovery.ts:133-153`），与旧 `beginAttempt()` 内隐式创建candidate的位置一致；handle编号与全部event sequence因此恢复一致。candidate metadata恢复为 `{ compatibility: "attempt-adapter" }`（`:151`），settle reason恢复为 `attempt adapter terminal`（`:224-232`），两者均与旧adapter一致。candidate仍在egress之后、terminal之前settle，winner／committed字段同出同没（`:211-245`）。`captureTimestamps:false` 下，旧adapter与当前实现的candidate creation、dispatch creation、dispatch settle、candidate settle、terminal均不补`occurredAt`／`settledAt`；旧adapter在`commitTerminal()`中的terminal时间推导也得到undefined。因此 record、timeline与prepared manifest digest没有残余差异。保留旧metadata／reason以维持既有canonical digest是正确取舍；recovery provenance已有record／terminal extensions承载，不应为措辞美化破坏内容身份稳定性。
+
+### R2 — 通过 — F8 的冻结命中集关上多语句 `exec` 缝且适配当前生产拼写
+
+`tests/history/v3/store-performance.it.test.ts:185-199` 现在只允许逐字trim后等于 `V3_SCHEMA_SQL`，或单条 `DROP TABLE IF EXISTS \w+` 加可选分号／任意大小写。当前生产 `ensureV3Schema()` 的实际 `exec` 形状正是完整 `V3_SCHEMA_SQL` 与三条 `DROP TABLE IF EXISTS v3_search_*`；表名仅含word字符、无引号／schema限定，故不会false-red。`PRAGMA …; UPDATE …`、`CREATE …; SELECT …`及任何其他新增script都会落入`unexpectedExec`，从而fail closed；trigger body里的DML因整段script按`V3_SCHEMA_SQL`身份放行，不再误报。未来合法新增`exec`也会先红、迫使作者显式审查并更新冻结集合，这正是此gate的设计目标，不属于false-red。
+
+### 最终可引用结论
+
+**总体 verdict：可合并。BLOCKER 0，MAJOR 0。** 本评审范围内没有必须在合并master前继续处置的正确性、spec合规或生产接线问题。F6的历史拆分与status count正交加固仍为已记录的非阻断事项。
+
+复评时我执行 `bun test tests/history/v3/recovery-script.it.test.ts tests/history/v3/store-performance.it.test.ts`：recovery四态与query-plan gate通过，但同文件无关的CAS容量case本次受负载影响在15秒门超时，汇总为`8 pass / 1 fail`；这不推翻协调方已提供的`9 pass / 0 fail`及全History `560 pass / 23 skip / 0 fail`证据，也不涉及F7／F8机制，但交付记录应保留这次非零复跑而不能写成“本次复评命令全绿”。

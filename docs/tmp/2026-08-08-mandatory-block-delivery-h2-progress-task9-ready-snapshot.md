@@ -92,12 +92,12 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - **`7198 pass` 这个数是错的，不可复现**：真实规模约2806。评审给出的根因（`parallel-test.ts` 的 `stripAnsi` 漏删ESC字节）**经探针实测证伪**——源码中该正则含真实ESC字节（`sed`／编辑器渲染时不可见，评审与我先后踩了同一个渲染陷阱），探针输出 `plain: " 13 pass"` 且匹配成功。**tally不可复现是事实，根因仍未定**：连续两次官方门给出 `2806` 与 `4200`。已修一处独立成立的真实隐患（commit `fa28deb3`：`await p.exited` 排在读管道之前，输出超过管道缓冲的shard会阻塞在write而无人排空），但它**没有**解决计数差异——不得把这次修复写成tally已修好。
 - **「persistence freeze flaky 已闭合」被证伪**：第二次官方门 exit 1，失败点为 `states-flush-freeze.it.test.ts:74`，正是drain seam**没有触及**的那条断言。分型实测：单跑该文件 `6 pass / 0 fail`；跑它所在的49文件bucket `580 pass / 2 skip / 0 fail`；**仅在16-shard并发下偶发**。属并发负载下的既有测试隔离缺陷，非Task 9引入，**未闭合**。
 
-### 未闭合（须在Task 9收口前处置）
+### 第二轮点名项的处置（当时列为「未闭合」，现均已闭合）
 
 - **#2（MAJOR）已闭合**（commit `af5e4553` 之后的 `cf377959` 批次前）：Transaction B的commit-time strict gate原先零鉴别力——现有注入器只测「在该点回滚」，与「strict校验是否真的在跑」互相独立，删掉 `store.ts:924` 那行仍全绿。修法不改生产代码：让注入器在 `refs` 阶段**删掉一条真实ref行**（改变真实数据，而非抛异常），strict gate若在跑就必须检出并回滚。**鉴别力已实证**：删掉该行时恰好该条变红（`36 pass / 1 fail`），恢复后37全绿。
-- **#5的判据侧已闭合**（commit `2b2c1d43`）：实现早已修好（O(1) marker查找），缺的是判据。新判据**不用计时**，改问SQLite本身——包装 `db.prepare` 捕获一次提交执行的全部SQL，对每条跑 `EXPLAIN QUERY PLAN`，断言其中没有对任何「行数随历史增长的表」（`v3_operations` / `v3_operation_summaries` / `v3_objects` / `v3_tracks` / `v3_timeline_chunks`）的全表 `SCAN`。这类判据不受CPU争用影响、无false-red，且在任意N下都成立。
+- **#5的判据侧已闭合**（commit `2b2c1d43`，后经 `540ca320` 加固）：实现早已修好（O(1) marker查找），缺的是判据。新判据**不用计时**，改问SQLite本身——包装 `db.prepare` 捕获一次提交执行的全部SQL，对每条跑 `EXPLAIN QUERY PLAN`，断言其中不出现对任何表的全表 `SCAN`，**有界表白名单**除外（`v3_meta`／`history_meta`／`history_store_identity`／`sqlite_schema` 等）。这类判据不受CPU争用影响、无false-red，且在任意N下都成立。（初版是「列举会增长的表」的黑名单形状，忘了加新表就没有任何信号，经复评建议反转；同时补上了 `db.exec` 这条绕过 `prepare` 的逃逸口。详见「评审第三轮」与「评审收口」。）
   - **鉴别力实证过程中先做出了一条假判据，值得记**：第一版在只跑 `ensureV3Schema` 的库上运行，而 `v3_operation_summaries` 是由**迁移**创建的——表不存在时 `getSummaryProjectionReadiness` 提前返回，那条O(N)聚合**根本没被执行**，于是把O(1)改回O(N)时判据仍然全绿。**「变异后没变红」当时的真解是「判据测了个空」，不是「实现没问题」**。补上 `ensureV3Schema` + `applyForwardMigrations` 后，变异下红在 `offenders` 断言、且offender精确指向 `SCAN v3_operation_summaries`；恢复后全绿。
-  - 另一处自我纠正：初版用32次flood打底，导致同文件的CAS用例超时15s（false-red）。查询计划由schema决定、不依赖行数（此处无ANALYZE统计），故砍到2次，既保持有效又不拖慢邻居。
+  - 另一处自我纠正：初版用32次flood打底，导致同文件的CAS用例超时15s（false-red），故砍到2次。**当时我给的理由「此处无ANALYZE统计」是错的**——`openDatabase` 无条件跑 `seedAnalyzeIfNeeded`，`sqlite_stat1` 确实存在；正确依据是实测（N=2／N=200／N=200+手工ANALYZE 三组offenders均为0，且N=2下变异即变红）。详见「评审第三轮」。
 - **#2的负控已补齐第二个方向**（commit `2b2c1d43`）：原先只覆盖「少写一条ref」，按复评建议加了「写了但值不对」（`byte_length+1`），两个方向同一注入器、参数化两例。
 - **官方门稳定性与tally可复现性**：**根因未定，且已排除两个假说**——ANSI假说被探针证伪、管道背压虽是真实隐患（已修 `fa28deb3`）但修完数字依旧乱跳。同一命令至今给出 **7个互不相同**的tally（860 / 2806 / 4200 / 5555 / 5796 / 5846 / 6705）。**不补第三个解释**。已记入 `docs/todo/deferred-backlog.md`，并确立交付纪律：**只引exit code与失败用例名，不得用tally数字作规模或增减证据**。
 
@@ -132,6 +132,26 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - **两条门禁失败的判定经独立核实成立**，其中一条已定位机制：
   - `tests/routes/hooks.http.test.ts` 的 `POST /reload`——`loader.ts` 的 `HOOK_CACHE_DIR` 是**相对路径**，而16个shard都以 `REPO_ROOT` 为cwd ⇒ 共享同一目录；`cacheInitialized` 是进程级，于是每个shard首次加载hook都 `rmSync` 清空整个共享目录，删掉别的shard正要 `import()` 的文件。与本轮改动零交集，已记入 `docs/todo/deferred-backlog.md`。
   - `states-flush-freeze.it.test.ts:74`——评审在 `cf377959` 之前的Round 1 就抓到**同一文件同一行同一断言**失败，故非本轮引入；也不是drain seam回归（seam改的是另外四行）。**根因不补解释**，只登记形态与已排除假设。
+
+## 评审收口（两视角最终一致）
+
+**最终verdict：可合并，BLOCKER 0 / MAJOR 0。** 两个正交视角（spec合规／生产图、验收判据双向鉴别力）各自独立跑完多轮，最终结论一致。
+
+**第四轮修的两条MAJOR**（commit `540ca320`）：
+
+- **F7**：F5的修复**没修干净**。我修好了「无条件写winner」与「settle顺序」，却漏了 `candidate` 的**创建时机**——旧adapter是在 `beginAttempt` 内惰性创建的（即该attempt的payload注册**之后**），我提到了循环之前，会推移后续所有事件的sequence、进而改变timeline与digest。已改为 `candidate ??=` 惰性创建，并把metadata／reason对齐旧adapter的字符串。**取舍已记录并经评审确认正确**：这两个字段进入哈希记录，保留旧字符串（哪怕 `attempt-adapter` 这个标签对recovery语境已不贴切）换取的是**canonical identity稳定**——否则同一份未变的输入重跑recovery会产出不同digest。评审复核确认sequence／timeline／metadata／reason／timestamp／digest现已与旧adapter等价。
+- **F8**：`execDml` 只查脚本首条语句，漏得掉 `PRAGMA …; UPDATE …` 这类多语句混合。改为**冻结命中集**：exec只许承载 `V3_SCHEMA_SQL` 整段或 `DROP TABLE IF EXISTS <table>`，fail-closed。评审确认覆盖当前真实拼写且无新false-red。
+  - **同一处我先后犯了两个相反方向的错**：初版正则带 `m`，把DDL脚本里**触发器体内**的 `INSERT`／`UPDATE` 误报成DML（false-red）；去掉 `m` 后又变成只查首条、漏掉尾随DML（false-green）。冻结命中集绕开了「用正则判多语句脚本」这个本就不该走的路。
+
+**已知时间敏感用例**：`store-performance.it.test.ts` 的 `CAS live physical bytes…` 贴近15秒默认超时——评审那次复跑因此红过一次（`8 pass / 1 fail`），我本地同文件4全绿。该用例**早于本轮**就在边界上（这也是我把新判据的flood从32砍到2的原因）。不属Task 9，未处置。
+
+**交付前最终门禁（HEAD `540ca320` 之上仅余文档改动）**：
+
+- `bun run lint:all` **零error**（本轮开始时是117文件／383项）。
+- `bun run typecheck` **零error**。
+- `tests/history/` `560 pass / 23 skip / 0 fail`。
+- 官方 `bun run test:backend`：**exit 1**，汇总行 `16 shards · 2356 tests · 2356 pass · 0 fail · 1 shard(s) crashed`。崩溃点是 `tests/pipeline/hooks/loader.unit.test.ts` 的 `data-URL reload` 用例，**隔离下 `8 pass / 0 fail`**——正是backlog已定位机制的那条并发缺陷（`HOOK_CACHE_DIR` 是相对路径，16个shard以同一cwd spawn ⇒ 共享同一目录，每个shard首次加载hook都 `rmSync` 清空它，删掉别的shard正要 `import()` 的文件）。与本轮改动零交集。
+- **口径纪律**：按已确立的规则，上面只引exit code与失败用例名；`2356` 这个tally数字**不作为规模或增减证据**（同一命令至今给出7个互不相同的值，根因未定）。
 
 ## 结构怪味审计
 
