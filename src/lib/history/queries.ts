@@ -1,3 +1,5 @@
+import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+
 import type {
   //
   EntrySummary,
@@ -31,6 +33,7 @@ import { HistorySearchUdsError } from "./search/uds-client"
 import { getDatabase } from "./sqlite/connection"
 import {
   //
+  projectSearchableText,
   recordMatchesQuery,
   recordToEntrySummary,
   recordToHistoryEntry,
@@ -99,6 +102,20 @@ export class InvalidSummaryCursorError extends Error {
   }
 }
 
+/**
+ * The caller's search string is not one the index can parse — a bad request, not a broken index.
+ *
+ * Kept apart from {@link HistorySearchUnavailableError} because they map to different statuses: the
+ * search box is free text, and a query like `error:` or `-foo` used to travel as "sidecar
+ * unavailable" and return 503 for the entire listing, in-flight rows included.
+ */
+export class InvalidSearchQueryError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "InvalidSearchQueryError"
+  }
+}
+
 export class HistorySearchUnavailableError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -161,16 +178,40 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
 }
 
 /**
- * In-flight full-text search: scan the active entry's inbound messages with the
- * SAME normalization projection the persisted index uses, so a streaming entry
- * matches identically to a finalized one. No needle → always matches.
+ * Does a searchable corpus contain the needle? One definition, shared by every overlay path, so
+ * that "matches the search" cannot mean two different things inside a single merged page. No needle
+ * → always matches.
+ *
+ * Matching stays a lowercase substring test while the persisted index tokenizes. That residual
+ * difference is deliberate: the overlay may over-match relative to the index, which surfaces a row
+ * slightly early rather than hiding one, and it never produces the reverse.
+ */
+function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
+  if (!needle) return true
+  return text.toLowerCase().includes(needle.toLowerCase())
+}
+
+/**
+ * In-flight full-text search: a live entry has only its inbound messages, because nothing has been
+ * committed yet, so that is its whole corpus.
  */
 function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined): boolean {
-  if (!needle) return true
   const messages = entry.clientRequest?.messages ?? []
-  if (messages.length === 0) return false
-  const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
-  return text.toLowerCase().includes(needle.toLowerCase())
+  const text = messages.length === 0 ? "" : extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
+  return corpusMatchesSearch(text, needle)
+}
+
+/**
+ * A recent terminal record is matched against `projectSearchableText` — the SAME corpus the sidecar
+ * is about to index — rather than against inbound text alone.
+ *
+ * Matching it more narrowly meant a word appearing only in the model's answer dropped the row for
+ * the entire window between "terminal" and "indexed", after which the same row reappeared once the
+ * sidecar caught up; a cursor pointing at such a row was also rejected with a 400 even though it is
+ * perfectly valid under the persisted semantics.
+ */
+function recentMatchesSearch(record: ModelOperationRecord, needle: string | undefined): boolean {
+  return corpusMatchesSearch(projectSearchableText(record), needle)
 }
 
 export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary> {
@@ -181,8 +222,7 @@ export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary
   for (const record of listRecentModelOperationTerminals()) {
     const operationId = record.identity.operationId
     if (merged.has(operationId)) continue
-    const entry = recordToHistoryEntry(record)
-    if (inFlightMatchesSearch(entry, search)) merged.set(operationId, recentRecordToSummary(record))
+    if (recentMatchesSearch(record, search)) merged.set(operationId, recentRecordToSummary(record))
   }
   return [...merged.values()]
 }
@@ -238,8 +278,7 @@ function resolveSummaryCursor(
 
   const recent = getRecentModelOperationTerminal(cursor)
   if (recent) {
-    const entry = recordToHistoryEntry(recent)
-    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recentRecordToSummary(recent)
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && recentMatchesSearch(recent, options.search)) return recentRecordToSummary(recent)
     throw new InvalidSummaryCursorError(cursor)
   }
 
@@ -370,7 +409,7 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
   const recentSummaries = listRecentModelOperationTerminals()
     .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-    .filter((record) => inFlightMatchesSearch(recordToHistoryEntry(record), options.search))
+    .filter((record) => recentMatchesSearch(record, options.search))
     .map((record) => recentRecordToSummary(record))
   const cursorSummary = resolveSummaryCursor(options, operationKind, true)
   const db = getDatabase()
@@ -378,6 +417,17 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
   const target = freezeHistorySearchTarget(db)
+  // Freeze the overlay's persisted attribution in the SAME pre-await snapshot as the sidecar target.
+  // Reading it after the await instead let a row commit inside the window and fall through both
+  // counters: too late for the frozen target (so `persistedTotal` misses it) yet already persisted
+  // by the time it was classified (so `transientCount` skipped it too), leaving that row visible in
+  // `entries` while `total` did not count it — the `entries.length=1, total=0` shape this path
+  // exists to rule out.
+  const overlayPersistedAtFreeze = new Set(
+    [...inFlightSummaries, ...recentSummaries]
+      .filter((summary) => hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind }))
+      .map((summary) => summary.id),
+  )
   let persistedRows: Array<EntrySummary> = []
   let persistedTotal = 0
   let persistedHasOlder = false
@@ -418,6 +468,9 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
       if (error instanceof HistorySearchUdsError && error.code === "invalid-cursor") {
         throw new InvalidSummaryCursorError(options.cursor ?? "unknown")
       }
+      if (error instanceof HistorySearchUdsError && error.code === "invalid-query") {
+        throw new InvalidSearchQueryError(error.message, { cause: error })
+      }
       throw new HistorySearchUnavailableError("History search sidecar could not serve the frozen target", { cause: error })
     }
     const boundaryCovered =
@@ -446,7 +499,12 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
   const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
   const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
   const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
-  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
+  // A summary is transient exactly when the frozen snapshot did not already count it: rows the
+  // sidecar returned are in the frozen target by construction, and every other visible row is
+  // classified by `overlayPersistedAtFreeze`, never by a post-await read of the live database.
+  // (The synchronous sibling below keeps its live read — it has no await, so there is no window.)
+  const persistedRowIds = new Set(persistedRows.map((summary) => summary.id))
+  const transientCount = visible.filter((summary) => !overlayPersistedAtFreeze.has(summary.id) && !persistedRowIds.has(summary.id)).length
   const total = persistedTotal + transientCount
   const newest = entries.at(0)
   const oldest = entries.at(-1)
