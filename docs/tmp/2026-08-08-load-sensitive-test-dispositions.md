@@ -12,7 +12,55 @@
 >
 > 基线：`git log -1` = `2a4898e8`（本 worktree 已 fast-forward 到 master）。
 
+## 交接：本轮到此为止的完整状态（接手先读这一节）
+
+**状态锚点**：worktree `/home/xp/src/copilot-api-js/.claude/worktrees/agent-a915058689631f211`，分支 `worktree-agent-a915058689631f211`，已 fast-forward 合入集成分支 `command-algebra-entry-gate-fix`（`aa79ad57`）后叠加本轮提交。**全部提交在本地，未 push。** `git diff c672dda8 HEAD -- src/ packages/ native/ scripts/` **为空**——生产代码零改动，改的全是测试与本文档。
+
+**本轮 16 个提交（按时间倒序）**
+
+| commit | 作用 |
+|---|---|
+| `4925a27f` | 失败面枚举：5 次全量、0 失败；并记下「5 次只排除 ≥45% 那一档」的算式 |
+| `50ff39e9` | 文档重排 + 数字重锚（脚本重排 + 非空行多重集校验） |
+| `bb20d402` | M3：第 7 条补 stall-后探针；三处「命题强于证明」的措辞更正 |
+| `dbccb898` | M2：`bus` 的 `DEADLINE_MS` 50→500，上界相对形状不动 |
+| `fd18041b` | M1：`commitRatio` 改 5 样本中位数 + 60ms 预算地板 |
+| `b6bd3fb0` | V1 结论（inconclusive）、分类被推翻一览、`N tests` 字段不可信 |
+| `2915ecd0` | 第 8 条：改断言返回的 deadline failure 形状（时间无关 oracle） |
+| `e92bdffc` | 第 7 条：补微任务探针，覆盖「未 abort 却 resolve」 |
+| `5ae97d40` | 第 6 条：两探针夹住真实 stall，取代 `>= 40` 的间接推断 |
+| `601b4444` | 第 5 条：探针 + 修正取帧，上界降为兜底 |
+| `01504bdc` | 第一批 `test:backend` 验收落盘 |
+| `1de883cf` | 第 3 条注释更正：onClose 吸收实为两层 |
+| `48a6c246` | 第 4 条：`delivery-lifecycle` 文件级预算 30s |
+| `0109bd95` | 第 3 条：`upstream-ws-crash-safety` 文件级预算 30s |
+| `b9954a39` | 第 2 条：`store-performance` 文件级预算 60s |
+| `c9c069f9` | 第 1 条：armSilent 退役 wall-clock 存活判据 |
+
+触及 8 个文件（7 个测试 + 本文档），清单见文末「本轮没有做的事」。
+
+**当前未处置项**（正文「未处置清单」有完整依据，此处只给触发指针）
+
+1. `liveRatio >= 10` 对「去重丢失」鉴别力弱（实测 10.54 险过）。
+2. `timedCommit` 的姊妹问题已由 M1 解决；原第 2 条登记**已过时**，保留仅为溯源。
+3. `liveTimerDelaysMs` 四条断言 —— **V1 inconclusive**，造不出可观测泄漏；阈值关系已证正确（2000 不 > 2000）。
+4. `DESIGN.md:82` 是否补「两层防御纵深」一笔。
+5. **已撤下**（前提不成立，非裁决通过），见 M2。
+6. `parallel-test` 汇总行 `N tests` 字段不可信（同码 4639–6825 摆动，`executed` 恒 7297）。
+7. `commitRatio` 那条断言对它名字里那个缺陷鉴别力弱（改前 3.37 / 改后 4.62，阈值 5，双双不红）。
+8. `http2-generation-reconcile.it.test.ts:377` flaky，观测 1 次，**未因 5 次全绿撤下**。
+
+**下一个接手的人，第一件事该做什么**
+
+1. **先确认基线没漂**：`git log --oneline -1`、`git diff --stat c672dda8 HEAD -- src/ packages/ native/ scripts/`（应为空）、`git --no-optional-locks status --short`（应只有你自己的改动）。本轮**从未**用整文件 `git checkout`/`restore` 恢复 mutation，恢复一律走冻结 patch 的 `--reverse`——请保持。
+2. **不要先跑全量套件**。当前调度约定是：复评期间不跑测试，两边并跑会互相污染负载，把双方结果变成噪声（这正是本轮在治的病）。
+3. **要判「能不能进 T0.0f」，先看枚举那一节的漏检表**，别用「最近几次都绿」下结论：目前累计 5 次干净运行，只排除了 ≥45% 那一档；把 20% 那档压到 5% 漏检需累计约 14 次。
+4. **要改任何一条既有断言之前**，先读「分类被推翻」一节。八条表面同形的测试底下是四种鉴别力结构，本轮有 5 次读码判断被实跑推翻、3 次 mutation 没打到被走到的路径。**判据是对每条候选 mutation 实跑，不是读代码。**
+5. **写任何「这条判据证明了 X」之前**，先举一个刚好不满足 X 却能通过该判据的输入；举得出来就说明范围写宽了。本轮这个错犯了三次，第三次是**在修第二次的过程中**犯的。
+
 ## 隔离基线（本会话实测，load 30–40 的机器上单文件独跑）
+
+
 
 | 文件 | 隔离单跑 | 用例数 | 分片下的失败形态 |
 |---|---|---|---|
