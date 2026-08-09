@@ -27,7 +27,7 @@ The ready-live scenarios no longer use an uncontrolled real `setTimeout(20)`. Th
 
 A dedicated 50ms SDK negative control uses an abort-aware never-responding upstream fake. It proves the selective business clock still lets the real SDK deadline fire as `APIConnectionTimeoutError`, while the fake mirrors the real abort protocol so teardown can settle. The exact mutation setting `preContentRecovery.enabled=false` makes all three ready-live SDK scenarios fail with the real SDK surfacing the stream `APIError`. Restoring the exact patch returns the suite to green.
 
-## Verification across the two merges
+## Verification at `fc570601` and after the first merge
 
 ### Before merging master, at `fc570601`
 
@@ -60,11 +60,13 @@ Building the native artifact instead would have made this worse. 27 of the 36 fr
 
 The summary fixture also inherited `PARALLEL_TEST_ARTIFACT_DIR` and `REQUIRE_TEST_ARTIFACTS` from the environment, so under the producer it took the artifact-transfer branch and failed two of its own cases. The sibling harness in the same file already sanitises those and explains why.
 
-Neither would have announced itself early: the producer runs all fifteen invocations before reconciling any of them, so a deterministic drift costs the whole batch first. `scripts/parallel-test.ts` now compares the run's skip multiset against the frozen baseline and prints what differs — warning only, backend tier only, reusing the production parser and identity key. That key had three copies (two private ones in the producer, one in the schema module); it now has one exported definition.
+Neither would have announced itself early: the producer runs all fifteen invocations before reconciling any of them, so a deterministic drift costs the whole batch first. `scripts/parallel-test.ts` now compares the run's skip multiset against the frozen baseline and prints what differs — warning only, backend tier only, reusing the production parser and identity key, and wrapped so an unparsable baseline can never take the run down with it. That key had three copies (two private ones in the producer, one in the schema module); it now has one exported definition.
 
-## Verification at the branch tip
+The warning is not redundant with the guard that already exists. `entry-evidence-schema.unit.test.ts` checks the baseline's `files` against a disk glob, which is why a new test file cannot drift unnoticed — but nothing checked `allowed_skipped`, which is why seven native-gated skips did. The baseline's other two bindings also fail fast on their own: `files` and `runner_git_blob` are compared before the batch starts, and the executed floor stops the wrapper on run 01. The skip multiset was the one binding whose mismatch cost all fifteen runs first.
 
-Measured at `01b3bbf2`, the branch tip:
+## Verification at `8cf8acd1`
+
+Measured at `8cf8acd1`; nothing after it changes code:
 
 - `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 18 pass, 0 fail;
 - `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail;
@@ -76,9 +78,9 @@ Measured at `01b3bbf2`, the branch tip:
 - `bun test tests/history/search/uds-transport.it.test.ts`: 24 pass, 0 fail;
 - `bun run typecheck`: exit 0;
 - `bunx eslint` over every file this branch changed: exit 0;
-- `bun run test:backend` under the producer's own environment: 16 shards, 7374 pass, 0 fail, 7377 executed, 43 skipped, exit 0, and no baseline-staleness warning.
+- `bun run test:backend` under the producer's own environment: 16 shards, 6836 pass, 0 fail, 7377 executed, 43 skipped, exit 0, and no baseline-staleness warning.
 
-The reporter's `tests` count is not the population authority, and this round is a good demonstration: successive backend runs reported 6211, 5502, 5693, 5151, 6836 and 7374 `tests`. `executed` is stable within one tree — 7266 before the first merge, 7377 after the second — but it moves across merges too, so neither number is a constant to quote. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
+The reporter's `tests` count is not the population authority, and this round is a good demonstration: successive backend runs reported 6211, 5502, 5693, 5151, 6836, 7374 and 6836 `tests`. `executed` is steadier but still not a constant: 7266 at `fc570601` plus its uncommitted diff, 7261 at `fc570601` itself as an independent reviewer measured it, and 7377 after the second merge. Anchor either number to a commit or do not quote it. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
 
 ## Failed evidence disposition and mandatory next step
 
