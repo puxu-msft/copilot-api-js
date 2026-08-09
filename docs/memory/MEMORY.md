@@ -75,7 +75,7 @@
 - [测 elapsed 注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；[node_modules 存在≠锁文件事实](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — bun add 只进该树·缺 gitignored 产物假红·向上解析主树 node_modules·可能跑错树·夹带无关祖先
-- [隔离 worktree 会话合不了主线](worktree-isolated-session-cannot-merge-shared-master.md) — 判据=`merge-base --is-ancestor master HEAD`，最后一条命令交用户
+- [隔离 worktree 会话怎么合主线](worktree-isolated-session-merging-into-shared-master.md) — 逃生门=`ExitWorktree(keep)` 退回主检出后自己 `merge --ff-only`；`dangerouslyDisableSandbox` 无效
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决
