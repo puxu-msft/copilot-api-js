@@ -15,6 +15,7 @@ import type {
 import type { HistoryWorkerTransport } from "~/lib/history/worker/runtime"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
 import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
 import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
 
@@ -83,6 +84,27 @@ describe("HistoryPersistenceRuntime contract", () => {
   test("in-process test backend runs the same contract", async () => {
     await exerciseRuntime(createInProcessHistoryPersistenceRuntime())
   })
+
+  test("a retryable startup failure kills the in-process generation, not the host process", async () => {
+    // The message loop is shared with the real Worker entry, where "die so the runtime
+    // restarts me" means `process.exit`. Running that unchanged HERE would take down the
+    // host — the proxy in production, this test runner right now. If the host adapter
+    // regresses, this test does not go red: the whole run dies, which is the loudest
+    // possible signal and the reason the assertion below is worth so little on its own.
+    let remainingFailures = 2
+    const runtime = createInProcessHistoryPersistenceRuntime({
+      openSemanticDatabase: (dbPath) => {
+        if (remainingFailures-- > 0) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" })
+        return openOwnedHistoryDatabase(dbPath)
+      },
+    })
+
+    const ready = await runtime.start(startConfig())
+
+    expect(ready.configRevision).toBe(1)
+    expect(runtime.snapshot()).toMatchObject({ ready: true, terminalFailed: false, restartsTotal: 2 })
+    await runtime.shutdown()
+  }, 20_000)
 
   test("real Worker exposes deterministic error before exit", async () => {
     const worker = new Worker(fixtureWorkerUrl, { workerData: { crash: true } })
