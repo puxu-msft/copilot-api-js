@@ -41,6 +41,7 @@ import path from "node:path"
 import {
   //
   compareFileIdentities,
+  formatTallyLine,
   parseJUnit,
 } from "./parallel-test-artifacts"
 
@@ -228,18 +229,26 @@ writeArtifactAtomically(
 // Stdout parsing was the original source and it reports a green `0 fail` whenever a shard
 // dies while writing its summary: the `N fail` line never lands, but the failing testcase
 // row was already flushed to the XML. Observed on a merge gate — a timed-out test sat in
-// shard-06's XML while the tally line read `3337 tests · 3337 pass · 0 fail`. The pass
-// count is derived (executed − failed) so it can never disagree with them.
+// shard-06's XML while the tally line read `3337 tests · 3337 pass · 0 fail`.
+// `formatTallyLine` owns the line itself (and derives pass from executed − failed, so the
+// two can never disagree); it lives in the artifacts module so the incompleteness marker is
+// reachable by a test rather than only by running the whole suite.
 const failSum = parsedIdentities.reduce((sum, identity) => sum + identity.failed, 0)
 const failedIdentities = parsedIdentities.flatMap((identity) => identity.failedIdentities)
-const passSum = executed - failSum
 for (const identity of failedIdentities) {
   console.error(`[parallel-test] FAIL ${identity.file} › ${identity.classname} › ${identity.name} (${identity.type})`)
 }
 
 console.error(
-  `\n[parallel-test] ${buckets.length} shards · ${executed} tests · `
-    + `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
+  `\n${formatTallyLine({
+    shards: buckets.length,
+    executed,
+    failed: failSum,
+    skipped,
+    crashedShards: crashed.length,
+    missingFiles: fileComparison.missing.length,
+    wallSeconds: wall,
+  })}`,
 )
 console.error(`[parallel-test] artifacts=${artifactDir}`)
 process.exit(failed.length > 0 || failSum > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)

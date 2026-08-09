@@ -10,6 +10,7 @@ import path from "node:path"
 import {
   //
   compareFileIdentities,
+  formatTallyLine,
   parseJUnit,
 } from "../../scripts/parallel-test-artifacts"
 
@@ -184,5 +185,37 @@ describe("parallel-test JUnit artifact parsing", () => {
 
   test("rejects malformed or truncated JUnit rather than returning a partial identity", () => {
     expect(() => parseJUnit(`<testsuites><testsuite file="tests/a.unit.test.ts"><testcase file="tests/a.unit.test.ts"`, "/repo")).toThrow()
+  })
+})
+
+// The tally line is what a delivery report quotes, so every way the counts can be wrong
+// has to be visible ON it. A file that throws at load time produces no JUnit rows at all
+// while bun still prints its own `N fail`, so the crashed-shard heuristic does not fire and
+// that file's tests vanish from every count here -- the exit code stays fail-closed via the
+// file-identity check, but the line itself would read green.
+describe("formatTallyLine", () => {
+  const base = { shards: 16, executed: 100, failed: 0, skipped: 3, crashedShards: 0, missingFiles: 0, wallSeconds: "12.34" }
+
+  test("derives pass from executed - failed so the two can never disagree", () => {
+    expect(formatTallyLine({ ...base, executed: 100, failed: 7 })).toContain("100 tests · 93 pass · 7 fail · 100 executed")
+  })
+
+  test("says nothing extra when every discovered file reported rows", () => {
+    const line = formatTallyLine(base)
+    expect(line).toContain("100 pass · 0 fail")
+    expect(line).not.toContain("INCOMPLETE")
+    expect(line).not.toContain("crashed")
+  })
+
+  test("marks the tally itself incomplete when a file produced no JUnit rows", () => {
+    const line = formatTallyLine({ ...base, missingFiles: 2 })
+    expect(line).toContain("INCOMPLETE: 2 file(s) produced no JUnit rows")
+    expect(line).toContain("a floor, not a total")
+  })
+
+  test("reports a crashed shard and an incomplete tally independently", () => {
+    const line = formatTallyLine({ ...base, crashedShards: 1, missingFiles: 1 })
+    expect(line).toContain("1 shard(s) crashed")
+    expect(line).toContain("INCOMPLETE: 1 file(s)")
   })
 })

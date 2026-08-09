@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "runner_git_blob": "11b24db546eee6e5c10befbcdb65d606e0e5c1f9",
+  "runner_git_blob": "e077439eacb8f24f64fd35ba5f67e22e34c6564f",
   "minimum_executed": 7279,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",

@@ -206,3 +206,35 @@ export function compareFileIdentities(expected: Array<string>, actual: Array<str
     unexpected: [...actualSet].filter((file) => !expectedSet.has(file)).sort(),
   }
 }
+
+export interface TallyInput {
+  shards: number
+  executed: number
+  failed: number
+  skipped: number
+  crashedShards: number
+  missingFiles: number
+  wallSeconds: string
+}
+
+/**
+ * The one line a delivery report actually quotes, so every way the counts can be
+ * wrong has to be visible ON it -- not several lines above it.
+ *
+ * `missingFiles > 0` means at least one discovered test file produced no JUnit rows
+ * at all. A file that throws at load time does exactly that: bun still prints its own
+ * `N fail`, so the crashed-shard heuristic does not fire, and that file's tests and
+ * failures evaporate from every count here while the line still reads green.
+ */
+export function formatTallyLine(input: TallyInput): string {
+  const passed = input.executed - input.failed
+  const crashedNote = input.crashedShards > 0 ? ` · ${input.crashedShards} shard(s) crashed (see isolated re-run above)` : ""
+  const incompleteNote =
+    input.missingFiles > 0 ?
+      ` · ⚠ INCOMPLETE: ${input.missingFiles} file(s) produced no JUnit rows (see "missing runtime file identity" above) — these counts are a floor, not a total`
+    : ""
+  return (
+    `[parallel-test] ${input.shards} shards · ${input.executed} tests · ${passed} pass · ${input.failed} fail`
+    + ` · ${input.executed} executed · ${input.skipped} skipped${crashedNote}${incompleteNote} · ${input.wallSeconds}s`
+  )
+}
