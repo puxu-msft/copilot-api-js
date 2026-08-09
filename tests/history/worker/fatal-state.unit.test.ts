@@ -200,7 +200,9 @@ describe("History Worker terminal-failed state", () => {
     for (const timer of restartTimers.splice(0)) timer.fn()
     transports[1]?.emitReady()
 
-    const kinds = (transports[1]?.sent ?? []).filter((message) => message.type === "persist-operation" || message.type === "drain").map((message) => message.type)
+    const kinds = (transports[1]?.sent ?? [])
+      .filter((message) => message.type === "persist-operation" || message.type === "drain")
+      .map((message) => message.type)
     // The Worker serializes what it receives, so a `drain` that arrives before the replayed
     // envelopes would answer "everything received so far is settled" while those envelopes
     // were still sitting in the main thread's queue (spec §8.2).
