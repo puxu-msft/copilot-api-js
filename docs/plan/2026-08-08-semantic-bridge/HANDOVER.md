@@ -19,7 +19,14 @@
 ### 两个分支怎么合
 
 1. **计划文档**：`plan-semantic-bridge` 每次合过 master 后即可快进。**主线动得很勤，合并前先复跑上面那条 `--is-ancestor`。**
-2. **C0.1 代码**：`worktree-thinking-translation-rfc` 与 master 分叉（它含 RFC 的旧 commit 谱系，那些内容已以不同 commit 进入 master）。**C0.1 是纯新增测试文件，cherry-pick 两个 commit 到基于 master 的分支最干净**：`6af28887`（提取）+ `588b0c09`（补第二条谓词负控 + `ReadonlySet` 硬化）。
+2. **C0 代码**：`worktree-thinking-translation-rfc` 与 master 分叉（它含 RFC 的旧 commit 谱系，那些内容已以不同 commit 进入 master）。**该分支上属于本工作的提交全部是纯新增测试文件 + 文档，cherry-pick 到基于 master 的分支最干净。**
+   `[hard]` **不要照抄一份 commit 列表**——本会话期间它已从 2 个涨到 6 个以上，写死必然过期。取当前列表：
+
+   ```
+   git -C <repo> log --oneline --reverse b59abc30..worktree-thinking-translation-rfc
+   ```
+
+   `b59abc30`（`docs: accept semantic bridge RFC`）是 RFC 谱系的末端，其后每一个提交都属于本工作。**逐个核对再 cherry-pick**，别整段照搬。
 
 ## 已完成
 
@@ -27,14 +34,29 @@
 - **实施计划**：32 片映射 C0–C11，五轮跨模型对抗评审收口（5 blocker + 17 major 全部核实成立并采纳）。
 - **C0.1（共享 SDK oracle harness）**：已交付 + 独立评审（0 blocker，1 major 已修）。
   实测 **47 pass / 0 fail / 177 expect() calls** = 30（anthropic 既有）+ 15（responses 既有）+ 2（新增自验）；断言 151 + 21 + 5。两个既有测试的基线数完好。
+- **C0.2（缺陷语料 + G2 wire golden）**：已交付 + 独立评审（0 blocker，4 major 全部核实成立并采纳）。
+  `[hard]` **数字不写死**，复算：`bun test tests/openai/semantic-bridge/`（在 `worktree-thinking-translation-rfc` 上跑）。
+- **orphan-tool 位置缺口**：已登记 `docs/todo/deferred-backlog.md`，明确标注为**代码静态推断、未打上游探针**；定性取决于上游是否接受尾随的未配对 `tool_use`（若上游 400，当前的删除就是修复而非缺陷）。**不在本 RFC 范围内，别顺手改。**
 
-## 下一步：C0.2
+### C0.2 评审抓到的四条，值得后续片记住
 
-kickoff 已写好：[prompts/c0-2.md](prompts/c0-2.md)。按用户裁决，**起某一片时才写它的 kickoff，交接时为接手者要做的那片写**——C0.2 的已就绪，C0.3 及之后到时再写，并**在同一次改动里更新 `prompts/README.md` 导航表**（那张表会陈旧，本仓库已有先例）。
+1. **九条 KNOWN-LOSS 在 C1–C8 期间必然一直绿**——它们绑定 legacy translator，而 C8.x 全是 `Create` 新模块。**「没红」不代表没欠账**，转绿动作在 C9/C10 的 `Files` 里。
+2. **golden 的覆盖面要从被保护对象反推**，不能凭记忆列内容类型。本片连漏三次（只有一个方向有 reasoning → 守卫审 helper 不审集合 → tool/non-stream reasoning/错误腿零覆盖），三次都是枚举漏的。
+3. **守卫的登记键必须是用例级**。用 digest key 登记时，retry 与 no-retry 变体共用一个键、互相覆盖，「删掉一条 golden 守卫会红」只对少数几条成立。判据是**删除敏感性**，不是 marker 存在性。
+4. **计数判据（「行数 ≥ N」）分不清「补齐了」与「凑够了」**，改用集合双向差集。
 
-C0.2 的两个要点：
-1. 它要交付 **G2 的客户端 wire 字节 golden**（≥6 条）——那是 C2.1–C8.3 十余片「不改变 production writer」的**唯一机械判据**，且它自己必须有灵敏度对照（改一个生产字节 → 至少一条 golden 变红），否则后续每片的对账都是空转。
-2. fixture 清单已按「旧码可否表达」二分——需要 C1.2 三层 terminal 才能表达的那批**不在 C0.2**，硬塞会让执行者撞上过不去的门而去弱化断言。
+## 下一步：C0.3
+
+kickoff 已写好：[prompts/c0-3.md](prompts/c0-3.md)（其验收判据已按 C0.2 评审结果改过：从「行数 ≥ N」换成三来源集合双向差集）。按用户裁决，**起某一片时才写它的 kickoff，交接时为接手者要做的那片写**——C0.1–C3.4 十份已就绪，C4 及之后到时再写，并**在同一次改动里更新 `prompts/README.md` 导航表**（那张表会陈旧，本仓库已有先例）。
+
+C0.3 的要点：
+1. 它建的是 **mutation registry**——把每条判据的 exact mutation 制度化，否则后续各片只会口头声称「我做了 mutation 对照」，没人能复核那次 mutation 改了什么、失败是不是来自目标机制。
+2. `[hard]` **三个来源缺一不可**：RFC §12 验收矩阵每一行、C0.2 的九条 KNOWN-LOSS、**C0.2 实际执行过的每一次 mutation**（第三项是初稿漏的，见 `progress/c0-2.md`）。
+3. **registry 是明细 SSOT，任何汇总是派生视图**——别在别处另维护一份计数。
+
+### 再往后（C1.1 起）
+
+C1.1–C1.3 建 ledger 类型契约与 reducer，是 C2 之后所有片的地基。**C1.2 的三层 terminal 是解锁点**：C0.2 里那批「旧码无从表达」的断言（part/item/response 三层 terminal 的拒绝正控）**移到了 C1.2 的验收**，接手时别忘了它们欠在那儿。
 
 ## 本会话实测到的坑（**对后续片有用，别重新踩**）
 
