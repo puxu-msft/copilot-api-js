@@ -325,8 +325,12 @@ describe("persisted list-search facade", () => {
       expect(result.entries.map((entry) => entry.id)).toEqual(["unindexed-row"])
       expect(result.total).toBe(1)
     }
-    // Negative control: a term that is absent must not be dragged in by the term-wise match.
-    expect(await getHistorySummariesAsync({ search: "hello absent", limit: 10 })).toMatchObject({ entries: [], total: 0 })
+    // A query carrying one word the row lacks must STILL match, because the index is OR by default
+    // (`bug zzzabsent` matches a document containing only `bug` — measured). An earlier version of
+    // this test asserted the opposite and would have made the correct fix look like a regression.
+    expect(await getHistorySummariesAsync({ search: "hello zzzabsent", limit: 10 })).toMatchObject({ entries: [{ id: "unindexed-row" }], total: 1 })
+    // The real negative control: no term of the needle appears anywhere in the row.
+    expect(await getHistorySummariesAsync({ search: "zzzabsent qqqabsent", limit: 10 })).toMatchObject({ entries: [], total: 0 })
   })
 
   /**

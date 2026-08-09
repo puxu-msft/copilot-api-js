@@ -178,28 +178,23 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
 }
 
 /**
- * Does a searchable corpus contain the needle? One definition, shared by every overlay path, so
- * that "matches the search" cannot mean two different things inside a single merged page. No needle
- * → always matches.
+ * Does a searchable corpus match the needle? One definition, shared by every overlay path, so that
+ * "matches the search" cannot mean two different things inside a single merged page. No needle →
+ * always matches.
  *
- * A multi-word needle is split and matched term by term, approximating how the index tokenizes,
- * because a plain substring test disagrees with it in BOTH directions and the second one hurts:
- * against `please fix the hello-world bug`, the index matches `hello world` and a substring test
- * does not. Rows the index cannot see yet are the overlay's alone to show, so under-matching there
- * hid a just-finished request from the most ordinary query there is, until the sidecar caught up and
- * it reappeared.
+ * The invariant this exists to hold is one-directional and worth stating as such, because three
+ * attempts to describe it as symmetric were each falsified by a probe: **the overlay must never hide
+ * a row the index would return.** Rows the index has not indexed yet are the overlay's alone to
+ * show, so a miss here removes a just-finished request from the results until the sidecar catches up
+ * and then puts it back. Matching more than the index is harmless by comparison — it surfaces a row
+ * early. The property is checked against the real index in `exp/history-search-list-perf/`, which is
+ * where it belongs: a claim about two tokenizers is not something to assert in a comment.
  *
- * The split is on Unicode letters and numbers rather than ASCII, because Tantivy's `SimpleTokenizer`
- * splits on `char::is_alphanumeric`. An ASCII-only split produced no terms at all for `你好 世界` or
- * `значение умолчанию` and fell through to a substring test that the index disagrees with — the same
- * hole, reopened for every non-Latin script. This is an approximation, not the same tokenizer:
- * `\p{L}\p{N}` and Rust's `is_alphanumeric` differ at the margins, and the index applies its own
- * pipeline. It is calibrated against the real index in `exp/history-search-list-perf/cjk-probe.ts`.
- *
- * A single-token needle keeps the substring test, which over-matches relative to the index — `orld`
- * finds `world` here and not there, and so does any infix of an unbroken CJK run. That direction is
- * deliberate: it surfaces a row early rather than hiding one, and it is what makes a search box
- * usable as you type.
+ * Hence: split on Unicode letters and numbers (Tantivy's `SimpleTokenizer` splits on
+ * `char::is_alphanumeric`; ASCII-only produced zero terms for `你好 世界`), and require ANY term
+ * rather than all of them, because `QueryParser` is OR by default — measured: `bug zzzabsent` matches
+ * a document containing only `bug`. Requiring all terms hid a row whenever a query contained one word
+ * the row lacked, which is most multi-word queries.
  */
 function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
   if (!needle) return true
@@ -209,15 +204,18 @@ function corpusMatchesSearch(text: string, needle: string | undefined): boolean 
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
   if (terms.length <= 1) return haystack.includes(needle.toLowerCase())
-  const tokens = new Set(haystack.split(/[^\p{L}\p{N}]+/u).filter(Boolean))
-  return terms.every((term) => tokens.has(term))
+  return terms.some((term) => haystack.includes(term))
 }
 
 /**
  * In-flight full-text search: a live entry has only its inbound messages, because nothing has been
  * committed yet, so that is its whole corpus.
+ *
+ * The needle is checked BEFORE the corpus is built. Without that, every listing — including the
+ * ordinary one with no search at all — paid for normalizing the inbound text of every live entry.
  */
 function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined): boolean {
+  if (!needle) return true
   const messages = entry.clientRequest?.messages ?? []
   const text = messages.length === 0 ? "" : extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
   return corpusMatchesSearch(text, needle)
@@ -231,8 +229,13 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
  * the entire window between "terminal" and "indexed", after which the same row reappeared once the
  * sidecar caught up; a cursor pointing at such a row was also rejected with a 400 even though it is
  * perfectly valid under the persisted semantics.
+ *
+ * The needle guard is load-bearing here, not tidiness: `projectSearchableText` serializes the whole
+ * record, and the recent bus holds up to 256 of them. Evaluating it unconditionally put that cost on
+ * every un-searched listing, on the synchronous path.
  */
 function recentMatchesSearch(record: ModelOperationRecord, needle: string | undefined): boolean {
+  if (!needle) return true
   return corpusMatchesSearch(projectSearchableText(record), needle)
 }
 
