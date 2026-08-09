@@ -18,6 +18,7 @@ import {
 import {
   //
   HistorySearchUnavailableError,
+  InvalidSearchQueryError,
   InvalidSummaryCursorError,
 } from "~/lib/history/queries"
 import { compressAsync } from "~/lib/sqlite/compression"
@@ -31,20 +32,40 @@ import { compressAsync } from "~/lib/sqlite/compression"
  * （cursor / limit / direction / terminalOnly）与 search 端点专有的 q / source 不在此列，
  * 由各 handler 自行叠加。
  */
+/**
+ * Parse a query parameter as a non-negative integer, or `undefined` when the text is not one.
+ *
+ * Validation and consumption both go through this, because they used to disagree: the validator ran
+ * `Number("1e2")` (100) while the consumer ran `Number.parseInt("1e2", 10)` (1), so `limit=1e2`
+ * validated as 100 and then silently became 1, and `from=10&to=1e2` passed the `from <= to` check
+ * before becoming the inverted range 10 > 1. Sharing one parser makes that divergence
+ * unrepresentable. Only decimal digits are accepted — exponent, hex and fractional spellings are not
+ * integers a caller can have meant, and a leading `-` is rejected here rather than downstream.
+ */
+function parseIntegerParam(raw: string | undefined): number | undefined {
+  if (!raw || !/^\d+$/.test(raw)) return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
 function parseListFilters(query: Record<string, string>): QueryOptions {
   return {
     operationKind: (query.operationKind as QueryOptions["operationKind"]) || undefined,
     model: query.model || undefined,
-    endpoint: query.endpoint as EndpointType | undefined,
+    // `|| undefined` is load-bearing on every string dimension: an empty value means "no filter".
+    // Without it `?endpoint=` reached the sidecar as an exact match on the empty string, which no
+    // document carries, so the persisted half of the page silently came back empty — while the same
+    // URL without `search=` took the SQL path, whose `if (options.endpoint)` treated it as no filter.
+    endpoint: (query.endpoint as EndpointType | undefined) || undefined,
     success: query.success ? query.success === "true" : undefined,
     state: (query.state as QueryOptions["state"]) || undefined,
-    from: query.from ? Number.parseInt(query.from, 10) : undefined,
-    to: query.to ? Number.parseInt(query.to, 10) : undefined,
+    from: parseIntegerParam(query.from),
+    to: parseIntegerParam(query.to),
     search: query.search || undefined,
     sessionId: query.sessionId || undefined,
     agentId: query.agentId || undefined,
     mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
-    pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
+    pid: parseIntegerParam(query.pid),
   }
 }
 
@@ -54,7 +75,13 @@ function rejectsRetiredArchiveTier(c: Context): Response | undefined {
 }
 
 const OPERATION_KINDS: ReadonlySet<string> = new Set(["generation", "count_tokens", "embeddings", "responses_ws", "all"])
-const ENDPOINTS: ReadonlySet<string> = new Set(["anthropic-messages", "openai-chat-completions", "openai-responses", "gemini-generate-content"])
+const ENDPOINTS: ReadonlySet<string> = new Set([
+  "anthropic-messages",
+  "openai-chat-completions",
+  "openai-responses",
+  "gemini-generate-content",
+  "openai-embeddings",
+])
 const LIFECYCLE_STATES: ReadonlySet<string> = new Set(["pending", "executing", "streaming", "completed", "failed", "aborted", "interrupted"])
 const DIRECTIONS: ReadonlySet<string> = new Set(["older", "newer"])
 const BOOLEANS: ReadonlySet<string> = new Set(["true", "false"])
@@ -89,13 +116,13 @@ function rejectsInvalidListQuery(c: Context): Response | undefined {
   for (const name of ["from", "to", "pid", "limit"] as const) {
     const raw = query[name]
     if (!raw) continue
-    const value = Number(raw)
-    if (!Number.isSafeInteger(value) || value < 0) return invalid(name, raw, "Expected a non-negative safe integer.")
+    const value = parseIntegerParam(raw)
+    if (value === undefined) return invalid(name, raw, "Expected a non-negative safe integer.")
     if (name === "limit" && (value === 0 || value > MAX_LIST_LIMIT)) return invalid(name, raw, `Expected an integer between 1 and ${MAX_LIST_LIMIT}.`)
   }
 
-  const from = query.from ? Number(query.from) : undefined
-  const to = query.to ? Number(query.to) : undefined
+  const from = parseIntegerParam(query.from)
+  const to = parseIntegerParam(query.to)
   if (from !== undefined && to !== undefined && from > to) {
     return c.json({ error: `Invalid range: from ${from} is later than to ${to}.` }, 400)
   }
@@ -116,7 +143,7 @@ export async function handleGetEntries(c: Context) {
     ...parseListFilters(query),
     // 分页维单独解析并叠加：故意不并入共享 filter，避免空列表分页请求被误判为「有筛选」。
     cursor: query.cursor || undefined,
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+    limit: parseIntegerParam(query.limit),
     direction: query.direction ? (query.direction as "older" | "newer") : undefined,
     terminalOnly: query.terminalOnly === "true" ? true : undefined,
   }
@@ -125,6 +152,7 @@ export async function handleGetEntries(c: Context) {
     return c.json(await getHistorySummariesAsync(options))
   } catch (error) {
     if (error instanceof InvalidSummaryCursorError) return c.json({ error: error.message }, 400)
+    if (error instanceof InvalidSearchQueryError) return c.json({ error: error.message }, 400)
     if (error instanceof HistorySearchUnavailableError) return c.json({ error: error.message }, 503)
     throw error
   }
@@ -140,8 +168,10 @@ export function handleGetSessions(c: Context) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
 
-  const limitRaw = c.req.query("limit")
-  const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined
+  // No 400 here: validation stays scoped to `/api/entries` (user ruling 2026-08-08). Sharing the
+  // parser only means a malformed `?limit=` degrades to the store's default cap instead of reaching
+  // it as `NaN`.
+  const limit = parseIntegerParam(c.req.query("limit"))
   return c.json({ sessions: getSessionSummaries(limit) })
 }
 
@@ -299,7 +329,7 @@ export async function handleSearch(c: Context) {
     const result = await searchHistory({
       source,
       q: query.q || "",
-      limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+      limit: parseIntegerParam(query.limit),
       cursor: query.cursor || undefined,
       filters,
     })
