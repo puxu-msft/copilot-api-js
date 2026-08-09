@@ -355,226 +355,6 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 ---
 
-## 未处置清单（登记，不在本轮改，交独立裁决）
-
-> **「撤下」与「裁决通过」是两回事，别混。** 一条登记项被划掉可能出于两种完全不同的原因：
-> - **裁决通过** —— 前提成立、确实存在取舍，由未卷入的一方作出选择。走流程。
-> - **撤下（前提不成立）** —— 登记时依据的那个二选一/约束**经实测根本不存在**，于是没有什么可裁的。此时正确动作是**撤下并写明前提为何不成立**，而不是走一遍流程再盖章通过——后者会把一个错误前提追认成「已裁决的事实」，下一个人会以为那个取舍真的存在过。
-> 本清单第 5 条属于**后者**（见 M2）。
-
-按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something`：删除或放宽既有 guard、以及重塑判据，合并前必须交独立 reviewer 或用户裁决，不得由实施者自判放行。以下四条都属此类，本轮**只记录不动手**。
-
-1. **`store-performance.it.test.ts:166` `liveRatio >= 10` 对「去重丢失」几乎没有鉴别力。** 实测：破坏跨 operation CAS 去重时 `physicalRatio` 掉到 9.10（红），`liveRatio` 只掉到 10.54（**仍绿**）。两条断言量的是不同的东西，都该留；但若将来只保留 `liveRatio`，这条 guard 就是假绿。证据见本文第 2 节。
-2. **`store-performance.it.test.ts:100-105` `timedCommit` 单次采样。** 同文件的 `timedPrepare` 取 5 次中位数，`timedCommit` 只取单次，`commitRatio < 5` 因此比 `prepareRatio < 3` 更易受争用方差影响。**不改的理由是机械的**：同一 record 重复 commit 会命中 CAS 去重，第 2–5 次样本天然更快，照搬中位数写法会改变被测量的量；要正确修必须为每个样本造不同 `operationId`。
-3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 在当前基线下以真空方式通过——鉴别力尚未验证。**
-   探针实测：断言点该数组为 `[]`，故 `[].every(...)` 恒 `true`，这四条**在本次运行中**没有对任何东西施加约束。
-   **但「真空通过」不等于「抓不到目标缺陷」**——这是一个否定性结论，不自证。该断言守的是「终态 / client-abort 之后不得有短周期心跳存活」（用例名即 "...stops heartbeat"，`tests/helpers/fake-clock.ts:52-53` 的 docstring 明写该 getter 是为了「把泄漏的短周期心跳与无关的长生命期运行时定时器区分开」）。若心跳真的泄漏，数组就非空、且该项剩余延迟很短 → `.every()` 为 false → 红。所以我观测到 `[]`，只能说明**它守的不变量在当前基线下成立**，即这是一次通过，不是空转。
-   **待验证（本轮未做）**：
-   - **V1** 注入一个「终态后心跳定时器不被 clear」的真实泄漏（打生产代码，不翻测试状态），跑该文件，记录这四条是红是绿。红 → 有鉴别力，本条从未处置清单撤下；绿 → 才成立「盲」。
-   - **V2** 仅在 V1 为绿时才需要：查 `2_000` 阈值与该测试里 keepalive 实际周期的关系——若被泄漏的定时器剩余延迟本来就 > 2000，`.every()` 照样为真，那才是真的盲。阈值与周期都要给实测值。
-
-   ### V1 执行结果（2026-08-08 当轮补做）：**未能判定，不是「有鉴别力」也不是「盲」**
-
-   先说**已经确证**的两件事（这两条本身就推进了问题）：
-
-   - **该心跳定时器对 FakeClock 是可见的，剩余延迟就是 `2000`**。在用例内插探针实测（跑完即撤）：
-     ```
-     PROBE A (after commit, before tail advance) timers = [2000]
-     PROBE B (after 2.5s advance, stream still open)  timers = [2000]
-     ```
-     配置是 `streamKeepalivePingSec: 2` → 周期 2000ms。**这直接回答了 V2 关心的阈值关系**：判据是 `delay > 2_000`，而心跳定时器的剩余延迟恰好是 `2000`，`2000 > 2000` 为 **false**——**只要它在断言点还活着，这四条就会红**。所以谓词的形状是对的，不存在「阈值定得太松、泄漏也照过」的问题。
-   - **但在断言点它是 `[]`**：`PROBE C (at assertion point, post-terminal) timers = []`。
-
-   于是问题收敛成一个具体的技术障碍：**我造不出「终态后仍有活心跳定时器」的状态**。逐级加码试了三种真实泄漏，全部仍 `[]`、四条断言全绿：
-
-   | 尝试 | 打在哪 | 断言点 timers | 结果 |
-   |---|---|---|---|
-   | `stop()` 不 clear 定时器 | `client-sink.ts:611-615`（`startFixedForwardIdleHeartbeat`） | — | 2 pass |
-   | tick 在 stopped 时**仍自我重排**（该 helper docstring 明写 `stop` 就是为防这个） | 同上 `:595` | — | 2 pass |
-   | **inline** heartbeat 的 tick 在 stopped/suspended 时仍自我重排 | `client-sink.ts:436` | `[]` | 1 pass |
-   | 上一条 **叠加** `close()` 完全不置 `stopped`、不 clear | 再叠 `:375` | `[]` | 1 pass |
-
-   前两次说明**这个用例根本没走 `startFixedForwardIdleHeartbeat`**（那是另一个 builder）——这本身是一次「mutation 没打到被走到的路径」，与第 3、4 条同型。后两次说明：即使 inline 心跳无限自我重排、且 `close` 完全失效，定时器在断言点仍然不在 FakeClock 的表里。**也就是说还有第三条路径在终态前后让它消失（或让该 sink 实例整个脱钩），我没定位到。**
-
-   **结论（严格按证据写）**：V1 **inconclusive**。不能说「已验证有效」，也**不能**升级成「已验证是盲的」——后者需要「存在真实泄漏而断言不红」，而我没能造出真实泄漏的**可观测状态**。目前唯一确定的是：谓词阈值与心跳周期的关系是**正确**的（2000 不 > 2000），若泄漏可见就会红。
-   **交给裁决方的下一步**（我没做，也不该由我自决）：定位终态路径上第三个让该定时器消失的地方（建议从 `createDownstreamDeliverySession` / 终态 finalize 一侧查，而不是继续在 `client-sink.ts` 里加码），在那里注入泄漏后重跑本判据；或改用一个不依赖 FakeClock 定时器表的 oracle。
-
-   **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
-   同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
-4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
-5. ~~**`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。**~~ **已由 M2 关闭，不再需要裁决。** 原登记的前提（「要么保覆盖、要么降敏感，二选一」）是错的：那个二选一只在 `DEADLINE_MS` 钉死为 50 时成立。M2 保持上界的相对形状 `DEADLINE_MS * 4` 不变、把 fixture 的 deadline 放大到 500，鉴别力与绝对余量同时拿到（实测三行见 M2 节）。**不涉及放宽既有 guard。**
-6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后恒 35）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。
-7. **`store-performance.it.test.ts` 的「commit 成本不随历史长度增长」判据对该缺陷类鉴别力弱。** 实测：注入「按 hash 点查退化为全表扫描 + 逐行解压」后，**改前写法 ratio 3.37、改后写法 ratio 4.62，双双低于阈值 5，都不红**。根因是 ratio 的自归一化——该缺陷让冷热两端一起变慢。这是**既有局限**（改前改后同样存在，已用并跑对照钉死），不是 M1 引入的。收紧阈值或换判据形状都属于改既有 guard，须独立裁决。
-8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
-
-## 本轮的分类判断被实测推翻过几次
-
-**8 条表面症状相同的测试，底下是 4 种不同的鉴别力结构；靠类比推进必然出错。** 下面每一条都是「先有一个看起来合理的分类判断，再被一次实跑推翻」的记录——列出来不是自我检讨，是给下一个想「统一处理这一类测试」的人一面墙。
-
-| # | 原判断（谁提出） | 实测结果 | 推翻它的那次观测 |
-|---|---|---|---|
-| 1 | 第二批 4 条「都是过分敏感的 outlier 兜底，放宽即可」（协调方派活前提） | **第 8 条不成立**，它的 `200` 是承重的 | 放宽到 2000 后 Mutation F（deadline 实际时长 6x）**抓不到**；改回 4x 才红（303ms） |
-| 2 | 第 6 条「可能与第 5 条同型」（协调方 + 我的初始倾向） | **不同型** | 同一个 Mutation B，第 5 条旧写法全绿、第 6 条旧写法红（`lowerBound:false`） |
-| 3 | 第 7 条「同文件，大概率同前两条之一」 | **第三种结构** | 它开着 `idleTimeoutMs`，因果判据更强（reject vs sentinel），但**仍对 Mutation B 全盲** |
-| 4 | 第 8 条「`done === 0` 大概已蕴含上界」 | **两条都不蕴含，且两条一起还漏一整类** | Mutation E（deadline 被完全忽略）下旧写法 `{"upperBound":true,"doneIsZero":true}` 全绿 |
-| 5 | 我写的「那四条 `liveTimerDelaysMs` 断言鉴别力为零」 | **过头断言，已撤回** | 「真空通过」只证明不变量成立；否定性结论不自证。V1 实测后仍 **inconclusive** |
-| 6 | 第 3 条注释声称「`guardCallback` 吸收 onClose 异常」 | **实为两层**，第一层是 `notifyClosed` 自己的 try/catch | 第一次 mutation 打在 `guardCallback` 上**没变红**，子进程直跑 rc=0 |
-| 7 | 第 4 条「mutation 打在 `freezeHeartbeat`/`close` 上就能证伪」 | **三次都没打到被走到的路径** | 三次全绿后插探针才发现断言点 `timers = []` |
-| 8 | V1「造个心跳泄漏就能定这四条有没有鉴别力」 | **造不出可观测的泄漏状态**，V1 未判定 | 四级加码（含无限自我重排 + `close` 完全失效）断言点仍 `[]` |
-
-**可复用的判据**（这才是这张表的价值）：
-
-- **「同形」只是症状层面的相似**。判鉴别力结构要问的是：**去掉这条断言后，哪些退化还会被抓住？** 这个问题只能靠**对每条候选 mutation 实跑**回答，读代码读不出来——本轮 8 次里有 5 次我的读码判断被实跑推翻。
-- **「mutation 没变红」永远有两解**：测试没咬住 vs mutation 没打到被走到的路径。本轮命中后者 **3 次**（第 3、4 条与 V1）。分辨方法是**独立观测被测机制本身**（子进程直跑 rc、插探针打印状态），不是再读一遍代码。
-- **否定性结论（「这条断言抓不到东西」）不自证**，需要「注入真实缺陷而它不红」的正面证据；拿不到就老实写 inconclusive，别升级成「盲」。
-
-### 同一个错误在本轮复发三次：把「我的判据证明了什么」写宽一档
-
-这三次不是各自独立的口误，是**同一个形态**，值得单独拎出来：
-
-| 次序 | 我写下的命题 | 实际证明的 | 差在哪 |
-|---|---|---|---|
-| 1 | 那四条 `liveTimerDelaysMs` 断言「鉴别力为零」 | 只观测到「当前基线下真空通过」 | 把「这次没约束到东西」写成了「永远抓不到东西」 |
-| 2 | 探针证明「BEFORE the abort, nothing may settle」 | 只证明「这一瞬间未 settle」 | 把一个瞬间写成了整段窗口 |
-| 3 | 修正版说「within one microtask tick」 | 连 1 个 tick 都不覆盖（实测：1/2/3 tick 与 `setTimeout(0)` 全判 pending） | **修正它的那次修正本身又宽了一档** |
-
-第 3 次尤其要记：它是**在修第 2 次的过程中**犯的，而且**写进了会长期留在仓库的测试注释**——比写在临时文档里危险得多。
-
-**可执行的自查动作**（在写下任何「这条判据证明了 X」之前做，包括写在注释里的）：
-
-> **举一个刚好不满足 X、却能通过这条判据的输入。举不出来才可以写 X；举得出来，就把 X 缩小到那个输入之外。**
-
-对照上面三次：第 2 次只要问「有没有一个晚一点 settle 的 promise 能通过？」——`Promise.resolve().then(...)` 就是，20 秒就能证否。第 3 次同理，我却把范围从「窗口」缩到「一个 tick」就停手了，**没有再问一遍**。**缩小范围之后要重新跑一次这个自查**，因为新范围是一个新命题。
-
-第 1 次的形态略有不同（否定性断言），自查动作是上一节最后那条：**要主张「抓不到」，得拿出「注入真实缺陷而它不红」的正面证据**。
-
-### 附带：`Edit` 之后立刻验标题（本轮踩中四次）
-
-本轮用 `Edit` 插入新章节时，`old_string` 拿小节标题当锚点、`new_string` 忘了写回去，**静默删标题**——**发生了四次**（第 7 条残留复核段一次、M1 一次、M2 一次、本节一次），全部在通读或即时检查时发现并补回。四次都不报错，因为 `Edit` 只校验 `old_string` 唯一命中。
-
-**固定动作**：每次用 `Edit` 插入或替换跨小节的内容后，**立刻**跑一次 `rg -n "^## " <文件>` 或 grep 被当作锚点的那一行，确认它还在。这比「下次仔细些」有用，因为它是一条命令而不是一个意愿。
-
-## 工具性教训：`Edit` 的替换覆盖面（本轮踩中一次，写成机械判据）
-
-本轮在插入第 7 条的残留复核段时，`Edit` 的 `old_string` 圈进了「方向一」那张表，却没在 `new_string` 里写回去，**静默删掉了它**（通读时才发现并补回）。`Edit` 只校验 `old_string` 唯一命中，**不会**因为你漏写了打算保留的内容而报错。
-
-**机械判据（比记住这次有用）**：把 `old_string` 与 `new_string` 各自**按行拆开**，只有「本次有意删除」和「本次有意新增」的行允许出现在差集里。差集里出现任何你说不出意图的行，就落在这两个方向之一：
-
-- **新串多、旧串少 → 重复**：`new_string` 里「顺手带上」了 `old_string` 没圈进来的邻近内容，那段会留一份再插一份。
-- **旧串多、新串少 → 静默删除**（本轮这次）：拿一段上下文当锚点圈进 `old_string`，却忘了写回 `new_string`。
-
-**表头、小节标题、列表行首最危险**——它们看起来像定位符、不像内容。
-
-
-## 评审 major 处置
-
-评审报告：`docs/tmp/2026-08-08-load-sensitive-test-dispositions-review.md`（blocker 0 / major 4）。基线已换到集成分支 `command-algebra-entry-gate-fix`，本 worktree 已 fast-forward 到 `aa79ad57`。
-
-### M1 · `store-performance.it.test.ts` 的 `commitRatio < 5`（已处置）
-
-**为什么必须现在修（不是「以后再说」）**：三次合并态全量运行 —— `405d459c` 56.80s 绿 / `aa79ad57` 99.02s **红 8.295** / `aa79ad57` 132.61s 绿，**失败率 ≈ 1/3**。T0.0f 要求连续 15 次全绿，按此比率通过概率 ≈ (2/3)^15 ≈ **0.2%**。它是事实上的阻塞项。注意耗时与是否变红**不单调**（56.8 绿 / 99.0 红 / 132.6 绿），所以「多跑几次都绿」不构成收口，必须给机制层面的论据。
-
-**先复核评审给的机制归因——它对了一半，另一半我实测证否**：
-
-- ✅ 评审说对的：`:134`/`:138` 的调用点**本来就**在给冷热两次采样造不同的 `operationId`（`target-cold` / `target-hot`）。所以我在未处置#2 写的「要正确修必须为每个样本造不同的 operationId」指错了一层——真正的去重键是**内容哈希**，不是 operationId。
-- ❌ 评审据此建议「样本用形状相同、内容不同的 fixture（`highBranchFixture` 已按 name 取种子）」——**这个前提不成立**。`tests/history/v3/performance-fixtures.ts:64-101` 里 `highBranchFixture` 的载荷文本全部来自**常量种子**：`deterministicText(1, branchBytes)`、`deterministicText(index + 10, …)`、`deterministicText(index + 100, 2_048)`，**与 `id` 无关**；`id` 只进 `beginRecord(id)`。也就是说**不同 name 造出的 fixture 内容逐字节相同**，照它的建议做，样本 2..N 仍会命中既有 CAS 对象（`insertObject` 在 `:651` 命中已有 hash 即早返回），中位数量到的是去重查表而不是插入。
-
-**处置**（形状由我定，理由如下）：
-
-1. `timedCommit` 改为与 `timedPrepare` 同构的 **5 样本中位数**。
-2. 每个样本用 `saltedSample()` 给每个 payload 注入 `__sample` salt —— **形状与体积不变、内容不同**，保证每次都是真实插入。这是上面那条证否的直接后果：光换 `operationId` 不够。
-3. 判据从 `commitRatio < 5` 改为 `hotCommitMs < max(coldCommitMs * 5, 60ms)`。**5x 的语义一字未改**，只是分母不再能塌到噪声量级。
-
-`60ms` 的推导：分片下**健康**的 hot commit 已被观测到 23.6ms（就是那次 false-red 的现场值），60ms 给约 2.5x 余量；隔离下 hot 实测 1.65–2.00ms，余量约 30x。
-
-**方向一：正确状态不被误拒**
-
-隔离连跑 5 次（同一 HEAD）：`hotCommitMs` = 1.90 / 1.84 / 1.91 / 1.65 / 2.00 ms，`commitRatio` = 0.70 / 0.36 / 0.65 / 0.66 / 0.88 —— 对比改前同一份代码在 0.617 与 8.295 之间摆动 13 倍。
-
-真实并发（`bun run test:backend` = `parallel-test.ts` 16 分片，**不是 spinner**）三次：
-
-| 运行 | 耗时 | store-performance | 结果 |
-|---|---|---|---|
-| 1 | 92.29s | 绿 | 0 fail |
-| 2 | 95.52s | **绿** | 1 fail —— **但失败的是另一条测试**，见下 |
-| 3 | 106.23s | 绿 | 0 fail |
-
-**机制层面的论据**（这才是收口依据，不是「跑了三次绿」）：改前判据 = `单次 2.8ms 级采样` 做分母，分母的相对标准差直接乘进比值；改后 = 5 样本中位数 **且** 分母有 60ms 地板，**比值不再可能被单次毫秒级采样支配**——分母低于 12ms 时判据完全脱离比值、退化成一条固定的 60ms 预算。
-
-**方向二：错误状态仍被拦住——这里有一个必须点名的否定结果**
-
-注入真实的「commit 成本随历史长度增长」缺陷（冻结件 `/tmp/mut-m1-commit-cost-grows-with-history.patch`：`store.ts:651` 的按 hash 点查退化为**全表扫描 + 逐行解压**）：
-
-| 形态 | coldCommitMs | hotCommitMs | ratio | 判定 |
-|---|---|---|---|---|
-| 改后（本次） | 51.39 | 237.61 | 4.62 | **仍绿**（budget 256.9） |
-| **改前的单次采样写法**（临时并跑，跑完即撤） | 12.12 | 40.79 | 3.37 | **仍绿**（`wouldPass: true`） |
-
-**两种写法都抓不住它。** 根因是 ratio 判据的自归一化：该缺陷让**冷热两端一起**变慢（冷端此时已有前几次采样写入的对象），比值因此被吸收。**这是既有局限，不是本次改动引入的**——上表第二行就是为了把这一点钉死才跑的。
-
-因此我**没有**为 M1 交出「注入缺陷即变红」的证据，也**不会**为了凑这个证据去收紧阈值（那是放宽/收紧既有 guard，须独立裁决）。作为新发现登记进未处置清单第 7 条。
-
-**顺带发现（不在本轮范围，但会同样打掉 T0.0f）**：run 2 的那次 `1 fail` **不是** store-performance，而是 `tests/transport/http2-generation-reconcile.it.test.ts:377`「row 1 — pre-header req.error」，错误文本 `test setup: server stream/session missing`。同 HEAD 隔离单跑该文件 **11 pass / 0 fail**。本轮改动只碰了 `tests/history/v3/store-performance.it.test.ts` 一个文件（`git diff --stat HEAD` 可证），与它无关。**这是套件里的又一条同族 flaky**，登记进未处置第 8 条。
-
-### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
-
-**评审指出我的约束是假的，这一条我判它成立。** 我原先写的「放宽上界就失去覆盖」是**真的**，但它**只在把 `DEADLINE_MS` 钉死在 50 时成立**——而 50 本身不承重（fixture 的 deadline 取多少，与「deadline 被尊重」这条不变量无关）。上界的鉴别力挂在**相对形状 `DEADLINE_MS * 4`** 上，不挂在绝对毫秒上；把 fixture 按比例放大，鉴别力不变而绝对余量变宽。
-
-**三行对照全部自己复跑过**（不是采信评审转述），mutation 为「deadline 腿的实际时长 = 请求值的 6 倍」（`/tmp/mut-item8-wrong-deadline-duration.patch`）：
-
-| 配置 | Mutation F | 健康 |
-|---|---|---|
-| `DEADLINE_MS=50`，上界 200（改前） | **红 301** | 绿 |
-| `DEADLINE_MS=50`，上界 2000 | **绿 —— 失去覆盖** | 绿 |
-| `DEADLINE_MS=500`，上界 `DEADLINE_MS*4`=2000（本次） | **红 3008** | **绿，11 pass** |
-
-第三行是本轮实测的：健康 `11 pass / 0 fail`，注入 mutation 后 `Expected: < 2000 / Received: 3008`。
-
-**处置**：`DEADLINE_MS` 50 → 500，上界保持相对形状 `DEADLINE_MS * 4` 不动（自动从 200 变 2000）。**生产代码零改动**，断言的相对形状零改动。
-
-- 绝对余量：150ms → **约 1500ms**（健康 elapsed ≈ deadline ≈ 500ms，上界 2000ms）。
-- 代价：约 450ms 墙钟（文件 0.60s → 1.09s）。gate 化的 handler 意味着这 450ms 是**唯一**新增等待，收尾仍是开闸即返回。
-- 争用验证：64 spinner（loadavg 31→37）下 **11 pass / 0 fail，2.77s**。
-
-**未处置清单第 5 条据此撤下**——那条登记的是「放宽上界须裁决」，现在的答案是**不放宽上界**，改放大 fixture，两个目标同时达成，不构成放宽既有 guard。
-
-## 第二批收口验收（第 5–8 条全部落地后）
-
-
-
-`bun run typecheck` —— 绿。源码残留核验：`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数 **0**。
-
-`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片）连跑两次：
-
-```
-[parallel-test] 16 shards · 5396 tests · 5396 pass · 0 fail · 7297 executed · 31 skipped · 66.26s
-[parallel-test] 16 shards · 6394 tests · 6394 pass · 0 fail · 7297 executed · 31 skipped · 59.39s
-```
-
-**必须点名的一件事：这个 runner 的 `N tests` 字段在同一份代码上不稳定。** 本会话三次 `test:backend` 分别报 **4856 / 5396 / 6394**，而 `executed = 7297`、`skipped = 31`、`fail = 0` **三次完全一致**。三次之间的代码差异只有第 5–8 条的测试体改写（用例数没变：`stream-shutdown-race` 恒 25 条、`bus.unit` 恒 11 条），**解释不了 +1538 的漂移**。
-
-因此：
-
-- **可引用的口径是 `executed` / `skipped` / `fail`**（稳定，三次一致）；
-- **`N tests` 不可作为交付数字引用**，任何「本仓库有 N 条测试」的断言若取自这一行，都应视为未经交叉验证；
-- 成因**未定位**（不在本轮范围）。已作为一条独立发现登记进「未处置」清单第 6 条。
-
-这条正是 `cross-check-with-two-methods` 的一次实际命中：若只跑一次并把 `5396 tests` 写进交付物，它看起来完全正常，也没有任何信号提示它是错的。
-
-## 收口验收（四条全部落地后）
-
-`bun run typecheck` —— 绿（`tsc`，无输出即无错）。
-
-`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片），在本 worktree 根、HEAD = `1de883cf`：
-
-```
-[parallel-test] 16 shards · 4856 tests · 4856 pass · 0 fail · 7297 executed · 31 skipped · 89.83s
-```
-
-**口径说明**：`4856 tests` 是用例数、`7297 executed` 是含参数化展开后的执行数、`31 skipped` 主要是 `history-search` 的 native 产物缺失时按 `describe.skipIf(!isNativeHistorySearchAvailable())` 显式跳过（本 worktree 未 `bun run build:history-search`，属预期行为，见 CLAUDE.md「测试分档」）。该数字**未**交叉验证，是 runner 自报的单一来源。
-
-**本轮没有跑 T0.0f 的 15 连跑。** 那才是 faithful 的分片复现，也正是该门本身要做的事；本文件只负责把四条从「会被争用误杀」变成「不会」。四条里只有第 2 条（`store-performance`）在本会话用 spinner 直接复现出了原始失败形态并验证修复，第 1、3、4 条的复现依据分别是：第 1 条真实分片日志 `run-02.log:20-32`（spinner 复现失败，已标注）、第 3、4 条真实分片日志 + 「宽预算下完成、收紧预算下仍绿」的双向分型。
-
 ## 第二批：4 条同形但**本轮没红**的 wall-clock 上界
 
 > **与第一批的关键差别，必须先声明**：这 4 条**没有**在 `run-02.log` 里红过，因此**没有实测失败可引**。下面每条只写「余量是多少、已观测到的放大倍数是多少」，**不写「它会红」**——那是未经证实的断言。
@@ -666,26 +446,6 @@ PROBE windows: new(abort→resolve) = 0 ms ; legacy(start→resolve, includes se
 > | （sentinel 放第一个参数位）1 微任务后 settle | 判 PENDING —— 参数顺序不改变结论 |
 >
 > 真命题是：**「在这一行执行的那一瞬间尚未 settle」**——既不是「一个 tick 内」，也不是「永不」。它连一个 tick 都覆盖不了。三条用例的注释与本记录已全部按这一版改写。
-
-### M3 · 三处微任务探针的命题强度（已处置）
-
-**处置 1：措辞。** 第 5、7 条的注释与上面的 §5 更正块，全部改成「at the instant this line ran」，并把「它连一个 tick 都不覆盖」这条限制**写进注释本身**（不只是写进本文档）——因为注释才是下一个读者会看到的东西。第 6 条原注释写的是 "not immediately, and not across a real stall"，**本来就是准确的**，未改。
-
-**处置 2：第 7 条补第二探针——补，理由是实测的假绿，不是类比。**
-
-评审构造的假绿场景：`idleTimeoutMs > 0` 时，race 在构造后**晚一个微任务**自发 resolve 成 `STREAM_ABORTED`（与 abort 无关）。我把它做成 mutation 实跑（`/tmp/mut-m3-spontaneous-resolve-one-tick.patch`，在 `stream.ts:251` 处 `if (idleTimeoutMs > 0) racers.push(Promise.resolve().then(() => STREAM_ABORTED))`）：
-
-| 第 7 条的形态 | 该 mutation 下 |
-|---|---|
-| **只有第一探针**（本轮此前的状态） | **1 pass —— 假绿确认成立** |
-| **补上第二探针后**（本次） | **0 pass / 1 fail**，红在第二探针 `:733`，`Expected: Symbol(still-pending) / Received: Symbol(STREAM_ABORTED)` |
-
-所以这个假绿是**真实可达**的，不是理论担忧，第 7 条必须补。形状照第 6 条：真实 `setTimeout(50)` stall + 第二次探针。为什么 stall 有效：睡眠会把微任务队列排空，此后**已 settled 的 `p` 确实会赢** race（上表第一行），于是自发 resolve 暴露出来。50ms 远低于该用例的 `idleTimeoutMs = 5000`，不干扰它要测的「abort 赢过空闲超时」。单侧安全——睡得更久只让「仍 pending」更成立。
-
-**为什么第 6 条不需要再补**：它本来就有 stall-后探针，且其 `idleTimeoutMs = 0`（该 mutation 按 `idleTimeoutMs > 0` 触发，对它不适用）。评审复核也确认第 6 条成立。
-
-改后：全文件 **25 pass / 0 fail**，typecheck、eslint 绿，`git diff -- src/ packages/` = 0。
-
 
 ## 6. `tests/streaming/stream-shutdown-race.it.test.ts` — `raceIteratorNext resolves STREAM_ABORTED when signal fires during stall`
 
@@ -903,15 +663,269 @@ failures.push({ subscriber: "publishAndFlush", phase: "async-handler", eventKind
 
 
 
-- 没有退役（删除/skip）任何一条用例——四条全部保留，用户裁决按目标而非字面执行。
-- 没有放宽任何断言的**阈值或内容**：`10x` 比值、逐字节 wire、`detail` 序列、`exitCode`、stderr 正则，全部逐字未改。改的只有 per-test / 文件级**预算**，以及第 1 条那条被证明冗余且错帧的 wall-clock 上界。
-- 没有碰上述 4 个测试文件与本文档之外的任何文件（第 3 条的注释更正另见下节，是协调方明确追加授权的）。
-- 没有跑 T0.0f 的 15 连跑；faithful 的分片复现留给该门本身。
-- 没有 push。四个 commit 都在本地隔离 worktree 分支 `worktree-agent-a915058689631f211` 上。
+## 本轮**没有**做的事（显式声明，随每轮重新锚定）
+
+> 这一节的数字每轮都在变，因此每条都注明**锚点**。锚点 = 集成分支 `command-algebra-entry-gate-fix`，本 worktree HEAD 已 fast-forward 到 `aa79ad57` 之后又叠了本轮 major 处置的提交。**引用本节任何数字前先看锚点是否还是当前状态。**
+
+- **没有退役（删除 / skip）任何一条用例。** 八条全部保留并仍在跑。
+- **删除的既有断言共 2 条**（此前记作 1 条，是漏数）：
+  1. 第 6 条的 `expect(elapsed).toBeGreaterThanOrEqual(40)` —— 由 stall-后微任务探针接手，覆盖经实测确认未丢（见第 6 条验收证据）。
+  2. M1 的 `expect(commitRatio).toBeLessThan(5)` —— 由 `expect(hotCommitMs).toBeLessThan(commitBudgetMs)` 接手，5x 语义未改、分母加地板。
+  **容易数错的原因**：第 1 条的 `expect(elapsed).toBeLessThan(SILENCE_MS)` 看着像被删了，其实是**同一条断言换了常量**（→ `OUTLIER_CEILING_MS`），断言本身还在。数「删了几条」时要按「该断言是否以任何形式仍然存在」判，不是按「那一行是否被改过」判。
+- **没有放宽任何断言的阈值或内容**：`10x` 比值、逐字节 wire、`detail` 序列、`exitCode`、stderr 正则、`DEADLINE_MS * 4` 的相对形状，全部逐字未改。改的是**预算**（per-test → 文件级）、**取帧**（把脚手架定时器移出计时窗口）、以及 **fixture 规模**（M2 放大 deadline）。
+- **生产代码零改动**：`git diff --stat c672dda8 HEAD -- src/ packages/ native/ scripts/` **输出为空**（本轮实跑）。范围内出现的任何生产改动都来自 master 侧的合并，不是我写的。所有 mutation 都以冻结 patch 注入、`git apply --reverse --check` 后反向撤回，**全程未用整文件 `git checkout` / `git restore`**。
+- **我的提交共 14 个**，触及 **8 个文件**（7 个测试文件 + 本文档），实测清单：
+  `tests/e2e-client/keepalive-idle-reset.it.test.ts`、`tests/history/v3/store-performance.it.test.ts`、`tests/observability/bus.unit.test.ts`、`tests/pipeline/delivery-lifecycle-baseline.http.test.ts`、`tests/responses/fixtures/ws-crash-probe.ts`、`tests/responses/upstream-ws-crash-safety.it.test.ts`、`tests/streaming/stream-shutdown-race.it.test.ts`、`docs/tmp/2026-08-08-load-sensitive-test-dispositions.md`。
+  （早先版本写「四个 commit / 只碰 4 个文件」，那是第一批结束时的快照，之后经第二批、注释更正与四条 major 处置已失效。）
+- **没有跑 T0.0f 的 15 连跑。** faithful 的分片复现留给该门本身；本轮只做到「枚举失败面」这一步。
+- **没有 push。** 全部提交都在本地隔离 worktree 分支 `worktree-agent-a915058689631f211` 上。
 
 
 
 
 
 
+
+
+
+## 评审 major 处置
+
+评审报告：`docs/tmp/2026-08-08-load-sensitive-test-dispositions-review.md`（blocker 0 / major 4）。基线已换到集成分支 `command-algebra-entry-gate-fix`，本 worktree 已 fast-forward 到 `aa79ad57`。
+
+### M1 · `store-performance.it.test.ts` 的 `commitRatio < 5`（已处置）
+
+**为什么必须现在修（不是「以后再说」）**：三次合并态全量运行 —— `405d459c` 56.80s 绿 / `aa79ad57` 99.02s **红 8.295** / `aa79ad57` 132.61s 绿，**失败率 ≈ 1/3**。T0.0f 要求连续 15 次全绿，按此比率通过概率 ≈ (2/3)^15 ≈ **0.2%**。它是事实上的阻塞项。注意耗时与是否变红**不单调**（56.8 绿 / 99.0 红 / 132.6 绿），所以「多跑几次都绿」不构成收口，必须给机制层面的论据。
+
+**先复核评审给的机制归因——它对了一半，另一半我实测证否**：
+
+- ✅ 评审说对的：`:134`/`:138` 的调用点**本来就**在给冷热两次采样造不同的 `operationId`（`target-cold` / `target-hot`）。所以我在未处置#2 写的「要正确修必须为每个样本造不同的 operationId」指错了一层——真正的去重键是**内容哈希**，不是 operationId。
+- ❌ 评审据此建议「样本用形状相同、内容不同的 fixture（`highBranchFixture` 已按 name 取种子）」——**这个前提不成立**。`tests/history/v3/performance-fixtures.ts:64-101` 里 `highBranchFixture` 的载荷文本全部来自**常量种子**：`deterministicText(1, branchBytes)`、`deterministicText(index + 10, …)`、`deterministicText(index + 100, 2_048)`，**与 `id` 无关**；`id` 只进 `beginRecord(id)`。也就是说**不同 name 造出的 fixture 内容逐字节相同**，照它的建议做，样本 2..N 仍会命中既有 CAS 对象（`insertObject` 在 `:651` 命中已有 hash 即早返回），中位数量到的是去重查表而不是插入。
+
+**处置**（形状由我定，理由如下）：
+
+1. `timedCommit` 改为与 `timedPrepare` 同构的 **5 样本中位数**。
+2. 每个样本用 `saltedSample()` 给每个 payload 注入 `__sample` salt —— **形状与体积不变、内容不同**，保证每次都是真实插入。这是上面那条证否的直接后果：光换 `operationId` 不够。
+3. 判据从 `commitRatio < 5` 改为 `hotCommitMs < max(coldCommitMs * 5, 60ms)`。**5x 的语义一字未改**，只是分母不再能塌到噪声量级。
+
+`60ms` 的推导：分片下**健康**的 hot commit 已被观测到 23.6ms（就是那次 false-red 的现场值），60ms 给约 2.5x 余量；隔离下 hot 实测 1.65–2.00ms，余量约 30x。
+
+**方向一：正确状态不被误拒**
+
+隔离连跑 5 次（同一 HEAD）：`hotCommitMs` = 1.90 / 1.84 / 1.91 / 1.65 / 2.00 ms，`commitRatio` = 0.70 / 0.36 / 0.65 / 0.66 / 0.88 —— 对比改前同一份代码在 0.617 与 8.295 之间摆动 13 倍。
+
+真实并发（`bun run test:backend` = `parallel-test.ts` 16 分片，**不是 spinner**）三次：
+
+| 运行 | 耗时 | store-performance | 结果 |
+|---|---|---|---|
+| 1 | 92.29s | 绿 | 0 fail |
+| 2 | 95.52s | **绿** | 1 fail —— **但失败的是另一条测试**，见下 |
+| 3 | 106.23s | 绿 | 0 fail |
+
+**机制层面的论据**（这才是收口依据，不是「跑了三次绿」）：改前判据 = `单次 2.8ms 级采样` 做分母，分母的相对标准差直接乘进比值；改后 = 5 样本中位数 **且** 分母有 60ms 地板，**比值不再可能被单次毫秒级采样支配**——分母低于 12ms 时判据完全脱离比值、退化成一条固定的 60ms 预算。
+
+**方向二：错误状态仍被拦住——这里有一个必须点名的否定结果**
+
+注入真实的「commit 成本随历史长度增长」缺陷（冻结件 `/tmp/mut-m1-commit-cost-grows-with-history.patch`：`store.ts:651` 的按 hash 点查退化为**全表扫描 + 逐行解压**）：
+
+| 形态 | coldCommitMs | hotCommitMs | ratio | 判定 |
+|---|---|---|---|---|
+| 改后（本次） | 51.39 | 237.61 | 4.62 | **仍绿**（budget 256.9） |
+| **改前的单次采样写法**（临时并跑，跑完即撤） | 12.12 | 40.79 | 3.37 | **仍绿**（`wouldPass: true`） |
+
+**两种写法都抓不住它。** 根因是 ratio 判据的自归一化：该缺陷让**冷热两端一起**变慢（冷端此时已有前几次采样写入的对象），比值因此被吸收。**这是既有局限，不是本次改动引入的**——上表第二行就是为了把这一点钉死才跑的。
+
+因此我**没有**为 M1 交出「注入缺陷即变红」的证据，也**不会**为了凑这个证据去收紧阈值（那是放宽/收紧既有 guard，须独立裁决）。作为新发现登记进未处置清单第 7 条。
+
+**顺带发现（不在本轮范围，但会同样打掉 T0.0f）**：run 2 的那次 `1 fail` **不是** store-performance，而是 `tests/transport/http2-generation-reconcile.it.test.ts:377`「row 1 — pre-header req.error」，错误文本 `test setup: server stream/session missing`。同 HEAD 隔离单跑该文件 **11 pass / 0 fail**。本轮改动只碰了 `tests/history/v3/store-performance.it.test.ts` 一个文件（`git diff --stat HEAD` 可证），与它无关。**这是套件里的又一条同族 flaky**，登记进未处置第 8 条。
+
+### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
+**评审指出我的约束是假的，这一条我判它成立。** 我原先写的「放宽上界就失去覆盖」是**真的**，但它**只在把 `DEADLINE_MS` 钉死在 50 时成立**——而 50 本身不承重（fixture 的 deadline 取多少，与「deadline 被尊重」这条不变量无关）。上界的鉴别力挂在**相对形状 `DEADLINE_MS * 4`** 上，不挂在绝对毫秒上；把 fixture 按比例放大，鉴别力不变而绝对余量变宽。
+
+**三行对照全部自己复跑过**（不是采信评审转述），mutation 为「deadline 腿的实际时长 = 请求值的 6 倍」（`/tmp/mut-item8-wrong-deadline-duration.patch`）：
+
+| 配置 | Mutation F | 健康 |
+|---|---|---|
+| `DEADLINE_MS=50`，上界 200（改前） | **红 301** | 绿 |
+| `DEADLINE_MS=50`，上界 2000 | **绿 —— 失去覆盖** | 绿 |
+| `DEADLINE_MS=500`，上界 `DEADLINE_MS*4`=2000（本次） | **红 3008** | **绿，11 pass** |
+
+第三行是本轮实测的：健康 `11 pass / 0 fail`，注入 mutation 后 `Expected: < 2000 / Received: 3008`。
+
+**处置**：`DEADLINE_MS` 50 → 500，上界保持相对形状 `DEADLINE_MS * 4` 不动（自动从 200 变 2000）。**生产代码零改动**，断言的相对形状零改动。
+
+- 绝对余量：150ms → **约 1500ms**（健康 elapsed ≈ deadline ≈ 500ms，上界 2000ms）。
+- 代价：约 450ms 墙钟（文件 0.60s → 1.09s）。gate 化的 handler 意味着这 450ms 是**唯一**新增等待，收尾仍是开闸即返回。
+- 争用验证：64 spinner（loadavg 31→37）下 **11 pass / 0 fail，2.77s**。
+
+**未处置清单第 5 条据此撤下**——那条登记的是「放宽上界须裁决」，现在的答案是**不放宽上界**，改放大 fixture，两个目标同时达成，不构成放宽既有 guard。
+
+### M3 · 三处微任务探针的命题强度（已处置）
+
+**处置 1：措辞。** 第 5、7 条的注释与上面的 §5 更正块，全部改成「at the instant this line ran」，并把「它连一个 tick 都不覆盖」这条限制**写进注释本身**（不只是写进本文档）——因为注释才是下一个读者会看到的东西。第 6 条原注释写的是 "not immediately, and not across a real stall"，**本来就是准确的**，未改。
+
+**处置 2：第 7 条补第二探针——补，理由是实测的假绿，不是类比。**
+
+评审构造的假绿场景：`idleTimeoutMs > 0` 时，race 在构造后**晚一个微任务**自发 resolve 成 `STREAM_ABORTED`（与 abort 无关）。我把它做成 mutation 实跑（`/tmp/mut-m3-spontaneous-resolve-one-tick.patch`，在 `stream.ts:251` 处 `if (idleTimeoutMs > 0) racers.push(Promise.resolve().then(() => STREAM_ABORTED))`）：
+
+| 第 7 条的形态 | 该 mutation 下 |
+|---|---|
+| **只有第一探针**（本轮此前的状态） | **1 pass —— 假绿确认成立** |
+| **补上第二探针后**（本次） | **0 pass / 1 fail**，红在第二探针 `:733`，`Expected: Symbol(still-pending) / Received: Symbol(STREAM_ABORTED)` |
+
+所以这个假绿是**真实可达**的，不是理论担忧，第 7 条必须补。形状照第 6 条：真实 `setTimeout(50)` stall + 第二次探针。为什么 stall 有效：睡眠会把微任务队列排空，此后**已 settled 的 `p` 确实会赢** race（上表第一行），于是自发 resolve 暴露出来。50ms 远低于该用例的 `idleTimeoutMs = 5000`，不干扰它要测的「abort 赢过空闲超时」。单侧安全——睡得更久只让「仍 pending」更成立。
+
+**为什么第 6 条不需要再补**：它本来就有 stall-后探针，且其 `idleTimeoutMs = 0`（该 mutation 按 `idleTimeoutMs > 0` 触发，对它不适用）。评审复核也确认第 6 条成立。
+
+改后：全文件 **25 pass / 0 fail**，typecheck、eslint 绿，`git diff -- src/ packages/` = 0。
+
+
+## 收口验收（四条全部落地后）
+
+`bun run typecheck` —— 绿（`tsc`，无输出即无错）。
+
+`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片），在本 worktree 根、HEAD = `1de883cf`：
+
+```
+[parallel-test] 16 shards · 4856 tests · 4856 pass · 0 fail · 7297 executed · 31 skipped · 89.83s
+```
+
+**口径说明**：`4856 tests` 是用例数、`7297 executed` 是含参数化展开后的执行数、`31 skipped` 主要是 `history-search` 的 native 产物缺失时按 `describe.skipIf(!isNativeHistorySearchAvailable())` 显式跳过（本 worktree 未 `bun run build:history-search`，属预期行为，见 CLAUDE.md「测试分档」）。该数字**未**交叉验证，是 runner 自报的单一来源。
+
+> **锚点更正（M4）**：本节及下一节里所有 `31 skipped` 的读数都取自**集成分支刷新 baseline 之前**。集成分支 `command-algebra-entry-gate-fix` 刷新 baseline（新增 native-gated 用例）后，稳定值是 **35 skipped**；**相对 BASE 的 skip 增量是 `+5`，不是 `+4`**。本轮 M1 之后的所有运行读数均为 35。上面保留 31 的原始读数是为了让那几次运行可复核，**不要拿它与刷新后的运行直接相减**。
+
+**本轮没有跑 T0.0f 的 15 连跑。** 那才是 faithful 的分片复现，也正是该门本身要做的事；本文件只负责把四条从「会被争用误杀」变成「不会」。四条里只有第 2 条（`store-performance`）在本会话用 spinner 直接复现出了原始失败形态并验证修复，第 1、3、4 条的复现依据分别是：第 1 条真实分片日志 `run-02.log:20-32`（spinner 复现失败，已标注）、第 3、4 条真实分片日志 + 「宽预算下完成、收紧预算下仍绿」的双向分型。
+
+## 第二批收口验收（第 5–8 条全部落地后）
+
+
+
+`bun run typecheck` —— 绿。源码残留核验：`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数 **0**。
+
+`bun run test:backend`（= `bun scripts/parallel-test.ts unit it http`，16 分片）连跑两次：
+
+```
+[parallel-test] 16 shards · 5396 tests · 5396 pass · 0 fail · 7297 executed · 31 skipped · 66.26s
+[parallel-test] 16 shards · 6394 tests · 6394 pass · 0 fail · 7297 executed · 31 skipped · 59.39s
+```
+
+**必须点名的一件事：这个 runner 的 `N tests` 字段在同一份代码上不稳定。** 本会话三次 `test:backend` 分别报 **4856 / 5396 / 6394**，而 `executed = 7297`、`skipped = 31`、`fail = 0` **三次完全一致**。三次之间的代码差异只有第 5–8 条的测试体改写（用例数没变：`stream-shutdown-race` 恒 25 条、`bus.unit` 恒 11 条），**解释不了 +1538 的漂移**。
+
+因此：
+
+- **可引用的口径是 `executed` / `skipped` / `fail`**（稳定，三次一致）；
+- **`N tests` 不可作为交付数字引用**，任何「本仓库有 N 条测试」的断言若取自这一行，都应视为未经交叉验证；
+- 成因**未定位**（不在本轮范围）。已作为一条独立发现登记进「未处置」清单第 6 条。
+
+这条正是 `cross-check-with-two-methods` 的一次实际命中：若只跑一次并把 `5396 tests` 写进交付物，它看起来完全正常，也没有任何信号提示它是错的。
+
+## 未处置清单（登记，不在本轮改，交独立裁决）
+
+> **「撤下」与「裁决通过」是两回事，别混。** 一条登记项被划掉可能出于两种完全不同的原因：
+> - **裁决通过** —— 前提成立、确实存在取舍，由未卷入的一方作出选择。走流程。
+> - **撤下（前提不成立）** —— 登记时依据的那个二选一/约束**经实测根本不存在**，于是没有什么可裁的。此时正确动作是**撤下并写明前提为何不成立**，而不是走一遍流程再盖章通过——后者会把一个错误前提追认成「已裁决的事实」，下一个人会以为那个取舍真的存在过。
+> 本清单第 5 条属于**后者**（见 M2）。
+
+按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something`：删除或放宽既有 guard、以及重塑判据，合并前必须交独立 reviewer 或用户裁决，不得由实施者自判放行。以下四条都属此类，本轮**只记录不动手**。
+
+1. **`store-performance.it.test.ts:166` `liveRatio >= 10` 对「去重丢失」几乎没有鉴别力。** 实测：破坏跨 operation CAS 去重时 `physicalRatio` 掉到 9.10（红），`liveRatio` 只掉到 10.54（**仍绿**）。两条断言量的是不同的东西，都该留；但若将来只保留 `liveRatio`，这条 guard 就是假绿。证据见本文第 2 节。
+2. **`store-performance.it.test.ts:100-105` `timedCommit` 单次采样。** 同文件的 `timedPrepare` 取 5 次中位数，`timedCommit` 只取单次，`commitRatio < 5` 因此比 `prepareRatio < 3` 更易受争用方差影响。**不改的理由是机械的**：同一 record 重复 commit 会命中 CAS 去重，第 2–5 次样本天然更快，照搬中位数写法会改变被测量的量；要正确修必须为每个样本造不同 `operationId`。
+3. **`delivery-lifecycle-baseline.http.test.ts:181/184/207/209` 的 `liveTimerDelaysMs.every(...)` 在当前基线下以真空方式通过——鉴别力尚未验证。**
+   探针实测：断言点该数组为 `[]`，故 `[].every(...)` 恒 `true`，这四条**在本次运行中**没有对任何东西施加约束。
+   **但「真空通过」不等于「抓不到目标缺陷」**——这是一个否定性结论，不自证。该断言守的是「终态 / client-abort 之后不得有短周期心跳存活」（用例名即 "...stops heartbeat"，`tests/helpers/fake-clock.ts:52-53` 的 docstring 明写该 getter 是为了「把泄漏的短周期心跳与无关的长生命期运行时定时器区分开」）。若心跳真的泄漏，数组就非空、且该项剩余延迟很短 → `.every()` 为 false → 红。所以我观测到 `[]`，只能说明**它守的不变量在当前基线下成立**，即这是一次通过，不是空转。
+   **待验证（本轮未做）**：
+   - **V1** 注入一个「终态后心跳定时器不被 clear」的真实泄漏（打生产代码，不翻测试状态），跑该文件，记录这四条是红是绿。红 → 有鉴别力，本条从未处置清单撤下；绿 → 才成立「盲」。
+   - **V2** 仅在 V1 为绿时才需要：查 `2_000` 阈值与该测试里 keepalive 实际周期的关系——若被泄漏的定时器剩余延迟本来就 > 2000，`.every()` 照样为真，那才是真的盲。阈值与周期都要给实测值。
+
+   ### V1 执行结果（2026-08-08 当轮补做）：**未能判定，不是「有鉴别力」也不是「盲」**
+
+   先说**已经确证**的两件事（这两条本身就推进了问题）：
+
+   - **该心跳定时器对 FakeClock 是可见的，剩余延迟就是 `2000`**。在用例内插探针实测（跑完即撤）：
+     ```
+     PROBE A (after commit, before tail advance) timers = [2000]
+     PROBE B (after 2.5s advance, stream still open)  timers = [2000]
+     ```
+     配置是 `streamKeepalivePingSec: 2` → 周期 2000ms。**这直接回答了 V2 关心的阈值关系**：判据是 `delay > 2_000`，而心跳定时器的剩余延迟恰好是 `2000`，`2000 > 2000` 为 **false**——**只要它在断言点还活着，这四条就会红**。所以谓词的形状是对的，不存在「阈值定得太松、泄漏也照过」的问题。
+   - **但在断言点它是 `[]`**：`PROBE C (at assertion point, post-terminal) timers = []`。
+
+   于是问题收敛成一个具体的技术障碍：**我造不出「终态后仍有活心跳定时器」的状态**。逐级加码试了三种真实泄漏，全部仍 `[]`、四条断言全绿：
+
+   | 尝试 | 打在哪 | 断言点 timers | 结果 |
+   |---|---|---|---|
+   | `stop()` 不 clear 定时器 | `client-sink.ts:611-615`（`startFixedForwardIdleHeartbeat`） | — | 2 pass |
+   | tick 在 stopped 时**仍自我重排**（该 helper docstring 明写 `stop` 就是为防这个） | 同上 `:595` | — | 2 pass |
+   | **inline** heartbeat 的 tick 在 stopped/suspended 时仍自我重排 | `client-sink.ts:436` | `[]` | 1 pass |
+   | 上一条 **叠加** `close()` 完全不置 `stopped`、不 clear | 再叠 `:375` | `[]` | 1 pass |
+
+   前两次说明**这个用例根本没走 `startFixedForwardIdleHeartbeat`**（那是另一个 builder）——这本身是一次「mutation 没打到被走到的路径」，与第 3、4 条同型。后两次说明：即使 inline 心跳无限自我重排、且 `close` 完全失效，定时器在断言点仍然不在 FakeClock 的表里。**也就是说还有第三条路径在终态前后让它消失（或让该 sink 实例整个脱钩），我没定位到。**
+
+   **结论（严格按证据写）**：V1 **inconclusive**。不能说「已验证有效」，也**不能**升级成「已验证是盲的」——后者需要「存在真实泄漏而断言不红」，而我没能造出真实泄漏的**可观测状态**。目前唯一确定的是：谓词阈值与心跳周期的关系是**正确**的（2000 不 > 2000），若泄漏可见就会红。
+   **交给裁决方的下一步**（我没做，也不该由我自决）：定位终态路径上第三个让该定时器消失的地方（建议从 `createDownstreamDeliverySession` / 终态 finalize 一侧查，而不是继续在 `client-sink.ts` 里加码），在那里注入泄漏后重跑本判据；或改用一个不依赖 FakeClock 定时器表的 oracle。
+
+   **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
+   同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
+4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
+5. ~~**`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。**~~ **已由 M2 关闭，不再需要裁决。** 原登记的前提（「要么保覆盖、要么降敏感，二选一」）是错的：那个二选一只在 `DEADLINE_MS` 钉死为 50 时成立。M2 保持上界的相对形状 `DEADLINE_MS * 4` 不变、把 fixture 的 deadline 放大到 500，鉴别力与绝对余量同时拿到（实测三行见 M2 节）。**不涉及放宽既有 guard。**
+6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后恒 35）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。
+7. **`store-performance.it.test.ts` 的「commit 成本不随历史长度增长」判据对该缺陷类鉴别力弱。** 实测：注入「按 hash 点查退化为全表扫描 + 逐行解压」后，**改前写法 ratio 3.37、改后写法 ratio 4.62，双双低于阈值 5，都不红**。根因是 ratio 的自归一化——该缺陷让冷热两端一起变慢。这是**既有局限**（改前改后同样存在，已用并跑对照钉死），不是 M1 引入的。收紧阈值或换判据形状都属于改既有 guard，须独立裁决。
+8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
+
+## 本轮的分类判断被实测推翻过几次
+
+**8 条表面症状相同的测试，底下是 4 种不同的鉴别力结构；靠类比推进必然出错。** 下面每一条都是「先有一个看起来合理的分类判断，再被一次实跑推翻」的记录——列出来不是自我检讨，是给下一个想「统一处理这一类测试」的人一面墙。
+
+| # | 原判断（谁提出） | 实测结果 | 推翻它的那次观测 |
+|---|---|---|---|
+| 1 | 第二批 4 条「都是过分敏感的 outlier 兜底，放宽即可」（协调方派活前提） | **第 8 条不成立**，它的 `200` 是承重的 | 放宽到 2000 后 Mutation F（deadline 实际时长 6x）**抓不到**；改回 4x 才红（303ms） |
+| 2 | 第 6 条「可能与第 5 条同型」（协调方 + 我的初始倾向） | **不同型** | 同一个 Mutation B，第 5 条旧写法全绿、第 6 条旧写法红（`lowerBound:false`） |
+| 3 | 第 7 条「同文件，大概率同前两条之一」 | **第三种结构** | 它开着 `idleTimeoutMs`，因果判据更强（reject vs sentinel），但**仍对 Mutation B 全盲** |
+| 4 | 第 8 条「`done === 0` 大概已蕴含上界」 | **两条都不蕴含，且两条一起还漏一整类** | Mutation E（deadline 被完全忽略）下旧写法 `{"upperBound":true,"doneIsZero":true}` 全绿 |
+| 5 | 我写的「那四条 `liveTimerDelaysMs` 断言鉴别力为零」 | **过头断言，已撤回** | 「真空通过」只证明不变量成立；否定性结论不自证。V1 实测后仍 **inconclusive** |
+| 6 | 第 3 条注释声称「`guardCallback` 吸收 onClose 异常」 | **实为两层**，第一层是 `notifyClosed` 自己的 try/catch | 第一次 mutation 打在 `guardCallback` 上**没变红**，子进程直跑 rc=0 |
+| 7 | 第 4 条「mutation 打在 `freezeHeartbeat`/`close` 上就能证伪」 | **三次都没打到被走到的路径** | 三次全绿后插探针才发现断言点 `timers = []` |
+| 8 | V1「造个心跳泄漏就能定这四条有没有鉴别力」 | **造不出可观测的泄漏状态**，V1 未判定 | 四级加码（含无限自我重排 + `close` 完全失效）断言点仍 `[]` |
+
+**可复用的判据**（这才是这张表的价值）：
+
+- **「同形」只是症状层面的相似**。判鉴别力结构要问的是：**去掉这条断言后，哪些退化还会被抓住？** 这个问题只能靠**对每条候选 mutation 实跑**回答，读代码读不出来——本轮 8 次里有 5 次我的读码判断被实跑推翻。
+- **「mutation 没变红」永远有两解**：测试没咬住 vs mutation 没打到被走到的路径。本轮命中后者 **3 次**（第 3、4 条与 V1）。分辨方法是**独立观测被测机制本身**（子进程直跑 rc、插探针打印状态），不是再读一遍代码。
+- **否定性结论（「这条断言抓不到东西」）不自证**，需要「注入真实缺陷而它不红」的正面证据；拿不到就老实写 inconclusive，别升级成「盲」。
+
+### 同一个错误在本轮复发三次：把「我的判据证明了什么」写宽一档
+
+这三次不是各自独立的口误，是**同一个形态**，值得单独拎出来：
+
+| 次序 | 我写下的命题 | 实际证明的 | 差在哪 |
+|---|---|---|---|
+| 1 | 那四条 `liveTimerDelaysMs` 断言「鉴别力为零」 | 只观测到「当前基线下真空通过」 | 把「这次没约束到东西」写成了「永远抓不到东西」 |
+| 2 | 探针证明「BEFORE the abort, nothing may settle」 | 只证明「这一瞬间未 settle」 | 把一个瞬间写成了整段窗口 |
+| 3 | 修正版说「within one microtask tick」 | 连 1 个 tick 都不覆盖（实测：1/2/3 tick 与 `setTimeout(0)` 全判 pending） | **修正它的那次修正本身又宽了一档** |
+
+**高危时刻 = 你正在修同一类错误的那一刻。** 第 3 次是**在修第 2 次的过程中**犯的，而且**写进了会长期留在仓库的测试注释**——比写在临时文档里危险得多。修正一条「范围写宽了」的表述时，人会本能地只把范围往回缩一档就收手，而**缩小后的那句话是一个全新的命题，必须重新过一遍下面的自查**。本轮就是缩了一档（窗口 → 一个 tick）就停手，没有再问一遍，于是错了第二次；直到实跑探针才定下第三版。
+
+**可执行的自查动作**（在写下任何「这条判据证明了 X」之前做，包括写在注释里的）：
+
+> **举一个刚好不满足 X、却能通过这条判据的输入。举不出来才可以写 X；举得出来，就把 X 缩小到那个输入之外。**
+
+对照上面三次：第 2 次只要问「有没有一个晚一点 settle 的 promise 能通过？」——`Promise.resolve().then(...)` 就是，20 秒就能证否。第 3 次同理，我却把范围从「窗口」缩到「一个 tick」就停手了，**没有再问一遍**。**缩小范围之后要重新跑一次这个自查**，因为新范围是一个新命题。
+
+第 1 次的形态略有不同（否定性断言），自查动作是上一节最后那条：**要主张「抓不到」，得拿出「注入真实缺陷而它不红」的正面证据**。
+
+### 附带：`Edit` 之后立刻验标题（本轮踩中四次）
+
+**已并入文末「工具性教训」一节**，此处不重复（保留指针，因为这条是从四次实际事故里长出来的，值得在两处都能被撞见）。
+
+## 工具性教训：`Edit` 的替换覆盖面（本轮踩中四次，写成机械判据）
+
+本轮用 `Edit` 插入新章节时，`old_string` 拿一段上下文（多为小节标题或表格）当锚点，却没在 `new_string` 里写回去，**静默删掉了它**——**四次**：第 7 条残留复核段吞掉「方向一」那张表、M1 与 M2 各吞掉一个小节标题、以及「分类被推翻」那节吞掉一条列表项的开头。四次都不报错，因为 `Edit` 只校验 `old_string` 唯一命中，**不会**因为你漏写了打算保留的内容而报错。
+
+**机械判据（比记住这几次有用）**：把 `old_string` 与 `new_string` 各自**按行拆开**，只有「本次有意删除」和「本次有意新增」的行允许出现在差集里。差集里出现任何你说不出意图的行，就落在这两个方向之一：
+
+- **新串多、旧串少 → 重复**：`new_string` 里「顺手带上」了 `old_string` 没圈进来的邻近内容，那段会留一份再插一份。
+- **旧串多、新串少 → 静默删除**（本轮四次全是这个方向）：拿一段上下文当锚点圈进 `old_string`，却忘了写回 `new_string`。
+
+**表头、小节标题、列表行首最危险**——它们看起来像定位符、不像内容。
+
+**配套的事后动作**：每次用 `Edit` 插入或替换跨小节的内容后，**立刻**跑一次 `rg -n "^## " <文件>`（或 grep 被当作锚点的那一行），确认它还在。这比「下次仔细些」有用，因为它是一条命令而不是一个意愿。**做大块重排时不要用 `Edit`**——用脚本按标题切块重排，并加一条机械校验（本轮 M4 的重排脚本比对了重排前后**非空行的多重集**，相等才写盘）。
 
