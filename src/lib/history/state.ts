@@ -116,10 +116,10 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     setHistorySearchClient(undefined)
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
-    // No main-thread write handle to close any more; the Worker owns it and is torn down
-    // by `shutdownHistory`. Only this thread's readonly handle is ours to release.
+    // No main-thread write handle to close any more; the Worker owns it. Disabling History means there is no writer at all, so a Worker WE started goes with it — leaving it in the registry would both keep a thread alive for a subsystem that is off and hand the next `initHistory(true)` an already-started runtime.
     shutdownRawCapture()
     closeHistoryReadDatabase()
+    if (startedRuntime()) await releaseHistoryPersistenceRuntime()
     startedDbPath = undefined
     return
   }
@@ -245,7 +245,8 @@ export async function shutdownHistory(): Promise<void> {
   const runtime = startedRuntime()
   if (runtime) {
     await runtime.drain()
-    await runtime.shutdown()
+    // Release rather than plain `shutdown()`: a runtime is single-use, so leaving the closed one in the registry means the NEXT `initHistory` finds it, tries to start it, and is told it has been shut down. We started it, so removing it is ours to do.
+    await releaseHistoryPersistenceRuntime()
   }
   setHistorySearchClient(undefined)
   shutdownRawCapture()
