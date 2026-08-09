@@ -1245,6 +1245,20 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：本轮任务是把这套生命周期合同写成 skill，不是改产品代码；且这两处是 **test seam**，误用后果落在测试可信度而非线上行为，与本轮已闭合的其他项不同档。改动虽小但要新增三条测试并选定失败策略，值得自己的一次验证链。
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
+
+## `store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败（2026-08-08 合并态验证时发现）
+
+- **根因 / 现状**：`tests/history/v3/store-performance.it.test.ts` 的「prepare and commit do not depend on prior session history length」断言的是**耗时比值**，对 CPU 争用敏感。在 `bun run test:backend` 的 16-shard 负载下会间歇性变红；单文件独跑 3/3 稳定通过。同文件的「CAS live physical bytes …10x smaller」也观测到过一次同类失败。
+- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含本条 + 上述 CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail（仅本条）、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
+- **不是什么**：不是 `worktree-fix-shutdown-review-findings` 引入的——该分支对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交，无直接改动（`git log --first-parent 44457047~1..765bb2be -- tests/history/v3/ src/lib/history/v3/` 为空）。
+- **两条 legacy Vue 守卫（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿**——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
+- **理想架构 / 若做需改什么**：耗时比值不适合在共享 CPU 的分片 runner 里当通过条件。可选路径：①把该断言迁到不并行的档位（如 `test:pty` 之外另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。②最长远——它测的本来就是「不依赖历史长度」这个性质。
+- **为何暂缓**：属既有测试的判据形态问题，不是产品缺陷；且本轮任务未触及 History V3 store，就地改它会把两件事混进同一次验证链。**但它会持续制造 false-red**，按 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 的判据，这正是「wall-clock 预算/比值当通过条件」那一类。
+- **触发条件**：再次在 CI 或全量运行中看到本条变红时，直接做②，不要调阈值——调阈值是打地鼠。
+
+> **状态更新（2026-08-09，合并 master 时对账）**：本条开出的「理想架构②——改为断言算法性质而非墙钟比值」**已在 master 落地**（`tests/history/v3/store-performance.it.test.ts` 的 query-plan oracle：观察 commit 实际 prepare 的 SELECT/DELETE/UPDATE 语句、断言其计划不退化为 SCAN，并带「planned.length > 0」的正控防空跑），且墙钟比值那条已被 `RUN_PERF_TESTS` gate 移出 `test:backend`、文件级 `setDefaultTimeout(60_000)` 按实测worst case 设定。**同文件那条 CAS 字节比也已重新标定**为 `>=30` physical / `>=50` live——旧的 `10x` 在去重**完全**失效时实测为 9.51 / 10.79，即 live 那一侧毫无鉴别力（见本文件「仓库里仍有文档把同源证据写成独立」条所引评审）。
+> **仍未闭合的部分**：query-plan oracle **严格窄于**原比值断言——它看不见「保持索引计划但成本仍增长」（N+1 点查、行变大、JS 侧 per-operation работы）。那部分现在只由 perf 档承担，而 perf 档默认不跑。**触发条件照旧：再看到相关红，直接做②的延伸，别调阈值。**
+
 ## marker 缺席时 History 列表 fallback 走遍全表（2026-08-08，Task 9 验收判据复评的邻域实测）
 
 - **根因 / 现状**：`src/lib/history/queries.ts:267-291` 的 fallback 列表路径，其 `visitV3Summaries` visitor **从不返回 `false`**、也不带 limit，因此 marker 缺席时一次请求会遍历并 hydrate 全部 canonical operation。复杂度类没有变化（该路径此前同样逐行 hydrate），变大的是常数——Task 9 让 fallback 一律从 canonical record 重投影（不再采信缓存 `summary_json`），这是修复 BLOCKER 所必需的，但每行多了一次投影开销。
