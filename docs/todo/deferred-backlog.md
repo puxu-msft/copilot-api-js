@@ -1242,7 +1242,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-09，A3 合并态复评 round 4 的邻域发现）
 
-- **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条：`store-performance.it.test.ts` 的 CAS 用例（18.3s）、`summary-query-performance.it.test.ts`、`uds-transport.it.test.ts` 的 socket 重组用例（5004ms）、乃至纯静态守卫 `stream-error outcomes are minted in exactly one place`（5028ms）。后两条撞的是 bun 的 **5000ms 默认单测超时**；`summary-query-performance.it.test.ts:162-163` 的判据是 `elapsedMs < Math.max(50, small.elapsedMs * 5)`——比值部分稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
+- **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条。**具体断言（这是要改的清单，不是「某些测试」）**：
+  - `tests/history/v3/summary-query-performance.it.test.ts:162-163` —— `expect(large.elapsedMs).toBeLessThan(Math.max(50, small.elapsedMs * 5))`。比值那半稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
+  - `tests/history/v3/store-performance.it.test.ts` 的 “CAS live physical bytes are at least 10x smaller…” —— 观测到 17.3s / 18.3s，隔离复跑 9.31s；撞的是**测试自身耗时**而非断言，属默认超时型。
+  - `tests/history/search/uds-transport.it.test.ts` 的 “a large multi-segment response reassembles correctly” —— 5004ms，正好撞 bun **5000ms 默认单测超时**。
+  - `tests/architecture/package-boundaries.unit.test.ts` 的 “stream-error outcomes are minted in exactly one place” —— 5028ms，同样撞默认超时。**这一条是纯静态源码守卫**（grep 源码形状），见下。
+- **两类问题，别混**：① **判据里含 wall-clock 绝对值**（上面第一条）——这是预算设计问题，改 oracle 就能永久消失；② **撞 5000ms 默认超时**（后三条）——其中「静态源码守卫」那条的结果**不可能**被运行时改动影响，它超时只说明进程当时太慢，与「负载敏感 perf」是两回事，值得单独给这类文件设 `--timeout` 或拆分。
 - **当前行为**：机器安静时全绿。同一提交、同一份代码实测对照：负载下 98.91s / 4 fail，安静时 71.68s / **0 fail**。所以这些红**不是**确定性回归；但代价是每次全后端跑完都要人工分辨「这条红是真的吗」，而**分辨成本本身会训练人挥手放过红灯**——本仓 2026-07-28 已经因此吃过一次亏。
 - **理想架构 / 若做需改什么**：交 `perf-engineer` 建**可复现基线**后重定预算：① 判据里去掉 wall-clock 绝对地板，只保留比值与事件循环 gap（这两项对负载稳健）；② 确需绝对值的，按机器实测校准而非拍脑袋，并给这些文件单独的 `--timeout`；③ 超时型（非断言型）的红要能区分「机器慢」与「真的卡住」，否则每次都得靠隔离复跑来判。**注意**：`60-evidence-and-criteria` 的 `false-red-from-process-global-quantities` 与「污染型 flaky」签名相同（单跑绿、全量红），两者要并列排查、可同时成立。
 - **为何暂缓**：A3 合并态复评的范围是那六条 finding 的合并态正确性，不是测试预算工程；重定预算需要先建基线，是独立的一次验证链。本轮已按最小判别动作取证（记测试名与断言、看判据里有无 wall-clock 绝对值、安静/负载对照），结论足以支撑「不阻塞本轮收口」。
