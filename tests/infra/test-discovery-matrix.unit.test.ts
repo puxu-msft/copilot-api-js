@@ -49,12 +49,16 @@ describe("test discovery matrix", () => {
   // perf-gated case still carries a tier suffix and still shows up in the discovery baseline as an
   // allow-listed skip, so it looks supervised while nothing runs it. Tie the two sides together:
   // the files that opt into the perf gate must be exactly the files the script runs.
+  //
+  // BOUNDARY: this recognises the LITERAL string `RUN_PERF_TESTS` only. A gate opened through a
+  // different variable name, or through an indirection like `env[NAME]`, is invisible to it.
   const PERF_ENV = "RUN_PERF_TESTS"
-  const perfGatedFiles = async (): Promise<Array<string>> => {
+  const perfGatedFiles = async (root: string): Promise<Array<string>> => {
     const found: Array<string> = []
-    for (const relative of scan("tests")) {
+    const glob = new Glob("**/*.test.ts")
+    for (const relative of [...glob.scanSync({ cwd: `${root}/tests`, onlyFiles: true })].sort()) {
       if (relative.endsWith("test-discovery-matrix.unit.test.ts")) continue // this guard names the var itself
-      if ((await Bun.file(`${REPO_ROOT}/${relative}`).text()).includes(PERF_ENV)) found.push(relative)
+      if ((await Bun.file(`${root}/tests/${relative}`).text()).includes(PERF_ENV)) found.push(`tests/${relative}`)
     }
     return found.sort()
   }
@@ -62,7 +66,7 @@ describe("test discovery matrix", () => {
   test("every perf-gated test file is named by the test:perf script", async () => {
     const scripts = ((await Bun.file(`${REPO_ROOT}/package.json`).json()) as { scripts: Record<string, string> }).scripts
     const scriptFiles = [...(scripts["test:perf"] ?? "").matchAll(/tests\/\S+?\.(?:unit|it|http|pty|e2e)\.test\.ts/g)].map((match) => match[0]).sort()
-    const gated = await perfGatedFiles()
+    const gated = await perfGatedFiles(REPO_ROOT)
     expect(
       gated,
       `perf-gated files and the test:perf script disagree — a gated case nobody runs still shows up as an allow-listed skip, so it looks supervised.\ngated: ${gated.join(", ")}\nscript: ${scriptFiles.join(", ")}`,
@@ -72,12 +76,19 @@ describe("test discovery matrix", () => {
   })
 
   test("the perf-gate scan notices a file the script does not name (positive control)", async () => {
-    const planted = "tests/infra/perf-scan-control.unit.test.ts"
-    await Bun.write(`${REPO_ROOT}/${planted}`, `import { test } from "bun:test"\n// ${PERF_ENV}\ntest("placeholder", () => {})\n`)
+    // Planted in a throwaway tree, NEVER under the real `tests/`. Writing a real file here would be
+    // visible to any concurrently running full suite: capture-entry-evidence compares the discovered
+    // file set against a frozen count, so a peer run landing inside the write/delete window would
+    // fail with "discovery baseline differs from entry tree" pointing at a file that no longer
+    // exists — a false red on the gate we are trying to make trustworthy.
+    const tmp = await Bun.$`mktemp -d`.text().then((s) => s.trim())
     try {
-      expect(await perfGatedFiles()).toContain(planted)
+      await Bun.write(`${tmp}/tests/infra/planted.unit.test.ts`, `// ${PERF_ENV}\n`)
+      await Bun.write(`${tmp}/tests/infra/unrelated.unit.test.ts`, `// nothing to see here\n`)
+      const found = await perfGatedFiles(tmp)
+      expect(found).toEqual(["tests/infra/planted.unit.test.ts"])
     } finally {
-      await Bun.$`rm -f ${REPO_ROOT}/${planted}`.quiet()
+      await Bun.$`rm -rf ${tmp}`.quiet()
     }
   })
 })
