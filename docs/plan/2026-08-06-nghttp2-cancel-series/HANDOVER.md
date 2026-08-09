@@ -268,7 +268,19 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 ### B.5.2 A4 canonical diagnostics
 
-**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口：** A4 尚未实施，现有 History 无法回答取消发起方或 session 关联。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
+**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口（2026-08-09 更新）：** A4 已开工、**尚未完成**；下述批次 1 已合并 master，批次 2–5 未实施，因此「现有 History 无法回答取消发起方或 session 关联」这一判断**仍然成立**。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
+
+**批次划分与状态**（划分由执行会话所拟，不是正式计划的一部分；正式计划只给整体范围、未分批）：
+
+| 批次 | 内容 | 状态 |
+|---|---|---|
+| A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
+| A4-2 | `H2StreamDiagnostic` schema + `onTransportDiagnostic` 发射 + 经既有 `AttemptDiagnostic` 持久化 | 未开始 |
+| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | 未开始 |
+| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
+| A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
+
+**A4-1 的验收证据**（测于 `7f7a0730`，命令可重跑）：`bun run typecheck` 绿；`bun run test:backend` 0 fail；判别性断言做过变异对照——把实现换成 sibling 的 `selectGenerationAttempt` + 写当前 attempt 的写法后，`records a diagnostic against the named dispatch without moving the ambient current attempt` 精确转红在「ambient 游标未被移动」那条断言上（**归属断言在变异下仍绿**，故它单独没有判别力）。**未做**：独立 reviewer／verifier 与 merged-state review——按下方验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批次一次。
 
 验收边界：最终持久 record 是 oracle；peer CANCEL 与 local abort 可机械区分；session 事件不误归 sibling；诊断不改变 transport 行为；目标缺陷 mutation 转红、正确样本保持绿；独立 reviewer／verifier 与 merged-state review 在同一最终 commit 上闭合。HTTP/2 注入按 Node 官方语义：对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`，本地 `req.close(NGHTTP2_CANCEL)` 注入 local abort，并核对两端 `rstCode`／事件序列；`stream.destroy(error)` 未预设 code 时属于 INTERNAL_ERROR／destruction 分支，不用于制造 peer CANCEL。
 
