@@ -11,6 +11,14 @@
 - **为何暂缓**：direct-live 的 C9 publication 已提供可对照的生命周期合同，但 buffered re-entry、retry budget 与历史逐 attempt 簿记仍是独立结构设计，不能用 live 成功路径假装等价。
 - **触发条件**：为 buffered Anthropic 路径请求 B2 行为，或需要在 `max_retries>0` 耗尽后给尚未交付语义内容的 stream 再尝试一次。**发现方**：Task 4.0 review（reviewer，2026-07-28）；2026-08-08 更新为 live 已完成后的真实 deferred 边界。
 
+## B2 direct-live recovery 的 translated publication（2026-08-08）
+
+- **根因 / 现状**：direct Anthropic live recovery 的 evaluator 与 C9 owner batch publication 只拥有 Anthropic client wire、anchor close、duplicate `message_start` 和 block-index remap 契约。`@cc`／`@responses` translated candidate 的 renderer、terminal signal、usage、response id 与 block boundary 不同，不能把 Anthropic batch 原样写入客户端。
+- **当前行为**：translated direct-live candidate 在 recovery publication gate 上 fail-closed，不发布 fresh recovery batch；本次超长驻留 lifecycle 收敛只整合 direct Anthropic live B2，不把 translated 路径伪装成已实现。
+- **理想架构 / 若做需改什么**：由 cell-aware recovery publication owner 接收 candidate-local renderer 与 terminal snapshot，为每个 translated client format 定义完整／失败／截断 terminal、usage 与 id 保持规则；publication 仍须遵守 C9、candidate settlement-before-request-finalization、唯一 delivery `settleFinal()` 与 canonical History attribution。每个协议需要独立真实客户端或官方 SDK oracle，不能用 Anthropic 自洽编解码替代。
+- **为何暂缓**：复用 direct Anthropic publication 会产生协议错误或错误 terminal attribution；在缺少各 client-format oracle 时接线属于 false-green。该项不阻塞 direct Anthropic live recovery 与共享 lifecycle 根因修复。
+- **触发条件**：请求 `@cc`／`@responses` translated direct-live pre-content recovery，或为 translated candidate 建立 cell-aware publication contract。**发现方**：Task 4.3b 实施期边界；2026-08-08 lifecycle spec 独立评审确认缺少正式 backlog SSOT。
+
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
 >
 > **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。

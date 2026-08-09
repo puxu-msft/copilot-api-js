@@ -197,6 +197,7 @@
     "tests/context/manager-dual-registry.unit.test.ts",
     "tests/context/model-operation-record.unit.test.ts",
     "tests/context/operation-lifecycle-api.unit.test.ts",
+    "tests/context/operation-lifecycle.unit.test.ts",
     "tests/context/operation-scope.unit.test.ts",
     "tests/context/reaper-interval.unit.test.ts",
     "tests/context/request-buffered-merge-info.unit.test.ts",

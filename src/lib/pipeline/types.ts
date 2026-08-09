@@ -69,9 +69,9 @@ export interface DispatchDisposalResult {
 export interface UpstreamDispatchLifecycle {
   /** Cooperative cancellation; returns immediately. */
   cancel(reason?: string): void
-  /** Idempotent force-disposal barrier; no local frame/header callback can fire after resolve. */
+  /** Idempotent force-disposal barrier; resolves after natural completion or successful cleanup, and rejects with the cleanup failure when disposal fails. */
   dispose(reason?: string): Promise<DispatchDisposalResult>
-  /** Resolves on natural completion or disposal. */
+  /** Resolves on natural completion or successful disposal; rejects with the original cleanup failure. */
   quiesced: Promise<void>
 }
 

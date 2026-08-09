@@ -37,6 +37,156 @@ function makeContext(overrides?: { endpoint?: EndpointType }) {
   return { ctx, events }
 }
 
+// ─── Operation lifecycle ───
+
+describe("createRequestContext - operation lifecycle", () => {
+  test("publishes delivery and canonical settlement after logical completion", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+
+    expect(ctx.operationLifecycle).toMatchObject({ settled: false, delivery: { state: "open" }, canonical: "waiting", blocker: "request-running" })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    expect(ctx.operationLifecycle).toMatchObject({
+      settled: true,
+      operationScope: { sealed: true },
+      delivery: { state: "open" },
+      blocker: "delivery-finalization",
+    })
+
+    ctx.beginModelOperationDeliveryFinalization()
+    expect(ctx.operationLifecycle.delivery).toEqual({ state: "finalizing" })
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+
+    expect(ctx.operationLifecycle).toMatchObject({ delivery: { state: "finalized" }, canonical: "completed", blocker: "none" })
+  })
+
+  test("records a registered delivery failure, publishes canonical terminal metadata, and does not make delivery an operation child", async () => {
+    const failures: Array<{ phase: "delivery" | "canonical"; error: unknown }> = []
+    const ctx = createRequestContext({
+      endpoint: "anthropic-messages",
+      onLifecycleFailure: (_id, failure) => {
+        failures.push(failure)
+        return true
+      },
+    })
+    const error = new Error("delivery write failed")
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    expect(ctx.operationLifecycle.operationScope).toMatchObject({ sealed: true, childCount: 0, quiesced: true })
+    ctx.beginModelOperationDeliveryFinalization()
+    ctx.failModelOperationDelivery(error)
+    await ctx.whenModelOperationFinalized()
+
+    expect(ctx.operationLifecycle).toMatchObject({ delivery: { state: "failed", error, failureRegistered: true }, canonical: "completed", blocker: "none" })
+    expect(failures).toEqual([{ phase: "delivery", error }])
+    expect(ctx.modelOperationTerminalRecord?.terminal?.metadata).toMatchObject({
+      deliveryFailure: expect.objectContaining({ message: "delivery write failed" }),
+    })
+  })
+
+  const unregisteredCallbacks: ReadonlyArray<
+    readonly [string, ((id: string, failure: { phase: "delivery" | "canonical"; error: unknown }) => boolean) | undefined]
+  > = [
+    ["without callback", undefined],
+    ["when callback returns false", () => false],
+    [
+      "when callback throws",
+      () => {
+        throw new Error("barrier unavailable")
+      },
+    ],
+  ]
+
+  test.each(unregisteredCallbacks)("keeps delivery failure blocked %s", (_label, onLifecycleFailure) => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", ...(onLifecycleFailure !== undefined && { onLifecycleFailure }) })
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.failModelOperationDelivery(new Error("delivery write failed"))
+
+    expect(ctx.operationLifecycle).toMatchObject({
+      delivery: { state: "failed", failureRegistered: false },
+      canonical: "waiting",
+      blocker: "delivery-finalization",
+    })
+  })
+
+  test.each([
+    [
+      "failed false then finalize",
+      (ctx: ReturnType<typeof createRequestContext>, firstError: Error, _secondError: Error) => ctx.failModelOperationDelivery(firstError),
+      (ctx: ReturnType<typeof createRequestContext>, _firstError: Error, _secondError: Error) => ctx.finalizeModelOperationDelivery(),
+    ],
+    [
+      "failed false then fail",
+      (ctx: ReturnType<typeof createRequestContext>, firstError: Error, _secondError: Error) => ctx.failModelOperationDelivery(firstError),
+      (ctx: ReturnType<typeof createRequestContext>, _firstError: Error, secondError: Error) => ctx.failModelOperationDelivery(secondError),
+    ],
+    [
+      "finalized then fail",
+      (ctx: ReturnType<typeof createRequestContext>, _firstError: Error, _secondError: Error) => ctx.finalizeModelOperationDelivery(),
+      (ctx: ReturnType<typeof createRequestContext>, _firstError: Error, secondError: Error) => ctx.failModelOperationDelivery(secondError),
+    ],
+    [
+      "failed true then finalize",
+      (ctx: ReturnType<typeof createRequestContext>, firstError: Error, _secondError: Error) => ctx.failModelOperationDelivery(firstError),
+      (ctx: ReturnType<typeof createRequestContext>, _firstError: Error, _secondError: Error) => ctx.finalizeModelOperationDelivery(),
+    ],
+  ] as const)("locks the first delivery outcome: %s", async (label, first, second) => {
+    const failures: Array<{ phase: "delivery" | "canonical"; error: unknown }> = []
+    const registered = label === "failed true then finalize"
+    const ctx = createRequestContext({
+      endpoint: "anthropic-messages",
+      onLifecycleFailure: (_id, failure) => {
+        failures.push(failure)
+        return registered
+      },
+    })
+    const firstError = new Error("first delivery failure")
+    const secondError = new Error("second delivery failure")
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    first(ctx, firstError, secondError)
+    const firstOutcome = ctx.operationLifecycle.delivery
+    second(ctx, firstError, secondError)
+
+    expect(ctx.operationLifecycle.delivery).toBe(firstOutcome)
+    expect(failures).toEqual(firstOutcome.state === "failed" ? [{ phase: "delivery", error: firstError }] : [])
+    if (registered) await ctx.whenModelOperationFinalized()
+  })
+
+  test("joins operation quiescence before later delivery terminal", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    let release!: () => void
+    ctx.trackOperationBody(new Promise<void>((resolve) => (release = resolve)))
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    release()
+    await ctx.whenOperationQuiesced()
+    expect(ctx.operationLifecycle.blocker).toBe("delivery-finalization")
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+    expect(ctx.operationLifecycle.blocker).toBe("none")
+  })
+
+  test("joins delivery terminal before later operation quiescence", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    let release!: () => void
+    ctx.trackOperationBody(new Promise<void>((resolve) => (release = resolve)))
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    ctx.finalizeModelOperationDelivery()
+    expect(ctx.operationLifecycle).toMatchObject({
+      operationScope: { childCount: 1, quiesced: false },
+      delivery: { state: "finalized" },
+      canonical: "running",
+      blocker: "operation-body",
+    })
+    release()
+    await ctx.whenModelOperationFinalized()
+    expect(ctx.operationLifecycle.blocker).toBe("none")
+  })
+})
+
 // ─── Initialization ───
 
 describe("createRequestContext - initialization", () => {
@@ -312,7 +462,9 @@ describe("createRequestContext - attempt lifecycle", () => {
     const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
     const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
 
-    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", error: new Error("primary failed") })
+    const primaryError = new Error("primary failed")
+    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", error: primaryError })
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === primaryDispatch)?.error).toMatchObject({ message: "primary failed" })
     ctx.settleGenerationCandidate(primary, { verdict: "failed", reason: "primary failed" })
     ctx.selectGenerationWinner(recovery, recoveryDispatch)
     ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
@@ -349,6 +501,22 @@ describe("createRequestContext - attempt lifecycle", () => {
     const entry = ctx.toHistoryEntry()
     expect(ctx.currentAttempt?.strategy).toBe("legacy-last")
     expect(entry._index?.derived?.currentStrategy).toBe("legacy-last")
+  })
+
+  test("records a failed response error on the generation dispatch", () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate })
+
+    ctx.setAttemptResponse({
+      success: false,
+      model: "test",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      content: null,
+      error: "response failure",
+    })
+
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === dispatch)?.error).toBe("response failure")
   })
 
   test("records response failure supersession on the current dispatch and terminal snapshot", async () => {
@@ -1116,6 +1284,7 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     expect(entry._index?.derived?.failureReason).toBe("HTTP 400: body")
     expect(last?.upstreamResponse?.status).toBe(400)
     expect(last?.upstreamResponse?.rawBody).toBe("body")
+    expect(ctx.modelOperationSnapshot.dispatches[0]?.error).toBe("HTTP 400: body")
     // Model normalized (claude-sonnet-4-5 → claude-sonnet-4.5).
     expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
 

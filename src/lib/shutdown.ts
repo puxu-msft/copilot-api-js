@@ -309,8 +309,14 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
+  // NOTE (Task 4 / Task 6 seam): the manager method this calls was renamed
+  // `drainModelOperationFinalizations` → `drainLifecycleFailures` in Task 4 (manager.ts). The
+  // `ShutdownDeps.drainModelOperationFinalizationsFn` field name, this local variable, and the
+  // `FinalizeDeps.drainModelOperationFinalizations` field below are Task 6's responsibility
+  // (plan: `Modify: src/lib/shutdown.ts` — dependency rename — Task 6 Step 3/5) and are left
+  // unchanged here; only the call target is updated so `bun run typecheck` passes for Task 4.
   const drainModelOperationFinalizations =
-    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
+    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainLifecycleFailures() ?? Promise.resolve())
   const stopAdmission = deps?.stopHistoryAdmissionFn ?? stopHistoryAdmission
   const drainAdmissionHandoffs = deps?.drainHistoryAdmissionHandoffsFn ?? drainHistoryAdmissionHandoffs
   const drainAdmission = deps?.drainHistoryAdmissionFn ?? drainHistoryAdmission

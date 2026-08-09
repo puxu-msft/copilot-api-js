@@ -13,6 +13,8 @@
 // 用法:pipeline/handler 顶层为每请求建一个 scope,把每段 settle-前工作 trackOperationBody,
 // 在唯一 finally 里 seal();lifecycle orchestrator 在 root 之外 await whenOperationQuiesced()。
 
+import type { OperationScopeSnapshot } from "./operation-lifecycle"
+
 export interface OperationScope {
   /** 登记一段 settle-前 child 工作(root owner 自身不登记——避免 self-join)。rejection 也算 settled。 */
   trackOperationBody(p: Promise<unknown>): void
@@ -22,6 +24,7 @@ export interface OperationScope {
   whenOperationQuiesced(): Promise<void>
   readonly childCount: number
   readonly sealed: boolean
+  readonly snapshot: OperationScopeSnapshot
 }
 
 export function createOperationScope(): OperationScope {
@@ -72,6 +75,10 @@ export function createOperationScope(): OperationScope {
 
     get sealed(): boolean {
       return sealed
+    },
+
+    get snapshot(): OperationScopeSnapshot {
+      return Object.freeze({ sealed, childCount, quiesced: sealed && childCount === 0 })
     },
   }
 }
