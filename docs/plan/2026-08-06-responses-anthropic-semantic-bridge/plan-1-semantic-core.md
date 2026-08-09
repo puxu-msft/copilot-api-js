@@ -144,20 +144,24 @@ Commit: `feat(bridge): add Responses target grammar`
 - [ ] **Step 4: mutation**：把 id 纳入 hash、把 response collector改成单槽后测试红。
 - [ ] **Step 5: commit** `feat(bridge): add append-only diagnostics collectors`
 
-### Task 1.6: Compatibility error 类型
+### Task 1.6: Compatibility error 与 exact renderer contract
 
 **Files:**
 - Create: `src/lib/error/bridge-compatibility-error.ts`
 - Modify: `src/lib/error/index.ts`
+- Create: `src/lib/semantic-bridge/compatibility-error-renderer.ts`
 - Test: `tests/semantic-bridge/compatibility-error.unit.test.ts`
+- Test: `tests/semantic-bridge/compatibility-error-renderer.unit.test.ts`
 
-**Produces:** class fields与规格一致；`retryable:false` readonly；`isBridgeCompatibilityError` 不靠 message string。
+**Produces:** class fields与规格一致；`retryable:false` readonly；`isBridgeCompatibilityError`不靠message string；`createAnthropicCompatibilityErrorRenderer()`与`createResponsesCompatibilityErrorRenderer()`实现规格§11的唯一矩阵。
 
-- [ ] 写构造／序列化／type guard 红灯。
-- [ ] 实现 class 和 export。
-- [ ] mutation：删除 `retryable:false` 或用普通 Error 冒充后红。
-- [ ] Run: `bun test tests/semantic-bridge && bun run typecheck`。
-- [ ] Commit: `feat(error): add bridge compatibility error`
+- [ ] **Step 1: 写class红灯。** 覆盖四个code、request/response direction、source/target、wireType、requestId；type guard拒绝同名普通Error。
+- [ ] **Step 2: 写8格renderer红灯。** 2目标协议×4阶段：request HTTP、whole response HTTP、stream body-uncommitted、stream body-committed。断exact status/body/event/data/bodyCommitted输入；判别union要求Anthropic terminal调用不带sequence、Responses terminal必须带单调`sequenceNumber:number`，漏传在type fixture编译红。
+- [ ] **Step 3: 跑红灯。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts`。Expected: FAIL，缺class／renderer。
+- [ ] **Step 4: 实现唯一矩阵。** Request incompatible-continuation=422，其余request=400，response=502；Anthropic HTTP/terminal与OpenAI HTTP/Responses terminal形状逐字按spec；renderer不读transport classifier。
+- [ ] **Step 5: mutation。** 把response改400、Anthropic terminal用invalid_request、Responses terminal漏sequence、bodyCommitted两支生成不同taxonomy后精确红。
+- [ ] **Step 6: 运行。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts && bun run typecheck`。Expected: PASS。
+- [ ] **Step 7: commit。** Commit: `feat(error): add bridge compatibility renderers`
 
 ## Phase 验收
 

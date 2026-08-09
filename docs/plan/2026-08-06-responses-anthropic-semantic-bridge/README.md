@@ -71,10 +71,10 @@ docs/tmp/2026-08-07-responses-anthropic-semantic-bridge-progress-<slug>.md
 ### 现有集成点
 
 - `src/lib/pipeline/hub-translate.ts`：选择并驱动 profile；不放业务 matcher。
-- `src/lib/pipeline/request-state.ts` 与 `generation/candidate-state.ts`：携带 frozen request diagnostics 引用及 candidate-local response supplies。
-- `src/lib/pipeline/generation/candidate-response-session.ts`：拥有 candidate response collector 的创建、freeze 与 snapshot。
-- `src/lib/context/{types,request}.ts`、`src/lib/history/types.ts`：append-only disposition SSOT、winner-only 顶层投影与持久化。
-- `src/lib/pipeline/driver.ts`：S2 request collector `try/finally`、compatibility fail-fast、winner 投影时点；不判断 semantic kind。
+- `src/lib/pipeline/request-state.ts` 与 `generation/candidate-state.ts`：只携带 frozen request diagnostics；open request collector 是 S2-local supply，candidate 不可见。
+- `src/lib/pipeline/generation/candidate-response-session.ts`：接收 candidate runtime 预先创建的 response collector，与 renderer 共享同一实例，并拥有 freeze／snapshot。
+- `src/lib/context/{types,request,model-operation-record}.ts`、`src/lib/history/types.ts`：append-only disposition SSOT、dispatch diagnostics、winner-only 顶层投影与持久化。
+- `src/lib/pipeline/driver.ts`：S2-local request collector `try/finally`、candidate collector 先于 renderer 创建、whole／stream candidate ownership、compatibility fail-fast、winner 投影时点；不判断 semantic kind。
 - `src/routes/{messages,responses}/handler-v4.ts`：headers-uncommitted HTTP error 与 headers-committed typed terminal wire。
 - 旧 `src/lib/openai/translate/*anthropic*responses*.ts`：按 family 原子迁移后删除对应分支；不长期双轨。
 

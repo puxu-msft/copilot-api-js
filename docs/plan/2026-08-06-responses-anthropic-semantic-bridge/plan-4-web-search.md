@@ -97,9 +97,10 @@
 - Reuse/extend: mock hook harness
 
 - [ ] 从真实 Claude Code `WebSearch.call()`／CLI tool registry入口启动，不直接调内部 Messages请求。
-- [ ] Mock Responses upstream发完整 web-search lifecycle＋message/citations。
-- [ ] 断言内部声明／forced choice正确、query/progress/searchCount/results、外层普通 tool_result进入下一主循环。
-- [ ] 正控至少一个可观察 link；删 server-tool-use emission时 client行为测试红。
+- [ ] Mock Responses upstream发完整web-search lifecycle＋message/citations；不生成Anthropic`web_search_tool_result`。
+- [ ] 断言内部声明／forced choice正确、query／query-update／`searchCount>0`／duration正确；`data.results`只含commentary字符串，不含`{tool_use_id,content:[{title,url}]}`结构化link entry。
+- [ ] 断言外层普通`tool_result`含commentary并进入下一主循环，但不含伪造`Links:`段；此降级路径不要求`search_results_received`progress。
+- [ ] 正控至少一次synthetic`server_tool_use`＋commentary；删server-tool-use时searchCount/query-update红，伪造`web_search_tool_result`时no-link/no-`Links:`断言红。
 - [ ] incomplete无action不崩、不虚构query；carrier不触发第二次client tool执行。
 - [ ] Run: `bun test tests/e2e-client/semantic-bridge-web-search-cli.e2e.test.ts`
 - [ ] Commit: `test(e2e): verify Claude Code web search bridge`

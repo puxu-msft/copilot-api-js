@@ -21,19 +21,26 @@
 - [ ] mutation：把 open collector放进 RequestState 或每 candidate复制 records 后红。
 - [ ] Commit: `feat(pipeline): carry frozen request bridge diagnostics`
 
-### Task 3.2: Candidate-local response collector
+### Task 3.2: Candidate-local response collector 先于 renderer 创建
 
 **Files:**
-- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`
 - Modify: `src/lib/pipeline/generation/candidate-state.ts`
+- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`
+- Modify: `src/lib/pipeline/driver.ts:539-547`
+- Modify: `src/lib/pipeline/types.ts`（`FormatCodec.createCandidateRenderer(env, bridgeDiagnostics)`）
+- Modify: `src/lib/codec/anthropic/codec.ts`
+- Modify: `src/lib/codec/openai-responses/codec.ts`
+- Test: `tests/pipeline/candidate-state.unit.test.ts`
 - Test: `tests/pipeline/candidate-response-session.unit.test.ts`
 
-**Produces:** 每 candidate 一个 append-only response collector；snapshot 包含 frozen records；loser／failed／cancelled 都保留。
+**Produces:** 每candidate一个append-only response collector；candidate runtime在renderer之前创建同一实例，将它同时传给`createCandidateRenderer`和`createCandidateResponseSession`，snapshot冻结其records；loser／failed／cancelled都保留。
 
-- [ ] 写两个 candidate 相互隔离、freeze 后 append失败、loser记录保留测试。
-- [ ] 在 `CreateCandidateResponseSessionInput` 增 `bridgeDiagnostics` supply／snapshot，不让 driver直接改业务记录。
-- [ ] mutation：共享 collector 或 request-global 单槽后红。
-- [ ] Commit: `feat(pipeline): isolate candidate bridge diagnostics`
+- [ ] **Step 1: 写创建顺序红灯。** Mock codec的`createCandidateRenderer`必须收到collector；renderer append后session snapshot看到同一record；两个candidate实例不相等。
+- [ ] **Step 2: 跑红灯。** Run: `bun test tests/pipeline/candidate-state.unit.test.ts tests/pipeline/candidate-response-session.unit.test.ts`。Expected: FAIL，renderer无collector参数。
+- [ ] **Step 3: 重排producer。** Candidate state supply先创建collector；driver `createProcessor`先取得collector，再创建renderer，最后创建session；禁止renderer／session各自new collector。
+- [ ] **Step 4: snapshot与settle。** Session terminal snapshot freeze；loser／failed／cancelled在dispatch diagnostics保留完整records。
+- [ ] **Step 5: mutation。** 恢复renderer先创建、共享collector或request-global单槽后目标测试红。
+- [ ] **Step 6: commit。** Commit: `feat(pipeline): isolate candidate bridge diagnostics`
 
 ### Task 3.3: RequestContext 与 History schema
 
@@ -44,28 +51,35 @@
 - Modify: `src/lib/context/model-operation-record.ts`（dispatch diagnostics 与 terminal metadata 的权威 owner）
 - Test: `tests/context/request-bridge-diagnostics.unit.test.ts`
 - Test: `tests/history/v3/bridge-diagnostics.it.test.ts`
+- Test: `tests/pipeline/non-streaming-bridge-diagnostics.unit.test.ts`
 
 **Produces:**
 
 ```ts
-appendRequestBridgeDisposition(record)
-freezeRequestBridgeDiagnostics(): RequestBridgeDiagnostics
-appendCandidateBridgeDisposition(candidate, record)
+publishRequestBridgeDiagnostics(diagnostics: RequestBridgeDiagnostics): void
+appendCandidateBridgeDisposition(candidate: CandidateHandle, record: ResponseBridgeDispositionRecord): void
+freezeCandidateBridgeDiagnostics(candidate: CandidateHandle): CandidateBridgeDiagnostics
 PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 ```
 
-- [ ] 写 request records 单份冻结、candidates 只投影 id/hash、winner顶层投影测试。
-- [ ] 写 hedge loser 先写、winner 后写、无 winner failure 六种顺序。
-- [ ] 接 V3 terminal store／API readback，不能只测 `toHistoryEntry()` 内存对象。
-- [ ] mutation：loser污染winner、request records复制到每 candidate、无 candidate reject 丢 History 后红。
+- [ ] 写request records单份冻结、candidates只投影id/hash、winner顶层投影测试。
+- [ ] 写hedge loser先写、winner后写、无winner failure六种顺序。
+- [ ] 新增non-streaming candidate调用链：`runResponseNonStreaming`必须解析当前generation binding，使用该candidate的collector运行whole profile，freeze后再选择／投影winner；不得直接写request-global response slot。Response-only compatibility helper创建显式synthetic candidate-local collector并标`dispatchScopedCapture:false`。
+- [ ] 接V3 terminal store／API readback，不能只测`toHistoryEntry()`内存对象。
+- [ ] mutation：whole response绕过candidate collector、loser污染winner、request records复制到每candidate、无candidate reject丢History后红。
+- [ ] Run: `bun test tests/context/request-bridge-diagnostics.unit.test.ts tests/history/v3/bridge-diagnostics.it.test.ts tests/pipeline/non-streaming-bridge-diagnostics.unit.test.ts`。Expected: PASS。
 - [ ] Commit: `feat(history): persist semantic bridge dispositions`
 
 ### Task 3.4: 惰性 migration dispatcher 与 S2 request runner `try/finally`
 
 **Files:**
 - Create: `src/lib/openai/translate/semantic-bridge/migration-dispatch.ts`
-- Modify: `src/lib/pipeline/hub-translate.ts`
+- Modify: `src/lib/pipeline/request-state.ts`
+- Modify: `src/lib/pipeline/cell-assembly.ts`（`translateOut(env, requestTranslation?)`）
+- Modify: `src/lib/pipeline/hub-translate.ts`（profile resolver + `RequestTranslationRuntime`）
 - Modify: `src/lib/pipeline/driver.ts:347-369`
+- Modify: `src/lib/codec/anthropic/anthropic-cell.ts:103-106`
+- Modify: `src/lib/codec/openai-responses/openai-responses-cell.ts:88-101`
 - Test: `tests/semantic-bridge/migration-dispatch.unit.test.ts`
 - Test: `tests/pipeline/hub-translate.unit.test.ts`
 - Test: `tests/pipeline/request-bridge-wiring.it.test.ts`
@@ -74,8 +88,8 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 
 - [ ] **Step 1: 写 dispatcher 红灯。** 空集合只调 legacy；已迁 kind只调 semantic；semantic throw不回退legacy；同kind双调用计数必须失败。
 - [ ] **Step 2: 跑红灯。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts`。Expected: FAIL，模块不存在。
-- [ ] **Step 3: 实现 dispatcher，并在hub装空production集合。** `HubTranslateContext`增request collector／affinity与仅测试使用的`profileOverride?: RequestBridgeProfile`；空production集合且无override时不创建profile／collector、不改变body。`tests/pipeline/request-bridge-wiring.it.test.ts`注入fixture profile验证真实S2时序，不实现真实family。
-- [ ] **Step 4: Driver S2 finally。** Success／compatibility reject／unexpected throw 都 freeze已有collector；没有collector时完全惰性。Reject before dispatch记录request History，dispatch count=0。
+- [ ] **Step 3: 建S2-local supply。** `hub-translate.ts`导出`resolveRequestTranslationRuntime(env, profileOverride?)`，只在non-identity且有migrated kind／fixture override时返回`{collector,context,profile}`。Driver在route decision后、`outboundTranslateOut`前调用一次，并以显式参数传给`CellAssembly.translateOut(env,runtime)`；两个outbound cell继续传给`translateRequestVia`。Open collector不进入`RequestState`。空production集合且无override时resolver返回undefined、dispatcher不append、不改变body。
+- [ ] **Step 4: Driver S2 finally。** Success／compatibility reject／unexpected throw都freeze同一runtime collector；成功时`env.with({requestState:{...stableState,requestBridgeDiagnostics:frozen}})`，reject／throw时直接`ctx.publishRequestBridgeDiagnostics(frozen)`供失败History。Candidate fork只见frozen diagnostics，永不接触open collector。
 - [ ] **Step 5: inspector共路。** `inspectRequest(stopAfter=translate)` 调同一S2 helper，不复制bridge runner。
 - [ ] **Step 6: mutation。** Empty dispatcher创建diagnostic／改变body、semantic失败回legacy、reject绕过finally后目标测试红。
 - [ ] **Step 7: 运行与提交。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts tests/pipeline/hub-translate.unit.test.ts tests/pipeline/request-bridge-wiring.it.test.ts`。Expected: PASS。Commit: `feat(pipeline): add inert semantic bridge dispatcher`。
@@ -93,14 +107,13 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 - Test: `tests/pipeline/bridge-compatibility-retry.unit.test.ts`
 - Test: `tests/openai/bridge-compatibility-errors.http.test.ts`
 
-- [ ] Request error：headers未提交，真实 HTTP 400/422，dispatch=0。
-- [ ] Whole response error：headers未提交，真实 HTTP 502或规格 status。
-- [ ] Stream headers-committed/body-uncommitted：HTTP 200、无 partial semantic content、typed terminal。
-- [ ] Stream body-committed：保 partial＋typed terminal，History `bodyCommitted:true`。
-- [ ] `runResponseBufferedSink` catch 在 `classifyStreamError` 前识别 typed error，返回原 Error，不增加 attempt／reset／exchange／continuation。
-- [ ] Semantic retry registry 不 claim；compatibility error观测后 dispatch delta=0，但合法前置 retry／hedge数量保留。
-- [ ] mutation：把 typed error送回 transport retry后 callCount测试红。
-- [ ] Commit: `feat(pipeline): fail fast on bridge compatibility errors`
+- [ ] **Step 1: 写 exact 8格红灯。** 2目标协议×4阶段逐格断言：request HTTP（`incompatible-continuation`=422，其余=400）、whole response HTTP=502、stream body-uncommitted HTTP保持200且terminal前无semantic content、stream body-committed保partial＋同taxonomy terminal。Anthropic HTTP body固定`{type:"error",error:{type:"invalid_request_error"|"api_error",message}}`；OpenAI HTTP body固定`{error:{message,type:"invalid_request_error"|"server_error",code,param:null}}`；Anthropic terminal固定`event:error`＋`api_error` data；Responses terminal固定`event:error`＋`{type:"error",code,message,sequence_number}`，无`param`。
+- [ ] **Step 2: 跑红灯。** Run: `bun test tests/openai/bridge-compatibility-errors.http.test.ts tests/pipeline/bridge-compatibility-retry.unit.test.ts`。Expected: FAIL，codec／handler尚未委托profile renderer，outcome无`bodyCommitted`。
+- [ ] **Step 3: 接唯一调用链。** Headers未提交时route只调用`formatHttp`；进入`streamSSE`后handler只调用`formatTerminal`；driver只携原Error＋`bodyCommitted`，不选择status／taxonomy／wire。Anthropic codec复用`mapHttpErrorToEnvelope`／`anthropicErrorFrame`的既有taxonomy，Responses codec复用`openAIStreamErrorFrame` taxonomy并由renderer补typed code／sequence。
+- [ ] **Step 4: fail-fast。** `runResponseSink`／`runResponseBufferedSink`在`classifyStreamError`前识别typed error，返回原Error，不增加attempt／reset／exchange／continuation；semantic retry registry不claim。错误观测后dispatch delta=0，合法前置retry／hedge数量保留。
+- [ ] **Step 5: mutation。** Response-side改400、Anthropic terminal改`invalid_request_error`、Responses terminal漏sequence、body-uncommitted写partial、typed error重进transport retry后对应测试红。
+- [ ] **Step 6: 绿灯。** Run: `bun test tests/openai/bridge-compatibility-errors.http.test.ts tests/pipeline/bridge-compatibility-retry.unit.test.ts`。Expected: 8格全部PASS，request dispatch=0，response error后dispatch delta=0。
+- [ ] **Step 7: commit。** Commit: `feat(pipeline): fail fast on bridge compatibility errors`
 
 ### Task 3.6: Infrastructure merged-state gate
 

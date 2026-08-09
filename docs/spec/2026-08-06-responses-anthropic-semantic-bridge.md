@@ -1,6 +1,6 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：已定稿；协议、架构与最新 master thinking 审计增量复核均无 BLOCKER／MAJOR
+> **状态**：计划评审发现 WebSearch 外层 oracle 与 error renderer 契约缺口，更正待复审
 >
 > **核验基线**：`b6fb0947686ea6620bfafb63a4fd151d18599483`（2026-08-06；定稿分支重基后的最新 master）
 >
@@ -249,14 +249,45 @@ interface StreamRenderer<E> {
   flush(input: ResponseRenderInput<E>): readonly ClientFrame[]
 }
 
-interface CompatibilityErrorRenderer {
-  formatHttp(error: BridgeCompatibilityError): {
-    status: 400 | 422 | 502
-    body: unknown
-    headers?: Readonly<Record<string, string>>
-  }
-  formatTerminal(error: BridgeCompatibilityError): readonly ClientFrame[]
+type BridgeCompatibilityHttpStatus = 400 | 422 | 502
+
+type AnthropicCompatibilityErrorBody = {
+  type: "error"
+  error: { type: "invalid_request_error" | "api_error"; message: string }
 }
+
+type OpenAICompatibilityErrorBody = {
+  error: {
+    message: string
+    type: "invalid_request_error" | "server_error"
+    code: BridgeCompatibilityError["code"]
+    param: null
+  }
+}
+
+interface AnthropicCompatibilityErrorRenderer {
+  readonly targetFormat: "anthropic-messages"
+  formatHttp(error: BridgeCompatibilityError): {
+    status: BridgeCompatibilityHttpStatus
+    body: AnthropicCompatibilityErrorBody
+  }
+  formatTerminal(input: { error: BridgeCompatibilityError; bodyCommitted: boolean }): readonly [ClientFrame]
+}
+
+interface ResponsesCompatibilityErrorRenderer {
+  readonly targetFormat: "openai-responses"
+  formatHttp(error: BridgeCompatibilityError): {
+    status: BridgeCompatibilityHttpStatus
+    body: OpenAICompatibilityErrorBody
+  }
+  formatTerminal(input: {
+    error: BridgeCompatibilityError
+    bodyCommitted: boolean
+    sequenceNumber: number
+  }): readonly [ClientFrame]
+}
+
+type CompatibilityErrorRenderer = AnthropicCompatibilityErrorRenderer | ResponsesCompatibilityErrorRenderer
 
 interface RequestBridgeProfile<
   Payload,
@@ -794,7 +825,6 @@ interface BridgeCompatibilityError extends Error {
   readonly direction: "request" | "response"
   readonly wireType: string
   readonly requestId?: string
-  readonly suggestedHttpStatus: 400 | 422 | 502
   readonly retryable: false
 }
 
@@ -802,13 +832,17 @@ declare function isBridgeCompatibilityError(error: unknown): error is BridgeComp
 ```
 
 - Identity Responses→Responses 路径原样透传；
-- 每个非 identity profile 必须提供 `CompatibilityErrorRenderer`，不得让 handler 临场拼错误 wire；
-- Translation request 在发送上游前抛出 typed error；route 调 `profile.errorRenderer.formatHttp`，使用 `suggestedHttpStatus` 返回真实 HTTP 4xx／502；
-- Non-streaming translation response 在 `c.json` 前抛出 typed error，同样走 `formatHttp`；
-- Responses streaming 与已进入 Messages pump 的路径都在 `streamSSE` callback 之前提交 HTTP 200 headers。此后即使 candidate buffer 尚未 flush，也不能改回 route-level HTTP 4xx；
-- streaming **headers-committed／body-uncommitted**：丢弃尚未 flush 的 candidate body buffer，经 `formatTerminal` 写目标协议 typed terminal error；客户端仍见 HTTP 200，但没有 partial semantic content；
-- streaming **body-committed**：保留已发送 partial content，经 `formatTerminal` 追加 typed terminal error；forwarded 轨同时保留 partial 与 error；
-- `runResponseSink`／`runResponseBufferedSink` 不把 `BridgeCompatibilityError` 降为普通字符串：`stream-error` outcome 保留原 Error 对象、结构化字段和 `bodyCommitted` 布尔值；
+- 每个 non-identity profile 必须提供 `CompatibilityErrorRenderer`，不得让 handler、driver 或 route 临场拼错误 wire；
+- HTTP status 只由错误方向与 code 决定：request-side `incompatible-continuation` 为 422，其他 request-side code 为 400；所有 response-side compatibility error 为 502。`BridgeCompatibilityError` 本身不保存第二份 status；
+- Anthropic HTTP body 固定为 `{type:"error",error:{type,message}}`：request-side `type="invalid_request_error"`，response-side `type="api_error"`；
+- OpenAI HTTP body 固定为 `{error:{message,type,code,param:null}}`：request-side `type="invalid_request_error"`，response-side `type="server_error"`，`code` 原样取 `BridgeCompatibilityError.code`；
+- Translation request 在发送上游前抛出 typed error；route 在 headers 未提交时只调用 `profile.errorRenderer.formatHttp`。Non-streaming translation response 在 `c.json` 前同样走 `formatHttp`；
+- Responses streaming 与已进入 Messages pump 的路径都在 `streamSSE` callback 之前提交 HTTP 200 headers。此后 route 不得再调用 `formatHttp`；handler 只调用 `formatTerminal`；
+- Anthropic terminal 固定为单帧 `event:error`，data 与 response-side Anthropic `api_error` body相同；
+- Responses terminal 固定为单帧 `event:error`，data 为 `{type:"error",code,message,sequence_number}`（与本地 `ResponsesStreamErrorEvent` 一致），其中 code取 typed error code，sequence_number 由当前 Responses renderer 的单调计数器提供；Responses renderer 的判别 union 要求该参数必填；
+- streaming **headers-committed／body-uncommitted**：丢弃尚未 flush 的 candidate body buffer，调用 `formatTerminal({bodyCommitted:false})`；客户端仍见 HTTP 200，且 terminal 之前无 partial semantic content；
+- streaming **body-committed**：保留已发送 partial content，调用 `formatTerminal({bodyCommitted:true})` 追加同一种目标协议 terminal；forwarded 轨同时保留 partial 与 error；
+- `runResponseSink`／`runResponseBufferedSink` 只保留原 `BridgeCompatibilityError` 对象与 `bodyCommitted`，不选择 status、不生成 wire、不把错误降为字符串；
 - `BridgeCompatibilityError.retryable` 恒为 false。Buffered catch 先用 `isBridgeCompatibilityError` 分流并立即返回 typed `stream-error`；它不得进入 `classifyStreamError(error)==="other"` 的 transport retry gate，不增加 attempt，不调用 `onAttemptReset`／`escalate`，不重开 exchange，也不进入 continuation generation；
 - semantic retry registry 不得 claim `BridgeCompatibilityError`；若错误在 S2 request bridge 产生，上游 dispatch 数必须为 0；若在 response bridge 产生，记录错误观测时的 dispatch／candidate 集合，之后 dispatch 数增量必须为 0，当前 candidate 不启动 recovery／continuation。无前置 retry／hedge 的基准 fixture 额外断言总 dispatch=1；有前置 retry／hedge 的 fixture 保留既有 dispatch，只断言错误后不增长；
 - handler 使用两个显式状态：`httpHeadersCommitted`（进入 `streamSSE` 即 true）与 `bodyCommitted`（sink 首次 external body write 后 true）。candidate buffer 的 `committedAny` 只用于 retry／partial 判定，不能冒充 HTTP commit；
@@ -875,19 +909,20 @@ interface CandidateBridgeDiagnostics {
 
 所有权与写入规则：
 
-1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。它使用 request-level `RequestBridgeDiagnosticsCollector`；禁止伪造 primary candidate 或把同一请求记录复制到所有候选。
-2. S2 以 `try/finally` 驱动 collector：item／coordinator 每产生一个 disposition 就 `append`；无论成功、`BridgeCompatibilityError` reject 或意外 throw，`finally` 都恰好一次 `freeze()`。freeze 后 append／再次 freeze 必须 fail-loud。
+1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。Driver 从 hub profile resolver 获取一个 S2-local `RequestTranslationRuntime {collector, context, profile}`，并以显式参数传给 `CellAssembly.translateOut`／`OutboundLeg.translateOut`／`translateRequestVia`；open collector 不进入 request-lifecycle-stable `RequestState`，也不进入任何 candidate。
+2. S2 以 `try/finally` 驱动 runtime collector：item／coordinator 每产生一个 disposition 就 `append`；无论成功、`BridgeCompatibilityError` reject 或意外 throw，`finally` 都恰好一次 `freeze()`。freeze 后 append／再次 freeze 必须 fail-loud。
 3. `freeze()` 生成稳定 id，并对 canonical JSON 计算 hash。Canonical input 精确为 `{version:1, records}`：对象 key 按字典序、array 保序、undefined 字段省略、UTF-8 编码；id 不进入 hash。测试用同 records 不同对象构造顺序证明 hash 相同，record 顺序变化证明 hash 不同。
-4. Frozen `RequestBridgeDiagnostics {id,hash,records}` 挂入 `RequestState.requestBridgeDiagnostics`。`snapshotStableState` 与 candidate fork 原样共享该 deep-frozen 值；每个 candidate／dispatch metadata 只投影 `id/hash`，表示它消费了哪一版已翻译请求。
-5. S2 reject 没有 candidate：route failure settle 仍从 `RequestState`／RequestContext 取得 frozen diagnostics，把 request records 投影到失败 History；不得因没有 candidate 丢记录。
-6. **Response bridge SSOT**：每个 generation candidate 创建自己的 append-only response disposition collector，API 为 `appendCandidateBridgeDisposition(candidateHandle, record)`。
-7. 每处理一个 known response item、lifecycle 或 compatibility error，追加一条 record；同一 candidate 的多 item 不得互相覆盖。
-8. 每个 candidate 的完整 response records 进入该 candidate／attempt 诊断轨，包含 loser、failed、cancelled；因此可解释落败候选，但不会污染胜者事实。
-9. `selectGenerationWinner(candidate, dispatch)` 后，顶层 `pipelineInfo.bridgeDispositions` 由 request records + winner response records 派生；无 winner 的失败请求只投影 request records，不能伪造 response winner。
-10. RequestContext 新增 `appendRequestBridgeDisposition`、`freezeRequestBridgeDiagnostics`、`appendCandidateBridgeDisposition` 三个窄 API；不得复用 `recordFeature` 或现有单值 `recordTranslationDegradation`。
-11. History `PipelineInfo` 新增 append-only `bridgeDispositions?: BridgeDispositionRecord[]`；request diagnostics 与 attempt/candidate response diagnostics 是明细 SSOT，顶层仅为派生视图。
-12. upstream 轨保留原始 source item／event；forwarded 轨保留客户端实收 wire；synthetic presentation 使用 `bridge-degradation` provenance；carrier 只记录 scheme/version/kinds，不记录 opaque payload。
-13. response disposition 在 candidate settle 前冻结；winner 投影在 winner selection 后、terminal History snapshot 前完成。测试必须覆盖 request success、request reject、unexpected throw、hedge loser 先写、winner 后写以及无 winner 失败六种顺序。
+4. 只有 frozen `RequestBridgeDiagnostics {id,hash,records}` 挂入 `RequestState.requestBridgeDiagnostics`。`snapshotStableState` 与 candidate fork 原样共享该 deep-frozen 值；每个 candidate／dispatch metadata 只投影 `id/hash`，表示它消费了哪一版已翻译请求。
+5. S2 reject 没有 candidate：runtime freeze 同时把 frozen diagnostics 交给 RequestContext，route failure settle 从 RequestContext 投影 request records 到失败 History；不得因没有 candidate 或没有成功返回 env 而丢记录。
+6. **Response bridge SSOT**：candidate runtime 在创建 renderer 之前创建一个 candidate-local append-only response collector，并把同一实例同时传给 renderer 与 `CandidateResponseSession`；renderer 不自建 collector，session 拥有 freeze／snapshot。
+7. Streaming 与 non-streaming 都使用该 candidate collector。Non-streaming driver 从 generation binding 取得 candidate／dispatch／session，运行 whole renderer并在 `finally` freeze；只有 render成功后才 `selectGenerationWinner` 并投影顶层。Render失败时 candidate／dispatch明细保留response records，但无winner顶层只投影request records。
+8. 每处理一个 known response item、lifecycle 或 compatibility error，追加一条 record；同一 candidate 的多 item 不得互相覆盖。
+9. 每个 candidate 的完整 response records 进入该 candidate／attempt 诊断轨，包含 loser、failed、cancelled；因此可解释落败候选，但不会污染胜者事实。
+10. `selectGenerationWinner(candidate, dispatch)` 后，顶层 `pipelineInfo.bridgeDispositions` 由 request records + winner response records 派生；无 winner 的失败请求只投影 request records，不能伪造 response winner。
+11. RequestContext 新增 `publishRequestBridgeDiagnostics`、`appendCandidateBridgeDisposition`、`freezeCandidateBridgeDiagnostics` 三个窄 API；不得复用 `recordFeature` 或现有单值 `recordTranslationDegradation`。
+12. History `PipelineInfo` 新增 append-only `bridgeDispositions?: BridgeDispositionRecord[]`；request diagnostics 与 attempt/candidate response diagnostics 是明细 SSOT，顶层仅为派生视图。
+13. upstream 轨保留原始 source item／event；forwarded 轨保留客户端实收 wire；synthetic presentation 使用 `bridge-degradation` provenance；carrier 只记录 scheme/version/kinds，不记录 opaque payload。
+14. response disposition 在 candidate settle 前冻结；winner 投影在 winner selection 后、terminal History snapshot 前完成。测试必须覆盖 request success、request reject、unexpected throw、whole render success／throw、hedge loser先写、winner后写以及无winner失败顺序。
 
 ## 13. Phase 0 探针
 
@@ -930,18 +965,20 @@ message/output_text/citations
 response.completed
 ```
 
-oracle 同时观察内部与外层：
+oracle 同时观察内部与外层，并明确 current Claude Code 2.1.207 的降级边界：
 
 - 内部子请求声明并强制选择 web search；
-- 三种 Web Search lifecycle event 均由同一 handler 消费，不触发 unknown error；
-- query update 与 search-results progress callback 可见；
-- `WebSearch.call()` 最终 `data.searchCount`、`data.results`、`data.query` 与 duration 正确；
-- `mapToolResultToToolResultBlockParam` 生成的外层普通 `tool_result` 含 links／text，并实际进入下一轮主 agent loop；
+- 三种 Responses Web Search lifecycle event 均由同一 handler 消费，不触发 unknown error；
+- synthetic `server_tool_use` 使 query update 与 `data.searchCount > 0` 可见；
+- `WebSearch.call()` 最终 `data.query` 与 duration 正确；
+- 普通 Anthropic text／citation presentation 只成为 `data.results` 中的 commentary 字符串；在没有真实 Anthropic `web_search_tool_result` source 的前提下，`data.results` 不得含 `{tool_use_id,content:[{title,url}]}` link entry；
+- `mapToolResultToToolResultBlockParam` 生成的外层普通 `tool_result` 含 commentary text 并实际进入下一轮主 agent loop，但不得出现由伪造 result 生成的 `Links:` 段；
+- `search_results_received` progress 与结构化 links 在此降级路径上不可保真，测试不得要求它们；未来若要提供，必须先取得真实 `web_search_tool_result` source 或另行裁决显式客户端 adapter；
 - incomplete 无 action 不崩溃、不虚构 query；
 - continuation carrier 不触发额外 client tool 执行；
 - 客户端 echo 后，Anthropic→Responses request bridge 恢复 continuation，真实／协议级 Responses oracle 接受。
 
-正控必须让 mock 发出至少一次 `server_tool_use` 展示和一个可观察 link；负控删除 semantic server-tool-use emission 时，`searchCount`／progress 断言必须变红。只看内部 HTTP 200、只看 Anthropic wire，或直接构造外层 `data` 都不满足本 E2E。
+正控必须让 mock 发出至少一次 synthetic `server_tool_use` 和 commentary text；负控删除 semantic server-tool-use emission时，`searchCount`／query-update 断言必须变红；伪造 `web_search_tool_result` 时 no-link-entry／no-`Links:` 断言必须变红。只看内部 HTTP 200、只看 Anthropic wire，或直接构造外层 `data` 都不满足本 E2E。
 
 ### P0-4. 流式时序
 
@@ -1174,14 +1211,14 @@ ADR 旧决策和当时证据保留原文，新注解只说明后续事实如何�
 - AC2：第一批支持集合没有 silent drop；
 - AC3：whole／stream 对同一 source semantic 调用同一 mapper，并由协议 adapter 保留各自生命周期主键；
 - AC4：展示 degraded 与 continuation carrier 可同时成立并分别记录；
-- AC5：从真实 Claude Code `WebSearch.call()`／等价 CLI 外层入口运行 E2E；query、progress、`data.searchCount`、`data.results`、links／text 与主 loop `tool_result` 正确；
+- AC5：从真实 Claude Code `WebSearch.call()`／等价 CLI 外层入口运行 E2E；query、query-update、`data.searchCount > 0`、duration、commentary string 与主 loop `tool_result` 正确；在没有真实 Anthropic `web_search_tool_result` source 时，`data.results` 无结构化 link entry，外层 `tool_result` 无伪造 `Links:` 段，且不要求 `search_results_received` progress；
 - AC6：Web Search incomplete 无 action 不崩溃、不虚构 query；
 - AC7：不伪造 Anthropic `web_search_result.encrypted_content`；
 - AC8：Responses opaque continuation 经过 Anthropic wire 与客户端 echo 后被 Responses upstream 接受；
 - AC9：reasoning 继续使用权威 `.done` opaque state，v1 carrier 不回归；
 - AC10：Responses 流式关联使用 `output_index`，Anthropic 使用 block `index`；不使用变化的 opaque item id；
 - AC11：`response.web_search_call.in_progress/searching/completed` 是 known lifecycle，完整序列与缺 added／重复／乱序控制均通过；
-- AC12：未知 translation item fail-loud，identity item passthrough；request／whole／stream headers-committed/body-uncommitted／stream body-committed 四条错误路径的 status、wire、typed error 与 `bodyCommitted` 均符合规格；
+- AC12：未知 translation item fail-loud，identity item passthrough；两目标协议×request HTTP／whole-response HTTP／stream body-uncommitted／stream body-committed 共 8 格逐格符合 §11.1 的 exact status、HTTP body、terminal event/data、typed error 与 `bodyCommitted`；Anthropic terminal 恒为 `api_error`，Responses terminal 强制单调 `sequence_number`；
 - AC13：History upstream／forwarded 轨与 disposition 记录可对账；request records 只存一次并由 candidates 引用，candidate response 明细 append-only，顶层由 request + winner response 派生；
 - AC14：carrier wire 编码 affinity／compatibilityKey；同实际模型 alias 可恢复，不兼容 source 默认剥离；
 - AC15：whole-on-done／stateful handler 均经 typed factory 生成 bound closure；adapter 给每个 semantic kind／phase 提供非 `never` typed source，complete/incomplete Web Search 均纳入；业务 handler／registry／router 调用面无 cast，唯一 core 擦除点有 runtime kind guard 与错误 kind mutation；

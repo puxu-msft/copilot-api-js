@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：已完成；协议、架构与最新 master thinking 审计增量复核均放行
+> **状态**：原规格评审已放行；实施计划评审触发两项规格更正，待原 reviewer 复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -338,4 +338,14 @@
 - Mutation、正确状态、守卫 21–24 与 AC22–AC24 对目标缺陷有双向判别力；未发现阻断正确零 delta、多 item、canonical-equivalent JSON 或合法 degraded capability 的 false-red。
 - Reviewer 复核本记录对第五轮结果、M20–M22 的级别、事实、处置与待复审命题转录忠实；隔离 worktree 结束时 `git status --short` 为空。
 
-至此 thinking 审计增量的 7 个 MAJOR 全部采纳并经原 reviewer 复审闭合；连同首轮至第四轮，累计处置 1 BLOCKER、22 MAJOR，无未决 finding。
+至此 thinking 审计增量的 7 个 MAJOR 全部采纳并经原 reviewer 复审闭合；连同首轮至第四轮，规格定稿阶段累计处置 1 BLOCKER、22 MAJOR，无未决 finding。
+
+## 实施计划评审触发的规格更正
+
+后续实施计划评审独立发现：规格 P0-3／AC5 要求 Claude Code 外层 WebSearch 产生结构化 links，却同时由 AC7 禁止伪造 Anthropic `web_search_tool_result`；另一个 MAJOR 是 `CompatibilityErrorRenderer` 没有冻结两目标协议×四错误阶段的 exact wire。两项均经一手源码／现有 error primitives 复核成立，故规格状态暂降为“更正待复审”。
+
+- WebSearch oracle 已按 Claude Code 2.1.207 `app.pretty.js:281505-281525,281604-281631` 更正：synthetic `server_tool_use` 证明 searchCount／query-update，普通 text 只提供 commentary；无真实 `web_search_tool_result` 时不得要求结构化 link entry、`Links:` 或 `search_results_received`。
+- Error renderer 已删除 error 内第二份 suggested status，冻结 status 函数、Anthropic／OpenAI HTTP body、Anthropic／Responses terminal frame与route／handler／driver唯一调用链。
+- 计划阶段finding与处置另记`docs/tmp/2026-08-07-responses-anthropic-semantic-bridge-plan-review.md`；不混入上述规格阶段的1 BLOCKER／22 MAJOR历史计数。
+
+以上规格更正待原协议 verifier 与架构 reviewer 复审，未复审前不得重新标为已定稿。
