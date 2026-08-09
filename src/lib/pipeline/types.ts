@@ -11,7 +11,11 @@
  * `~/lib/request/retry-types` and enter the driver through the payload adapter.
  */
 
-import type { OperationKind } from "~/lib/context/model-operation-record"
+import type {
+  //
+  DispatchHandle,
+  OperationKind,
+} from "~/lib/context/model-operation-record"
 import type {
   //
   EffectiveRequest,
@@ -27,10 +31,12 @@ import type {
   SseFrame,
   StreamErrorKind,
 } from "~/lib/stream"
+import type { ParsedSseFrame } from "~/lib/transport/parsed-sse-frame"
 
 // `import type` — erased at runtime, so this does NOT create a runtime cycle with
 // rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
 // used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type { BufferedFlushContext } from "./buffered-flush"
 import type {
   //
   CanonicalBlock,
@@ -45,16 +51,18 @@ import type {
 } from "./envelope"
 import type { FrameAction } from "./rewrite-registry"
 
+export type { BufferedFlushContext } from "./buffered-flush"
+export type { OwnerOperation } from "./owner-operation"
+
 // ============================================================================
 // SSE frames + upstream stream
 // ============================================================================
 
-/**
- * One SSE frame flowing from upstream, pre-rewrite. Today this is the raw wire
- * shape (`{ event?, data? }`); it gains a parsed-view discriminant when the
- * response rewrite/translate stages (S5/S6) land (P1/P2).
- */
+/** Semantic SSE fields exposed to upstream observers, rewrites, hooks, and codecs. */
 export type UpstreamFrame = SseFrame
+
+/** Transport-owned parsed frame entering the response processor before semantic projection. */
+export type TransportUpstreamFrame = ParsedSseFrame | UpstreamFrame
 
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
@@ -80,8 +88,8 @@ export interface UpstreamDispatchLifecycle {
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
  * carries the upstream HTTP response headers for capture (Retry-After, quota).
  */
-export interface UpstreamStream {
-  frames: AsyncIterable<UpstreamFrame>
+export interface UpstreamStream<Frame extends TransportUpstreamFrame = TransportUpstreamFrame> {
+  frames: AsyncIterable<Frame>
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
@@ -120,8 +128,17 @@ export interface PreparedRequest {
   stream: boolean
 }
 
-/** Scheduler-owned controls for ONE physical transport dispatch. */
+/**
+ * Scheduler-owned controls for ONE physical transport dispatch.
+ *
+ * `dispatch` is the canonical ownership link: every transport-level observation is attributed to THIS handle, never to whatever attempt happens to be "current" on the request context.
+ * Ambient attribution is wrong the moment two dispatches overlap — hedged candidates and buffered retry both do exactly that — and the failure is silent, because a misattributed diagnostic still lands on a real attempt.
+ *
+ * It is required, and so is the options bag itself, so that a new dispatch site cannot compile without deciding whose dispatch it is.
+ */
 export interface TransportDispatchOptions {
+  /** Canonical owner of this dispatch; every diagnostic recorded below is attributed here. */
+  dispatch: DispatchHandle
   /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
   forceHttp?: boolean
   /** Candidate/dispatch-local cancellation, independent from request-level lifecycle signals. */
@@ -136,18 +153,22 @@ export interface TransportDispatchOptions {
  * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<UpstreamStream>
 }
 
 export type PhysicalTransportResponse =
-  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | {
+      kind: "stream"
+      upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }
+      lifecycle: UpstreamDispatchLifecycle
+    }
   | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
 
 /** Mandatory physical ownership contract consumed by the generation dispatch scheduler. */
 export interface PhysicalTransport {
-  open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
+  open(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
 
 // ============================================================================
@@ -295,14 +316,6 @@ export interface RawHttpRequest {
 }
 
 export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
-export type OwnerOperation =
-  | "allocate-anchor"
-  | "allocate-real-block"
-  | "publish-recovery-batch"
-  | "begin-leg"
-  | "close-anchor-before-real"
-  | "close-anchor-terminal"
-  | "write-block-frame"
 export type OwnerResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
@@ -596,12 +609,6 @@ export type ProtectStreamingOutcome =
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
-/** The flush-triggering cause + (for boundary flushes) the frame that closed the block (spec §4). */
-export interface BufferedFlushContext {
-  cause: "boundary" | "terminal-drain" | "retreat"
-  boundaryFrame?: ClientFrame
-}
-
 export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Anthropic synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).

@@ -5,13 +5,14 @@
 ## 工作方式（硬性）
 
 - 工作树 `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`，分支同名。**接手第一件事是 `git log --oneline -1` 取当前 HEAD**，不要采信本文写死的值。每条 Bash 调用自带绝对路径根。**不要 push。**
+- **文档在 master、代码在分支**：spec / plan / 本目录 / `docs/tmp/` 证据已由 `6bda73d8` 合入 master；**代码未合**，只在上述分支上。所以在 master 上能读到计划、读不到实现。
 - 代码改动派 implementer 到隔离 worktree；评审一律派 subagent，不在主会话自审。
 - 派 implementer 前先读 skill `session-closeout` 的 §6b（进度文件协议）。本项目的进度文件是 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`。
 
 ## 启动前的两道 gate（按序，前一道不过不要进下一道）
 
 **Gate 1 —— 先合并 master，再动任何 Tasks 5–8 的代码。**
-本分支落后 master **287** 个提交，其中 11 个重写了 `src/lib/shutdown.ts`，而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。**行数请以 HANDOVER 的 `numstat` 原始输出为准，本文不复述衍生数字。** 策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
+本分支落后 master 数百个提交（**跑 `git rev-list --count fix-long-resident-operations..master` 取当前值，别信任何写死的数字**——2026-08-08 记的 287 到次日已是 459），其中十余个重写了 `src/lib/shutdown.ts`，而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。**所有行数与提交数一律以 HANDOVER 给出的命令现取，本文不复述任何衍生数字。** 策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
 （Tasks 1–4 与 B1 均已完成并通过独立评审，**不要重做**；Task 4 遗留两条已记录的后续项，见 HANDOVER「待办 1」，它们不阻断 Task 5。）
 
 **Gate 2 —— 读 master 新落地的 lossless shutdown 文档（`71c043cf` 引入），再动 Tasks 6/8。**

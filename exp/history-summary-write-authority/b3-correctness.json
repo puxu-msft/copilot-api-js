@@ -1,0 +1,221 @@
+{
+  "runtime": "Bun 1.3.14",
+  "constants": {
+    "rows": 512,
+    "refCounts": [
+      0,
+      4,
+      32
+    ],
+    "manifestBytes": 262144,
+    "supportedFormat": 3
+  },
+  "ddl": "\nCREATE TABLE operations (\n  operation_id TEXT PRIMARY KEY,\n  format_version INTEGER NOT NULL,\n  manifest_digest TEXT NOT NULL,\n  manifest_payload BLOB NOT NULL,\n  manifest_epoch INTEGER NOT NULL DEFAULT 1\n);\nCREATE TABLE evidence (\n  digest TEXT PRIMARY KEY,\n  payload BLOB NOT NULL,\n  entity_epoch INTEGER NOT NULL DEFAULT 1\n);\nCREATE TABLE operation_refs (\n  operation_id TEXT NOT NULL,\n  sequence INTEGER NOT NULL,\n  evidence_digest TEXT NOT NULL,\n  expected_entity_epoch INTEGER NOT NULL,\n  PRIMARY KEY(operation_id, sequence)\n);\nCREATE TABLE operation_integrity (\n  operation_id TEXT PRIMARY KEY,\n  validated_manifest_epoch INTEGER NOT NULL,\n  validated_manifest_digest TEXT NOT NULL,\n  status TEXT NOT NULL CHECK(status IN ('valid','invalid'))\n);\nCREATE TABLE summaries (\n  operation_id TEXT PRIMARY KEY,\n  session_id TEXT NOT NULL,\n  summary_text TEXT NOT NULL,\n  projection_status TEXT NOT NULL CHECK(projection_status IN ('ready','pending'))\n);\nCREATE TABLE ready_marker (singleton INTEGER PRIMARY KEY CHECK(singleton=1), ready INTEGER NOT NULL CHECK(ready IN (0,1)));\nINSERT INTO ready_marker VALUES(1, 1);\n\nCREATE TRIGGER operation_changed AFTER UPDATE OF format_version, manifest_digest, manifest_payload ON operations\nBEGIN\n  UPDATE operations SET manifest_epoch = OLD.manifest_epoch + 1 WHERE operation_id = NEW.operation_id;\n  UPDATE operation_integrity SET status = 'invalid' WHERE operation_id = NEW.operation_id;\n  UPDATE summaries SET projection_status = 'pending' WHERE operation_id = NEW.operation_id;\n  UPDATE ready_marker SET ready = 0 WHERE singleton = 1;\nEND;\nCREATE TRIGGER evidence_changed AFTER UPDATE OF payload ON evidence\nBEGIN\n  UPDATE evidence SET entity_epoch = OLD.entity_epoch + 1 WHERE digest = NEW.digest;\n  UPDATE operation_integrity SET status = 'invalid' WHERE operation_id IN (SELECT operation_id FROM operation_refs WHERE evidence_digest = NEW.digest);\n  UPDATE summaries SET projection_status = 'pending' WHERE operation_id IN (SELECT operation_id FROM operation_refs WHERE evidence_digest = NEW.digest);\n  UPDATE ready_marker SET ready = 0 WHERE singleton = 1;\nEND;\nCREATE TRIGGER evidence_deleted AFTER DELETE ON evidence\nBEGIN\n  UPDATE operation_integrity SET status = 'invalid' WHERE operation_id IN (SELECT operation_id FROM operation_refs WHERE evidence_digest = OLD.digest);\n  UPDATE summaries SET projection_status = 'pending' WHERE operation_id IN (SELECT operation_id FROM operation_refs WHERE evidence_digest = OLD.digest);\n  UPDATE ready_marker SET ready = 0 WHERE singleton = 1;\nEND;\n",
+  "readySql": "\nSELECT s.operation_id\nFROM summaries s\nJOIN operations o USING(operation_id)\nJOIN operation_integrity i USING(operation_id)\nJOIN ready_marker m ON m.singleton=1\nWHERE s.operation_id = ?\n  AND m.ready=1\n  AND s.projection_status='ready'\n  AND i.status='valid'\n  AND o.format_version BETWEEN 1 AND 3\n  AND i.validated_manifest_epoch=o.manifest_epoch\n  AND i.validated_manifest_digest=o.manifest_digest\n  AND NOT EXISTS (\n    SELECT 1 FROM operation_refs r\n    LEFT JOIN evidence e ON e.digest=r.evidence_digest\n    WHERE r.operation_id=o.operation_id\n      AND (e.digest IS NULL OR e.entity_epoch<>r.expected_entity_epoch)\n  )\n",
+  "generated": {
+    "0": {
+      "summaries": 512,
+      "refs": 0,
+      "manifestBytesPerRow": {
+        "min": 262144,
+        "max": 262144
+      },
+      "readyRows": 512
+    },
+    "4": {
+      "summaries": 512,
+      "refs": 2048,
+      "manifestBytesPerRow": {
+        "min": 262144,
+        "max": 262144
+      },
+      "readyRows": 512
+    },
+    "32": {
+      "summaries": 512,
+      "refs": 16384,
+      "manifestBytesPerRow": {
+        "min": 262144,
+        "max": 262144
+      },
+      "readyRows": 512
+    }
+  },
+  "correctness": {
+    "v1": {
+      "expectedReady": true,
+      "actualReady": true,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 1,
+          "manifest_digest": "6faefade5a638cd3545d638dd5754763658e32209e69420cb559b7650d4bf93a",
+          "manifest_epoch": 1,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-0",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "6faefade5a638cd3545d638dd5754763658e32209e69420cb559b7650d4bf93a",
+          "status": "valid"
+        },
+        "summary": {
+          "projection_status": "ready"
+        },
+        "marker": {
+          "ready": 1
+        }
+      }
+    },
+    "v2": {
+      "expectedReady": true,
+      "actualReady": true,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 2,
+          "manifest_digest": "29963fe390f24cc88b55de9bfb51fc30a4ac2385ddf04910ce5f8e1f683bda17",
+          "manifest_epoch": 1,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-1",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "29963fe390f24cc88b55de9bfb51fc30a4ac2385ddf04910ce5f8e1f683bda17",
+          "status": "valid"
+        },
+        "summary": {
+          "projection_status": "ready"
+        },
+        "marker": {
+          "ready": 1
+        }
+      }
+    },
+    "valid-v3": {
+      "expectedReady": true,
+      "actualReady": true,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 3,
+          "manifest_digest": "f14fda951c512227e8acbca7efa75497165512611455218c2a4b724d5d97fd49",
+          "manifest_epoch": 1,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-2",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "f14fda951c512227e8acbca7efa75497165512611455218c2a4b724d5d97fd49",
+          "status": "valid"
+        },
+        "summary": {
+          "projection_status": "ready"
+        },
+        "marker": {
+          "ready": 1
+        }
+      }
+    },
+    "future-manifest": {
+      "expectedReady": false,
+      "actualReady": false,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 999,
+          "manifest_digest": "cf5e6682885e71ce6e5ab7e2470a00f78bf54544496d16a72a37e85423a95af6",
+          "manifest_epoch": 2,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-3",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "cf5e6682885e71ce6e5ab7e2470a00f78bf54544496d16a72a37e85423a95af6",
+          "status": "invalid"
+        },
+        "summary": {
+          "projection_status": "pending"
+        },
+        "marker": {
+          "ready": 0
+        }
+      }
+    },
+    "digest-mismatch": {
+      "expectedReady": false,
+      "actualReady": false,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 3,
+          "manifest_digest": "mismatch",
+          "manifest_epoch": 2,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-4",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "811fcff6d0986e87a8925870f05fbda2ada6e15d6706f98105b4cdce9fd2aede",
+          "status": "invalid"
+        },
+        "summary": {
+          "projection_status": "pending"
+        },
+        "marker": {
+          "ready": 0
+        }
+      }
+    },
+    "write-after-attestation": {
+      "expectedReady": false,
+      "actualReady": false,
+      "passed": true,
+      "state": {
+        "operation": {
+          "format_version": 3,
+          "manifest_digest": "f00fe5379e843e6346600bdfe186632d4126fcc4f47076b062651730a9920216",
+          "manifest_epoch": 2,
+          "manifest_bytes": 262144
+        },
+        "integrity": {
+          "operation_id": "case-5",
+          "validated_manifest_epoch": 1,
+          "validated_manifest_digest": "f00fe5379e843e6346600bdfe186632d4126fcc4f47076b062651730a9920216",
+          "status": "invalid"
+        },
+        "summary": {
+          "projection_status": "pending"
+        },
+        "marker": {
+          "ready": 0
+        }
+      }
+    }
+  },
+  "allExpectedCasesPassed": true,
+  "criterionGap": {
+    "description": "Ordinary SQL changes canonical bytes, then rewrites integrity/status/marker to a self-consistent ready state.",
+    "incorrectStateStillReady": true,
+    "physicalBlocker": "Pure SQLite epochs and normalized refs detect uncoordinated changes, but without a connection-local authority boundary ordinary SQL can rewrite both subject and validation state.",
+    "state": {
+      "operation": {
+        "manifest_digest": "bf65c99300e43108fdde9e3d66d18ca5ec4089daf264d112a9ba47dd00a9aa70",
+        "manifest_epoch": 2,
+        "manifest_bytes": 262144
+      },
+      "integrity": {
+        "operation_id": "gap",
+        "validated_manifest_epoch": 2,
+        "validated_manifest_digest": "bf65c99300e43108fdde9e3d66d18ca5ec4089daf264d112a9ba47dd00a9aa70",
+        "status": "valid"
+      },
+      "summary": {
+        "projection_status": "ready"
+      },
+      "marker": {
+        "ready": 1
+      }
+    }
+  }
+}

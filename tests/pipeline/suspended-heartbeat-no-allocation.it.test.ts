@@ -26,7 +26,7 @@ test("a suspended heartbeat allocates no further anchors", async () => {
   let injectorCalls = 0
   const sinkHolder: { current?: ReturnType<typeof makeDeliverySseSink> } = {}
   const stream = {
-    writeSSE: async () => {},
+    write: async () => {},
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   const sink = makeDeliverySseSink(stream, {
     wireState,

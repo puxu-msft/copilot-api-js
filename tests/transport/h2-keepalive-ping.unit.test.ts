@@ -1,9 +1,9 @@
 /**
  * Unit tests for the upstream HTTP/2 PING keepalive scheduler
  * (`scheduleH2KeepalivePing`). Pure scheduler logic — a fake session with a
- * `ping` spy + event-driven waits for the observed calls. Bun's h2 server does
- * not surface received PINGs, and fake-timer + setInterval is fragile under Bun
- * (see skill debugging-ghc-api-upstream-transport).
+ * `ping` spy + an injected manual interval scheduler, so it is deterministic
+ * without an h2 server, wall-clock sleeps, or fake timers (Bun's h2 server does
+ * not surface received PINGs — see skill debugging-ghc-api-upstream-transport).
  *
  * Why this exists: GHC's CAPI proxy does not forward Anthropic's SSE `ping`
  * frames, so a long thinking silence is a truly idle upstream stream that a
@@ -26,85 +26,69 @@ function fakeSession(ping: (cb: () => void) => void): Parameters<typeof schedule
   return { ping } as unknown as Parameters<typeof scheduleH2KeepalivePing>[0]
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
-function waitForCalls(target: number, invoke: (onCall: () => void) => NodeJS.Timeout | undefined): Promise<NodeJS.Timeout> {
-  return new Promise((resolve, reject) => {
-    let calls = 0
-    const timer = invoke(() => {
-      calls++
-      if (calls !== target) return
-      if (timer) resolve(timer)
-      else reject(new Error("scheduler did not return a timer"))
-    })
-  })
+function manualInterval(): {
+  schedule: NonNullable<Parameters<typeof scheduleH2KeepalivePing>[2]>
+  tick: () => void
+  clear: () => void
+  delayMs: () => number | undefined
+  unref: ReturnType<typeof mock>
+} {
+  let callback: (() => void) | undefined
+  let delay: number | undefined
+  const unref = mock(() => {})
+  return {
+    schedule(next, delayMs) {
+      callback = next
+      delay = delayMs
+      return { unref } as unknown as NodeJS.Timeout
+    },
+    tick: () => callback?.(),
+    clear: () => {
+      callback = undefined
+    },
+    delayMs: () => delay,
+    unref,
+  }
 }
 
 describe("scheduleH2KeepalivePing", () => {
-  test("passes the configured cadence to the interval scheduler", () => {
-    let scheduledDelay: number | undefined
-    const timer = { unref: mock(() => {}) } as unknown as NodeJS.Timeout
-    const schedule = mock((_callback: () => void, delay: number) => {
-      scheduledDelay = delay
-      return timer
-    })
-
-    expect(
-      scheduleH2KeepalivePing(
-        fakeSession(() => {}),
-        15,
-        schedule,
-      ),
-    ).toBe(timer)
-    expect(scheduledDelay).toBe(15)
-    expect(timer.unref).toHaveBeenCalledTimes(1)
-  })
-
-  test("pings repeatedly until cleared", async () => {
+  test("passes the configured cadence, unreferences the timer, and pings repeatedly until cleared", () => {
     const ping = mock((cb: () => void) => cb())
-    const timer = await waitForCalls(2, (onCall) =>
-      scheduleH2KeepalivePing(
-        fakeSession((cb) => {
-          ping(cb)
-          onCall()
-        }),
-        15,
-      ),
-    )
-    const afterRun = ping.mock.calls.length
+    const interval = manualInterval()
+    const timer = scheduleH2KeepalivePing(fakeSession(ping), 15, interval.schedule)
 
-    clearInterval(timer)
-    await sleep(40)
-    // No further pings after clear.
-    expect(ping.mock.calls.length).toBe(afterRun)
+    expect(timer).toBeDefined()
+    expect(interval.delayMs()).toBe(15)
+    expect(interval.unref).toHaveBeenCalledTimes(1)
+    interval.tick()
+    interval.tick()
+    expect(ping).toHaveBeenCalledTimes(2)
+
+    interval.clear()
+    interval.tick()
+    expect(ping).toHaveBeenCalledTimes(2)
   })
 
-  test("intervalMs <= 0 disables it (no timer, no ping)", async () => {
+  test("intervalMs <= 0 disables it (no timer, no ping)", () => {
     const ping = mock((cb: () => void) => cb())
-    expect(scheduleH2KeepalivePing(fakeSession(ping), 0)).toBeUndefined()
-    expect(scheduleH2KeepalivePing(fakeSession(ping), -5)).toBeUndefined()
-    await sleep(30)
-    expect(ping.mock.calls.length).toBe(0)
+    const interval = manualInterval()
+
+    expect(scheduleH2KeepalivePing(fakeSession(ping), 0, interval.schedule)).toBeUndefined()
+    expect(scheduleH2KeepalivePing(fakeSession(ping), -5, interval.schedule)).toBeUndefined()
+    interval.tick()
+    expect(ping).toHaveBeenCalledTimes(0)
+    expect(interval.unref).toHaveBeenCalledTimes(0)
   })
 
-  test("a ping throwing (session half-closed) does not propagate or stop the timer", async () => {
+  test("a ping throwing (session half-closed) does not propagate or stop the timer", () => {
     const ping = mock(() => {
       throw new Error("ERR_HTTP2_INVALID_SESSION")
     })
-    const timer = await waitForCalls(2, (onCall) =>
-      scheduleH2KeepalivePing(
-        fakeSession(() => {
-          try {
-            ping()
-          } finally {
-            onCall()
-          }
-        }),
-        15,
-      ),
-    )
-    // Reaching the second call proves the first throw did not stop the interval.
+    const interval = manualInterval()
+    scheduleH2KeepalivePing(fakeSession(ping as unknown as (cb: () => void) => void), 15, interval.schedule)
+
+    expect(() => interval.tick()).not.toThrow()
+    expect(() => interval.tick()).not.toThrow()
     expect(ping).toHaveBeenCalledTimes(2)
-    clearInterval(timer)
   })
 })

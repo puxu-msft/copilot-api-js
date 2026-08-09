@@ -1,3 +1,5 @@
+import type { Model } from "@hsupu/ghc-proxy-foundation/ghc-model-types"
+
 import type {
   //
   AskNormalizationDiag,
@@ -18,9 +20,8 @@ import type {
   SseEventRecord,
   TruncationInfo,
   WarningMessage,
-} from "~/lib/history/store"
-import type { Model } from "~/lib/models/client"
-import type { FeatureKind } from "~/lib/observability"
+} from "~/lib/history/types"
+import type { FeatureKind } from "~/lib/observability/feature-kind"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -33,6 +34,7 @@ import type {
   DispatchVerdict,
   ModelOperationRecord,
   OperationSyntheticKind,
+  RecordAttemptDiagnosticInput,
 } from "./model-operation-record"
 
 // ─── Request State Machine ───
@@ -567,6 +569,12 @@ export interface RequestContext {
   setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
   setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  /**
+   * Records one diagnostic against an explicitly named dispatch.
+   * Unlike {@link setGenerationDispatchTransport} and friends it does NOT move the ambient "current" attempt: transport-level producers run concurrently with whatever else the request is doing, so selecting a current attempt to write through would both misattribute this diagnostic and silently re-point every later ambient write.
+   * Throws on an unknown handle while the record is still writable, and drops silently once sealed — the same contract as {@link setGenerationDispatchTimingEpoch}.
+   */
+  recordGenerationDispatchDiagnostic(dispatch: DispatchHandle, diagnostic: RecordAttemptDiagnosticInput): void
   setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
   captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
   captureGenerationDispatchFrameTransform(

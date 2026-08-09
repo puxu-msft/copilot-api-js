@@ -475,4 +475,13 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["contrib/pm2/ecosystem.config.cjs", "hooks/strip-todowrite.ts", "tests/diagnostics/fixtures/sonic-boom-flush-contract.mjs"],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+      },
+    },
+  },
 )
