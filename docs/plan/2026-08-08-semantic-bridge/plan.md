@@ -5,7 +5,9 @@
 > **本文职责**：HOW —— 任务 DAG + 锚点表（精确 `file:line`）+ 每 commit invariant + 验收与 mutation。**WHY 与公共契约一律以 RFC 为准，本文不重新裁决、不复述类型定义正文**。
 > **kickoff 提示词**：[prompts/README.md](prompts/README.md)（阶段导航 + 依赖 DAG + 通用红线）。
 >
-> **计划基线**：master `82c0664e`（RFC/ADR/评审报告合入点）。下方所有 `file:line` 在该基线复验过；实施者**开工第一件事是重新复验自己要改的锚点**——行号会随并发会话漂移，用内容匹配而非行号定位。
+> **计划基线**：master 合并态 `3c341f81`（RFC/ADR/评审报告 + 主线 200+ 并发提交的合并点）。下方所有 `file:line` 已在**该合并态**复验；`[hard]` 实施者**开工第一件事仍是重新复验自己要改的锚点**——行号会随并发会话继续漂移，用**内容匹配**而非行号定位。
+>
+> 实证：从 `82c0664e` 合并到 `3c341f81` 期间，`recordToHistoryEntry` 由 `:187` 移到 `:188`，`responses-to-anthropic.ts` 的 `if (reasoningText.length > 0)`（**C0.2 的 mutation 目标**）由 `:210` 移到 `:213`。两处已订正。这就是为什么不能照行号干活。
 
 ## Goal
 
@@ -59,7 +61,7 @@ TypeScript / Bun；SSE + WebSocket 流式；官方 `openai@^6.45.0`（`ResponseA
 | A-2 | `src/lib/openai/translate/anthropic-to-responses.ts:81` | A→R non-stream。:94-145 把所有 reasoning `unshift` 前置。:132-136 drop server-tool 两类。`mapStopReasonToResponsesStatus`（:145）／`mapUsage`（:205-263）是**要保留的算法核** |
 | A-3 | `src/lib/openai/translate/anthropic-to-responses-stream.ts:139` | A→R stream。`createAnthropicToResponsesStreamTranslator`。:419-504 `flush` 无条件发 `response.completed`、只把 status 填成 incomplete → 违反 RFC §4 `ResponseTerminal` 不得改写，C8.1 治。:258-271 `content_block_start` 不读完整 input，flush 靠 `argumentParts.join("")` → 无 delta 的 function call 变空 input |
 | A-4 | `src/lib/openai/translate/responses-to-anthropic-request.ts:113` | R→A request。`foldInputItems`（:148-277）三槽位按类别重组，丢原序 → C4.2 治。:122-128 静默裁剪 `previous_response_id`／context management／truncation |
-| A-5 | `src/lib/openai/translate/responses-to-anthropic.ts:157` | R→A non-stream。:163-173 **单个** `reasoningText` + **单个** `reasoningEncrypted` → 多 reasoning item 被压扁；:210-219 只有 text 非空才生成 thinking → encrypted-only reasoning 被丢。`mapResponsesStatusToStopReason`（:221-234）／`mapUsage`（:305-351）／`repairToolInput`（:271-279）是**要保留的算法核** |
+| A-5 | `src/lib/openai/translate/responses-to-anthropic.ts:157` | R→A non-stream。:163-173 **单个** `reasoningText` + **单个** `reasoningEncrypted` → 多 reasoning item 被压扁；:213-222 只有 text 非空才生成 thinking → encrypted-only reasoning 被丢。`mapResponsesStatusToStopReason`（:221-234）／`mapUsage`（:305-351）／`repairToolInput`（:271-279）是**要保留的算法核** |
 | A-6 | `src/lib/openai/translate/responses-to-anthropic-stream.ts:122` | R→A stream。同样只有一个 `reasoningEncrypted`（:129-139）。:274-294 在 `.done` 才捕获 opaque（**这是正确行为，Phase 0 探针已裁决 `.added` 是中间态**，勿回退）。:179-191 `buildSyntheticReasoningSignature` carrier |
 
 **方向不对称提醒**：两向 carrier **故意不同**（Claude signature vs synthetic-reasoning 前缀），RFC §6.1 要求保持前缀分离并做 prefix↔kind↔source 联合校验；**不得为「统一」合并成通用 string**。
@@ -190,7 +192,7 @@ C2.3 应当**沿用并扩展这个既有模式**（在它记录交付的地方�
 | ID | 锚点 | 说明 |
 |---|---|---|
 | E-1 | `src/lib/history/types.ts:217` `PipelineInfo`，:222 `wirePartialDelivery`，:225 `translation?.anthropicToResponses` | 旧槽。迁移窗口内只作**旧读兼容投影**，新 mapper 只写 `semanticBridgeV2`（RFC §10.1 末条） |
-| E-2 | `src/lib/history/v3/projection.ts:187` `recordToHistoryEntry`，:388 `pipelineInfo` 取自 `terminalMeta` | ⚠️ **当前 `pipelineInfo` 只经 terminal metadata 落地**，是 terminal-only 路径 |
+| E-2 | `src/lib/history/v3/projection.ts:188` `recordToHistoryEntry`，:388 `pipelineInfo` 取自 `terminalMeta` | ⚠️ **当前 `pipelineInfo` 只经 terminal metadata 落地**，是 terminal-only 路径 |
 | E-3 | `src/lib/history/in-flight.ts:54` `putInFlight`，:58 `updateInFlight`；`src/lib/history/entries.ts:33` 发布 `history.entry_updated` | in-flight 是**独立的内存 `HistoryEntry` 映射**，不走 V3 record。RFC §10.1 的 `lifecycle:"in-flight"` variant 要求实时可见 → **C3.2 必须同时接这条路径，只改 V3 terminal 投影不够** |
 | E-4 | `src/lib/context/model-operation-record.ts` `setExtension(namespace, value)`（terminal committed 后调用会抛，见 `tests/context/model-operation-record.unit.test.ts:332`） | 建议宿主：semantic bridge 活状态挂 `extensions["translation.semanticBridgeV2"]`，in-flight 与 terminal 两条投影**从同一 extension 派生**，避免两份可独立写入的真相 |
 
@@ -316,7 +318,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Verify**：`bun test tests/openai/semantic-bridge/` + `bun run test:fast`。**用例集合用运行时枚举冻结**，`[hard]` 不要用 `rg -c 'KNOWN-LOSS'` 当计数判据 —— 注释里写九次同样能满足它，与断言是否存在无关（参数化与模板名也会让 grep 结构性失明）。
 
 **Mutation**（三条，各自指名期望变红的用例）
-- **encrypted-only**：翻转 `responses-to-anthropic.ts:210` 的 `if (reasoningText.length > 0)` 条件（改为 `>= 0`）→ encrypted-only 那条 KNOWN-LOSS 变红。⚠️ **不要用「把 `reasoningEncrypted` 改成数组」当这条的 mutation** —— 该字段的基数与 `:210` 这道门无关，改它**不可能**让 encrypted-only 变红（本计划初稿就是这么写的，是错的；而且改成数组会先撞 `buildSyntheticReasoningSignature` 的签名，patch 本身跑不通）。
+- **encrypted-only**：翻转 `responses-to-anthropic.ts:213` 的 `if (reasoningText.length > 0)` 条件（改为 `>= 0`）→ encrypted-only 那条 KNOWN-LOSS 变红。⚠️ **不要用「把 `reasoningEncrypted` 改成数组」当这条的 mutation** —— 该字段的基数与 `:213` 这道门无关，改它**不可能**让 encrypted-only 变红（本计划初稿就是这么写的，是错的；而且改成数组会先撞 `buildSyntheticReasoningSignature` 的签名，patch 本身跑不通）。
 - **multi-reasoning**：把 `:172` 的覆盖赋值（`reasoningEncrypted = item.encrypted_content`）改为累加 → multi-reasoning 那条 KNOWN-LOSS 变红。
 - `[hard]` **wire golden 的灵敏度对照**：改动 production wire 的**一个字节**（例如改 A-3 某个 `event:` 名，或改一个 usage 字段值）→ **至少一条 wire golden 变红**。
   **这条不做，整组 golden 就没有判别力** —— 它是 C2.1–C8.3 十余片 G2 的唯一机械判据，若捕获点取浅（捕在 translator 输出而非真实客户端字节）或归一化过度，后续每一片的对账都是空转，而且不会有任何信号提示你。本条结论记进 C0.3 的 registry。
@@ -1109,7 +1111,16 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 两处都只是**补上 DAG 的隐含层**，未改变任何公共契约。若评审认为这构成对 RFC 的实质改动，应回到 RFC 层裁决而非在计划层消化。
 
-### 裁决记录：kickoff 提示词增量产出（**仍存分歧，待用户裁决**）
+### 裁决记录：kickoff 提示词增量产出（**用户已裁决，2026-08-09**）
+
+`[hard]` **用户裁决：kickoff 不需要一次性补齐；在「第一个任务时」和「交接时」提供。**
+
+这终结了第 1–2 轮评审中契约 reviewer 与我的分歧（它坚持全部补齐；我主张增量 + 硬触发）。用户的裁决比我原来的提法更精确 —— 它给出了**两个具体时点**，而不只是「分派前」：
+
+1. **第一个任务时**：起某一片时写它的 kickoff。
+2. **交接时**：跨会话／跨 agent 交接，为接手者要做的那片写 kickoff。
+
+按此更新的执行规则见 `prompts/README.md` 的导航表触发条款。RFC §16 的每片要求由 plan.md 本身满足（每片都有 Files／Interfaces／Steps／Commit invariant／Verify／Mutation + 进度文件协议 + review 闭环）。
 
 **RFC §16 原文要求**：「实施计划必须把 C0–C11 拆成可直接派给独立 implementer 的小片，并为每片定义进度文件、commit invariant、测试、mutation 和 review 闭环。」
 
