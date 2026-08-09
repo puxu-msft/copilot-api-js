@@ -30,7 +30,7 @@
 ## 这一轮反复踩的坑
 
 - 不要据 transcript/文件 mtime 判定 agent 已死——只有调用真的失败才算不可达。
-- 不要引用 `bun run test:backend` 的测试总数（同树同 commit 连跑会变），只引用 `0 fail`。
+- 不要引用 `bun run test:backend` 的测试总数（同树同 commit 连跑会变），只引用 `0 fail`。**而且它在 History 子系统间歇性红**（四次连跑签名各不相同），红了先看失败文件是否落在 History、隔离复跑确认，别误判成自己弄坏的——详见 HANDOVER 同名小节。
 - 清理类型断言前先跑 `bun run typecheck`——本轮有一处 `as` 是承重的。
 
 ## 测试门禁现状（核验于 2026-08-08 / `3e418cdb`，接手第一件事是复验而非采信）

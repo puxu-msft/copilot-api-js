@@ -8,6 +8,14 @@
 - **已跑门禁（在 `e397720a`，其后仅文档/台账提交，代码未变）**：十文件 focused gate `197 pass / 0 fail / 687 expect`；`bun run typecheck` exit 0；`bun run test:backend` 连跑两次均 `0 fail`。Task 4 自身门禁在 `3e418cdb`：`26 pass / 0 fail / 62 expect`，typecheck 与 `git diff --check` 均 exit 0。
 - **未推送**。分支自基线 `92858d08` 起共 32 个提交。
 
+## `bun run test:backend` 在 History 子系统间歇性红（**别误判成自己弄坏的**）
+
+同一 commit 上连跑四次，签名每次都不同：`0 fail` → `0 fail` → `2 个分片崩溃` → `2 fail`。第四次的两条失败是 `tests/history/v3/store-performance.it.test.ts`（性能断言，并行下 15.1s）与 `tests/history/worker/packaged-runtime.it.test.ts`（beforeEach/afterEach 钩子 5s 超时）。**两条在隔离下都通过**（分别 3 pass/7.59s 与 2 pass/3.11s）。
+
+- **判定**：16 分片并发下的负载敏感 flake，落在 History 子系统；本项目改动的是 `src/lib/context/`、`src/lib/pipeline/generation/`、`src/lib/transport/dispatch-lifecycle.ts` 与 `shutdown.ts` 的一处调用点，与 History 无交集。
+- **诚实边界**：本文**未**在基线 commit 上复跑 `test:backend` 做 A/B 对照，所以「非本项目引入」是基于「隔离通过 + 子系统无交集 + 签名不稳定」三条推断，**不是 A/B 实证**。若接手方需要更强证据，在基线上跑一次即可。
+- **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断本项目是否破坏了东西，以十文件 focused gate 与 Task 4 焦点集为准（它们稳定绿）。红了先看失败文件是否落在 History，是就隔离复跑确认。
+
 ## 入口指引（按序读）
 
 1. **本文**——先读「必须最先做的事」与「已确证的硬事实」。
@@ -19,7 +27,7 @@
 
 **这是本次交接最重要的一条，不做会白干。**
 
-- **证据**：本分支基线 `92858d08` 之后，master 已前进 **287** 个提交，其中 **11** 个改过 `src/lib/shutdown.ts`；`git diff --stat 92858d08 master -- src/lib/shutdown.ts` 显示 **403 行变动、净减 258 行**（复现命令即此）。同期 master 也改过 `src/lib/context/manager.ts`（+20）与 `src/lib/context/request.ts`（+23）——**正是 Task 4 与 Task 2 改的两个文件**。
+- **证据**：本分支基线 `92858d08` 之后，master 已前进 **287** 个提交，其中 **11** 个改过 `src/lib/shutdown.ts`。复现命令与原始输出（**别引用二次算出的衍生数字**）：`git diff --numstat 92858d08 master -- src/lib/shutdown.ts` → `102	301`（即 102 增、301 删，合计 403 行变动、净减 **199** 行）；`git show 92858d08:src/lib/shutdown.ts | wc -l` = 849、`git show master:src/lib/shutdown.ts | wc -l` = 650，849−650 = 199，两法互证。同期 master 也改过 `src/lib/context/manager.ts`（+20）与 `src/lib/context/request.ts`（+23）——**正是 Task 4 与 Task 2 改的两个文件**。
 - **为什么阻塞**：Tasks 5–8 的主要战场就是 `shutdown.ts`（Task 6「暴露 tracked-operation 运维真相」、Task 8 文案与验收）。master 的 lossless-shutdown 重写已经删改了计划正文引用的结构，照旧基线施工等于对着不存在的代码写。
 - **前提仍成立（已核实，不必重查）**：master 版 `formatActiveRequestsSummary`（`master:src/lib/shutdown.ts:246-256`）**仍然打印 `request.state`**——正是产生 `(failed, 17620s)` 的那个字段。所以本项目要修的缺陷在当前 master 上依然存在，工作没有作废。措辞已由 `active request(s)` 改为 `accepted operation(s)`，**Task 8 里任何按旧文案写的断言都要重新校准**。
 - **合并策略**：按 memory `methodology-remerge-stale-feature-across-subsystem-rewrite`——**取 master 的结构，重放我们的 delta**，不要把 master 的重写往回改成旧形状。
