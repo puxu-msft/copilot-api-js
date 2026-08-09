@@ -4,30 +4,28 @@
 
 ## 工作方式（硬性）
 
-- 工作树 `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`，分支同名，基线 `3e418cdb`。每条 Bash 调用自带绝对路径根。**不要 push。**
+- 工作树 `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`，分支同名。**接手第一件事是 `git log --oneline -1` 取当前 HEAD**，不要采信本文写死的值。每条 Bash 调用自带绝对路径根。**不要 push。**
 - 代码改动派 implementer 到隔离 worktree；评审一律派 subagent，不在主会话自审。
 - 派 implementer 前先读 skill `session-closeout` 的 §6b（进度文件协议）。本项目的进度文件是 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`。
 
-## 启动前的三道 gate（按序，前一道不过不要进下一道）
+## 启动前的两道 gate（按序，前一道不过不要进下一道）
 
-**Gate 1 —— 闭合 Task 4 的评审发现（1 blocker + 1 major）。**
-独立评审判 Task 4 **在修掉前不可通过、不得进入 Task 5**。blocker 是「已登记的 delivery failure 永不进入 drain，错误写进一个只写不读的 map 后随 ctx 删除而彻底消失」，major 是「该 map 无驱逐、按 requestId 单调增长——反长驻留的工作自己引入了长驻留」。完整报告已存档在仓库内 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-4-review.md`。修复在上一会话末已派出，**接手第一件事是确认它是否落地并通过复评**（`grep -n lifecycleFailureBarrier src/lib/context/manager.ts` 若仍只有写、没有读，即未修）。详见 HANDOVER「待办 1」。
-
-**Gate 2 —— 先合并 master，再动任何 Tasks 5–8 的代码。**
+**Gate 1 —— 先合并 master，再动任何 Tasks 5–8 的代码。**
 本分支落后 master **287** 个提交，其中 11 个重写了 `src/lib/shutdown.ts`（403 行变动、净减 258），而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
+（Tasks 1–4 与 B1 均已完成并通过独立评审，**不要重做**；Task 4 遗留两条已记录的后续项，见 HANDOVER「待办 1」，它们不阻断 Task 5。）
 
-**Gate 3 —— 读 master 新落地的 lossless shutdown 文档（`71c043cf` 引入），再动 Tasks 6/8。**
+**Gate 2 —— 读 master 新落地的 lossless shutdown 文档（`71c043cf` 引入），再动 Tasks 6/8。**
 它与本计划处在同一区域，两套取舍**尚未对账**。发现冲突交用户裁决，不要自行取舍。详见 HANDOVER「与既有裁决的对账」。
 
-## 三道 gate 之后的第一步动作
+## 两道 gate 之后的第一步动作
 
 对 Tasks 5–8 做 plan-vs-code 对账：逐条核对计划里引用的每个 `file:line` 与符号在合并后的树上是否仍存在，不存在的当场标注并改写计划。已知 Task 6 会撞上一处接缝（代码里已有注释标出）。判据与证伪方式见 HANDOVER「待办 3」。
 
 ## 批准状态
 
 - **已批准、无需再问**：Tasks 1–8 的计划本身（用户已批准实施），以及「修根因不修表象」这一方向。
-- **需用户先定的**：若 Gate 3 发现本计划与 master 的 lossless shutdown 取舍冲突，冲突点的取舍由用户裁决。
-- **已闭合、不要重做**：Tasks 1–3 与 B1 合并态评审（reviewer approved、verifier 0 findings）。进度文件「已作废路线」里的四条**不要重试**。
+- **需用户先定的**：若 Gate 2 发现本计划与 master 的 lossless shutdown 取舍冲突，冲突点的取舍由用户裁决。
+- **已闭合、不要重做**：Tasks 1–4、B1 合并态评审（reviewer approved、verifier 0 findings）、以及 Task 4 的评审与复评（blocker 与 major 均已关闭）。进度文件「已作废路线」里的四条**不要重试**。
 
 ## 这一轮反复踩的坑
 

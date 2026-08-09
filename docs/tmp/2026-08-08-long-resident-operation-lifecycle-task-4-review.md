@@ -39,3 +39,28 @@ Task 5-8 都不覆盖（Task 6 仅改名与渲染）。
 ## 结论
 
 **存在 blocker：在「已登记的 delivery failure 进不了 drain / barrier 只写不读」修好之前，Task 4 不可通过、不应进入 Task 5。** 其余命题（C1/C2/C3/C4/C6）与范围处置均成立，无 false-red。
+
+---
+
+# 复评（commit a8eeaf4c，父 297f2663）
+
+实测树：/tmp/t4rev2（`git archive a8eeaf4c`），探针 tests/context/zz-probe2.unit.test.ts。
+
+- **R1 关闭（原 blocker）。** 上轮 P1 原样复跑：settle 后仅 `failModelOperationDelivery(err)`、canonical 成功、finalizer 从不 reject →
+  `drainLifecycleFailures()` 抛 `AggregateError`、`errors.length===1`、`errors[0] === err` **按 identity 相等**（不是同 message 的替身）。registry count 0、barrier 0。
+- **R2 关闭（原 major）。** 25 次「失败→释放」且全程不 drain 后 `_lifecycleFailureBarrierSize()===0`、tracked 0。
+  evict 时机无丢失窗口：delivery 侧 `registerLifecycleFailure` 在 `deliveryState` 置 failed **之前**同步完成（request.ts:911-913），而 finalizer 要 `isDeliveryTerminal` 才启动；canonical 侧在 catch 内先登记再 throw（request.ts:929-931）。两者都严格早于 release，且 release 是唯一删除点，故「登记后才释放」恒成立。
+  界限（非缺陷、但要写明）：有界性**只与 release 等价**。实测 R2b——失败先于 settle 登记而 ctx 从不 settle 时，blocker 停在 `request-running`，ctx 与 barrier 条目各留 1（reaper 不动 `operationScopes`）。这与「暴露而非丢弃」的设计一致，但 Task 5 接线 delivery owner 后若出现「失败已登记却永不 settle」的 producer，泄漏会同时体现在 registry 与 barrier 上——建议 Task 7 的僵尸矩阵显式覆盖这一形态。
+- **R3 无双计；但反方向发现一条「一个都不推」的路径（minor）。** 正向：canonical 失败 → drain `errors.length===1` 且 identity 匹配 reject 值（reject 分支已删 push，manager.ts:489）；delivery+canonical 双失败 → `length===2` 且是两个**不同**的 error，非同一个重复；barrier 事后均为 0。
+  反方向（我注入 `onLifecycleFailure` 恒 false 后实测）：未登记的 canonical 拒绝现在**一个都不推**——drain 静默返回（`len: undefined`），仅 `consola.error` + ctx 永久留在 registry；而父提交 3e418cdb 的 reject 分支还会 push 它。该路径生产不可达（C2），故判 minor，但它是本次修复引入的**行为回退**，且正是「evict 取代 push」这一改法的天然缺口。
+  建议（不改可达行为、闭合缺口）：reject 分支在调用 release 后，若 `${id}:canonical` 在 barrier 中**不存在条目**（即登记失败），再 push 该 error——恰好只覆盖未登记态，不会与 evict 双计。
+- **R4 可接受，无生产泄漏。** `_lifecycleFailureBarrierSize()` 仅在 manager.ts:120-128（接口）与 602（实现）出现，全仓无生产读者；与既有 `_runReaperOnce()` 同惯例、同下划线前缀与 TEST-ONLY 注释。
+  唯一契约负担：它在**导出的 interface** 上，故任何被标注为 `RequestContextManager` 的测试替身都必须实现它。实测当前无替身受影响——`ShutdownDeps.contextManager` 的类型是结构化窄口 `{ stopReaper: () => void }`（shutdown.ts:304），全部 fixture 走这个窄口。判断：保持现状即可；若将来出现完整 manager 替身，再考虑把两个 `_` 方法收进一个 `RequestContextManagerTestHooks` 交叉类型。
+- **R5 无 false-red。** 正常成功 + 多请求：只释放对应 id（剩余恰为 b）、barrier 0、`drainLifecycleFailures()` 抛 NOTHING；单纯 canonical failure 与 delivery-only failure 均按预期抛且只抛一次。
+  仓库自带焦点集（plan Task 4 Step 5 的三个文件）在我的副本实跑 **30 pass / 0 fail / 74 expect**，与实施侧自报一致（该数字我独立复现，不是转述）。
+
+## 复评结论
+
+原 blocker（R1）与原 major（R2）**均已关闭**，机制单一且两条 finalizer 分支统一覆盖；新引入的双计风险经实测不存在。剩余一条 minor（未登记 canonical 拒绝不再进 drain 队列，生产不可达）+ 一条 Task 7 覆盖建议。
+
+**Task 4 可通过，可进入 Task 5。**
