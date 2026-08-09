@@ -224,26 +224,22 @@ writeArtifactAtomically(
   `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`,
 )
 
-// Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
-// can never disagree with them (bun prints pass/fail on their own lines per shard).
-// Bun colors that summary EVEN WHEN ITS STDOUT IS A PIPE, so the line actually reads
-// `\x1b[0m\x1b[32m 26 pass\x1b[0m` — an anchored `^\s*` never matched it and every run
-// reported `0 tests · 0 pass · 0 fail` (the exit code stayed correct, since it comes from
-// the shards' own exit codes, but the tally line — the evidence a delivery report quotes —
-// was always zero). Strip the escapes before matching.
-// eslint-disable-next-line no-control-regex -- matching the ESC of an SGR sequence is exactly the point
-const stripAnsi = (s: string): string => s.replaceAll(/\[[0-9;]*m/g, "")
-let passSum = 0
-let failSum = 0
-for (const r of results) {
-  const plain = stripAnsi(r.err)
-  for (const m of plain.matchAll(/^\s*(\d+) pass\b/gm)) passSum += Number(m[1])
-  for (const m of plain.matchAll(/^\s*(\d+) fail\b/gm)) failSum += Number(m[1])
+// Aggregate the pass/fail tallies from the JUnit artifacts, not from the shards' stdout.
+// Stdout parsing was the original source and it reports a green `0 fail` whenever a shard
+// dies while writing its summary: the `N fail` line never lands, but the failing testcase
+// row was already flushed to the XML. Observed on a merge gate — a timed-out test sat in
+// shard-06's XML while the tally line read `3337 tests · 3337 pass · 0 fail`. The pass
+// count is derived (executed − failed) so it can never disagree with them.
+const failSum = parsedIdentities.reduce((sum, identity) => sum + identity.failed, 0)
+const failedIdentities = parsedIdentities.flatMap((identity) => identity.failedIdentities)
+const passSum = executed - failSum
+for (const identity of failedIdentities) {
+  console.error(`[parallel-test] FAIL ${identity.file} › ${identity.classname} › ${identity.name} (${identity.type})`)
 }
 
 console.error(
-  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · `
+  `\n[parallel-test] ${buckets.length} shards · ${executed} tests · `
     + `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
 )
 console.error(`[parallel-test] artifacts=${artifactDir}`)
-process.exit(failed.length > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)
+process.exit(failed.length > 0 || failSum > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)

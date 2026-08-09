@@ -81,7 +81,7 @@ describe("parallel-test JUnit artifact parsing", () => {
       "/repo",
     )
 
-    expect(identities).toEqual({ files: ["tests/empty.unit.test.ts"], executed: 0, skipped: 0, skippedIdentities: [] })
+    expect(identities).toEqual({ files: ["tests/empty.unit.test.ts"], executed: 0, skipped: 0, skippedIdentities: [], failed: 0, failedIdentities: [] })
   })
 
   test("ignores a well-formed testcase row without the legacy identity fields", () => {
@@ -90,7 +90,7 @@ describe("parallel-test JUnit artifact parsing", () => {
       "/repo",
     )
 
-    expect(identities).toEqual({ files: [], executed: 0, skipped: 0, skippedIdentities: [] })
+    expect(identities).toEqual({ files: [], executed: 0, skipped: 0, skippedIdentities: [], failed: 0, failedIdentities: [] })
   })
 
   test("keeps a runnable testcase whose classname and name are legitimate empty strings", () => {
@@ -141,7 +141,45 @@ describe("parallel-test JUnit artifact parsing", () => {
       executed: 1,
       skipped: 1,
       skippedIdentities: [{ kind: "testcase", file: "tests/numeric-entity.unit.test.ts", classname: "suite name", name: "same case", ordinal: 2, count: 1 }],
+      failed: 0,
+      failedIdentities: [],
     })
+  })
+
+  // The tally the delivery report quotes used to come from the shards' stdout, which reads
+  // `0 fail` whenever a shard dies while printing its summary — the `N fail` line never
+  // lands, but this row was already flushed. These two cases are what make the XML the
+  // authority instead.
+  test("counts a failing testcase from its <failure> child and keeps it inside executed", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="asserts" file="/repo/tests/a.unit.test.ts"><failure type="AssertionError">expected 1 to be 2</failure></testcase><testcase classname="suite" name="passes" file="/repo/tests/a.unit.test.ts"/></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.executed).toBe(2)
+    expect(identities.failed).toBe(1)
+    expect(identities.failedIdentities).toEqual([{ file: "tests/a.unit.test.ts", classname: "suite", name: "asserts", ordinal: 1, type: "AssertionError" }])
+  })
+
+  test("counts an <error> child (thrown / timed out) as a failure too", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="times out" file="/repo/tests/a.unit.test.ts"><error type="TimeoutError"/></testcase></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.failed).toBe(1)
+    expect(identities.failedIdentities).toEqual([{ file: "tests/a.unit.test.ts", classname: "suite", name: "times out", ordinal: 1, type: "TimeoutError" }])
+  })
+
+  test("a skipped testcase is never counted as failed", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="skips" file="/repo/tests/a.unit.test.ts"><skipped/></testcase></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.skipped).toBe(1)
+    expect(identities.failed).toBe(0)
+    expect(identities.failedIdentities).toEqual([])
   })
 
   test("rejects malformed or truncated JUnit rather than returning a partial identity", () => {

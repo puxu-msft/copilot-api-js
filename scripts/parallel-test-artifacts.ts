@@ -22,17 +22,27 @@ export interface SuiteSkippedIdentity {
 
 export type SkippedIdentity = TestcaseSkippedIdentity | SuiteSkippedIdentity
 
+export interface FailedIdentity {
+  file: string
+  classname: string
+  name: string
+  ordinal: number
+  type: string
+}
+
 export interface JUnitIdentities {
   files: Array<string>
   executed: number
   skipped: number
   skippedIdentities: Array<SkippedIdentity>
+  failed: number
+  failedIdentities: Array<FailedIdentity>
 }
 
 const IDENTITY_SEPARATOR = String.fromCodePoint(0)
 
 type OpenSuite = { kind: "suite"; file?: string; name?: string; skipped: number; testcaseCount: number; selfClosing: boolean }
-type OpenTestcase = { kind: "testcase"; file: string; classname: string; name: string; ordinal: number; skipped: boolean }
+type OpenTestcase = { kind: "testcase"; file: string; classname: string; name: string; ordinal: number; skipped: boolean; failure?: string }
 type OpenElement = OpenSuite | OpenTestcase | { kind: "other" }
 
 function toRepoRelative(file: string, repoRoot: string): string {
@@ -59,9 +69,11 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   const files = new Set<string>()
   const ordinals = new Map<string, number>()
   const skipped = new Map<string, SkippedIdentity>()
+  const failedIdentities: Array<FailedIdentity> = []
   const elements: Array<OpenElement> = []
   let executed = 0
   let skippedCount = 0
+  let failedCount = 0
   const parser = new SaxesParser({ xmlns: true })
 
   parser.on("opentag", (tag: SaxesTagNS) => {
@@ -108,6 +120,19 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
         }
       }
     }
+    // A failing testcase carries a `<failure>` (assertion) or `<error>` (thrown/timeout)
+    // child. Counting them here is what makes the tally independent of the shards' stdout:
+    // a shard that dies while printing its summary loses its `N fail` line but has already
+    // flushed this row, and parsing the truncated stdout then reports a green `0 fail`.
+    if (name === "failure" || name === "error") {
+      for (let index = elements.length - 1; index >= 0; index -= 1) {
+        const element = elements[index]
+        if (element.kind === "testcase") {
+          element.failure ??= attributeValue(attributes, "type") ?? name
+          break
+        }
+      }
+    }
     elements.push({ kind: "other" })
   })
 
@@ -126,7 +151,21 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
           count: 1,
         }
         skipped.set(skippedIdentityKey(identity), identity)
-      } else executed += 1
+      } else {
+        executed += 1
+        // A failed test still ran, so it stays inside `executed`; `failed` is a separate
+        // axis, not a subtraction from it.
+        if (element.failure !== undefined) {
+          failedCount += 1
+          failedIdentities.push({
+            file: element.file,
+            classname: element.classname,
+            name: element.name,
+            ordinal: element.ordinal,
+            type: element.failure,
+          })
+        }
+      }
       return
     }
     // Bun represents a fully skipped file as a self-closing testsuite with no testcase rows.
@@ -154,6 +193,8 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     executed,
     skipped: skippedCount,
     skippedIdentities: [...skipped.values()].sort((left, right) => skippedIdentityKey(left).localeCompare(skippedIdentityKey(right))),
+    failed: failedCount,
+    failedIdentities,
   }
 }
 
