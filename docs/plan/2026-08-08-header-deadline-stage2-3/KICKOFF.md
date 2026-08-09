@@ -16,7 +16,7 @@
 - 每条 Bash **自带绝对目录根**（`cd <绝对路径> && ...`），不依赖上一条命令留下的 cwd（HANDOVER「我犯过的错」第 4 条）。
 - **不 push**。提交用显式 pathspec（`git commit -m <msg> -- <精确路径>`），共享主树上绝不 stage/还原他人 WIP。
 - 合并主线前先 `git merge-base --is-ancestor master <branch>`；分叉了就在隔离树 `git merge master` 逐 hunk 解冲突，别在共享树做三方合并（第 1 条）。
-- **合并主线后必须重跑 `bun run test:backend` 重取 `minimum_executed`**，两侧冻结数字都不可信；JUnit 交叉验证**只数 `<testcase>` 叶节点**（第 2、3 条）。
+- **合并主线后必须重跑 `bun run test:backend` 重取 `minimum_executed`**，两侧冻结数字都不可信；JUnit 复算**只数 `<testcase>` 叶节点**（第 2、3 条）。⚠️ 那是**同源复算不是交叉验证**——它与 runner tally **同源**（同一批 artifact、同一个 producer，只换了 parser），抓的是解析／聚合错误，**不是**独立交叉验证、也证明不了 producer 没漏项；据它冻结的是已观察量的地板。
 - CodeGraph 若打出「索引来自另一个 worktree」警告，**改用磁盘 Read**（第 5 条）。
 
 **第一步动作**：按 HANDOVER 的 **T1** 开工——在 `packages/foundation` 定义 `TransportTerminationEvidence`（六个 kind）与 `TransportTerminationObservation`（`firstObserved`/`attribution`/`evidence`），core／server 只通过包导入消费。验收 = `tests/architecture/package-boundaries.unit.test.ts` 绿；证伪 = 把定义搬进 core、再让 foundation 反向 `import ... from "~/lib/..."`，该守卫必须变红。⚠️ 该守卫只匹配 import specifier，**不会**因为「core 里另抄一份同名类型」变红——防复制需另加 AST 检查，见 HANDOVER 的 T1 边界说明。

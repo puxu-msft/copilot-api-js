@@ -61,8 +61,8 @@
 ## 我这一轮犯过的错（每条绑复发点）
 
 1. **把 `--ff-only` 失败当成「跑错目录」**。真因是交付窗口内 `master` 前进造成分叉。**复发点：T1/T2/T3 每次准备合并 `master` 之前**——先跑 `git merge-base --is-ancestor master <branch>`，是祖先才可能 FF；不是就先在隔离树 merge 主线。
-2. **合并冲突时差点在两侧 baseline 数字里选边**。两侧都错，正解是合并态实跑。**复发点：T1–T4 任一次合并主线后**——重跑 `test:backend` 重取 floor，并用 JUnit 叶节点交叉验证。教训已固化为记忆 `methodology-merge-invalidates-branch-frozen-test-floor`。
-3. **一次 JUnit 交叉验证用错口径**（按 `<testsuite tests=...>` 属性求和得 14475，因 suite 嵌套重复计数）。**复发点：同上**——只数 `<testcase>` 叶节点。
+2. **合并冲突时差点在两侧 baseline 数字里选边**。两侧都错，正解是合并态实跑。**复发点：T1–T4 任一次合并主线后**——重跑 `test:backend` 重取 floor，并用 JUnit 叶节点复算。⚠️ **2026-08-09 收窄**：此处原写「交叉验证」，**不准确**——它与 runner tally **同源**（同一批 artifact、同一个 producer，只换了 parser），抓的是解析／聚合错误，**不是**独立交叉验证、也证明不了 producer 没漏项；冻结出来的 `minimum_executed` 是**已观察量的地板**，不是「测试没减少」的证明。教训已固化为记忆 `methodology-merge-invalidates-branch-frozen-test-floor`。
+3. **一次 JUnit 复算用错口径**（按 `<testsuite tests=...>` 属性求和得 14475，因 suite 嵌套重复计数）。**复发点：同上**——只数 `<testcase>` 叶节点。
 4. **在隔离会话里让 ambient cwd 漏回共享树**，导致一条带 gate 的命令在共享 `master` 上打印后被拒。没有造成损害，但说明**不能依赖上一条命令留下的 cwd**。**复发点：阶段 2 的每条 Bash**——同一调用内 `cd <绝对路径> &&` 自带目录根。
 5. **信了 CodeGraph 的返回**——它的索引指向另一个 worktree 且 auto-sync 已停，返回的是缺阶段 1 字段的旧源码。**复发点：阶段 2 查 `http2-client` 结构时**——它自己会打警告，看到警告就改用磁盘 Read。
 6. **给 T1 编了一个不成立的证伪方法**（「在 core 里另抄一份同名类型 → `package-boundaries` 守卫变红」）。实际该守卫只匹配 import specifier，纯复制不触发；是收尾评审的接手视角实地读测试才发现。**复发点：T1–T4 每写一条「证伪方式」时**——**去打开那个守卫/测试，确认它真的检测你说的那件事**，别从测试文件名推断它的能力。同族教训见记忆 `methodology-new-oracle-discriminating-power-is-experimental`。

@@ -528,3 +528,62 @@
 
 - 复评轮次 10：BLOCKER 0、MAJOR 2、MINOR 0、NIT 0。
 - 当前 verdict：**修复 MAJOR 后可进入下一阶段**。
+
+
+# 复评轮次 11（整改提交 `c4cffaa7`）
+
+## 复评范围与方法
+
+- 读取 `c4cffaa7` 完整 diff 与最终文本；分别给 AST 枚举、进程注册自报、JUnit observed set 画 producer／observation point／upstream。
+- 扫描 `docs/spec/`、`docs/plan/`、`docs/rfc/`、`docs/decisions/`、`README.md` 中 tally／JUnit／test-count／minimum_executed 与“不减／独立／完整性”组合，并沿每个承重命中检查当前动作。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 3。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:76` — AST 例子原则上可独立，但“进程注册时自报”的例子未必跨上游，当前又把候选先判成独立
+
+- **现象**：AST 枚举若自行决定扫描范围、解析 source declaration，producer 可与 Bun JUnit 分离；但若文件集合仍来自 runner 的 discovery rule，它只能独立枚举已发现文件内的静态声明，不能证明仓库文件集合。进程“注册时自报”更直接共享 Bun test runtime／registration graph：JUnit reporter 通常也消费同一注册／执行状态，换 side channel 不等于换 upstream。正文先断言“两者的上游都不是 JUnit producer”，再要求未来交 provenance 图，顺序倒置。
+- **证据**：独立性的机械条件不只是“不是同一个最终 reporter”，还要求不共享共同上游。AST 路线至少要交代 source-file population producer；runtime self-report 路线必须证明其生产者不受与 JUnit 相同的 test registration/execution graph 控制，目前文档没有这张图。
+- **接手方错误动作**：维护者会把“不同输出通道”误当不同上游，直接采用 self-report + JUnit 作 completeness oracle；两侧可稳定漏掉同一个未注册／未加载 testcase。AST 实现者也可能复用同一 Glob 后便宣称覆盖仓库完整性。
+- **建议处置**：例子不要预判“上游都不同”。保留 AST 为**待 provenance 验证候选**，并点明其文件 population 也必须独立；删除 self-report 例子，或明确它默认与 JUnit registration 同源，除非设计证明相反。门槛句应先于候选结论。
+
+### [MAJOR] `docs/plan/2026-08-08-header-deadline-stage2-3/HANDOVER.md:64-65`、`KICKOFF.md:19` — 同批 JUnit recount 仍作为“交叉验证”指导下一阶段执行
+
+- **现象**：这两份接手入口仍要求每次合并后用 JUnit leaf count“交叉验证” `minimum_executed`，没有轮次 10 新增的“同 producer、同 artifact、第二 parser”边界。它们不是归档叙事：HANDOVER 点名 T1–T4 的未来复发点，KICKOFF 是直接执行指令。
+- **证据**：HANDOVER `:64` 写“重取 floor，并用 JUnit 叶节点交叉验证”，`:65` 只纠正 suite-vs-leaf 口径；KICKOFF `:19` 重复同一动作。当前 authority `docs/memory/methodology-merge-invalidates-branch-frozen-test-floor.md:12` 已明确这种复算同源，只抓 parser／aggregation 错，不证明 producer completeness。
+- **接手方错误动作**：阶段 2／3 执行者会把两次同源解析一致当成 floor 合法性的独立支持，在 producer 漏项时冻结偏低 floor。
+- **建议处置**：两处都改为“同源第二-parser 复算，仅校验 runner parser／aggregation；不证明 producer completeness／testcase no-decrease”，并链接当前 authority。修订建议 `gpt-souls:doc-writer`。
+
+### [MAJOR] `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md:494,530` 与 `prompts/commit-minus-1.md:44-46` — discovery baseline／manifest 与 JUnit 仍被称为独立 oracle，且计划明确复用同形 discovery
+
+- **现象**：cutover plan 把 `--discovery-baseline` 称“独立 oracle 输出”，并说 `minimum_executed` 由“独立 discovery/JUnit oracle”冻结；prompt 要求实际 shard JUnit 与“独立磁盘 manifest”对账。但该 manifest／baseline 仍是对同 checkout、同 suffix population 的磁盘枚举，且当前实现与轮次 8 已确认的 baseline 生成链共享同形 Glob。它对 post-discovery shard omission 有判别力，却不是仓库应有文件或 testcase total 的结构独立 oracle。
+- **证据**：plan `:452` 的 mutation 明确打在 `balance()` 后，证明它守的是 discovered set 到 shard 的传递；`:494,530` 却把同一产物升级成未限定的 independent oracle。prompt `:44-46` 也把 manifest/JUnit 组合称独立，并以此冻结 `minimum_executed`。当前 coding conventions `:69-70` 已收窄：baseline 与 runner discovery 共享 upstream，只是部分 tripwire；testcase total 不可判。
+- **接手方错误动作**：执行 cutover 的人会把 file-level post-discovery coverage 门当成 testcase completeness／minimum floor 的独立证明，系统性 discovery 漏项时仍放行。
+- **建议处置**：按 subject 分层命名：对 **live-discovered file set→shard/JUnit transfer**，磁盘 manifest 可作独立于 shard execution 的 expected set；对 **repo should-have file population** 与 **testcase population** 不独立／不可判。`:494,530` 和 prompt 不得无条件称 independent discovery/JUnit oracle。RFC／prompt 属指令文本，修订后须再评审；建议 `gpt-souls:instruction-smith` 或 `gpt-souls:architect-advisor`。
+
+## 已确认整改与扫描 disposition
+
+- 两份轮次 10 spec 已正确收窄：HTTP/2 spec 明确同源第二 parser；Anthropic reorg 已撤销 testcase no-decrease，文件级门与用例级缺口分开。
+- AST 候选不是当然错误：若 AST source population 与 JUnit producer／runner discovery 真正分离，它可成为独立腿；问题是正文未交 provenance 已先判定。runtime self-report 默认更接近共同 registration upstream，不能作为安全示例。
+- 扫描范围：`docs/spec/`、`docs/plan/`、`docs/rfc/`、`docs/decisions/`、根 `README.md`；关键词双向组合覆盖 JUnit／tally／testcase／minimum_executed／baseline 与 independent／cross-check／completeness／no-decrease。`docs/decisions/` 与 README 未发现相关承重主张；spec 除已闭合两处无新增；未闭合集中于上述 plan 接手入口与 command-algebra RFC／prompt。
+- 提交门禁只按窄结论采用：raw tally 支持 `c4cffaa7` 该次 observed count／exit 0；未重跑 backend。
+
+## 结构怪味扫描
+
+- `docs/coding-conventions.md:76` — **候选先于 provenance 裁决**；处置：本轮收窄候选，不把评审门写在错误结论之后。
+- header-deadline HANDOVER／KICKOFF — **authority 已更新、执行入口未同步**；处置：本轮同步，不能留给接手者自行发现。
+- command-algebra plan／prompt — **同一“独立”标签跨 subject 泄漏**：post-discovery transfer 的独立性被外推到 repo/testcase population；处置：按 subject 拆层，修后必须复评。
+
+## 收敛判定
+
+- **当前无未闭合 BLOCKER。**
+- **当前仍有 3 个未闭合 MAJOR**：候选 oracle 预判独立；HANDOVER/KICKOFF 同源交叉验证；RFC/prompt 把 post-discovery file transfer 独立性外推到 completeness／minimum floor。
+- 因此第十一轮仍不能收口。`c4cffaa7` 点名两项已闭合，但扩展扫描发现的执行入口会继续让接手方采取错误验证动作。
+
+## 最终计数
+
+- 复评轮次 11：BLOCKER 0、MAJOR 3、MINOR 0、NIT 0。
+- 当前 verdict：**修复 MAJOR 后可进入下一阶段**。
