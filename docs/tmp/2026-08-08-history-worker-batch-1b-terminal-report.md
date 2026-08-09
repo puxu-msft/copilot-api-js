@@ -1,6 +1,7 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**已完整集成主线**。Batch 1b 实现于 `master@d3b4ac77`；收尾证据、教训沉淀与 skill 条款迁移经多次 fast-forward 全部落地，最终合并点 `4c30e6eb` 已是 `master@58f4c45d` 的祖先，本分支 0 笔待合、工作树干净。
+> 状态：**Batch 1b 实现与全部收尾证据已集成主线**（实现于 `master@d3b4ac77`，收尾经五次 fast-forward 落地，合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中）。
+> ⚠️ **本报告自身的合并状态不写死数字**——它每次被修订都会重新领先 `master`。判定命令：`git -C <repo> merge-base --is-ancestor <本文件最后一次修订的 commit> master`；成立即全部落地。写下本行时最后一笔为 `a5ee292b`，尚待一次 fast-forward。
 > 核验基线：`4c30e6eb`（在 `master@58f4c45d` 祖先中）；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
@@ -27,7 +28,7 @@
 
 ## Git、发布与工作树状态
 
-- **全部 fast-forward 均已由用户执行并落地**（共五次，随共享 `master` 前进逐次进行）。**终态**：最终合并点 `4c30e6eb` 已在 `master@58f4c45d` 祖先中，本分支 `git rev-list --count master..HEAD` = **0**，工作树干净。`22c8e08b`（reviewed-plan anchor）亦在 `master` 祖先中。
+- **全部 fast-forward 均已由用户执行并落地**（共五次，随共享 `master` 前进逐次进行）：交付内容的最后一个合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中，`22c8e08b`（reviewed-plan anchor）亦然。**本报告与临时清单自身的修订提交每次都会再次领先 `master`**，按上方状态行的判定命令核，不写死待合数字。
 - **安装位置复验（从共享 checkout `/home/xp/src/copilot-api-js` 实跑，`pwd -P` 已确认）**：
   - reviewed-plan blob 门：`22c8e08b` 与 `master` 两侧 `docs/plan/2026-08-07-history-persistence-worker.md` 的 blob 同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`，PASS。
   - `bun run typecheck`：通过。
@@ -69,7 +70,30 @@
 
 ## 尚待动作
 
-**无。** 本交付已完整集成主线：`4c30e6eb` 在 `master@58f4c45d` 祖先中，分支 0 笔待合、工作树干净。
+**无（交付内容部分）。** 本报告自身的最后一笔修订仍需一次 fast-forward，判定命令见状态行。
+
+## 分支与 worktree 归宿（`resolve_branch`）
+
+- **分支 `worktree-history-worker-batch-1b-resume`：裁决＝保留（keep），不删。** 依据：其独有提交在**本报告最后一次修订合入前**是收尾证据的唯一持久来源；`finishing-a-development-branch` 的三选一里，merge 已完成、discard 需用户显式授权且会丢这些提交，故取 keep。
+- **worktree `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`：裁决＝保留。** 三条移除前置里**「HEAD 可从持久 ref 到达」当前不成立**——`a5ee292b` 尚未进入 `master`，此刻删除会丢掉收尾提交。待其 fast-forward 后三条齐备（clean／reachable／owned），才可由用户决定清理。
+- **未推送、未创建 PR、未发布任何 ref 或 artifact**；取证范围限于本仓库与 GitHub 可观测表面。
+- ⚠️ **共享主树状态本会话无法自查**：worktree 隔离护栏拒绝 `git -C <共享检出>` 与切目录的 git 调用，因此「共享主树是否干净、是否仍有那三处无关 WIP」**未由本会话核实**，不得据本报告认为已核。需要时请在共享检出直接跑 `git --no-optional-locks status --short`。
+
+## 收尾纪律执行情况（诚实记录）
+
+按 `closing-a-development-session` 的 stage 列表逐项对照，**本轮有跳步，据实登记**：
+
+| stage | 状态 | 说明 |
+| --- | --- | --- |
+| `freeze_truth` | ⚠️ 部分 | 只冻结了本 worktree 与 `master`；**共享主树因护栏未查**（见上） |
+| `inventory_job_tmp` | ✅ | 56 项／6,568,699 bytes，`find` 与 `fd -H -I` 两法交叉一致 |
+| `persist_evidence` / `verify_persisted_evidence` | ✅ | 四份接收者以 `git cat-file -e master:<path>` 逐一验证可达 |
+| `archive_docs` / `reconcile_live_docs` | ✅ | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
+| `discover_nonfile_candidates` | ✅ | 本轮新增候选 1 条（输出过滤伪造失败），已落 memory |
+| `review_temp_manifest` | ❌ **本轮未做** | 我修改了清单头部 → **按本 skill 自己的规则，先前评审结论已作废**，须重审 |
+| `clean_temp` | ✅（空操作） | **零删除**，56 项全留交 harness 回收；无删除即无需 receipt |
+| `resolve_branch` | ✅（本节补做） | 此前遗漏，现已显式裁决 keep／keep |
+| `review_closeout_draft` / `_final` | ❌ **本轮未做** | 报告在最后一次合并后又有实质修订，未重新送审 |
 
 **最终验证证据（每项标注新跑／复用，锚到 commit）**：
 
