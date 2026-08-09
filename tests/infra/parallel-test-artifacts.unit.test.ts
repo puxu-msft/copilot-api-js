@@ -194,7 +194,7 @@ describe("parallel-test JUnit artifact parsing", () => {
 // that file's tests vanish from every count here -- the exit code stays fail-closed via the
 // file-identity check, but the line itself would read green.
 describe("formatTallyLine", () => {
-  const base = { shards: 16, executed: 100, failed: 0, skipped: 3, crashedShards: 0, missingFiles: 0, wallSeconds: "12.34" }
+  const base = { shards: 16, executed: 100, failed: 0, skipped: 3, crashedShards: 0, missingFiles: 0, unexpectedFiles: 0, wallSeconds: "12.34" }
 
   test("derives pass from executed - failed so the two can never disagree", () => {
     expect(formatTallyLine({ ...base, executed: 100, failed: 7 })).toContain("100 tests · 93 pass · 7 fail · 100 executed")
@@ -204,6 +204,7 @@ describe("formatTallyLine", () => {
     const line = formatTallyLine(base)
     expect(line).toContain("100 pass · 0 fail")
     expect(line).not.toContain("INCOMPLETE")
+    expect(line).not.toContain("OUT-OF-SCOPE")
     expect(line).not.toContain("crashed")
   })
 
@@ -211,6 +212,20 @@ describe("formatTallyLine", () => {
     const line = formatTallyLine({ ...base, missingFiles: 2 })
     expect(line).toContain("INCOMPLETE: 2 file(s) produced no JUnit rows")
     expect(line).toContain("a floor, not a total")
+  })
+
+  // The first version marked only `missing`, so an unexpected-only mismatch exited 1 while
+  // the tally line still read clean -- the one line a report quotes said nothing was wrong.
+  test("marks the tally out-of-scope when an undiscovered file reported rows", () => {
+    const line = formatTallyLine({ ...base, unexpectedFiles: 1 })
+    expect(line).toContain("OUT-OF-SCOPE: 1 undiscovered file(s) reported rows")
+    expect(line).not.toContain("INCOMPLETE")
+  })
+
+  test("reports both directions of an identity mismatch at once", () => {
+    const line = formatTallyLine({ ...base, missingFiles: 2, unexpectedFiles: 1 })
+    expect(line).toContain("INCOMPLETE: 2 file(s)")
+    expect(line).toContain("OUT-OF-SCOPE: 1 undiscovered file(s)")
   })
 
   test("reports a crashed shard and an incomplete tally independently", () => {

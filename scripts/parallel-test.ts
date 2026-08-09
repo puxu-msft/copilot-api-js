@@ -247,6 +247,7 @@ console.error(
     skipped,
     crashedShards: crashed.length,
     missingFiles: fileComparison.missing.length,
+    unexpectedFiles: fileComparison.unexpected.length,
     wallSeconds: wall,
   })}`,
 )

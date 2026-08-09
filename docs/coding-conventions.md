@@ -49,7 +49,7 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 
 ⚠️ **但 JUnit 计数只是「已观察到的量」，不等于「总量」。** 测试文件在**加载期抛错**时根本不产生任何 JUnit 行，而 bun 照样打印自己的 `N fail`（实测 bun 1.3.14：summary `1 pass / 1 fail / 1 error / 2 files`，XML 却是 `tests=1 failures=0` 且完全不含该文件）——于是连 crash 分类器也不触发。兜住这一层的是 **discovery↔runtime 的文件身份对账**（`compareFileIdentities`）：发现集合里少了谁就退出 1，并在 tally 行打出 `⚠ INCOMPLETE: N file(s) produced no JUnit rows`。
 
-**因此引用 tally 数字的前提是**：该行**不带** `INCOMPLETE` 标记。带标记时这些数只是**下界**，禁止用作规模、增减或「全绿」的证据。实现新的报告器时同理——**只解析 XML 而不做文件身份对账，就会把加载期失败算成不存在**。另有兜底：某个 shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶的文件用 `--isolate` 重跑定位。
+**因此引用 tally 数字的前提是**：该次运行**退出码为 0**。这是唯一充分的判据——身份对账有**两个方向**，各配一个标记：`⚠ INCOMPLETE`（发现集合里的文件一行没写，数字是**下界**）与 `⚠ OUT-OF-SCOPE`（未被发现的文件却写了行，数字**超出**了预期集合）。只盯 `INCOMPLETE` 会漏掉后者。实现新的报告器时同理——**只解析 XML 而不做文件身份对账，就会把加载期失败算成不存在**。另有兜底：某个 shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶的文件用 `--isolate` 重跑定位。
 
 第三方 I/O adapter 和 durability 协议必须按真相域分层：
 
