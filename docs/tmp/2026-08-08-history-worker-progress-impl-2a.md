@@ -36,6 +36,7 @@ status: active
 - `bunx eslint src/lib/history tests/history tests/architecture` → exit 0，0 problems。
 - `bun run test:backend` → **7352 pass／0 fail／7352 executed／35 skipped**（16 shards，57.33s）。
 - **flaky 复核：** poison-journal 用例最初在 `test:backend` 下 3 次红 2 次；定位为产品缺陷（可重试启动错误被判 fatal）并修复后，`test:backend` 连跑 5 次全绿。
+- **收尾期观测到的争用型 false-red（不是本批引入，别当既有失败挥手放过，也别当本批回归）**：最后几次全量里出现过 3 条**互不相同**的红——`tests/history/v3/store-performance.it`「CAS live physical bytes …10x smaller」（两次，17.5s／19.8s，明显是计时）、`tests/telemetry/backfill-wiring.unit`「接线 3」、以及一次 `activeStreamCount …row 1 — pre-header req.error`。**判据三条**：①每条**单跑均绿**（perf 3 pass、telemetry 8 pass）；②**每次红的是不同的测试**——真回归会稳定咬同一条；③`git log master..HEAD -- tests/telemetry src/lib/telemetry` **为空**，本分支从未碰过遥测。故归类为 16-shard 负载下的争用敏感判据，与 `docs/todo/deferred-backlog.md` 已登记的「`store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败」同族。**`executed` 恒为 7358**（=discovery floor），说明没有测试被静默跳过。
 
 ### Mutation 正控（第二轮，commit `290cfb9e`；第三轮见下节）
 
