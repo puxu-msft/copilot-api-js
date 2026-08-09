@@ -187,3 +187,23 @@
 - **计数：1 BLOCKER；3 MAJOR（D6、handler死参数、I1判据）+ 1已知Task 4混合写路径MAJOR；3 MINOR（D7、merge字段契约、Responses陈旧oracle）。**
 - focused回归：31 pass／0 fail（5文件）；该绿不覆盖D8的no-half-unit oracle。
 - 本轮临时assertion patch已通过exact reverse check恢复；最终production与测试文件无变异diff。
+
+
+# 最终裁定（`10a7ba66`）
+
+- **D8：已闭合。** 撤回是正确处置：它精确消除了本轮新引入的半块泄漏／双终态回归；mid-block H2 的既有缺陷已按五字段落入 Task 4 backlog，且正确修法确实依赖 outcome consumer 能控制 owner buffer。不得为了本轮“变绿”重上已证伪的局部修法。
+- **撤回残留：未发现行为残留。** `acceptTerminal` 恢复原控制流；保留 adapter 的 payload-type优先＋event fallback 是正交且正确的加法，继续关闭零内容／闭合块后的 H2 重试缺陷。新增注释准确记录了 grammar discard与driver buffer脱节。
+- **gate 判据：可接受，不算掩盖。** 条件是当前三点均持续成立：缺陷在权威 backlog、skip identity进入基线、测试正文断言正确目标且Task 4有明确解除触发。`test.failing` 的自解除性质更好，但在本仓 JUnit／discovery口径未验证且无先例时，不应为形式偏好引入另一套未校准门；本轮采用具名 `describe.skip` 合理。
+- **D6：仍为本轮 MAJOR，阻塞复审门关闭。** 它已不是抽象“测试不够”：现有 event-only fixture在默认与 shaping-off路径都让 upstream accumulator打印 unknown event，handler随后以 truncation 收口；测试只查“含 error／state failed”，允许真实H2后再追加 synthetic truncation error并丢失原始失败因果。至少应断言恰一个error、History failureReason保留 upstream type/message且不含truncated。
+- **其余项：** handler死参数＋反向注释仍为MAJOR；I1 rich History carrier判据缺口仍为MAJOR。`mergeCandidateResponseOpts`字段契约与`isResponsesCommitBoundary`陈旧oracle维持MINOR。独立裁决的混合写路径是Task 4已知MAJOR债务，可随Task 4关闭，不单独阻断本轮。
+- **最终 verdict：修复上述3个本轮MAJOR后可进入下一阶段；当前不通过“0 blocker／0 major”门。** blocker为0，major为3，minor为2；另有1个已明确归属Task 4的阶段性major债务。
+
+
+# 复审三（`fefb0951`）
+
+- **D6：当前 Messages direct 两条探针已闭合，但“七处完整”结论不成立，发现新的 MAJOR。** 共享原语的 payload优先、event回落顺序正确：冲突时保持payload权威，不改变任何已有typed frame；event-only兼容形态只新增识别。`delivery/session.ts:289`豁免也合理——它是跨协议owner对自己已成形输出的状态追踪，不能套Anthropic-only fallback。
+- **D9 MAJOR——漏了 reverse／translator consumers。** 生产搜索发现至少五个未迁移点仍 `JSON.parse(data)` 后只按payload `type` 判断Anthropic H2：`src/routes/{chat-completions/handler-v4.ts:311-319,gemini/handler-v4.ts:244-252,responses/candidate-response-session.ts:74-82}` 三个reverse Messages accumulator，以及 `src/lib/openai/translate/{anthropic-to-cc-stream.ts:173-186,302-308,anthropic-to-responses-stream.ts:222-234,406-409}` 两个translator。event-only raw error在这些路径仍落unknown／truncated或被translator忽略。它们不是动态引用，而是直接生产调用，说明七处枚举以“显式比较 error”搜索，漏掉了“switch变量在上游赋值处丢type”的形态。
+- **修复建议：** 抽一个“parse Anthropic wire event并以共享原语补type”的共同函数，在Messages direct、三个reverse accumulator、两个translator统一使用；不要在每个handler重复spread。随后逐条真实入口做event-only H2正样本：Chat、Responses HTTP/WS、Gemini，断言单终态、真实cause、无truncation。
+- **当前两条探针的能力边界：** 对Messages direct已足够区分“单终态＋真实原因＋shaping on/off”；但它们不覆盖上述reverse/translate入口，也未直接断言History failureReason。Messages direct客户端wire已闭合，History cause仍建议补强，但不再单独作为同一路径blocker。
+- **handler死参数／反向注释：意见不变，仍MAJOR。** `anthropicCommitBoundaries`采用共享原语只证明函数本身正确，不改变production传参仍被candidate projection静默覆盖的事实；应删除死传参与反向注释，而不是重组merge恢复第二classifier。I1判据缺口仍MAJOR。
+- **最终 verdict：修复D9、handler死参数与I1判据后可进入下一阶段。当前0 blocker、3 major、既有Task 4阶段性major债务、2 minor。**
