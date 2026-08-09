@@ -862,7 +862,78 @@ for (let i = 0; i < 400 && !(serverStream?.session && getH2SessionStatusSnapshot
 
 **未审计的同族候选（不在本轮范围，据实登记）**：本文件还有若干固定 `sleep()`（`:124`、`:163`、`:173`、`:215`、`:217`、`:237`）。它们多数跟在 `await http2Fetch(...)` 之后、就绪性已由 await 保证，**但我没有逐条审计**，不声称它们都安全。列在这里供后续判断。
 
+### B · `entry-evidence-schema.ts` 的 identity 唯一性校验 —— **已经存在，不实施**
+
+**先验前提，结果是前提不成立。** `scripts/entry-evidence-schema.ts:109-111` 已经在解析期做这件事：
+
+```ts
+const keys = allowed_skipped.map((entry) => skipSortKey(entry))
+if (new Set(keys).size !== keys.length || keys.some((key, i) => i > 0 && compareStrings(keys[i - 1], key) >= 0))
+  fail("allowed_skipped are not unique bytewise sorted")
+```
+
+`new Set(keys).size !== keys.length` **就是**重复 identity 校验。实证（探针 `exp/tmp-b-probe/`，含 README 说明它没证明什么；**注意 `exp/` 被 `.gitignore` 忽略、无法追踪，所以下表就是这份证据的持久载体**）：
+
+| 构造 | 结果 |
+|---|---|
+| 控制组：未改动的真实 baseline | **ACCEPTED** |
+| 完全重复的条目，插在相邻位置 | REJECTED: `allowed_skipped are not unique bytewise sorted` |
+| 完全重复的条目，追加到末尾 | REJECTED（同上） |
+| identity 相同、`count` 不同 | REJECTED（同上） |
+| identity 相同、放在非排序位 | REJECTED（同上） |
+
+**所以「换个内容或换个位置就会静默出现重复条目」不成立**——四种变体全部被拒，且拒绝发生在解析期、消息明确。协调方描述的那次合并之所以没出问题，也不是「内容巧合」：两侧加的是逐字节相同的行、git 在同一位置合并成一条；**若真的产生了两条，上表第 2/4 行证明它会红，不会静默**。
+
+**suite 分支单独驱动过**（真实 baseline 是 35/35 testcase，直接改它**碰不到** suite 分支——第一版探针的 "suite duplicate ACCEPTED" 是**空真**，我发现后重做）。用合成 baseline 且**带可用的控制组**：
+
+```
+control: one suite entry                 -> ACCEPTED
+control: two DISTINCT suite entries      -> ACCEPTED
+duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not unique bytewise sorted
+```
+
+（第一次合成 baseline 时三行**全部** REJECTED（`file is invalid`），控制组一起挂掉 → 探针无鉴别力；查出 `requireFile` 要求 `^tests/.*\.(unit|it|http)\.test\.ts$` 后改正才得到上面的结果。**控制组是这里唯一能发现「探针本身坏了」的东西。**）
+
+**唯一被接受的近亲形态**：`file`+`classname`+`name` 相同但 `ordinal` 不同 → ACCEPTED。这**不是缺陷**——`skipSortKey` 对 testcase 包含 `ordinal`，因为同名用例靠 ordinal 区分，两条本就是两个 identity。是否该在更粗的粒度上再加一层，是设计问题，不是缺失的校验；登记为观察，不实施。
+
+**结论：不实施 B。** 再加一条同义校验只会制造两个真相源。
+
+### C · 六处固定 `sleep()` 的逐条审计（**4 处同形赌注已改，2 处良性**）
+
+按 (a) 良性 /（b) 同形赌注 /（c) 存疑 逐条给结论：
+
+| 位置 | 分类 | 理由 |
+|---|---|---|
+| `:124` 请求到达服务端 | **(b)** | 后面断言快照有 1 条且 `activeStreamCount===1`，而响应被 handler 故意挂住、**没有任何 await 覆盖这个就绪性**——与 row 1 同形 |
+| `:163` 慢 connect 内部 | **(a)** | 它不是就绪门，而是**被测刺激本身**（故意让握手慢到跨越 reconcile）。睡得更久只会让待测竞态更可靠 |
+| `:173` 等 connect 开始 | **(b)** | 注释自陈在等 `connectCount` 变 1——**条件是可观测的**，没有理由去猜时长 |
+| `:215` 等会话条目发布 | **(b)** | 注释自陈「session+entry created at the 15ms cadence」，随后即断言快照——典型就绪门 |
+| `:217` 等 ≥2 次 ping | **(b)** | 随后 `expect(callsBeforeReconcile).toBeGreaterThanOrEqual(2)`，而 `pingSpy.mock.calls.length` **直接可读** |
+| `:260` 等「若未取消则本会发生」 | **(a)** | **单侧**负向等待：若 ping 已正确取消，睡多久都不会有 ping，争用只会让它更严格，不可能 false-red |
+
+**处置**：4 处 (b) 全部改成条件等待，抽出共用 `waitUntil(predicate, label, timeoutMs = 2000)`；2 处 (a) **不动**，并把「为什么它们是良性的」写进上表（下一个人不必重查）。row 1 原先那个手写轮询也一并并入 `waitUntil`。
+
+`label` 参数是刻意的：超时消息写成 `test setup: timed out waiting for <label>`，**让「就绪没等到」与「随后那条断言真的失败了」在输出里可区分**——这正是本轮 row 1 那条 flaky 一开始难判的原因。
+
+**验证**：隔离 11 pass / 0 fail（0.95s）；96 spinner 争用（loadavg 31→39）**11 pass / 0 fail，3.00s**。typecheck、eslint 绿。
+
+### 口径更正：「改变判别内容」的条数（**M1 回退后重数**）
+
+不给单一数字，给可核对的表——单个数字正是本轮被数错两次的东西：
+
+| 位置 | 变化 | 计入 |
+|---|---|---|
+| 第 6 条 `expect(elapsed).toBeGreaterThanOrEqual(40)` | **删除**，由 stall-后探针接手 | **删 1** |
+| 第 1 条 `elapsed < SILENCE_MS`(4500) → `< 25_000` | 由**判据**降为 outlier 兜底（注释自陈不再是门） | **降 1** |
+| 第 5 条 `elapsed < 200` → `< 1_000` | 同上，降为兜底；同时新增微任务探针 | **降 1** |
+| 第 7 条 `elapsed < 200` → `< 1_000` | 同上，降为兜底；同时新增两个探针 | **降 1** |
+| M1 `commitRatio < 5` | 一度被替换，**已逐字回退** | **不计**（净零） |
+| 第 8 条 `elapsed < 200` → `DEADLINE_MS * 4` | 相对形状 `4x` 未变，只放大 fixture | **不计** |
+
+**当前口径：改变判别内容 4 处 = 1 删 + 3 降。** 此前记的「2 删 1 降」在两个方向上都错了：M1 那条已回退（不该再算删），而第 5、7 条的降级此前**漏记**。四处**全部**有替代覆盖（探针 / 因果判据），且每处都有 mutation 证据。
+
 ### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
 
 
 
