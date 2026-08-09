@@ -136,7 +136,12 @@ OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的�
 ### T3-b —— full-suite oracle 缺口（本轮新增，未实施）
 
 - **问题**：入场条件若要断言「全后端套件已执行」，需要一条**独立于 runner 自报计数**的执行证据通道。当前 `baseline-runs.sh` 的下限与被检查的计数同源，无法证明这一点（见 T3 的 ④ 与 `docs/tmp/2026-08-03-baseline-run-log.md` 第十四条）。
-- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（**独立于 runner**，用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- ⚠️ **「独立」的精确口径（2026-08-09 收窄，原文写作「独立于 runner」）**：它独立于 runner 的**实现**（换了语言与 glob 库），**不独立于 discovery 的规则**——两侧共享同一个 `tests/` 根与同一套 `{unit,it,http}` 后缀集。所以：
+  - **能守住**：runner 侧静默少跑／少报文件（本条真正要防的那个退化）。这个价值是实的，别因为下面的限制就放弃它。
+  - **守不住**：规则本身漏掉某类测试文件——那种文件两侧都看不见。因此它是**文件级的 coverage 绊线**，不是「仓库应有测试集合」的枚举者。
+  - **完全够不着**：用例级完整性（某文件加载期抛错时一行 JUnit 都不写，文件名却仍可能出现在 `<testsuite file>` 里）。
+  三层划分与判独立性的方法（交 provenance 图：每侧的生产者／观测点／上游）见 `docs/coding-conventions.md`「并行执行」节。
 - **验收**：注入「让某个 shard 静默少跑若干文件」的变异后，比对必须**报出缺失的文件名**；正确状态下两个集合相等。
 - **证伪**：**只比总数不比文件名集合**——总数相等而集合不同，正是这类退化最可能的形态；这也是本条与 `MIN_TESTS` 的本质区别，别用一个数替代一个集合。
 - **优先级**：不阻塞 Commit 0–8 的实施，但**入场条件的强度以它为上限**。在它落地前，T3 的 ④ 只能按上面那句缩小版命题引用。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。

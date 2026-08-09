@@ -587,3 +587,58 @@
 
 - 复评轮次 11：BLOCKER 0、MAJOR 3、MINOR 0、NIT 0。
 - 当前 verdict：**修复 MAJOR 后可进入下一阶段**。
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 3。**
+
+## 事实性发现
+
+### [MAJOR] `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md:442-454,494,530`、`prompts/commit-minus-1.md:44-46` — 新限定实质缩小并自相矛盾于 T0.0a～c 的冻结验收，不能由本轮注解代替计划所有者裁决
+
+- **现象**：plan 的冻结目标明确是“实际 shard identity 与**独立磁盘 manifest**逐次对账”，T0.0a 要 manifest 自行枚举 `tests/**/*.{unit,it,http}.test.ts`，mutation 打在 `balance()` 后以隔离 discovery→spawn 传递缝；这能证明独立 expected set 中的文件没有在 shard transfer 中丢失。新注解却把该门统一收窄成“请求过的文件有没有被 artifact 提及”，这对应当前 runner 同一 `discover()` 结果一处两用的门，不是 plan 原写的外部 manifest 门。两者不是同一个验收 subject。
+- **证据**：plan `:444,452` 仍要求 independent disk manifest；`:494,530` 新注解说 baseline 与 runner discovery 同源、只证明 requested files；prompt `:44` 已按后一种窄目标改写，而 `:46` 仍称“独立 `minimum_executed`”。同一执行包现在给实现者两套相反目标。更关键的是 `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md:148` 明写 Commit -1 实现／整合门／独立 review 已完成，并非单纯“尚未执行的计划”；当前 `scripts/parallel-test.ts:123,212-214` 也确实只做 live `discover()` 一处两用。
+- **接手方错误动作**：执行者可能按 prompt 的窄门保留当前同源 expected set，并宣称完成 plan 的 independent-manifest AC；或按 plan 重建独立 manifest，又被注解告知它只能证明 requested set，无法知道哪条是冻结目标。该注解会把既有 plan-vs-implementation gap 静默改写成“设计本来就只要求窄门”。
+- **建议处置**：退回 command-algebra plan 所有者／`gpt-souls:architect-advisor` 裁决，不要由本轮收尾文档替它缩目标。先明确两层是否都要：A．独立 population snapshot→requested argv；B．requested argv→JUnit mention。若只保留 B，显式记录为对冻结 T0.0a 的设计变更并说明为何撤销 A；若 A 仍要，修 prompt／实现接线并保留 post-balance mutation。`minimum_executed` 仍只能是 observed floor，不得借 A 升级成 testcase completeness。
+
+### [MAJOR] 全仓现行／接手载体仍有 2 组同源计数被写成独立／完整性证据
+
+- **组 A（floor 校准）**：`docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md:42` 写“独立 JUnit 求和”；对应进度 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md:61` 写“两组 16 份 JUnit 独立解析”并据此校准 floor。两者同样是对 runner 同批 JUnit 的第二 parser，只能抓解析／聚合错误。
+- **组 B（command-algebra 当前候选）**：`docs/tmp/2026-08-08-command-algebra-final-candidate-review.md:104` 把 `7259 executed / 30 skipped` 称“当前独立稳定量”，并说 file identity／skip multiset 对账支撑 gate；但三者均由同一 Bun producer／artifacts 产生，且 baseline 与 discovery 共享 upstream，只能说当前 observed signals 自洽。
+- **接手方错误动作**：后续 floor 校准或候选验收会引用这些收口报告，把 observed floor／同源 identity 当 producer completeness，从而继续复发本轮已撤销的结论。
+- **建议处置**：两组均追加 superseded 更正并指向 coding conventions：第二 parser／identity／skip 对账各自能抓什么，不能证明什么。历史数字可保留，删除“独立”“人口／稳定量”升级。修订建议 `gpt-souls:doc-writer`。
+
+### [MAJOR] `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md:136-142` 与 `docs/tmp/2026-08-03-baseline-run-log.md:19` — T3-b 仍把 Python rglob × JUnit 描述成“独立 full-suite oracle”，未同步当前 provenance 边界
+
+- **现象**：HANDOVER 把磁盘 Python `rglob` 文件集称“独立于 runner”，并把该路径定位为补齐“全后端套件已执行”的 oracle；baseline run log 指向同一方案。相对 runner process，它确实是不同观察程序；但若 `rglob` 后缀／根与 runner discovery 同源配置或手工复制，它仍无法独立裁仓库 should-have population，更不裁 testcase population。当前文本没有这层限定，且 `:148` 又声称 Commit -1 已完成，容易被当现行闭合证据。
+- **证据**：HANDOVER `:139-141` 只给 Python rglob 与 JUnit file set，相同 `unit/it/http` suffix；coding conventions `:69-70` 已裁定同 checkout／suffix／同形 discovery 只能作部分 tripwire。
+- **接手方错误动作**：读者会把文件集合相等升级成“full suite 完整执行”或 testcase no-decrease；系统性 suffix/root 漏项仍两边一致。
+- **建议处置**：同步收窄为 file-level transfer／coverage tripwire；若继续主张 independent should-have population，须交两侧 provenance 与独立 population source。baseline-run-log 的“补齐 full-suite”指针一并 supersede。
+
+## 全仓扫描补充 disposition
+
+- **同源第二-parser 的其余历史载体**：`docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md:34` 仍概括“16 份 shard JUnit 的结论已交叉验证”；应随上面组 A 一并收窄为 parser arithmetic 复算。`docs/tmp/2026-08-08-header-deadline-closeout-review-criteria.md:67-75` 的“独立脚本”若只指独立 parser 且结论限于 leaf-vs-suite 算术，本身成立，不作新增发现；不得外推 producer completeness。
+- **历史 review 报告命中**：`docs/tmp/2026-08-04-cutover-plan-review-criteria.md`、`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md` 等记录当时提出“独立 manifest／floor”的评审意见。它们是历史意见原文，不单列成当前合同缺陷；当前 plan／prompt 的冲突已由 MAJOR 1 覆盖。修 plan 时宜追加统一 superseded 指针，而非篡改历史报告。
+- **不属于缺陷的命中**：相对 manifest 重新读取 raw artifacts／重算 hash 的 validator 证据，subject 是“manifest 是否忠实”，其 observation upstream 与 manifest 声明分离；真实 SDK／真实 socket／直接 DB／精确数学 oracle 亦各有不同 upstream；“独立 phase／worktree／reviewer”不是数据 provenance 主张。T6.5 对**已冻结具名 identity set**做 runtime name equality，守的是已知集合未丢，不声称发现未知 testcase population，故不列问题。
+
+## 已确认整改与验证边界
+
+- `864edfc4` 对 AST／self-report 的降级准确；stage 2-3 HANDOVER／KICKOFF 已准确收窄为同源复算与 observed floor。
+- 本轮只改文档，未发现需要重跑 backend 的代码／测试基础设施变化；不要求重复全量门。`git diff --check 864edfc4^ 864edfc4` 通过。
+- 完整扫描范围：仓库内 `docs/**`、`.claude/**`、`scripts/**`、`tests/**`、根 `README.md` 与根 `*.md`，包含 ignored 文本、排除 `node_modules/**` 与本评审报告；双向搜索 JUnit／tally／testcase／test count／discovery／manifest／baseline／`minimum_executed` 与 independent／交叉验证／完整性／不减／总量，再逐条按 subject 画 provenance。
+
+## 结构怪味扫描
+
+- command-algebra plan／prompt — **同一术语跨 subject + 冻结 AC 与新注解分叉**；处置：必须由 plan owner 裁决，不在本轮静默缩范围。
+- history-worker／command-algebra closeout docs — **authority 更新后历史完成态仍保持更强结论**；处置：追加 superseded 边界，避免完成报告继续被当当前证据。
+- inter-block HANDOVER — **可行路径把“不同程序”误写成“不同上游”**；处置：同步 provenance 边界，不把 file coverage 升级成 full-suite completeness。
+
+## 收敛判定
+
+- **当前无未闭合 BLOCKER。**
+- **当前仍有 3 个未闭合 MAJOR**，已在本轮一次性全列：① command-algebra 冻结 AC 与新限定冲突，需 owner 裁决；② 其余完成态／收口载体仍把同源 JUnit／identity 称独立稳定证据；③ inter-block T3-b 仍把 rglob×JUnit 外推成 full-suite oracle。
+- 因此本轮仍不能收口；但按上述完整仓扫描，未发现第四组未被这三条覆盖的当前承重载体。
+
+## 最终计数
+
+- 复评轮次 12：BLOCKER 0、MAJOR 3、MINOR 0、NIT 0。
+- 当前 verdict：**修复 MAJOR 后可进入下一阶段**。

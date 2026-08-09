@@ -491,7 +491,10 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 ```
 
 - `--out` 必须是 `$TREE` 外的绝对空目录；已有 `run-*.log` 或路径落在 `$TREE` 内即 `exit 2`。
-- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，**严格使用下面的 v1 schema；额外／缺失字段一律 fail-closed**。⚠️ **2026-08-09 限定（不改本计划的设计，只界定它证得了什么）**：这里的「独立」指的是**相对 T0.0f 那次 15-run 输出**独立（即基线不得从被验收的那次运行反推）——**不是**「相对 discovery 规则或 JUnit producer 独立」。基线由同一 checkout／同一后缀集／同形 `Bun.Glob` 生成，与 runner 的 discovery **共享上游**；而 file-identity 对账证明的是「**请求过的**文件有没有在 artifact 里被提及」，**不能**外推成「仓库应有的测试集合完整」或「用例总数不减」。详见 `docs/coding-conventions.md`「并行执行」节的三层划分。`minimum_executed` 不得从本次 15-run 命令输出反推；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
+- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，**严格使用下面的 v1 schema；额外／缺失字段一律 fail-closed**。
+
+> ⚠️ **未决问题，留给本计划的所有者裁决（2026-08-09 提出，提出者未做裁决）**：`docs/coding-conventions.md`「并行执行」节在 2026-08-09 确立了一个分层结论——提交进仓库的 discovery baseline 与 runner 的 discovery **共享上游**（同 checkout／同后缀集／同形 `Bun.Glob`），而 file-identity 对账证明的是「**请求过的**文件有没有在 artifact 里被提及」，并不证明「仓库应有的测试集合完整」。**这与本节把 baseline 称作『独立 oracle』、以及 T0.0a～c 期望它们守住的完整性目标之间存在张力。**可能的读法有二：① 本计划所说的「独立」本就只指「相对被验收的那次 run 独立」，那么两者不冲突、只需澄清措辞；② 本计划确实要求一个**结构独立的磁盘 manifest**（上游不同于 runner discovery），那么它比当前实现更强，实现需补齐。**收尾方无权替本计划选定其一**——两种读法对 T0.0a～c 的验收强度影响不同。请所有者裁决后再执行该阶段。
+`minimum_executed` 不得从本次 15-run 命令输出反推；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
 
 **`entry-test-discovery-baseline.json` v1 完整 schema 与 canonical encoding**：
 
@@ -527,7 +530,7 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
   - `kind="testcase"`：JUnit 有 `<testcase>` 时，key=`file+classname+name+ordinal`；`ordinal` 是同 file/classname/name 的 1-based 出现序号。
   - `kind="suite"`：整文件 skip 只有 self-closing `<testsuite file=... name=... skipped=.../>`、没有 testcase；key=`file+suite_name`，**不得伪造 classname/name/ordinal**。
   两种 entry 的 `count` 均为正整数，以 multiset count 表达重复；分别按 `(kind, file, classname, name, ordinal)` 或 `(kind, file, suite_name)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许 `native-unavailable | todo | whole-suite-skip | reviewed-environment`；`suite` 通常只允许 `native-unavailable | whole-suite-skip | reviewed-environment`，未知组合 fail-closed。
-- `minimum_executed`：非负整数，由 Commit -1 的 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。⚠️ **限定同上**：该 oracle 相对被验收的那次 run 独立，但**与 discovery 规则和 JUnit producer 同源**；因此它冻结的是**已观察量的地板**，不是「用例数不减」的证明。
+- `minimum_executed`：非负整数，由 Commit -1 的独立 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。
 - `runner_git_blob` 必须等于 entry A 中 `scripts/parallel-test.ts` 的 `git rev-parse "${ENTRY_SHA}:scripts/parallel-test.ts"`；不等说明用另一把尺子量 evidence。
 - 文件编码 UTF-8、LF、2-space JSON、末尾单个 `\n`；顶层 key 顺序固定为上例，条目 key 顺序固定为上例。消费者既验证解析语义，也对原始 bytes 取 hash；禁止“语义相同就重写 baseline”绕过审计。
 - **runner→baseline wrapper→producer 的 artifact transfer 是冻结接口，不是实现细节**：

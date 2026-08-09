@@ -1,5 +1,7 @@
 # Command algebra final candidate merged-state review
 
+> ⚠️ **2026-08-09 追加的口径更正（不改本报告当时的结论，只界定其证据强度）**：本文若把「16 份 shard JUnit 叶节点复算」或「磁盘 glob × JUnit 对账」称作**交叉验证／独立重算／独立 oracle**，那个措辞**不准确**——前者与 runner tally 同出一批 artifact、同一个 producer，只是换了 parser（抓解析／聚合错误，抓不到 producer 漏项）；后者独立于 runner 的**实现**、不独立于 discovery 的**规则**，且只到文件级。因此据此冻结的 `minimum_executed` 是**已观察量的地板**，不是「测试没减少」的证明。当前口径与判独立性的方法见 `docs/coding-conventions.md`「并行执行」节。
+
 ## 评审结论
 
 - **评审范围**：候选 `16b494d301113fae7cd50a7aa499931dff5dab26`，评审包 `/home/xp/src/copilot-api-js/.claude/worktrees/command-algebra-calibration-flake/.superpowers/sdd/review-ebc8fffb..16b494d3.diff`，并以最终代码、`/home/xp/src/copilot-api-js/.claude/worktrees/command-algebra-calibration-flake/docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` Commit -1／§0.4f、`/home/xp/src/copilot-api-js/.claude/worktrees/command-algebra-calibration-flake/docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` T1 为 oracle。
