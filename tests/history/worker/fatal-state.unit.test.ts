@@ -280,7 +280,7 @@ describe("History Worker terminal-failed state", () => {
     expect((drainError as Error).message).toMatch(/shut down while no Worker generation was running/)
   })
 
-  test("gives up and goes terminal once the restart budget is spent, instead of retrying forever", async () => {
+  test("keeps restarting for as long as the condition persists, without inventing a terminal state", async () => {
     const transports: Array<ScriptedTransport> = []
     const runtime = new HistoryPersistenceRuntimeImpl({
       workerFactory: (generation) => {
@@ -288,7 +288,7 @@ describe("History Worker terminal-failed state", () => {
         transports.push(transport)
         return transport
       },
-      restart: { maxConsecutiveFailures: 3, setTimer: (fn) => (fn(), () => {}) },
+      restart: { setTimer: (fn) => (fn(), () => {}) },
     })
 
     const settlements: Array<HistoryPersistenceOutcome> = []
@@ -297,16 +297,22 @@ describe("History Worker terminal-failed state", () => {
     await started
     runtime.enqueue(buildEnvelope(buildTerminalRecord("op-budget-1")), (outcome) => settlements.push(outcome))
 
-    // Every replacement dies the moment it appears. Without a ceiling this is an infinite
-    // sequence with no terminal state: `start()` would never settle, and §8.1 would never
-    // let the proxy listen — a process that looks alive and serves nothing.
-    for (let attempt = 0; attempt < 3; attempt++) transports.at(-1)?.emitExit(1)
+    // Spec §7.1 routes ordinary crashes through the automatic restart and §7.2 reserves the
+    // irreversible terminal state for conditions already known to be permanent. "Tried N
+    // times" is not such a condition, so no amount of crashing may synthesise one — a
+    // transient fault that clears on attempt N+1 must still be allowed to recover.
+    for (let attempt = 0; attempt < 12; attempt++) transports.at(-1)?.emitExit(1)
 
-    expect(runtime.snapshot().terminalFailed).toBe(true)
-    expect(runtime.snapshot().lastError).toMatch(/failed to stay up after 3 consecutive attempts/)
-    expect(transports).toHaveLength(3)
-    // Going terminal is not a quiet abandonment: the un-ACKed envelope still settles.
-    expect(settlements).toEqual(["failed"])
+    expect(runtime.snapshot().terminalFailed).toBe(false)
+    expect(runtime.snapshot().consecutiveFailures).toBe(12)
+    expect(transports).toHaveLength(13)
+    // The envelope is retained across every restart, because a crash never proved it failed.
+    expect(settlements).toEqual([])
+    expect(runtime.snapshot().pendingEnvelopes).toBe(1)
+
+    // And it really is still recoverable: the 13th generation coming up settles the backlog.
+    transports.at(-1)?.emitReady()
+    expect(runtime.snapshot()).toMatchObject({ ready: true, terminalFailed: false, consecutiveFailures: 0 })
   })
 
   test("a retired generation's fatal is still believed, because it reports a permanent condition", async () => {

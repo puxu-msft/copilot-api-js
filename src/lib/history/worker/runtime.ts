@@ -544,15 +544,6 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     }
     this.publishStatus()
 
-    if (decision.exhausted) {
-      // Restarting has stopped being a recovery strategy. Spec §7.2 has no state for
-      // "retrying forever", and hanging is worse than failing: `start()` would never settle
-      // and §8.1 would never let the proxy listen, so the process would look alive and serve
-      // nothing. Go terminal, which shutdown escalates into a visible exit 1.
-      this.failTerminal(new Error(`History Worker failed to stay up after ${decision.consecutiveFailures} consecutive attempts: ${error.message}`))
-      return
-    }
-
     const setTimer = this.options.restart?.setTimer ?? defaultRestartTimer
     this.cancelRestartTimer = setTimer(() => {
       this.cancelRestartTimer = undefined

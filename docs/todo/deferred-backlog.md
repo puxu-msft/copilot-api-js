@@ -1249,3 +1249,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：耗时比值不适合在共享 CPU 的分片 runner 里当通过条件。可选路径：①把该断言迁到不并行的档位（如 `test:pty` 之外另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。②最长远——它测的本来就是「不依赖历史长度」这个性质。
 - **为何暂缓**：属既有测试的判据形态问题，不是产品缺陷；且本轮任务未触及 History V3 store，就地改它会把两件事混进同一次验证链。**但它会持续制造 false-red**，按 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 的判据，这正是「wall-clock 预算/比值当通过条件」那一类。
 - **触发条件**：再次在 CI 或全量运行中看到本条变红时，直接做②，不要调阈值——调阈值是打地鼠。
+
+## History Worker 的启动重试无截止时间，Batch 2b 接线时必须补（2026-08-09，Batch 2a 三轮评审的裁决产物）
+
+- **根因 / 现状**：`src/lib/history/worker/restart-policy.ts` 的重启预算**只限速、不限次**——延迟按指数增长并封顶 30s，但尝试次数无上限。配合 `runtime.ts` 的启动路径，这意味着一个**永不清除**的可重试启动错误（例如某个 peer 长期持有 SQLite 写锁、artifact 长期不可读）会让 `start()` 的 promise **既不 resolve 也不 reject**：start waiter 被一路带进每一次 `launchWorker`，而没有任何一条路径会终结它。
+- **为什么这不是实现疏忽**：spec §7.1 明写「普通 crash／可重试启动错误走自动重启」，§7.2 把不可逆 terminal 保留给**已知永久**的条件；「试了 N 次」不是这样的条件，把它当成 fatal 会让一个本可在第 N+1 次恢复的临时故障变成进程生命周期内不可恢复。Batch 2a 实现期曾加过 `maxConsecutiveFailures`（默认 10）上限，**经用户裁决撤回**（2026-08-09）：理由是它单方面改动了冻结 spec 的行为契约，而正确的归属层不在 runtime。
+- **暴露形态（这是本条真正的风险）**：spec §8.1 规定 startup hard gate 失败时**不监听代理端口**。两条叠加的后果是：进程**既不服务、也不退出**，运维看到的是「卡住」而不是「失败」——它取代了一次响亮的 exit 1。**这不是理论推演**：Batch 2a 期间 `SQLITE_BUSY` 在 `test:backend` 负载下真实出现过（3 次里 2 次），当时因为 Worker 把任何 initialize 抛错都当 fatal 才没有挂起；那个 fatal 误判修好之后，挂起路径才被打开。
+- **理想架构 / 若做需改什么**：**「何时放弃启动」属于拥有进程启动的一方，不属于 runtime**。Batch 2b 把 runtime 接进生产启动序列时，须在**调用方**加启动截止时间（deadline），超时后按 §7.2 让 shutdown 进入 `failed` 并 exit 1。runtime 侧已备好可观测出口：`HistoryWorkerStatus` 的 `consecutiveFailures` 与 `nextRetryAt`（`protocol.ts`），deadline 逻辑读它们即可，**不需要**改 restart-policy。若最终判断 runtime 自己也该有上限，那要先修 spec §7.2 的 fatal 成因清单再改代码，顺序不能反。
+- **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
+- **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
+- **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。

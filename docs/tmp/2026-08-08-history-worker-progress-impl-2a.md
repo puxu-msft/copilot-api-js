@@ -65,9 +65,13 @@ status: active
 
 | 变异 | SHA-256 前 12 | 改了什么 | 观测到的红 |
 |---|---|---|---|
-| `no_budget_cap` | `245b2056f015` | restart 预算永不耗尽 | 「预算耗尽转 terminal」一条 |
 | `retired_all_stale` | `4bada3cc732a` | 不区分退休 generation | 「崩溃后未替换前的 ACK 不被采信」一条 |
 | `start_after_fatal2` | `b543a5a0e88d` | 去掉 terminal 后的 `start()` 拒绝 | 「二次 start 被拒」一条 |
+| `no_tombstone_gen` | `88133b92a425` | tombstone 不比对 generation | 「跨代 ACK 属协议违规」一条 |
+| `counters_after_callback` | `81b2494f6022` | 计数更新挪到回调之后 | 「回调看见结算后计数」一条 |
+| `no_await_terminate` | `69411e866ab6` | shutdown 不等 Worker 关闭 | 「fatal 后 shutdown 等待关闭」一条 |
+
+**已撤回的机制（用户裁决 2026-08-09）**：第三轮曾加过 `maxConsecutiveFailures`（默认 10，超限转 terminal）及其变异对照 `no_budget_cap`。两位评审对它结论相反——对抗性评审认定它闭合了「无限重启无终态」，spec 一致性评审认定它与冻结 spec §7.1／§7.2 冲突。**用户裁决撤掉上限、恢复字面合规**，改为登记 `docs/todo/deferred-backlog.md`：「Batch 2b 接线时必须给 History Worker 启动加截止时间」。现有测试改为断言**反向性质**——连续 12 次崩溃后仍非 terminal、envelope 仍在、第 13 代 ready 后恢复，即「不得凭次数合成终态」。
 
 **仍无变异对照的既知项**（`no-silently-cut-but-defer`，留给 Batch 2b 或后续批次，不在本批修）：
 - fatal 分支写 tombstone（当前 tombstone 判别力落在非终态路径上；评审两轮均实测该变异全绿）。
@@ -104,7 +108,7 @@ status: active
 - **可重试启动错误被误判为 fatal（由一次 flaky 红暴露的真缺陷）。** 新写的 poison-journal 用例在 `bun run test:backend` 下 3 次里红 2 次，收到的是 `database is locked` 而不是预期消息。追下去发现是产品缺陷而非测试问题：Worker 把**任何** initialize 抛错都变成 `fatal`，于是负载下一瞬间的 `SQLITE_BUSY` 会让 History 在整个进程生命周期内不可恢复——与 spec §7.1「普通 crash／**可重试启动错误**走自动重启」冲突。修法不加新协议消息（`fatal` 按定义即终态），而是让 Worker 以专用退出码结束线程，走既有的重启路径。修完 `test:backend` 连跑多次全绿（最终口径 7352 pass／0 fail @ `af5130ce`）。
 - **对抗性评审的判别力结论比功能结论重要。** 18 条变异 11 条全绿，说明「N 条测试全绿＋每项都有变异对照」这种汇报会让读者高估覆盖面——三条变异只证明了「已写的那三条判据会红」，证明不了判据覆盖了该覆盖的面。上面的第二轮表格连同「故意留绿」那条一起记，正是为了不再制造这种高估。
 - **修一条约束时新引入了两条（第二轮复审抓到）。** ① 让 fatal 终止 Worker → `transport` 变 undefined → `start()` 的「已启动」守卫失效 → 二次 `start()` 会清掉 sticky fatal 标志。② 补 generation 退休后，最初写成「退休代的**所有**消息都作废」，把 `fatal` 也挡掉了——而 `fatal` 报的是替代代只会重新撞上的永久条件，挡掉它等于多赔一轮必败的重启。两条都由已有用例当场变红抓到，教训是 `fix-one-constraint-violates-sibling-constraint`：改一处状态转移后，要回头看**依赖同一状态**的其他判断。
-- **无限重试比一次响亮的失败更糟。** 可重试启动错误修完后，持续失败变成「delay 封顶 30s、`start()` 永不 settle、§8.1 永不监听」——进程看着活着、什么都不做，取代了原来的 exit 1。已加 `maxConsecutiveFailures`（默认 10）上限，超限走既有 §7.2 terminal 转移。**这一条是我自己没想到、评审提出的**，而我先前给用户的汇报里还把「30s 封顶所以不是风暴」当成结论——那个判断只回答了「是不是风暴」，没回答「有没有终态」。
+- **无限重试比一次响亮的失败更糟——但「修哪一层」不是实现者能自己定的。** 可重试启动错误修完后，持续失败变成「delay 封顶 30s、`start()` 永不 settle、§8.1 永不监听」——进程看着活着、什么都不做，取代了原来的 exit 1。**这一条是我自己没想到、对抗性评审提出的**，而我先前给用户的汇报里还把「30s 封顶所以不是风暴」当成结论——那个判断只回答了「是不是风暴」，没回答「有没有终态」。我随后在 runtime 里加了次数上限，**又被 spec 一致性评审判为与冻结 spec 冲突**：§7.2 的 fatal 成因是「已知永久」的条件，「试了 N 次」不是。两位评审结论相反、且争的是冻结 spec 的行为契约，**已交用户裁决：撤掉上限，把 deadline 归给拥有进程启动的一方（Batch 2b），登记进 `docs/todo/deferred-backlog.md`**。教训有两层：①「有没有终态」是比「是不是风暴」更该问的问题；②**发现缺陷 ≠ 有权选修复层**，缺陷真实并不代表可以在冻结契约上单方面开新终态。
 - **bun 的 per-test timeout 拦不住悬挂的 `.rejects`。** 跑 `start_after_fatal` 变异时整个文件挂死 >5 分钟、两次被外部 timeout 杀掉（第二次连 `}, 10_000)` 显式超时都没用）。改成 `Promise.race` 对短定时器后，同一变异 1 秒内变红。**推论：任何「断言某 promise 会 reject」的用例，若被测缺陷会让该 promise 永不 settle，就必须用 race 而不是 `.rejects`**，否则它的变异对照拿不到可用的红。
 
 ## 已作废的路线
