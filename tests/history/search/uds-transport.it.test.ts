@@ -460,6 +460,14 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
   }, 30_000)
 })
 
+// `DEFAULT_PING_TIMEOUT_MS` is 300ms because `/api/status` wants a fast answer
+// for the common "not installed" case. That is a production choice, not a test
+// oracle: the two tests below assert a POSITIVE outcome, so inheriting 300ms
+// makes a loaded machine read as "the sidecar did not answer". They pass an
+// explicit budget. The absent-sidecar test in between keeps the default on
+// purpose -- fast failure is exactly what it measures.
+const PING_TEST_TIMEOUT_MS = 20_000
+
 describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — unlike query(), DOES distinguish success/failure)", () => {
   test("a running, reachable sidecar -> { reachable: true }", async () => {
     const socketPath = freshSocketPath()
@@ -467,7 +475,7 @@ describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — u
     cleanupServers.push(server)
     await server.listen()
 
-    const result = await pingHistorySearchUdsClient(socketPath)
+    const result = await pingHistorySearchUdsClient(socketPath, PING_TEST_TIMEOUT_MS)
     expect(result.reachable).toBe(true)
     expect(result.error).toBeUndefined()
     expect(result.latencyMs).toBeGreaterThanOrEqual(0)
@@ -492,7 +500,7 @@ describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — u
     cleanupServers.push(server)
     await server.listen()
 
-    await pingHistorySearchUdsClient(socketPath)
+    await pingHistorySearchUdsClient(socketPath, PING_TEST_TIMEOUT_MS)
     // The wire request itself still round-trips through the real search callback
     // (the "cheap" guarantee comes from the NATIVE side's own short-circuit, see
     // native/history-search/src/lib.rs's search_blocking -- this test's injected
