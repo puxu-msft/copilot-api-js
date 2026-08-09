@@ -242,22 +242,40 @@ writeArtifactAtomically(
 // where it is. Only the backend tier is comparable -- a narrower suffix set legitimately skips
 // less, so comparing it would cry wolf on every `test:fast`. The identity key and the parser
 // are the production ones, so this cannot drift away from what the gate will actually assert.
-if (suffixes.length === BACKEND_SUFFIXES.length && suffixes.every((suffix) => BACKEND_SUFFIXES.includes(suffix))) {
+// Only the skip multiset needs this. The baseline's other two bindings already fail fast:
+// file identity and runner_git_blob are checked in seconds, before the batch starts
+// (capture-entry-evidence.ts), and the executed floor stops the wrapper on run 01. The skip
+// multiset is the one binding whose mismatch costs all fifteen runs first.
+//
+// Set equality on the suffixes, not length plus includes: `unit unit unit` satisfies the latter
+// while running only one tier, and would print a screenful of phantom `missing`. A mechanism
+// whose whole value is being believed when it speaks cannot afford to cry wolf.
+if (new Set(suffixes).size === BACKEND_SUFFIXES.length && BACKEND_SUFFIXES.every((suffix) => suffixes.includes(suffix))) {
   const baselinePath = path.join(REPO_ROOT, "tests/infra/entry-test-discovery-baseline.json")
   if (existsSync(baselinePath)) {
-    const allowed = parseDiscoveryBaseline(readFileSync(baselinePath, "utf8")).allowed_skipped
-    const expected = new Map(allowed.map((skip) => [skipIdentityKey(skip), skip.count]))
-    const actual = new Map(skippedIdentities.map((skip) => [skipIdentityKey(skip), skip.count]))
-    const drift = [
-      ...[...expected.keys()].filter((key) => !actual.has(key)).map((key) => `missing ${key}`),
-      ...[...actual.keys()].filter((key) => !expected.has(key)).map((key) => `unexpected ${key}`),
-      ...[...expected.entries()].flatMap(([key, count]) => (actual.has(key) && actual.get(key) !== count ? [`count ${key}`] : [])),
-    ]
-    if (drift.length > 0) {
-      console.error(`[parallel-test] entry discovery baseline is stale: ${drift.length} skip identities differ from this run.`)
-      console.error("[parallel-test] capture-entry-evidence.ts will exit 5 on this. Re-freeze allowed_skipped before taking entry evidence.")
-      for (const line of drift.slice(0, 10)) console.error(`[parallel-test]   ${line.split(String.fromCodePoint(0)).join(" :: ")}`)
-      if (drift.length > 10) console.error(`[parallel-test]   ... and ${drift.length - 10} more`)
+    // parseDiscoveryBaseline throws on anything non-canonical -- one stray newline is enough, and
+    // hand-refreezing allowed_skipped is exactly when that happens. Uncaught, it would land before
+    // the summary line below and turn a fully green run into "the tests blew up", losing the
+    // pass/fail tally to a diagnostic that was never allowed to fail anything.
+    try {
+      const allowed = parseDiscoveryBaseline(readFileSync(baselinePath, "utf8")).allowed_skipped
+      const expected = new Map(allowed.map((skip) => [skipIdentityKey(skip), skip.count]))
+      const actual = new Map(skippedIdentities.map((skip) => [skipIdentityKey(skip), skip.count]))
+      const drift = [
+        ...[...expected.keys()].filter((key) => !actual.has(key)).map((key) => `missing ${key}`),
+        ...[...actual.keys()].filter((key) => !expected.has(key)).map((key) => `unexpected ${key}`),
+        ...[...expected.entries()].flatMap(([key, count]) => (actual.has(key) && actual.get(key) !== count ? [`count ${key}`] : [])),
+      ]
+      if (drift.length > 0) {
+        console.error(`[parallel-test] entry discovery baseline is stale: ${drift.length} skip identities differ from this run.`)
+        console.error("[parallel-test] capture-entry-evidence.ts will exit 5 on this. Re-freeze allowed_skipped before taking entry evidence.")
+        for (const line of drift.slice(0, 10)) console.error(`[parallel-test]   ${line.split(String.fromCodePoint(0)).join(" :: ")}`)
+        if (drift.length > 10) console.error(`[parallel-test]   ... and ${drift.length - 10} more`)
+      }
+    } catch (error) {
+      console.error(
+        `[parallel-test] entry discovery baseline unreadable (${error instanceof Error ? error.message : String(error)}); skipping the staleness comparison`,
+      )
     }
   }
 }
