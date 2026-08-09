@@ -1376,3 +1376,23 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **若做需改什么**：用 provenance 判据全仓扫一遍（尚未覆盖：`ui/`、`ui-v4/`、`e2e/`、`native/`、历史 `docs/archive/`），逐处判定是「措辞不准」还是「判据真的担不起它承担的不变量」——**后者要连同它守的不变量一起改**，别只改措辞。⚠️ **别顺手改冻结计划的验收强度**：那属于推翻既有裁决，须交该计划所有者（本轮就踩过一次，已撤回并交裁决）。
 - **触发条件（值得做）**：① 有人又用 tally／同批 JUnit 复算论证「测试没减少」；② 新写判据时需要引用独立性判据；③ 顺手改到上述任一文档时。
 - **发现方**：收尾产物评审十二轮（`gpt-souls:reviewer`，2026-08-09），完整逐条证据在 `docs/tmp/2026-08-09-wrapup-artifacts-review.md`。
+
+## native 产物「存在即可用」——陈旧的 `.node` 让 14 条用例以断言失败的形状变红（2026-08-09，Task 37 接缝复审期间实测）
+
+- **根因**：`isNativeHistorySearchAvailable()` 只判断 `native/history-search/*.node` **是否存在**，不判断它是否与 `native/history-search/` 的 Rust 源码同代。CLAUDE.md（2026-07-28 起）声明的是一个**两态**模型——「有产物就真跑、没有就显式 skip，绝不红」；**第三态「产物存在但陈旧」没有被建模**，落进了「真跑」那一支。
+- **实测（口径：主检出 `/home/xp/src/copilot-api-js`，commit `638f6f3c`）**：产物构建于 2026-08-06 20:08，而 `native/history-search/` 此后有 5 个提交（`907302dc`、`d38fcb9c`、`a7a2da0d`、`0fef1143`、`14f7c6d4`，最新 2026-08-09 01:06）。`bun run test:backend` 得 `7647 tests · 7633 pass · 14 fail · 9 skipped · 1 shard crashed`，14 条全在 `tests/history/search/{daemon,search-rest-cutover}.it.test.ts`。
+- **正样本对照（决定性）**：同一 commit、同两个文件，只在一棵**新构建了产物**的隔离树里重跑 → `28 pass / 0 fail`。变量只有产物版本，故排除代码缺陷。失败用例名（`reports an unparsable query as invalidQuery`、`returns the full filtered match set`、`treats an empty filter value as no filter`）与那 5 个提交新增的行为逐条对应。
+- **危害**：这批红**看起来完全像代码回归**——断言失败、消息具体、指向被测行为。下一个撞上它的人有两条错路：把它当「既有失败」挥手放过（CLAUDE.md 已点名这个形态，2026-07-28 发生过一次），或反过来去「修」生产代码来迎合旧二进制。**没有任何输出提示「你跑的是三天前的二进制」。**
+- **理想架构 / 若做需改什么**：把产物**戳上它的来源指纹**（构建时把 `native/history-search/` 的 tree hash 或源码 sha 写进产物旁的 sidecar，或由 napi 导出一个版本常量），`isNativeHistorySearchAvailable()` 改为「存在**且**指纹匹配当前源码」——**不匹配时按「不可用」显式 skip，并打印一行说明与重建命令**，而不是静默拿旧二进制去跑。注意这会让「忘记重建」从假红变成显式 skip，与既有两态设计一致。
+- **为何暂缓**：不阻塞任何交付；`bun run build:history-search` 一条命令即可绕过，且 `test:ci` 本来就会先构建。属可增量修的开发者体验债。**触发条件（值得做）**：① 有人再次把这批红误判为回归或误判为既有失败；② 顺手改 `scripts/build-history-search.ts` 或 native 加载入口时；③ 有人要把 native 测试纳入某道必过门禁。
+- **发现方**：Task 37 接缝复审的 `test:backend` 门（主会话，2026-08-09）。
+
+## entry-evidence 的 skip 基线把「环境条件性 skip」当成无条件的，构建了 native 产物反而会让门变红（2026-08-09，同上）
+
+- **根因**：`scripts/validate-entry-evidence.ts:748-759` 对 skip 多重集做**逐条精确相等**比较（`JSON.stringify(identityMultiset(actual)) !== JSON.stringify(identityMultiset(expected))` → `fail(8, "skipped identity multiset mismatch")`）。而基线 `tests/infra/entry-test-discovery-baseline.json` 里的 skip **大多数是环境条件性的**：`638f6f3c` 上 43 条 allow-listed 中 **34 条 reason 为 `native-unavailable`**（另 8 条 `whole-suite-skip`、1 条 `todo`）。
+- **后果**：同一 commit 上，多重集取决于**这棵树有没有 native 产物**——没有 → 43 条 skip → 与基线相等 → 绿；有（`test:ci` 会主动构建，上一条 backlog 建议的修法也会导致有）→ 9 条 skip → **mismatch → 红**。门的绿色因此绑定在「产物缺席」这个环境上，方向恰好是**惩罚正确环境**。
+- **同类先例，且防护只做了小的那半**：`scripts/capture-entry-evidence.ts:283-289` 对 `RUN_PERF_TESTS` 做了**结构性**中和（构造子进程 env 时显式置 `undefined`），注释明写理由正是「它会改变 skip 多重集，令门以指不到根因的 mismatch 失败」。**同一条道理对 native 产物完全适用，爆炸半径是 34 条 vs 1 条，却没有任何对应防护。** 这是 `fix-at-the-shared-base-not-where-you-noticed` 的实例：真正的不变量是「多重集必须锚定到一个**被声明的环境**」，而实现成了针对单个环境变量的一次性擦除。
+- **归属澄清（别记错）**：**这不是本轮引入的。** 合并前 master `174f0dea` 的基线已有 **27** 条 `native-unavailable`（总 36、`minimum_executed` 7360）；本轮按同一既有模式增至 **34**（总 43、`minimum_executed` 7613）。本条记的是**既有形态被本轮实测暴露**，不是回归。
+- **理想架构 / 若做需改什么**：三选一，**需要裁决而不是顺手改**（放宽既有 guard 按纪律须交独立 reviewer 或用户）——① 基线给每条 skip 标注**它所依赖的环境前提**，比较时按当前环境筛选出应生效的子集；② 像 `RUN_PERF_TESTS` 那样在采集侧把环境**钉死到单一声明状态**（例如采集前强制构建产物，使 `native-unavailable` 恒为空）；③ 把 `minimum_executed` 之外的多重集比较**降级为按 reason 分组的计数**，牺牲一部分鉴别力换取环境无关性。①最正确、②最省事、③最弱。
+- **为何暂缓**：当前无红——`test:backend` 不调用该 validator，它只在收尾采集路径上跑，而那条路径迄今都在产物缺席的环境里执行。但这是**潜伏**而非不存在：一旦有人在构建过产物的机器上走收尾采集，就会拿到一条指不到根因的 `multiset mismatch`。**触发条件（值得做）**：① 任何人在有产物的环境跑 `capture-entry-evidence.ts`；② 上一条 backlog 的指纹修法落地（它会把 34 条 skip 变成条件性显式 skip，直接踩中本条）；③ 顺手改 `validate-entry-evidence.ts` 或该基线时。
+- **发现方**：Task 37 接缝复审期间自查本轮重建的基线（主会话，2026-08-09）。
