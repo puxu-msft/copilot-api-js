@@ -54,7 +54,7 @@
     "test": "bun run test:fast",
     "test:backend": "bun scripts/parallel-test.ts unit it http",
     "test:backend:isolated": "bun test --parallel .unit.test .it.test .http.test",
-    "test:ci": "bun run build:history-search && bun run test:backend && bun run test:pty && bun run test:e2e",
+    "test:ci": "bun run build:history-search && bun run test:backend && bun run test:pty && bun run test:e2e && bun run test:perf",
     "test:cov": "bun test --parallel --coverage .unit.test .it.test .http.test",
     "test:cov:report": "bun test --parallel --coverage --coverage-reporter lcov .unit.test .it.test .http.test",
     "test:e2e": "bun test .e2e.test",

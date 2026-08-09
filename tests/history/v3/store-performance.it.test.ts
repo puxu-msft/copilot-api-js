@@ -166,11 +166,14 @@ describe("History V3 store performance", () => {
     // intent that can be checked DETERMINISTICALLY, so the backend tier gates on this one.
     //
     // BOUNDARY — read before assuming this replaces the timing test. It is strictly NARROWER:
-    // "no query plan degrades to a full scan" is not "cost does not grow". It does NOT catch cost
-    // growth that keeps an indexed plan — an N+1 loop of point lookups, per-operation work in JS, a
-    // scan issued through a code path this commit does not execute, or growth in row SIZE. Those
-    // remain the timing test's job, which is why that test is kept (gated into the perf tier) rather
-    // than deleted.
+    // "no query plan degrades to a full scan" is not "cost does not grow". It COVERS the SELECT,
+    // DELETE and UPDATE statements this commit issues against history-sized tables — all three run a
+    // plan, and the journal DELETE on this path is exactly the case an earlier SELECT-only filter
+    // missed. It does NOT catch cost growth that keeps an indexed plan — an N+1 loop of point
+    // lookups, per-operation work in JS, growth in row SIZE, a scan issued through a code path this
+    // commit does not execute, or a plan that is indexed but poorly selective. Those remain the
+    // timing test's job, which is why that test is kept (gated into the perf tier) rather than
+    // deleted.
     //
     // It observes the statements PRODUCTION actually prepares, rather than re-stating SQL here — a
     // copy of the query would prove things about the copy.
@@ -193,16 +196,19 @@ describe("History V3 store performance", () => {
     }
 
     const HISTORY_SIZED = /v3_(?:objects|operations|sequence_nodes|tracks|timeline_chunks|journal)/
-    const reads = statements.filter((sql) => /^\s*SELECT/i.test(sql) && HISTORY_SIZED.test(sql))
-    // Positive control for the oracle itself: if the commit path stopped issuing reads against these
-    // tables at all, every assertion below would pass vacuously.
-    expect(reads.length).toBeGreaterThan(0)
+    // SELECT is not the only statement whose plan can degrade: a DELETE or UPDATE with a WHERE runs
+    // a plan too, and `DELETE FROM v3_journal WHERE operation_id=? AND revision=?` is on this very
+    // path. An earlier revision filtered on SELECT alone and silently excluded five such statements.
+    const planned = statements.filter((sql) => /^\s*(?:SELECT|DELETE|UPDATE)/i.test(sql) && HISTORY_SIZED.test(sql))
+    // Positive control for the oracle itself: if the commit path stopped issuing planned statements
+    // against these tables at all, every assertion below would pass vacuously.
+    expect(planned.length).toBeGreaterThan(0)
 
-    const scans = reads
+    const scans = planned
       .map((sql) => ({ sql, plan: (originalPrepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>).map((row) => row.detail) }))
       .filter(({ plan }) => plan.some((detail) => /^SCAN\b/.test(detail)))
 
-    console.log("HISTORY_V3_PLAN", JSON.stringify({ readsInspected: reads.length, scans: scans.length }))
+    console.log("HISTORY_V3_PLAN", JSON.stringify({ statementsSeen: statements.length, planInspected: planned.length, scans: scans.length }))
     expect(scans).toEqual([])
   })
 })
