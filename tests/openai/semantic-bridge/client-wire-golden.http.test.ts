@@ -13,6 +13,7 @@ import {
 import OpenAI from "openai"
 
 import { extractClaudeSignature } from "~/lib/anthropic/claude-signature-carrier"
+import { extractEncryptedReasoning } from "~/lib/anthropic/synthetic-reasoning"
 import { setModels } from "~/lib/models/cache"
 import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
@@ -42,6 +43,7 @@ const DONE = "data: [DONE]\n\n"
  */
 const CLIENT_WIRE_DIGESTS = {
   "A→R:stream": { byteLength: 794, sha256: "3ca27db7a9680c73ede46e67ffcb69ca085674e3bc39f7037af9ca73268a6b1f" },
+  "A→R:stream-thinking": { byteLength: 1024, sha256: "b9401bb11a1dcc8d5d7a94b27276ce7b523a0653e5cd6854f49bee995741879e" },
   "A→R:non-stream": { byteLength: 247, sha256: "07b986d706be6cf8dd404603cde0ece76cce0543b2e87649077d5e3d13fc34a7" },
   "R→A:stream": { byteLength: 1886, sha256: "a023fc92b9cd847ef525656fb0765bee28b14ef0a1798a4516cde2b3f8299b49" },
   "R→A:stream-reasoning": { byteLength: 2814, sha256: "c039bd10a4112dd666e7d80370ff6c987fb9e23c1fa29178fb946faaa615a5ab" },
@@ -54,6 +56,13 @@ interface ClientWireCapture {
   status: number
   contentType: string | null
   bodyHex: string
+}
+
+function containsDirectionalReasoningMarker(direction: "A→R" | "R→A", capture: ClientWireCapture): boolean {
+  const wire = Buffer.from(capture.bodyHex, "hex").toString("utf8")
+  return direction === "A→R" ?
+      wire.includes('"type":"thinking"') && wire.includes('"type":"signature_delta"')
+    : wire.includes("response.reasoning_summary_text.delta") && wire.includes('"encrypted_content"')
 }
 
 async function assertFixedClientWireDigest(key: ClientWireDigestKey, capture: ClientWireCapture): Promise<void> {
@@ -104,6 +113,42 @@ function responsesJson(): Response {
     parallel_tool_calls: false,
     store: false,
   })
+}
+
+function responsesReasoningStream(): Response {
+  const frame = (type: string, sequenceNumber: number, payload: Record<string, unknown>): string =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequenceNumber, ...payload })}\n\n`
+  const reasoningOpen = { id: "reasoning_golden", type: "reasoning", summary: [] }
+  const reasoningDone = {
+    id: "reasoning_golden",
+    type: "reasoning",
+    summary: [{ type: "summary_text", text: "responses reasoning summary" }],
+    encrypted_content: "responses-encrypted-golden",
+  }
+  return createSseResponse([
+    frame("response.created", 0, {
+      response: { id: "resp_reasoning_golden", object: "response", created_at: 1, status: "in_progress", model: RESPONSES_MODEL, output: [] },
+    }),
+    frame("response.output_item.added", 1, { output_index: 0, item: reasoningOpen }),
+    frame("response.reasoning_summary_text.delta", 2, { item_id: "reasoning_golden", output_index: 0, summary_index: 0, delta: "responses reasoning summary" }),
+    frame("response.output_item.done", 3, { output_index: 0, item: reasoningDone }),
+    frame("response.completed", 4, {
+      response: {
+        id: "resp_reasoning_golden",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: RESPONSES_MODEL,
+        output: [reasoningDone],
+        usage: { input_tokens: 7, output_tokens: 5, total_tokens: 12 },
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      },
+    }),
+    DONE,
+  ])
 }
 
 function responsesStream(): Response {
@@ -273,6 +318,22 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
 
   afterAll(() => proxy.close())
 
+  async function captureAnthropicClientThinkingWire(): Promise<ClientWireCapture> {
+    const upstream = upstreamWithOptionalRetry(responsesReasoningStream, false)
+    setUpstreamFetchForTests(upstream.handler)
+    const message = await anthropicClient.messages
+      .stream({ model: RESPONSES_MODEL, max_tokens: 32, messages: [{ role: "user", content: "hello" }] })
+      .finalMessage()
+    const thinking = message.content.find((block) => block.type === "thinking")
+    expect(thinking).toMatchObject({ type: "thinking", thinking: "responses reasoning summary" })
+    expect(thinking && "signature" in thinking ? extractEncryptedReasoning(thinking.signature) : undefined).toBe("responses-encrypted-golden")
+    expect(upstream.callCount()).toBe(1)
+    expect(captures).toHaveLength(1)
+    const capture = captures[0]
+    await assertFixedClientWireDigest("A→R:stream-thinking", capture)
+    return capture
+  }
+
   async function captureAnthropicClientWire(args: { stream: boolean; retry: boolean }): Promise<ClientWireCapture> {
     const upstream = upstreamWithOptionalRetry(args.stream ? responsesStream : responsesJson, args.retry)
     setUpstreamFetchForTests(upstream.handler)
@@ -331,6 +392,10 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(await captureAnthropicClientWire({ stream: true, retry: true })).toMatchSnapshot()
   })
 
+  test("A→R client wire：stream thinking summary + signature，no retry（锁定当前正常 reasoning→thinking 行为）", async () => {
+    expect(await captureAnthropicClientThinkingWire()).toMatchSnapshot()
+  })
+
   test("A→R client wire：non-stream，no retry", async () => {
     expect(await captureAnthropicClientWire({ stream: false, retry: false })).toMatchSnapshot()
   })
@@ -357,5 +422,21 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
 
   test("R→A client wire：non-stream，retry", async () => {
     expect(await captureResponsesClientWire({ stream: false, retry: true })).toMatchSnapshot()
+  })
+
+  test("coverage guard：A→R 与 R→A 各有至少一条客户端 wire 含方向对应的 thinking／reasoning marker", async () => {
+    const anthropicWire = await captureAnthropicClientThinkingWire()
+    captures.length = 0
+    const responsesWire = await captureResponsesClientReasoningWire()
+    expect(containsDirectionalReasoningMarker("A→R", anthropicWire)).toBe(true)
+    expect(containsDirectionalReasoningMarker("R→A", responsesWire)).toBe(true)
+  })
+
+  test("coverage guard negative control：纯 text wire 不能冒充任一方向的 thinking／reasoning 覆盖", async () => {
+    const anthropicTextWire = await captureAnthropicClientWire({ stream: true, retry: false })
+    captures.length = 0
+    const responsesTextWire = await captureResponsesClientWire({ stream: true, retry: false })
+    expect(containsDirectionalReasoningMarker("A→R", anthropicTextWire)).toBe(false)
+    expect(containsDirectionalReasoningMarker("R→A", responsesTextWire)).toBe(false)
   })
 })
