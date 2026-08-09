@@ -304,6 +304,7 @@
     "tests/history/worker/admission-ws.it.test.ts",
     "tests/history/worker/admission.unit.test.ts",
     "tests/history/worker/asset-url.unit.test.ts",
+    "tests/history/worker/bringup-lifecycle.it.test.ts",
     "tests/history/worker/crash-replay.it.test.ts",
     "tests/history/worker/fatal-state.unit.test.ts",
     "tests/history/worker/overlay-read-surfaces.it.test.ts",

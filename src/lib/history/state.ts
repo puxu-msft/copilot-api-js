@@ -1,4 +1,5 @@
 import type { ScopedPublisher } from "~/lib/observability"
+import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
 import type { HistoryPersistenceRuntime } from "./worker/runtime"
 
@@ -106,7 +107,31 @@ export function isHistoryEnabled(): boolean {
   return enabled
 }
 
-export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
+/**
+ * Tail of the History lifecycle queue: every transition (`initHistory` either way, `shutdownHistory`) runs after the previous one has settled.
+ *
+ * The transitions are not atomic — each awaits a Worker handshake in the middle — and they all mutate the same three pieces of shared state (`enabled`, `startedDbPath`, the two registries). Without a queue, two overlapping calls both read the pre-await snapshot, both decide a bring-up is needed, and the loser's rollback tears down the winner's runtime: `getHistoryPersistenceRuntime()` hands them the SAME singleton, the second `start()` is rejected for being already started, and the failure path releases the writer the first call is about to publish a readonly handle against. The observable end state was a live readonly handle over a registry with no writer at all.
+ *
+ * Serializing is what makes the three-condition idempotency check on the next call meaningful: it can only be trusted if nothing changes those conditions while a transition is mid-flight. Concurrent same-argument callers therefore see one real bring-up followed by idempotent re-entries, and differing arguments get a defined order (call order) instead of a race.
+ */
+let lifecycleTail: Promise<unknown> = Promise.resolve()
+
+/** Run a lifecycle transition after every previously queued one, whether those succeeded or failed (one caller's failure must not wedge the queue). */
+function serializeHistoryLifecycle<T>(transition: () => Promise<T>): Promise<T> {
+  const result = lifecycleTail.then(transition, transition)
+  // The tail must never carry a rejection, or the next `.then(transition, transition)` would still run it but every unhandled link would surface as an unhandled rejection.
+  lifecycleTail = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+export function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
+  return serializeHistoryLifecycle(() => bringHistoryTo(enable))
+}
+
+async function bringHistoryTo(enable: boolean): Promise<void> {
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
   enabled = enable
@@ -144,6 +169,8 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     // opened after `ready`, because the artifact and its owner marker are the Worker's to
     // create.
     const runtime = getHistoryPersistenceRuntime()
+    // Everything from here to `startedDbPath = dbPath` is ONE transaction with a rollback. The two installations are single-shot and the second can fail on its own (the artifact is gone or replaced between `ready` and the open, an owner-marker check rejects it, another handle got published while we were awaiting), so a bring-up that dies after `start()` succeeded would otherwise leave a live Worker holding the write connection that no teardown path can see: `startedRuntime()` keys off `startedDbPath`, which is not published until the last line.
+    let readDatabase: SqliteDatabase | undefined
     try {
       await runtime.start({
         semanticDbPath: dbPath,
@@ -154,15 +181,23 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
         persistRetry: getV3PersistRetryConfig(),
         maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
       })
+      // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
+      // path below reads through it; nothing on this thread may write the semantic DB again.
+      readDatabase = openDatabaseReadonly(dbPath)
+      installHistoryReadDatabase(readDatabase)
     } catch (error) {
-      // A failed start leaves a runtime that can never be started again (a permanent one — an unowned artifact, a corrupt payload — makes it terminal). Leaving it in the registry turns one caller's failure into every later caller's: the next `initHistory` fetches the same dead object and is told it is terminally failed, naming an artifact it never asked for. Release it, then let the original error out unchanged.
-      await releaseHistoryPersistenceRuntime()
+      // Undo this bring-up, then let the original error out unchanged.
+      //
+      // The readonly handle is closed through whichever end actually owns it: ours if it got published, the raw object if `installHistoryReadDatabase` rejected it (the published one then belongs to someone else and closing it would break them).
+      if (readDatabase) {
+        if (peekHistoryReadDatabase() === readDatabase) closeHistoryReadDatabase()
+        else readDatabase.close()
+      }
+      // Compare-and-release, not an unconditional clear: the slot is only ours to empty while it still holds the instance THIS call started. A failed start leaves a runtime that can never be started again (a permanent cause — an unowned artifact, a corrupt payload — makes it terminal), so leaving it in the registry would turn one caller's failure into every later caller's; but clearing a slot that meanwhile came to hold someone else's runtime would destroy an object we never owned.
+      if (peekHistoryPersistenceRuntime() === runtime) await releaseHistoryPersistenceRuntime()
       enabled = false
       throw error
     }
-    // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
-    // path below reads through it; nothing on this thread may write the semantic DB again.
-    installHistoryReadDatabase(openDatabaseReadonly(dbPath))
     startedDbPath = dbPath
   }
   const admission = getHistoryAdmissionController()
@@ -240,7 +275,12 @@ export function stopHistoryBackgroundWork(): void {
  * connection, see uds-client.ts), so there is nothing to drain/stop; it is
  * simply discarded along with everything else when History disables.
  */
-export async function shutdownHistory(): Promise<void> {
+export function shutdownHistory(): Promise<void> {
+  // Queued behind any in-flight bring-up rather than racing it: a shutdown that overtook a half-finished `initHistory` would read `startedRuntime()` as empty (the path is published last) and leave the Worker it was asked to close running.
+  return serializeHistoryLifecycle(shutdownHistoryTransition)
+}
+
+async function shutdownHistoryTransition(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
   stopHistoryBackgroundWork()
   // Keep the canonical terminal subscriber alive through request drain. Only
