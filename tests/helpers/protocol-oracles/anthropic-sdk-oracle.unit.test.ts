@@ -13,3 +13,9 @@ test("rejects an Anthropic frame without its event: line", () => {
 
   expect(() => assertAnthropicEventLineInvariant([frame])).toThrow("frame type=message_start must carry an event: line")
 })
+
+test("rejects a matching event: line that the Anthropic SDK does not recognize", () => {
+  const frame = { event: "unknown_event", data: JSON.stringify({ type: "unknown_event" }) } satisfies ServerSentEventMessage
+
+  expect(() => assertAnthropicEventLineInvariant([frame])).toThrow("event unknown_event must be SDK-recognized")
+})

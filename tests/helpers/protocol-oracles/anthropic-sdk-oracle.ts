@@ -3,7 +3,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import { expect } from "bun:test"
 
 /** The Anthropic stream event names the @anthropic-ai/sdk SSEDecoder dispatches on. */
-export const SDK_STREAM_EVENTS = new Set([
+const SDK_STREAM_EVENTS: ReadonlySet<string> = new Set([
   "message_start",
   "message_delta",
   "message_stop",
