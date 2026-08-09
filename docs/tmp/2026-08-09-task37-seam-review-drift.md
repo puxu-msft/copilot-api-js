@@ -138,3 +138,52 @@
 - **计数：2 BLOCKER，4 MAJOR（含四条未处置项中的handler死参数与I1判据缺口；D3/D6另两条），2 MINOR。**
 - 测试变异均以预先冻结exact patch注入并通过`git apply --reverse --check`后反向恢复；复跑原两测试为2 pass／0 fail。
 - 最终`git diff`不含本轮变异；`git status --porcelain`仅见并发方新增的未跟踪 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-09-task37-d1-arbitration.md`，不是本评审创建或修改，未触碰。报告文件本身由调用方指定，已按要求追加。
+
+
+# 复审二（`b2048227`）
+
+## E1：D4 修复机制本身成立，但判据仍使用非真实 payload shape
+
+- **ID：D7**
+- **所在路径或形态：** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/lib/pipeline/delivery/adapters/anthropic.ts:36-47` 与两条 H2 fixture。
+- **严重级别：MINOR**
+- **证据：** `frameType = typeof payload.type === "string" ? payload.type : frame.event` 保证已有 payload discriminator绝对优先；event只在payload未声明type时补位，所以 event/payload冲突不会改变已有分类。这是加法。`errorShapingEnabled=false` 的 I9格已能通过，且协调方报告的 event fallback mutation使该格从1 call变4 calls，判别目标机制。剩余问题是两条 fixture仍用 `{error:{...}}` 而非 Anthropic accumulator期望的 `{type:"error",error:{...}}`；因此测试日志持续出现 `Unknown event type: undefined` 和 handler“truncated”诊断，即使adapter已正确按event分类。
+- **接手方会做出的错误动作：** 后续读者会把日志中的截断诊断当作修复仍失败，或反过来把不真实fixture通过当成真实upstream payload的完整证明。
+- **建议处置：** 由 `gpt-souls:implementer` 让主正样本使用真实顶层`type:"error"`，另保留一条专门的 event-only兼容样本来钉 fallback；两者意图分开命名。
+
+## E2：grammar 的 failed-terminal 分支丢帧语义局部正确，response-terminal mode 未受影响
+
+- **结论：无新增 blocker。** `acceptTerminal` 的新分支只在 `mode === "unit" && openUnit && terminal.semantic === "failed"` 命中；`response-terminal` mode绕过整个分支，仍在原路径复制`responseFrames`。unit mode 的 `openFrames`与`structuralFrames`本来属于尚未闭合的原子unit，`discardOpen()`清空它们后返回`responseFrames:[]`是正确的“不泄漏半块”表达；全仓生产代码当前不读取`responseFrames`，只有测试 helper／assertions消费，因此不会从现有production consumer丢掉已提交帧。`state="terminal"` 后，后续frame仍走既有`rejectAfterTerminal`，duplicate terminal与post-terminal frame行为未变。
+- **但测试缺口：** 当前没有 focused grammar unit test直接断言“open unit + failed terminal → discard-open-unit + response-terminal{failed,responseFrames:[]}；随后再来frame→post-terminal-frame”。HTTP follow-up只断言一次调用、wire含error与History failed，未钉半块不泄漏；我临时加`not.toContain("mid-block")`后失败，见E3。
+
+## E3：D5 的实现停止了重试，但仍把半块泄漏到客户端并追加第二个 truncation error
+
+- **ID：D8**
+- **所在路径或形态：** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/tests/pipeline/i9-followup-midblock-error.http.test.ts:88-99` 与 shared processor/driver wire path。
+- **严重级别：BLOCKER**
+- **证据：** 在未变异production的 `b2048227` 上，只给该HTTP测试临时追加 `expect(sse).not.toContain("mid-block")` 与 `types.not.toContain("content_block_start")`，测试按目标失败。实际wire为 `message_start → content_block_start → content_block_delta(mid-block) → error(overloaded) → error(api_error truncated)`。所以grammar内部虽discard了open unit的outcome staging，processor仍在分类前逐帧yield，driver已把start/delta缓冲；failed terminal成为commit boundary时，driver把整个buffer原样flush，半块仍泄漏。由于fixture缺顶层type，upstream accumulator未记`streamError`，handler随后又把它当截断并写第二个error。临时assertion patch已用exact reverse patch恢复。
+- **接手方会做出的错误动作：** 接手者会依据 `upstreamCalls===1` 和 `state===failed` 宣称“半块丢弃且真实终态保留”；客户端实际收到协议不完整的open block和双error terminus。
+- **建议处置：** 由 `gpt-souls:implementer` 修在共享outcome→buffer接缝：failed terminal携带discard-open-unit时，buffer flush必须排除该open unit的frames，同时保留failed terminal source frame；不能只改grammar内部数组。补真实HTTP断言：无start/delta半块、恰一个error、一次upstream call、History cause为overloaded。
+
+
+## D6 与既有未处置项
+
+- **D6 仍是 MAJOR，不能留到本轮之后。** 本轮实际wire已再次证明它不是纯测试美化：mid-block路径最终落成“upstream overloaded + synthetic truncated”双error，日志与History可能以truncation收口。若不钉真实failureReason，D8即使修成单error也可能继续错误归因。要求与D8同批补：`_index.derived.failureReason`包含`overloaded_error`／`upstream overloaded`且不含`truncated`。
+- **handler死参数／反向注释：仍MAJOR。** `messages/handler-v4.ts:1874-1875` 未变；继续误导读者第二classifier生效。应删除production传参与反向注释，不改merge去尊重它。
+- **`mergeCandidateResponseOpts`不组合`commitBoundaries`：仍MINOR。** frozen Task 3下candidate应唯一拥有projection；建议类型层禁止outer字段或fail-fast，而不是OR组合。
+- **`isResponsesCommitBoundary`无production消费者：仍MINOR。** 本轮搜索仍仅见测试调用；标为test oracle或在确认adapter/grammar覆盖后退役，不能继续伪装production接线。
+- **I1 History rich carrier判据：仍MAJOR。** 本轮无相关改动，判据缺口未闭合。
+- **混合写路径：采纳独立裁决的MAJOR，作为Task 4已知受控债务保留；不升级为本轮blocker，也不重复另建条目。**
+
+## 复审二总表与 verdict
+
+| ID | 严重级别 | 结论 |
+| --- | --- | --- |
+| D7 | MINOR | adapter event fallback是加法，但主fixture混淆真实payload与event-only兼容形态。 |
+| D8 | BLOCKER | mid-block H2仍把半块写到客户端并追加第二个truncation error。 |
+| D6 | MAJOR | History真实失败因果仍未被判据保护，且D8已显示实际归因漂移。 |
+
+- **最终 verdict：存在 blocker，不可进入下一阶段。**
+- **计数：1 BLOCKER；3 MAJOR（D6、handler死参数、I1判据）+ 1已知Task 4混合写路径MAJOR；3 MINOR（D7、merge字段契约、Responses陈旧oracle）。**
+- focused回归：31 pass／0 fail（5文件）；该绿不覆盖D8的no-half-unit oracle。
+- 本轮临时assertion patch已通过exact reverse check恢复；最终production与测试文件无变异diff。

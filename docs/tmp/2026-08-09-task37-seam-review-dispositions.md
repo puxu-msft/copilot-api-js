@@ -162,4 +162,44 @@ adapter 的分类键只读 canonical payload 的 `type`。Anthropic 的 error �
 5. **视角 B 报的 D6（MAJOR）**：两条新测试只断言 `state=failed`，没有证明 History 保留了**真实的 upstream error 因果**、排除了被重标成 truncation。我没有补这条断言。
 6. **裁决者判定的混合写路径 Major**：归属属冻结计划的 Task 4，不另建项，但收口 Task 4 时必须一次性收敛。
 
+---
+
+# 第三轮：我的 D5 修复被撤回
+
+## D8 —— 我引入了回归，不是发现了既有缺陷
+
+视角 B 第二轮复审报出：mid-block H2 虽不再重试，但客户端收到 `content_block_start` + delta 而**没有 `content_block_stop`**（半块泄漏到线上），并拿到**两个终态**（上游 error + 合成 truncation error）。
+
+**归属判定（我自己做的，结论对我不利）**：把 D5 分支变异掉恢复改前行为后，半块**不泄漏**——测试卡在 `upstreamCalls Expected 1, Received 4`，说明 `not.toContain("mid-block")` 先通过了。**这是我的修复引入的回归。**
+
+**根因比表面深一层**（由第三轮的独立评审补强）：`sawUpstreamError()` 变真会让 buffered 路径的终态提交排空把**整个缓冲区**刷出去，而缓冲区含未闭合块的帧。grammar 的 `discardOpen()` 只清自己的累积——**`discard-open-unit` outcome 在 `src/` 里零消费者**，够不到 driver 的缓冲区。所以我在 `b8ab9dbb` 提交信息里写的「no partial block ever reaches the wire」**从一开始就是错的**：它把「grammar 内部丢弃」当成了「不会送达客户端」，而这两件事在 compatibility 期是脱节的。
+
+## 处置：撤回，而不是继续往下修
+
+三条理由：
+
+1. **代价方向明确为负**：半块泄漏使客户端收到一个永不闭合的 content block，破坏其解析状态；而 block-level 交付是本项目**公理**。用一个协议违规换掉一次浪费的重试不划算。
+2. **正确修法不在这一层**：终态排空必须知道最后一个 commit 边界在哪，那需要 block 级感知——正是冻结计划 Task 4 的 owner cutover 要建立的能力。
+3. **连续三层「每修一层冒出新一层」是架构信号**（`systematic-debugging` Phase 4.5），不是继续打补丁的理由。
+
+`acceptTerminal` 已恢复为与改前**逐字节等价**（独立评审用 `diff -u <(git show b8ab9dbb^:...) ...` 核实，唯一 hunk 全是注释行），只留注释记下这次尝试与实测代价。
+
+## 第三轮独立评审（全新、未卷入的 `reviewer`）的结论
+
+- **撤回干净、归属判定成立**。它在**不知道我会撤回**时先取到了分支生效态样本，随后用冻结 patch 正式做了 A/B：分支开 → 1 次上游调用、线上出现 `content_block_delta("mid-block")`；撤回态 → 4 次调用、该 delta 出现 0 次。
+- **MAJOR（已修）**：我在 `grammar.ts` 注释里写「tracked in docs/todo/deferred-backlog.md」，而**该条目当时并不存在**。假的追踪指针比不写更坏——它会终止后续追查。条目已补，并按评审要求把 `incomplete`（`adapters/responses.ts:17,:77-78`，同为上游终态决定）与 `failed` **并列**写进「若做需改什么」，避免 Task 4 只修一半。
+- **MINOR（记录但未采纳）**：`test.failing` 优于 `describe.skip`，因为它在用例转绿时会判红并提示 `Remove .failing`，即**自解除**；评审实测本仓 bun 1.3.14 确有此行为。未采纳的理由是它在 JUnit / discovery 基线口径下的表现**未验证**、且本仓无先例；证据已留在 backlog 条目里。
+- **一条作用域提醒**：`delivery-grammar.unit.test.ts:247` 那条 `truncation discards ... without returning a half block` 守的是 **finish 路径**（`kind:"truncated"`），**不是** `acceptTerminal`——名字比它的实际作用域宽，别当成半块守卫。
+
+## 提交历史的一处诚实说明
+
+`b8ab9dbb` 同时含 D4（adapter 认 wire 上的 error）与 D5（grammar 终态分流）两半。**D5 那一半已被本轮撤回，所以该提交信息现在只有一半成立**。不改写历史（共享分支不 amend），在此登记。
+
+## 最终状态
+
+**站得住的修复**：adapter 的 `case "error"`、以及分类键在 payload 未声明 `type` 时回落到 SSE `event` 行。覆盖「无前置内容」与「已提交完整块」两种形状，各有实测变异正控。
+
+**仍然缺陷的形状**：error 在块中途到达时重试四次。**既有缺陷，非本轮引入**，已按五字段体例记入 `docs/todo/deferred-backlog.md`，判据以 `[GATED — requires Task 4 owner cutover]` 形式就位并登记进基线 `allowed_skipped`，做 Task 4 的人去掉 `.skip` 即可验收。
+
+
 
