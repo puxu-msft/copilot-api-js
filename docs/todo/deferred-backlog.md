@@ -1271,4 +1271,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① agreement gate 再红一次；② 有人要给 overlay 加第二个匹配维度（如按 model / 按字段搜）——那会让双实现的面积翻倍；③ 要把搜索语义改成 AND（见上一条 backlog）时顺手做，因为那本来就要同时改两侧。
 - **发现方**：A3 合并态复评 round 5（`docs/tmp/2026-08-08-a3-merged-state-review-gpt-round5.md`「结构怪味扫描」节），主会话实测复核过宽反例。
 
+## 全部 term 都超长的搜索被判成「查询无法解析」并回 400（2026-08-09，A3 复评 round 6 的接缝发现）
+
+- **根因 / 现状**：native 的 `QueryParser` 先解析成功，再由默认分析链的 `RemoveLongFilter` 把 ≥40 字节的 token 全部滤掉；若 needle 的**每个** term 都超长（例如 `<摘要A> <摘要B>`），结果是一个空查询，而当前实现把它归进 `invalid_query: true` → daemon 贴 `invalid-query` 线码 → handler 回 **400「Unsupported search query」**。实测（`exp/history-search-list-perf/round8-probe.ts` 的 `two long needles` 行）：`listSearch` 返回 `invalidQuery=true`。
+- **当前行为**：这类查询语法**完全合法**，只是所有 term 被长度过滤器滤空。诚实的答案是 **200 + persisted 侧为空**，而不是告诉用户「你的查询没法解析」。这是 round-3 引入的 `invalid_query` 返回值与索引自带长度过滤器之间的接缝——两者分别在不同轮次落地，没人看过交界处。**改动早于本轮的 token 长度修复**，与 overlay 侧无关。
+- **理想架构 / 若做需改什么**：在 native 侧把「解析失败」与「解析成功但 term 集为空」分成两种结果——前者仍走 `invalid_query`，后者按普通空结果返回（`total=0`）。overlay 侧无需改动：它对同一 needle 已经返回 false，两侧一致。补一条对照：`<摘要A> <摘要B>` 必须 200 且 persisted 为空，而 `foo:` 仍必须 400。
+- **为何暂缓**：本轮范围是 overlay 与索引的匹配一致性；这条落在 native 的错误分类上，且需要区分两种「空」才不至于把真正的解析失败也降级成空结果，值得自己的一次验证。用户可观察的影响也小于 overlay 那几条：它只在「查询里每个词都超过 40 字节」时触发。
+- **触发条件（值得做）**：① 有用户反馈「搜两个 hash 报错」；② 下次动 `invalid_query` 这条线码时顺手分开；③ 若将来放宽或移除 `RemoveLongFilter`，这条自然消失，改之前先确认。
+- **发现方**：A3 合并态复评 round 6（Claude 侧收尾意见第 2 条），主会话用 `round8-probe.ts` 实测复现 `invalidQuery=true`。
+
 

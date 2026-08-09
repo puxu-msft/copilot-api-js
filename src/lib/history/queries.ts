@@ -224,7 +224,15 @@ function corpusMatchesSearch(text: string, needle: string | undefined): boolean 
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
-  if (rawTerms.length <= 1) return haystack.includes(needle.toLowerCase())
+  if (rawTerms.length <= 1) {
+    // A sole term the index cannot hold matches nothing, rather than matching as a substring. This
+    // is the shape the byte limit exists for: a digest is pasted on its own, not paired with a word,
+    // and letting it match here would show recent rows that vanish the moment they are indexed.
+    // It cannot hide anything — the index drops that token on both sides, so it never matches there.
+    // A needle of pure punctuation yields no terms at all and keeps the substring path.
+    if (rawTerms.length === 1 && Buffer.byteLength(rawTerms[0]) >= INDEX_TOKEN_BYTE_LIMIT) return false
+    return haystack.includes(needle.toLowerCase())
+  }
   const tokens = new Set(indexableTokens(haystack))
   return rawTerms.filter((term) => Buffer.byteLength(term) < INDEX_TOKEN_BYTE_LIMIT).some((term) => tokens.has(term))
 }

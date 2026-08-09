@@ -88,16 +88,21 @@ interface Pair {
 }
 
 /**
- * Whether a needle is one term, derived by the same split the predicate uses rather than annotated
- * by hand — a mis-annotated pair would silently grant itself the over-match exemption.
+ * Whether a needle earns the over-match exemption: exactly one term, short enough for the index to
+ * hold it. Derived by the same split and the same byte limit the predicate uses rather than
+ * annotated by hand — a mis-annotated pair would silently grant itself the exemption.
+ *
+ * The length half matters: a sole term the index drops is not a type-ahead prefix, it is a token
+ * that can never match on the persisted side, so matching it here is the disagreement this table
+ * exists to catch.
  */
-function isSingleTerm(needle: string): boolean {
-  return (
-    needle
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter(Boolean).length <= 1
-  )
+function isExemptSingleTerm(needle: string): boolean {
+  const terms = needle
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+  const sole = terms[0]
+  return terms.length <= 1 && sole !== undefined && Buffer.byteLength(sole) < 40
 }
 
 /**
@@ -128,9 +133,12 @@ const PAIRS: Array<Pair> = [
   { content: `id ${"a".repeat(40)} done`, needle: `${"a".repeat(40)} zzzabsent` },
   { content: `digest ${"9f".repeat(32)} recorded`, needle: `${"9f".repeat(32)} zzzabsent` },
   // Single-term needles: substring by design. Kept in the table so the exemption is exercised, not
-  // assumed — `isSingleTerm` decides which they are.
+  // assumed — `isExemptSingleTerm` decides which they are. The digest is here because pasting one alone is
+  // the natural way to search for it, and it is the case the byte limit exists for.
   { content: "please fix the hello-world bug", needle: "orld" },
   { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "429" },
+  { content: `digest ${"9f".repeat(32)} recorded`, needle: "9f".repeat(32) },
+  { content: `id ${"a".repeat(40)} done`, needle: "a".repeat(40) },
 ]
 
 async function indexSaysMatch(needle: string, corpusForIndex: string): Promise<boolean> {
@@ -174,7 +182,7 @@ describe.skipIf(!isNativeHistorySearchAvailable())("overlay and index agree in b
       putInFlight(liveEntry(content))
       const overlay = listHistoryOverlaySummaries(needle).length > 0
       if (indexed && !overlay) disagreements.push(`hidden: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
-      if (!indexed && overlay && !isSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
+      if (!indexed && overlay && !isExemptSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
     }
     expect(disagreements).toEqual([])
     // Builds one real Tantivy index per pair, so the run time tracks the machine rather than the
@@ -196,7 +204,7 @@ describe.skipIf(!isNativeHistorySearchAvailable())("overlay and index agree in b
       publishModelOperationTerminal(historyTerminalPublication(record))
       const overlay = listHistoryOverlaySummaries(needle).length > 0
       if (indexed && !overlay) disagreements.push(`hidden: ${JSON.stringify(needle)}`)
-      if (!indexed && overlay && !isSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(needle)}`)
+      if (!indexed && overlay && !isExemptSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(needle)}`)
     }
     expect(disagreements).toEqual([])
   }, 120_000)
