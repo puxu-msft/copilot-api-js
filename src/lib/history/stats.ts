@@ -15,7 +15,7 @@ import {
   getHistory,
   listHistoryOverlaySummaries,
 } from "./queries"
-import { getDatabase } from "./sqlite/connection"
+import { getHistoryReadDatabase } from "./sqlite/read-connection"
 import { visitV3Summaries } from "./v3/store"
 import {
   //
@@ -64,7 +64,7 @@ export function getStats(): HistoryStats {
   let totalDurationMs = 0
   const sessions = new Set<string>()
   const seen = new Set<string>()
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const projectionReady = isSummaryProjectionReady(db)
   if (projectionReady) {
     const persisted = queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))])

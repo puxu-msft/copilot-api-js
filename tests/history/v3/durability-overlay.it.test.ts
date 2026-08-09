@@ -36,6 +36,7 @@ import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
 
 import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 function terminalRecord(id: string) {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: Date.now() } })
@@ -54,7 +55,7 @@ function durabilityOf(id: string): EntrySummary["durability"] {
 beforeEach(async () => {
   resetModelOperationTerminalBusForTests()
   resetV3WriterForTests()
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true)
   setV3PersistRetryConfig({ maxAttempts: 1, backoffMs: 0 })
 })

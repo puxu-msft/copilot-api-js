@@ -2,6 +2,7 @@ import type { Context } from "hono"
 
 import {
   //
+  HistoryPinUnavailableError,
   exportHistory,
   getEntry,
   getHistorySummariesAsync,
@@ -220,8 +221,16 @@ function setEntryPinState(c: Context, pinned: boolean) {
   if (!id) {
     return c.json({ error: "Entry id is required" }, 400)
   }
-  if (!setPinned(id, pinned)) {
-    return c.json({ error: "Entry not found" }, 404)
+  // Pinning has no writer between the Batch 2b cutover and the Batch 6 set-pinned RPC (user ruling, 2026-08-09). Answer 503 with the reason rather than letting the missing write handle surface as a 500 that reads like a database fault.
+  try {
+    if (!setPinned(id, pinned)) {
+      return c.json({ error: "Entry not found" }, 404)
+    }
+  } catch (err: unknown) {
+    if (err instanceof HistoryPinUnavailableError) {
+      return c.json({ error: err.message }, 503)
+    }
+    throw err
   }
   const entry = getEntry(id)
   if (!entry) {

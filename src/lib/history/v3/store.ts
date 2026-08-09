@@ -25,6 +25,7 @@ import { abortableDelay } from "~/lib/util/abortable-delay"
 import type { Database } from "../sqlite/connection"
 
 import { getDatabase } from "../sqlite/connection"
+import { getHistoryReadDatabase } from "../sqlite/read-connection"
 import { recordToEntrySummary } from "./projection"
 import {
   //
@@ -992,7 +993,7 @@ export async function drainV3Writer(): Promise<void> {
 }
 
 export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<string>): number {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   if (operationIds.length === 0) return (db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n
   return (
@@ -1003,7 +1004,7 @@ export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<str
 }
 
 export function getV3StoreStatus(): V3StoreStatus {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   const summaryBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_summary_backlog").get() as { n: number }).n
   const projection = getSummaryProjectionReadiness(db)
@@ -1034,7 +1035,7 @@ function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3Stor
   }
 }
 
-export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
+export function getV3StoredOperation(operationId: string, db: Database = getHistoryReadDatabase()): V3StoredOperation | undefined {
   ensureV3Schema(db)
   const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
     | V3StoredOperationRow
@@ -1042,7 +1043,7 @@ export function getV3StoredOperation(operationId: string, db: Database = getData
   return row ? storedOperationFromRow(db, row) : undefined
 }
 
-export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getDatabase()): Map<string, V3StoredOperation> {
+export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getHistoryReadDatabase()): Map<string, V3StoredOperation> {
   ensureV3Schema(db)
   if (operationIds.length === 0) return new Map()
   const rows = db
@@ -1065,7 +1066,7 @@ export function getV3Operation(operationId: string): ModelOperationRecord | unde
   return getV3StoredOperation(operationId)?.record
 }
 
-export function listV3StoredOperations(kind?: string, limit = 100, db: Database = getDatabase()): Array<V3StoredOperation> {
+export function listV3StoredOperations(kind?: string, limit = 100, db: Database = getHistoryReadDatabase()): Array<V3StoredOperation> {
   ensureV3Schema(db)
   const rows =
     kind ?
@@ -1091,7 +1092,7 @@ function summaryFromRow(
 
 /** Visit persisted summaries newest-first without hydrating canonical payloads on format-v2 rows. */
 export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, kind?: string, pageSize = 256): void {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   let offset = 0
   while (true) {
@@ -1186,14 +1187,14 @@ export async function drainV3SummaryBackfill(): Promise<void> {
 }
 
 export function countV3Operations(kind?: string): number {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   const row = kind ? db.prepare("SELECT COUNT(*) AS n FROM v3_operations WHERE kind=?").get(kind) : db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get()
   return (row as { n: number }).n
 }
 
 /** Visit persisted operations newest-first with bounded SQLite/result memory. */
-export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64, db: Database = getDatabase()): void {
+export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64, db: Database = getHistoryReadDatabase()): void {
   ensureV3Schema(db)
   let offset = 0
   while (true) {

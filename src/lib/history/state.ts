@@ -36,9 +36,16 @@ import {
   getHistoryAdmissionController,
   getHistoryPersistenceRuntime,
   peekHistoryPersistenceRuntime,
+  releaseHistoryPersistenceRuntime,
 } from "./worker/registry"
 
 let enabled = false
+/**
+ * Semantic DB path this thread has already brought up (Worker started + readonly handle installed), or `undefined` when nothing is installed.
+ *
+ * `initHistory` has always been idempotent — the pre-cutover version relied on `openDatabase()` returning the live handle when the path was unchanged (`connection.ts`), and `resetTestRuntime` calls it on every test. The cutover replaced that one reopen with two installations that are BOTH single-shot: `runtime.start()` rejects an already-started runtime, and `installHistoryReadDatabase` refuses to shadow a live handle. This variable carries the same idempotency across the new pair, and is keyed by path so a caller that switches artifacts still gets a real re-open instead of silently keeping the previous one.
+ */
+let startedDbPath: string | undefined
 let unsubscribeV3Terminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
@@ -101,34 +108,47 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     // by `shutdownHistory`. Only this thread's readonly handle is ours to release.
     shutdownRawCapture()
     closeHistoryReadDatabase()
+    startedDbPath = undefined
     return
   }
   // `historyDbPath` is retained only as an injected test seam during the V3
   // cutover. Production config cannot set it; the default is a physically
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
-  // CUTOVER (Batch 2b): the Worker now owns the semantic WRITE connection exclusively.
-  // Everything the main thread used to do here — open, schema reconcile, forward
-  // migrations, journal recovery — happens inside `initialize` on the Worker thread, which
-  // is the whole point: those are the synchronous blocks that used to freeze the proxy's
-  // event loop. Spec §8.1 fixes this order, and the readonly handle below may only be
-  // opened after `ready`, because the artifact and its owner marker are the Worker's to
-  // create.
-  const runtime = getHistoryPersistenceRuntime()
-  await runtime.start({
-    semanticDbPath: dbPath,
-    configRevision: 1,
-    // Raw capture stays on the main thread until Batch 3b. The Worker must NOT open the
-    // same raw artifact concurrently, so it starts with raw disabled.
-    rawConfig: { enabled: false, dbPath: "", maxObjectBytes: state.historyRawCaptureMaxObjectBytes },
-    persistRetry: getV3PersistRetryConfig(),
-    maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
-  })
-  // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
-  // path below reads through it; nothing on this thread may write the semantic DB again.
-  installHistoryReadDatabase(openDatabaseReadonly(dbPath))
+  // Re-entry against the SAME artifact re-wires the subscriptions below but must NOT try to install the Worker or the readonly handle a second time — both reject that, and the old `openDatabase()` this replaced treated an unchanged path as a no-op reopen.
+  //
+  // "Already installed" is deliberately TWO conditions, not one. The path answers "same artifact?"; `peekHistoryPersistenceRuntime()` answers "is the thing I started still the registry's runtime?". A runtime is single-use — once shut down it never comes back — so anything that releases the singleton (a `historyDbPath` switch, `shutdownHistory`, the per-test injector reset that keeps a mocked runtime from leaking) leaves this thread believing it is up while its writer is gone. Reading the registry instead of trusting our own flag makes re-init self-healing rather than dependent on the caller's teardown order.
+  const alreadyInstalled = startedDbPath === dbPath && peekHistoryPersistenceRuntime() !== undefined
+  if (!alreadyInstalled) {
+    // Release whatever a previous bring-up left behind before installing again: a readonly handle on the old artifact, and a runtime that is either pointed at the old path or already dead.
+    closeHistoryReadDatabase()
+    await releaseHistoryPersistenceRuntime()
+    startedDbPath = undefined
+    // CUTOVER (Batch 2b): the Worker now owns the semantic WRITE connection exclusively.
+    // Everything the main thread used to do here — open, schema reconcile, forward
+    // migrations, journal recovery — happens inside `initialize` on the Worker thread, which
+    // is the whole point: those are the synchronous blocks that used to freeze the proxy's
+    // event loop. Spec §8.1 fixes this order, and the readonly handle below may only be
+    // opened after `ready`, because the artifact and its owner marker are the Worker's to
+    // create.
+    const runtime = getHistoryPersistenceRuntime()
+    await runtime.start({
+      semanticDbPath: dbPath,
+      configRevision: 1,
+      // Raw capture stays on the main thread until Batch 3b. The Worker must NOT open the
+      // same raw artifact concurrently, so it starts with raw disabled.
+      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: state.historyRawCaptureMaxObjectBytes },
+      persistRetry: getV3PersistRetryConfig(),
+      maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
+    })
+    // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
+    // path below reads through it; nothing on this thread may write the semantic DB again.
+    installHistoryReadDatabase(openDatabaseReadonly(dbPath))
+    startedDbPath = dbPath
+  }
   const admission = getHistoryAdmissionController()
-  admission.replaceTerminalSink(runtime)
+  // The registry singleton, not a local from the branch above: on an idempotent re-entry that branch never ran, and the sink must still point at the runtime that is actually installed.
+  admission.replaceTerminalSink(getHistoryPersistenceRuntime())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(async (publication) => {
     const outcome = await admission.acceptTerminal({ protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, publication })
@@ -221,6 +241,7 @@ export async function shutdownHistory(): Promise<void> {
   setHistorySearchClient(undefined)
   shutdownRawCapture()
   closeHistoryReadDatabase()
+  startedDbPath = undefined
   enabled = false
 }
 

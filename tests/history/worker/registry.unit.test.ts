@@ -15,7 +15,7 @@ import {
   getHistoryPersistenceRuntime,
   peekHistoryAdmissionController,
   peekHistoryPersistenceRuntime,
-  resetHistoryPersistenceRuntimeForTests,
+  releaseHistoryPersistenceRuntime,
   setHistoryAdmissionControllerForTests,
   setHistoryPersistenceRuntimeForTests,
 } from "~/lib/history/worker/registry"
@@ -28,7 +28,7 @@ import {
 
 afterEach(async () => {
   setHistoryAdmissionControllerForTests(undefined)
-  await resetHistoryPersistenceRuntimeForTests()
+  await releaseHistoryPersistenceRuntime()
   resetConfigManagedState()
 })
 
@@ -51,7 +51,7 @@ test("reset awaits owned runtime shutdown before clearing the registry", async (
   } as unknown as HistoryPersistenceRuntime
   setHistoryPersistenceRuntimeForTests(runtime)
 
-  const reset = resetHistoryPersistenceRuntimeForTests()
+  const reset = releaseHistoryPersistenceRuntime()
   await Promise.resolve()
   expect(shutdownStarted).toBeTrue()
   expect(peekHistoryPersistenceRuntime()).toBe(runtime)

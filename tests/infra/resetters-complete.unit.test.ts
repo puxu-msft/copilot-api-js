@@ -74,6 +74,8 @@ const EXEMPT: Record<string, string> = {
   resetModelOperationTerminalBusForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
   resetHistoryAdmissionLifecycleForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
   setHistoryAdmissionControllerForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  // Process-wide test infrastructure, deliberately NOT per-test. It decides what a LATER `getHistoryPersistenceRuntime()` CONSTRUCTS, and the registry singleton is released on every test by the registered `releaseHistoryPersistenceRuntime`. Clearing the factory too would make the very next construction a REAL Worker thread, silently, in a run that asked for the in-process backend. Installed once by bootstrapTestRuntime, like the sandbox-paths preload; the instance-level injector it backstops (`setHistoryPersistenceRuntimeForTests`) IS reset per test.
+  setHistoryPersistenceRuntimeFactoryForTests: "process-wide runtime backend selection — must NOT run per-test, else the next construction spawns a real Worker",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
   // Path/config injector setters: per-test opt-in, not a default reset. Their

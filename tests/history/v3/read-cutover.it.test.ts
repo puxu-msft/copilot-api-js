@@ -36,6 +36,8 @@ import {
 } from "~/lib/history/v3/store"
 import { setStateForTests } from "~/lib/state"
 
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
+
 function record(
   id: string,
   kind: "generation" | "count_tokens",
@@ -70,7 +72,7 @@ function record(
 
 beforeEach(async () => {
   closeDatabase()
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true)
   resetV3WriterForTests()
   for (const item of [record("generation-1", "generation"), record("tokens-1", "count_tokens")]) {

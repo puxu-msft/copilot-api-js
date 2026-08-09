@@ -6,6 +6,7 @@
 
 // Store (persistence and query)
 export {
+  HistoryPinUnavailableError,
   clearHistory,
   exportHistory,
   getAgentIdFromHeaders,
@@ -29,6 +30,7 @@ export {
   searchContains,
   searchHistory,
   setHistoryPublisher,
+  setHistoryStoreWipeForTests,
   setPinned,
   shutdownHistory,
   startHistoryBackfills,

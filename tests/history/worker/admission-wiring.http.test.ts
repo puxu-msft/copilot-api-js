@@ -27,6 +27,7 @@ import { setStateForTests } from "~/lib/state"
 import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { createFullTestApp } from "../../helpers/test-app"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 const app = createFullTestApp()
 
@@ -49,7 +50,7 @@ describe("production History admission wiring", () => {
   let controller: HistoryAdmissionControllerImpl
 
   beforeEach(async () => {
-    setStateForTests({ historyDbPath: ":memory:" })
+    setStateForTests({ historyDbPath: historyTestDbPath() })
     controller = new HistoryAdmissionControllerImpl({
       capacity: 1,
       sink: {

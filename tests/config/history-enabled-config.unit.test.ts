@@ -47,6 +47,8 @@ import {
   state,
 } from "~/lib/state"
 
+import { historyTestDbPath } from "../helpers/test-bootstrap"
+
 let tmpDir: string
 let savedAppDir: string
 let savedConfigYaml: string
@@ -119,7 +121,7 @@ describe("no-history mode runtime gate", () => {
   // (PATHS.HISTORY_DB is computed at module load, before the beforeEach APP_DIR
   // override, so it would otherwise resolve to the real path).
   beforeEach(() => {
-    setHistoryConfig({ historyDbPath: ":memory:" })
+    setHistoryConfig({ historyDbPath: historyTestDbPath() })
   })
 
   test("initHistory(false): isHistoryEnabled() false + DB never opened", async () => {

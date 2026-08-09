@@ -48,6 +48,7 @@ import { generateId } from "~/lib/utils"
 import { insertHistoryEntry } from "../helpers/history-fixtures"
 import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../helpers/state-fixture"
+import { historyTestDbPath } from "../helpers/test-bootstrap"
 
 /**
  * Count entries visible through the public read API (in-flight map merged
@@ -67,7 +68,7 @@ autoRestoreState()
 
 // Reset history state before each test
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 afterEach(async () => {

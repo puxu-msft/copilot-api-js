@@ -28,7 +28,7 @@ import {
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
-import { getDatabase } from "./sqlite/connection"
+import { getHistoryReadDatabase } from "./sqlite/read-connection"
 import {
   //
   recordMatchesQuery,
@@ -243,7 +243,7 @@ function resolveSummaryCursor(
     throw new InvalidSummaryCursorError(cursor)
   }
 
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const projectionReady = isSummaryProjectionReady(db)
   const persisted = projectionReady ? getPersistedSummary(db, cursor) : undefined
   if (
@@ -266,7 +266,7 @@ function persistedSummaryCandidates(
   capacity: number,
   cursor: EntrySummary | undefined,
 ): { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null } {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   if (isSummaryProjectionReady(db)) {
     const page = querySummaryPage(db, { ...options, operationKind }, capacity, cursor)
     return { rows: page.entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
@@ -307,7 +307,7 @@ export function getSummary(id: string): EntrySummary | undefined {
   if (inflight) return toEntrySummary(inflight)
   const recent = getRecentModelOperationTerminal(id)
   if (recent) return recentRecordToSummary(recent)
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   if (isSummaryProjectionReady(db)) return getPersistedSummary(db, id)
   const stored = getV3StoredOperation(id)
   return stored ? recordToEntrySummary(stored.record, stored) : undefined
@@ -373,7 +373,7 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     .filter((record) => inFlightMatchesSearch(recordToHistoryEntry(record), options.search))
     .map((record) => recentRecordToSummary(record))
   const cursorSummary = resolveSummaryCursor(options, operationKind, true)
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   if (!isSummaryProjectionReady(db)) {
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
@@ -496,7 +496,7 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
   const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
 
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
   const total = stored.total + transientCount
   const newest = entries.at(0)

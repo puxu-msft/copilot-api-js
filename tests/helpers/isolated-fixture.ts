@@ -53,13 +53,13 @@ import {
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
+import { resetV3WriterForTests } from "~/lib/history/v3/store"
+import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import {
   //
-  drainV3Writer,
-  resetV3WriterForTests,
-} from "~/lib/history/v3/store"
-import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
-import { resetHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
+  peekHistoryPersistenceRuntime,
+  releaseHistoryPersistenceRuntime,
+} from "~/lib/history/worker/registry"
 import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -161,7 +161,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
   // Injected factory/writer seams: reset to their default (null/undefined) so a
   // mock injected by one test never leaks into the next (RFC §11 R2).
-  { name: "resetHistoryPersistenceRuntimeForTests", reset: resetHistoryPersistenceRuntimeForTests },
+  { name: "releaseHistoryPersistenceRuntime", reset: releaseHistoryPersistenceRuntime },
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
@@ -281,13 +281,10 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   })
 
   afterEach(async () => {
-    // Drain any fire-and-forget async V3 terminal write (a request that settled
-    // during the test kicks one via `subscribeModelOperationTerminals`, see
-    // state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the
-    // in-flight write lands on a closed handle ("Cannot use a closed database")
-    // or leaks into the next test. Mirrors the production shutdown drain
-    // (`shutdownHistory`'s `drainV3Writer` call).
-    await drainV3Writer()
+    // Drain any fire-and-forget async V3 terminal write (a request that settled during the test kicks one via `subscribeModelOperationTerminals`, see state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the in-flight write lands on a closed handle ("Cannot use a closed database") or leaks into the next test. Mirrors the production shutdown drain.
+    //
+    // Since the Batch 2b cutover this drains the RUNTIME, not an in-process writer queue: the writer is on the Worker side of the boundary, so awaiting a main-thread queue would prove nothing about what actually reached disk. `peek` rather than `get` because a test that shut History down must not resurrect a runtime here just to drain it.
+    await peekHistoryPersistenceRuntime()?.drain()
     restoreStateForTests(snapshot)
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget

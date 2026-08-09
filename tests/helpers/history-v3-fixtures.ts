@@ -1,12 +1,39 @@
 import type { HistoryEntry } from "~/lib/history/types"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
-import { getDatabase } from "~/lib/history/sqlite/connection"
+import { PATHS } from "~/lib/config/paths"
+import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
 import {
   //
+  clearV3Store,
   commitPreparedOperation,
+  ensureV3Schema,
   prepareModelOperation,
 } from "~/lib/history/v3/store"
+import { state } from "~/lib/state"
+
+let seedDb: { path: string, db: ReturnType<typeof openOwnedHistoryDatabase> } | undefined
+
+/**
+ * A short-lived WRITE handle on the artifact under test, for seeding rows directly.
+ *
+ * Since the Batch 2b cutover the main thread has no write handle to borrow — `getDatabase()` throws, because the semantic write connection moved to the Worker. A seeding fixture is still legitimately a writer, so it opens its own connection to the same file; SQLite's WAL mode serializes it against the Worker's connection, and the main thread's readonly handle sees the rows on its next read. This is a test-only second connection, not a second production writer: nothing in `src/` may do this (see the architecture guard on `state.ts`).
+ */
+function seedWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
+  // Same resolution `initHistory` uses, so the fixture always seeds the artifact the app under test actually opened — an empty `historyDbPath` means the sandboxed default, not "no database".
+  const path = state.historyDbPath || PATHS.HISTORY_V3_DB
+  if (seedDb?.path === path) return seedDb.db
+  seedDb?.db.close()
+  const db = openOwnedHistoryDatabase(path)
+  ensureV3Schema(db)
+  seedDb = { path, db }
+  return db
+}
+
+/** Wipe every V3 table on the artifact under test. Backs `clearHistory()`'s persisted half, which production can no longer perform itself (see `setHistoryStoreWipeForTests`). */
+export function clearHistoryStoreForTests(): void {
+  clearV3Store(seedWriteDatabase())
+}
 
 /** Persist a terminal History-shaped fixture through the canonical V3 store. */
 export function commitV3HistoryEntry(entry: HistoryEntry): void {
@@ -131,5 +158,5 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
     error: entry._index?.derived?.failureReason,
     metadata: { durationMs: entry.durationMs },
   })
-  commitPreparedOperation(getDatabase(), prepareModelOperation(terminal))
+  commitPreparedOperation(seedWriteDatabase(), prepareModelOperation(terminal))
 }

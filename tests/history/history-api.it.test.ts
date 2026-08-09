@@ -46,6 +46,7 @@ import {
 
 import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { primeUdsConnectForBunTest } from "../helpers/prime-uds-for-bun-test"
+import { historyTestDbPath } from "../helpers/test-bootstrap"
 
 // See prime-uds-for-bun-test.ts's doc comment: `handleSearch` (Phase 4 cutover)
 // now calls the sidecar's UDS client, whose FIRST-EVER connect attempt in this
@@ -117,7 +118,7 @@ async function json<T = unknown>(res: Response): Promise<T> {
 // ─── Setup / Teardown ───
 
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 
