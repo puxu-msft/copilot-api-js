@@ -222,3 +222,81 @@ describe("History Worker thread ownership", () => {
     expect(importers.sort()).toEqual([...allowed].sort())
   })
 })
+
+/**
+ * Count `this.<method>(...)` calls anywhere beneath `node`.
+ *
+ * Deliberately syntactic and deliberately narrow: it answers "does this function body reach
+ * for that transition at all", which is a property of the code's shape rather than of any
+ * particular run.
+ */
+function methodCalls(node: ts.Node, method: string): number {
+  let calls = 0
+  const visit = (candidate: ts.Node): void => {
+    if (
+      ts.isCallExpression(candidate)
+      && ts.isPropertyAccessExpression(candidate.expression)
+      && candidate.expression.expression.kind === ts.SyntaxKind.ThisKeyword
+      && candidate.expression.name.text === method
+    ) {
+      calls++
+    }
+    ts.forEachChild(candidate, visit)
+  }
+  visit(node)
+  return calls
+}
+
+/**
+ * A crash count may never synthesise the irreversible terminal state.
+ *
+ * Spec §7.1 routes ordinary crashes and retryable startup errors through the automatic
+ * restart; §7.2 reserves `terminal-failed` for conditions already known to be permanent, and
+ * "crashed N times" is not one — a fault that would have cleared on attempt N+1 must still be
+ * able to recover. A behavioural test can only ever show that some specific N does not
+ * terminate, so it cannot express this: an implementation that gives up at N+1 stays green.
+ * The invariant is therefore stated where it is actually decidable — the crash handler does
+ * not contain the transition at all.
+ */
+describe("History Worker crash handling never synthesises a terminal state", () => {
+  test("the criterion sees a real transition call and ignores a lookalike", () => {
+    const live = parseSource("live.ts", "class R { private handleTransportCrash() { this.failTerminal(new Error('x')) } }")
+    const inert = parseSource("inert.ts", "class R { private handleTransportCrash() { const note = 'this.failTerminal()'; other.failTerminal() } }")
+
+    expect(methodCalls(namedFunction(live, "handleTransportCrash"), "failTerminal")).toBe(1)
+    expect(methodCalls(namedFunction(inert, "handleTransportCrash"), "failTerminal")).toBe(0)
+  })
+
+  test("handleTransportCrash contains no path to failTerminal", () => {
+    const file = path.join(repoRoot, "src/lib/history/worker/runtime.ts")
+    const sourceFile = parseSource(file, readFileSync(file, "utf8"))
+
+    expect(methodCalls(namedFunction(sourceFile, "handleTransportCrash"), "failTerminal")).toBe(0)
+  })
+
+  test("the restart policy exposes no attempt ceiling to decide on", () => {
+    const file = path.join(repoRoot, "src/lib/history/worker/restart-policy.ts")
+    const sourceFile = parseSource(file, readFileSync(file, "utf8"))
+
+    // AST, not substring: "exhausted" is an ordinary English word and appears in this file's
+    // prose ("exhausted disk"), so a text match reports a breach that does not exist. The
+    // property is about declared members — a ceiling cannot be consulted if none is declared.
+    // (Removed 2026-08-09 by user ruling; the startup deadline belongs to whoever owns
+    // process startup — see docs/todo/deferred-backlog.md.)
+    const declaredMembers = new Set<string>()
+    const visit = (node: ts.Node): void => {
+      if ((ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
+        for (const member of node.members) {
+          if (member.name && ts.isIdentifier(member.name)) declaredMembers.add(member.name.text)
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sourceFile)
+
+    expect([...declaredMembers].filter((name) => name === "maxConsecutiveFailures" || name === "exhausted")).toEqual([])
+    // Positive control: the walker does see the members that ARE declared.
+    expect(declaredMembers.has("consecutiveFailures")).toBe(true)
+    expect(declaredMembers.has("recordFailure")).toBe(true)
+  })
+})

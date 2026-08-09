@@ -280,7 +280,7 @@ describe("History Worker terminal-failed state", () => {
     expect((drainError as Error).message).toMatch(/shut down while no Worker generation was running/)
   })
 
-  test("keeps restarting for as long as the condition persists, without inventing a terminal state", async () => {
+  test("twelve consecutive crashes do not terminate, and the next generation still recovers", async () => {
     const transports: Array<ScriptedTransport> = []
     const runtime = new HistoryPersistenceRuntimeImpl({
       workerFactory: (generation) => {
@@ -298,9 +298,14 @@ describe("History Worker terminal-failed state", () => {
     runtime.enqueue(buildEnvelope(buildTerminalRecord("op-budget-1")), (outcome) => settlements.push(outcome))
 
     // Spec §7.1 routes ordinary crashes through the automatic restart and §7.2 reserves the
-    // irreversible terminal state for conditions already known to be permanent. "Tried N
-    // times" is not such a condition, so no amount of crashing may synthesise one — a
-    // transient fault that clears on attempt N+1 must still be allowed to recover.
+    // irreversible terminal state for conditions already known to be permanent. N=12 clears
+    // the old default ceiling of 10, so reinstating that specific cap fails here.
+    //
+    // SCOPE, because it is easy to over-read: this is an N-bounded regression guard, NOT a
+    // proof that no count can synthesise a terminal state — an implementation that gave up
+    // at attempt 13 would still pass, since generation 13 goes ready below. The unbounded
+    // property is asserted where it is actually decidable: `handleTransportCrash` contains
+    // no path to `failTerminal` at all (tests/architecture/history-worker-boundaries.unit.test.ts).
     for (let attempt = 0; attempt < 12; attempt++) transports.at(-1)?.emitExit(1)
 
     expect(runtime.snapshot().terminalFailed).toBe(false)
