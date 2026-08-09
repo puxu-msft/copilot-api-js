@@ -2,7 +2,7 @@
 
 > 状态：**交付内容已集成主线；评审已闭环，但收尾契约仍受阻**（**非终态交付件**）。
 > - 交付内容：Batch 1b 实现于 `master@d3b4ac77`，收尾证据经五次 fast-forward 落地，合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中。
-> - 收尾流程：评审已于第 5 轮闭环（**0 blocker／0 major、判可定稿**）。**但契约仍有两个根阻断点**——`freeze_truth`（共享主树未查，护栏所致，**本会话无法自行关闭**）与 `review_temp_manifest`（清单修订后未重审）；按 `requires` 传播，**stage 2–17 全部受阻**。逐项见「收尾纪律执行情况」表。**本文件不是终态交付件。**
+> - 收尾流程：评审已于第 5 轮闭环（**0 blocker／0 major、判可定稿**）；`review_temp_manifest` 原标未达成，已由**未卷入的独立裁决者**判定满足。**契约仅剩一个根阻断点**——`freeze_truth`（共享主树未查，护栏所致，**本会话无法自行关闭**）；按 `requires` 传播，**stage 2–17 均受阻于它**。逐项见「收尾纪律执行情况」表。**本文件不是终态交付件。**
 > ⚠️ **本报告自身的合并状态不写死数字**——它每次被修订都会重新领先 `master`。判定命令：`git -C <repo> merge-base --is-ancestor <本文件最后一次修订的 commit> master`；成立即全部落地。
 > 核验基线：`4c30e6eb`（在 `master@58f4c45d` 祖先中）；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
@@ -75,9 +75,9 @@
 **分开两个层面说，别混成一句「无」**——这两句此前互相打架，本轮统一如下：
 
 - **交付内容（Batch 1b 实现、plan、kickoff、测试）：已全部集成主线，无尚待动作。** 权威判据是 `git merge-base --is-ancestor 4c30e6eb master`。
-- **收尾流程本身：未闭环。** 契约 17 stage 有**两个根阻断点**，按 `requires` 传播使 2–17 全部受阻（详见阶段表）：
+- **收尾流程本身：未闭环。** 契约 17 stage 现只剩**一个根阻断点**（stage 8 原为第二个，已由独立裁决判定满足），按 `requires` 传播使 2–17 均受阻于它（详见阶段表）：
   1. **`freeze_truth` 未达成** —— 契约要求逐个 repository／worktree 跑 `git status --short --branch`，**共享主树因隔离护栏本会话查不了**。解阻动作：在共享检出直接跑 `cd /home/xp/src/copilot-api-js && git --no-optional-locks status --short --branch`。**这一项本会话无法自行关闭。**
-  2. **`review_temp_manifest` 未达成** —— 清单在上一轮评审后又被修订，须重审。
+  2. ~~`review_temp_manifest` 未达成~~ —— **已满足**，由未卷入的独立裁决者判定（`docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`）：第 1–2 轮全量评审（`43ffac97`）之后清单**无任何 disposition 行变化**，唯一表格字段变动是 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正由第 4 轮独立复算确认。⚠️ **裁决书同时纠正了我的措辞**——期间另有顶部状态的事实性改写，故「全部改动只有数值订正」按字面不成立；结论成立是因为**无一行 disposition 变化**，不是因为「只改了一个数」。
   3. ~~`review_closeout_final` 未闭环~~ —— **已闭环**：第 3 轮 4 major、第 4 轮 3 major 全部采纳整改，第 5 轮逐条专项复审 M1／M2／M3 均闭合，**0 blocker／0 major、判可定稿**。
   4. 本报告与清单、各轮评审报告的最后一笔修订需由用户执行一次 fast-forward（判定命令见状态行）。
 
@@ -102,7 +102,7 @@
 
 ⚠️ **两列不是一回事，Round 4 判 major 的正是把它们混为一谈**：「动作／证据」记这一步实际做没做，「契约达成」按 `requires` 图判——**前置未满足时，即便动作做了，该 stage 也不算达成**。这不是形式主义：`requires` 图的全部意义就是「顺序错了做出来的结果无效」（例如在 `discover_nonfile_candidates` 之前评审清单，评的是一份漏项的清单）。
 
-**本轮有两个根阻断点**：stage 1（共享主树未查，护栏所致）与 stage 8（清单修订后未重审）。按 `requires` 传播，**2–17 全部受阻**。解阻路径：先补 stage 1 的共享主树 `git status`（需在共享检出执行，本会话做不到），再重审清单，其余动作证据已在，可依序重新宣告。
+**本轮只剩一个根阻断点**：stage 1（共享主树未查，护栏所致）。stage 8 原为根阻断点 B，已由**未卷入的独立裁决者**判定满足（见下），故现按 `requires` 传播，**2–17 均只受阻于 1**。解阻路径：在共享检出跑一次 `git --no-optional-locks status --short --branch` 补齐 stage 1，其余动作证据已在，可依序重新宣告。
 
 **「契约达成」列的读法**（Round 5 判 major 后补）：`❌ 未达成` 记**本 stage 自身的直接缺口**，`⛔ 受阻（n）` 记**经 `requires` 图从 stage n 传播来的阻断**。**两者可以同时成立且必须同时写出**——stage 8／16／17 就是这种情形：它们各有直接缺口，其前置链**同时**受根阻断点阻断，所以补上自身缺口也不会立刻达成。只写直接缺口会让读者以为「把这一项做了就好」。
 
@@ -115,16 +115,16 @@
 | 5 | `archive_docs` | ✅ | ⛔ 受阻（1） | 本轮无待归档 plan／实验产物；已删项目 skill 的自验日志由 peer 归档至 `docs/archive/` |
 | 6 | `reconcile_live_docs` | ✅ | ⛔ 受阻（1） | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
 | 7 | `discover_nonfile_candidates` | ✅ | ⛔ 受阻（1） | 首轮列 2 条，reviewer 独立枚举补出整批；三轮双向对账后 diff 为空，共 12 条 |
-| 8 | `review_temp_manifest` | ❌ 未做 | ❌ 未达成；⛔ 受阻（1） | **根阻断点 B**。清单在评审后又被修订（行 73 字节数 431277→431517）→ 按 skill 自己的规则先前结论作废。**同时**其前置 4／7 均受阻于 1，故即便重审也要等 1 解阻 |
-| 9 | `clean_temp` | — 未执行 | ⛔ 受阻（1,8） | **零删除**，56 项全留交 harness 回收；动作根本没发生，故不宣告达成 |
-| 10 | `resolve_branch` | ✅ | ⛔ 受阻（1,8） | 见上节：branch keep；worktree 三条前置齐备、去留交用户 |
-| 11 | `draft_terminal_report` | ✅ | ⛔ 受阻（1,8） | 即本文件 |
-| 12 | `review_closeout_draft` | ✅ | ⛔ 受阻（1,8） | 跨模型 reviewer 在 `922b741b` 判 0 blocker／2 major，全额整改于 `43ffac97` |
-| 13 | `verify_installed_location` | ✅ | ⛔ 受阻（1,8） | 从共享 checkout 实跑（`pwd -P` 已确认）：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail |
-| 14 | `recommend_assets` | ✅ | ⛔ 受阻（1,8） | 见「可复用资产」节五条 |
-| 15 | `update_terminal_report` | ✅ | ⛔ 受阻（1,8） | 按第 3、4 轮 major 整改 |
-| 16 | `review_closeout_final` | ✅ 已闭环 | ⛔ 受阻（1,8） | 第 3 轮 4 major、第 4 轮 3 major、**第 5 轮 M1／M2／M3 逐条闭合，0 blocker／0 major、判可定稿**（`docs/tmp/2026-08-08-batch-1b-closeout-review-round5.md`）。**评审动作本身已完成**，但契约达成仍待 1／8 解阻 |
-| 17 | `report_terminal` | ❌ | ❌ 未达成；⛔ 受阻（1,8） | `requires: [review_closeout_final]`；**本文件不是终态交付件** |
+| 8 | `review_temp_manifest` | ✅ 已满足 | ⛔ 受阻（1） | **原标 ❌，经独立裁决改正**（`docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`）：清单在第 1–2 轮全量评审（`43ffac97`，56 行 0/0）后**无任何 disposition 行变化**——唯一表格字段变动是第 54 条 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正又由第 4 轮独立复算确认。**裁决由未卷入者作出，非本会话自判** |
+| 9 | `clean_temp` | — 未执行 | ⛔ 受阻（1） | **零删除**，56 项全留交 harness 回收；动作根本没发生，故不宣告达成 |
+| 10 | `resolve_branch` | ✅ | ⛔ 受阻（1） | 见上节：branch keep；worktree 三条前置齐备、去留交用户 |
+| 11 | `draft_terminal_report` | ✅ | ⛔ 受阻（1） | 即本文件 |
+| 12 | `review_closeout_draft` | ✅ | ⛔ 受阻（1） | 跨模型 reviewer 在 `922b741b` 判 0 blocker／2 major，全额整改于 `43ffac97` |
+| 13 | `verify_installed_location` | ✅ | ⛔ 受阻（1） | 从共享 checkout 实跑（`pwd -P` 已确认）：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail |
+| 14 | `recommend_assets` | ✅ | ⛔ 受阻（1） | 见「可复用资产」节五条 |
+| 15 | `update_terminal_report` | ✅ | ⛔ 受阻（1） | 按第 3、4 轮 major 整改 |
+| 16 | `review_closeout_final` | ✅ 已闭环 | ⛔ 受阻（1） | 第 3 轮 4 major、第 4 轮 3 major、**第 5 轮 M1／M2／M3 逐条闭合，0 blocker／0 major、判可定稿**（`docs/tmp/2026-08-08-batch-1b-closeout-review-round5.md`）。**评审动作本身已完成**，但契约达成仍待 1／8 解阻 |
+| 17 | `report_terminal` | ❌ | ❌ 未达成；⛔ 受阻（1） | `requires: [review_closeout_final]`；**本文件不是终态交付件** |
 
 **最终验证证据（每项标注新跑／复用，锚到 commit）**：
 
@@ -170,6 +170,13 @@
 - **[major] `requires` 传播仍不完整（M1 专项）** —— **已采纳**。stage 8／16／17 只写了各自的**直接缺口**（`❌ 未达成`），漏了它们**同时**经依赖链受根阻断点阻断：stage 8 的前置 4／7 均受阻于 1；16／17 经 15 继承 1 与 8。只写直接缺口会读成「把这一项补了就清」，而事实是补了也不会立刻达成。已在「契约达成」列并列写出两种状态，并加了一段列读法说明。整改提交 `d924de98`；reviewer 独立复核传播逐条相符、表格结构完好（19 行＝表头＋分隔＋17 数据行、每行 5 列、编号 1–17 连续）。
 - **M2 闭合** —— reviewer 全文扫描确认无第四处把 `master` ancestry 施加给 worktree；`head_reachable` 的动态命令在 `HEAD=d924de98` 实跑命中持久 branch，文中残留的 `b98fe5bb`／`9a6226b6` 已明确标为历史实测、不承担当前判定。
 - **M3 闭合** —— reviewer 逐条对照第 3、4 轮报告，disposition 的问题对象／影响／整改方向均相符、无遗漏错配；「终审处置」→「评审处置」的改名无残留悬空引用；`全额整改` 一词仅用于第 1 轮两条且由第 2 轮 0 major 支持。
+
+**stage 8 独立裁决（用户合并后补做）** —— 裁决书 `docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`
+
+- **裁决：`review_temp_manifest` 已满足**，原 ❌ 标记陈旧。**这个判断刻意不由本会话作出**——我是被判方，自己给自己摘 ❌ 正是最该被怀疑的动作，故派**未卷入此前任何一轮**的裁决者独立核，且明确要求它「宁可判未满足，别为了让流程好看而放行」。
+- 依据：canonical 只规定「增删或改变任何 disposition」使旧 verdict 作废；独立 diff 证明第 1–2 轮全量评审（`43ffac97`）之后 56 条路径的 type／用途／receiver／最终动作／清理前置**全未变**，唯一表格字段变动为第 54 条 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes（它是磁盘事实校验值，不是决定保留／删除的门）；该订正又经第 4 轮独立重算 56 行总和 `6568699` 确认。
+- ⚠️ **裁决书纠正了我派活时的措辞**：期间另有顶部状态与清理动作的事实性复述改写，故「全部改动只有数值订正」按字面不成立。结论成立的真正依据是**无一行 disposition 变化**。这一条记在这里，是因为它正是本文档反复犯的那类错——**用一个更好讲的概括替换了真正的判据**。
+- 裁决范围仅限本 stage，不裁决其它 stage 或整个 closeout 是否完成。
 
 ## 复验命令
 
