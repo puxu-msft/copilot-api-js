@@ -334,6 +334,25 @@ type CompatibilityErrorRendererFor<TF extends BridgeTargetFormat> = TF extends "
  *
  * **未验证**：本规格不冻结联合别名里**其余 8 个类型参数**该取何值（各臂独立推断／existential／
  * helper 泛型）——尚未实测。实施者自选，但必须由 P1 Step 5b 的三格负样本证明判别力仍在。
+ *
+ * **类型层的能力边界（重要，别再往这里加格）**：以上不变量约束的是「**你怎么实例化这个已冻结的
+ * 泛型构造**」。它**无法**约束「**你到底用不用它**」——实测确认，手写一个结构相似、
+ * `targetFormat` 与 `errorRenderer` 各自独立声明成宽类型的 interface，
+ * 拿它当容器值类型，错配同样 exit 0：
+ *
+ * ```ts
+ * interface ProfileBase { readonly targetFormat: BridgeTargetFormat; readonly errorRenderer: AnthropicRenderer | ResponsesRenderer }
+ * // Record<X, ProfileBase> —— 压根没经过 Profile<TF>，错配零报错
+ * ```
+ *
+ * 这**不是不变量写漏了一种姿势**，而是类型系统本身管不到的范围：TS 没有办法声明
+ * 「这个容器的值类型必须**恰是**某个具名别名」，而「结构相似的手写替身」有无穷多种，
+ * 再加第四、第五格类型负样本只是逐个点名个别替身，永远补不完。
+ *
+ * 因此该缺口**换一层堵**：由**架构守卫**（`tests/architecture/`，用既有的 `source-ast.ts`
+ * 做源码级断言，参照 `anchor-remap-single-authority.unit.test.ts` 的单一权威形状）断言
+ * **registry／表的值类型声明确实引用了这条已冻结的别名**，而非任何结构相似的替身。
+ * 见 P1 Task 1.6 Step 5c。
  */
 
 interface RequestBridgeProfile<

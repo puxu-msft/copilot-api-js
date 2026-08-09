@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：第五轮复评——管线接线侧判「**计划可定稿**」；协议契约侧 1 MAJOR（我的类型修法被独立 PoC 击穿），已实测复核并整改。整改后需第六轮**仅协议侧**复评。
+> **状态**：第六轮复评完成。管线接线侧第五轮已判「**计划可定稿**」；协议侧第六轮发现 Posture Q，经复核判定为**类型层能力边界**而非不变量漏洞，已换层用架构守卫（Step 5c）堵住——**此为与 reviewer 的分歧项，已记录理由，待第七轮仅协议侧确认层级选择**。
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
@@ -13,6 +13,8 @@
 > **第四轮基线**：`62075b12`（管线侧）／`7c5ba2ed`（协议侧）
 >
 > **第五轮基线**：`2bf81b6c`
+>
+> **第六轮基线**：`e1b19ebb`（仅协议侧）
 
 ## 评审视角
 
@@ -239,3 +241,40 @@ type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile
 ### 未采纳
 
 无。本轮 1 MAJOR + 2 minor + 1 措辞收紧全部采纳。
+
+## 第六轮（复评，基线 `e1b19ebb`，仅协议侧）
+
+结论：格 3 机制表述经实测确认**准确**；另发现 Posture Q（手写结构相似 interface 旁路整个泛型构造），实测属实。
+
+**但我没有采纳 reviewer 建议的修法层级**——这是本轮唯一的分歧，记在这里。
+
+### Posture Q：属实，但它标记的是**类型层的能力边界**，不是不变量又漏了一种姿势
+
+```ts
+interface ProfileBase {
+  readonly targetFormat: BridgeTargetFormat                       // 宽，独立声明
+  readonly errorRenderer: AnthropicRenderer | ResponsesRenderer   // 宽，独立声明
+}
+// Record<X, ProfileBase> —— 压根不经 Profile<TF>，错配 exit 0
+```
+
+**我方复核**：自写 PoC 独立复现——`postureQ` 无报错、冻结别名的对照仍报 `TS2322`，claim 属实。已追加进 `exp/` PoC（现五处观测点）。
+
+**reviewer 的建议**：不变量再加一句「必须就是那条别名本身」，Step 5b 扩至**四格**，第四格断言 `ProfileBase` 这类手撸结构也触发 `@ts-expect-error` 未命中。
+
+**我判断这个层级选错了，未采纳**。理由是机械的，不是偏好：
+
+- 前面 O/N 那几种是「**用了**冻结构造，但实例化方式丢了判别力」——类型层能管，也确实管住了（收紧为零参封闭联合后，reviewer 实测的 10 类姿势全部正确报红）。
+- Posture Q 是「**压根没用**它，手写一个像的」。**TS 没有「值类型必须恰是某具名别名」的表达能力**，而结构相似的替身有**无穷多种**。第四格只是点名其中一个 `ProfileBase`；换个字段顺序、换个名字、多一个可选字段，照样绕过。**这个集合补不完。**
+
+**改为换一层堵**（`fix-at-the-shared-base-not-where-you-noticed`／「又准备补一种等价写法时就停止补形态」）：新增 P1 Step 5c——`tests/architecture/bridge-profile-renderer-authority.unit.test.ts`，用既有 `source-ast.ts` 做源码级断言（形状参照 `anchor-remap-single-authority.unit.test.ts`），断言 registry 的值类型声明**确实引用那条冻结别名**。配正负样本对照。
+
+并在规格与 Step 5b 明写「**到此为止，别再往类型层加格**」及其理由，防止下一轮（或实施者）又去补第四种形态。
+
+### 本轮的方法论收获：什么时候该停止收紧判据
+
+前五轮每一轮收紧都是对的（每次都真的堵住了一类 false-green）。**第六轮是分界**：当新发现的绕过方式属于「不使用被守护的构造」而非「误用它」时，继续在同一层补形态就进入了补不完的集合——信号不是「补了几次」，而是**新形态与旧形态的关系从「同类变体」变成了「换一个轴」**。此时正确动作是把不变量搬到能表达它的那一层（这里是源码级守卫），而不是让类型层继续追。
+
+### 未采纳
+
+- reviewer 建议的「Step 5b 扩至四格 + 不变量再加一句」：**层级不对**，理由见上。已用 Step 5c（架构守卫）替代，不变量的目标与覆盖面完整保留，不构成范围缩减。

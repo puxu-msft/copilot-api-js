@@ -16,7 +16,7 @@ union-container.ts(33,3): error TS2322: Type '{ targetFormat: "anthropic-message
     Type '"openai-responses"' is not assignable to type '"anthropic-messages"'.
 ```
 
-四处观测点：
+五处观测点：
 
 | 位置 | 构造 | 实测 |
 |---|---|---|
@@ -24,10 +24,22 @@ union-container.ts(33,3): error TS2322: Type '{ targetFormat: "anthropic-message
 | `good` | 零参封闭联合 + 正确装配 | 无报错（无 false-red） |
 | `bad` | 零参封闭联合 + 错配 | **TS2322**（有判别力） |
 | `postureO` | 带宽默认值的泛型别名裸用 + 错配 | **无报错**（false-green） |
+| `postureQ` | 手写结构相似 interface（不经 `Profile<TF>`）+ 错配 | **无报错**（类型层管不到） |
 
 **`postureO` 是第五轮补上的**，它击穿了第四轮的不变量措辞。当时只写「具体实例化的联合」，而 `type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile<TF>` 裸用时**字面上像联合别名、实际等价于宽实例化**。因此不变量收紧为「**零类型参数的封闭联合**」。
 
-独立评审另外实测了 7 类姿势（helper 泛型 identity 中转、`Object.assign`／spread、`Partial<Record>`、裸索引签名、分两步赋值、mapped-type 分布式生成、共享 builder 返回宽类型），在零参封闭联合下**全部正确报红**。
+独立评审另外实测了 7 类姿势（helper 泛型 identity 中转、`Object.assign`／spread、`Partial<Record>`、裸索引签名、分两步赋值、mapped-type 分布式生成、共享 builder 返回宽类型），以及第六轮追加的 mapped/`Extract` 生成的零参联合、`typeof` 反推、漏写一臂——在零参封闭联合下**全部正确报红**。
+
+## `postureQ` 与类型层的能力边界（第六轮）
+
+`postureQ` 与前面几种**不是同一类问题**，因此**没有**再收紧不变量，也**不应**再加第四格类型负样本：
+
+- 前面几种是「**用了**这个冻结的泛型构造，但实例化方式让判别力丢失」——类型层能管，也已经管住了。
+- `postureQ` 是「**压根没用**它」：手写一个结构相似、两个字段各自独立声明成宽类型的 interface。
+
+TS **没有**「这个容器的值类型必须**恰是**某个具名别名」的表达能力，而「结构相似的替身」有**无穷多种**写法。每加一格类型负样本只是点名其中一个，**这个集合补不完**。
+
+所以该缺口**换一层堵**：源码级架构守卫（`tests/architecture/`，用既有 `source-ast.ts`，形状参照 `anchor-remap-single-authority.unit.test.ts`）断言 registry 的值类型声明确实引用了那条冻结别名。见 P1 Task 1.6 Step 5c。
 
 ## 为什么重要
 

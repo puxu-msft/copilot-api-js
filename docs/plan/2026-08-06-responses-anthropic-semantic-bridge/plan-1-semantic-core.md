@@ -167,6 +167,10 @@ Commit: `feat(bridge): add Responses target grammar`
   **为什么三格缺一不可**：格 1 看不见容器姿势；格 2 看不见「别名仍是开放泛型」这一姿势——`HelperProfile` 字面上像是符合「用联合别名」的要求，实际等价于宽实例化。**格 3 正是第五轮评审用独立 PoC 击穿前一版修法后补上的**，前一版不变量只写「具体实例化的联合」，允许了这个写法。
   **背景**：`hub-translate.ts` 现有 `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 就是容器形状，实施者照房内惯例写就会掉进格 2／格 3 的坑。
   **这三格不可省**：8 格运行时测试测的是各协议内部正确性，**覆盖不到装配错配**——这是判据之间的缝，不是某条判据写错。
+  **⛔ 到此为止，别再往这里加第四格类型负样本。** 理由见 Step 5c。
+- [ ] **Step 5c: 把「必须用这条别名」这一条挪到架构守卫，不要继续加类型格。** 新建 `tests/architecture/bridge-profile-renderer-authority.unit.test.ts`，用既有的 `tests/architecture/source-ast.ts` 做源码级断言（形状参照 `anchor-remap-single-authority.unit.test.ts` 的单一权威守卫）：**registry／表的值类型声明必须引用那条已冻结的零参封闭联合别名**，不得是结构相似的手写替身。
+  **为什么必须换层，而不是加第四格**：类型层的三格管的是「**你怎么实例化这个已冻结构造**」；它**管不到「你到底用不用它**」。实测确认，手写 `interface ProfileBase { targetFormat: BridgeTargetFormat; errorRenderer: AnthropicRenderer | ResponsesRenderer }`（两字段各自独立声明成宽类型、压根不经 `Profile<TF>`）当容器值类型，错配同样 **exit 0**。而这类「结构相似的替身」有**无穷多种**写法，每加一格类型负样本只是点名其中一个，永远补不完——**再补形态就是在补一个补不完的集合**。TS 没有「值类型必须恰是某具名别名」的表达能力，所以这条不变量只能靠源码级守卫。
+  正样本对照：把值类型换成正确的冻结别名后守卫转绿；负样本：换成任意手写替身后守卫必须红。
 - [ ] **Step 6: 运行。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts && bun run typecheck`。Expected: PASS。
 - [ ] **Step 7: commit。** Commit: `feat(error): add bridge compatibility renderers`
 

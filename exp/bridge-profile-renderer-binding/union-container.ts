@@ -44,3 +44,23 @@ type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile
 export const postureO = {
   anthropic: { targetFormat: "anthropic-messages", errorRenderer: responsesRenderer },
 } satisfies Record<string, HelperProfile>
+
+// --- Posture Q (added round 6): hand-written lookalike that never uses Profile<TF> ---
+// `targetFormat` and `errorRenderer` are each declared wide, independently — the two are
+// never correlated because the generic construct is bypassed entirely.
+// MEASURED: NO error on the mismatch below.
+//
+// This is NOT another hole in the invariant, and the fix is NOT a fourth type-level cell:
+// TS cannot express "this container's value type must BE this named alias", and
+// structurally-similar stand-ins are unbounded — naming them one at a time never
+// terminates. Closed one layer up instead, by a source-level architecture guard
+// asserting the registry's declared value type references the frozen alias.
+// See P1 Task 1.6 Step 5c.
+interface ProfileBase {
+  readonly targetFormat: BridgeTargetFormat
+  readonly errorRenderer: AnthropicRenderer | ResponsesRenderer
+}
+
+export const postureQ: Record<string, ProfileBase> = {
+  anthropic: { targetFormat: "anthropic-messages", errorRenderer: responsesRenderer },
+}
