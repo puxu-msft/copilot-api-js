@@ -1,5 +1,7 @@
 import type { ScopedPublisher } from "~/lib/observability"
 
+import type { HistoryPersistenceRuntime } from "./worker/runtime"
+
 import { PATHS } from "~/lib/config/paths"
 import {
   //
@@ -47,6 +49,15 @@ let enabled = false
  * `initHistory` has always been idempotent — the pre-cutover version relied on `openDatabase()` returning the live handle when the path was unchanged (`connection.ts`), and `resetTestRuntime` calls it on every test. The cutover replaced that one reopen with two installations that are BOTH single-shot: `runtime.start()` rejects an already-started runtime, and `installHistoryReadDatabase` refuses to shadow a live handle. This variable carries the same idempotency across the new pair, and is keyed by path so a caller that switches artifacts still gets a real re-open instead of silently keeping the previous one.
  */
 let startedDbPath: string | undefined
+
+/**
+ * The runtime THIS module started and that is still the registry's, or `undefined`.
+ *
+ * Every teardown path has to ask this rather than reaching for `peekHistoryPersistenceRuntime()`. A registry singleton can exist without ever having been started — History disabled, a construction that never got as far as `start()`, or a test that injected one — and the runtime deliberately rejects `stopMaintenance()`/`drain()` in that state instead of pretending to succeed. Shutting down a process whose History never came up must not raise; it also must not skip the teardown of a Worker that DID start, which is why this checks both ends rather than swallowing the error.
+ */
+function startedRuntime(): HistoryPersistenceRuntime | undefined {
+  return startedDbPath === undefined ? undefined : peekHistoryPersistenceRuntime()
+}
 let unsubscribeV3Terminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
@@ -200,7 +211,7 @@ export function stopHistoryBackgroundWork(): void {
   // Maintenance and summary backfill live on the Worker now, so "stop background work"
   // is a message rather than a local timer clear. §8.2 step 4: stop claiming new units,
   // finish the one already claimed — the Worker awaits that before answering.
-  void peekHistoryPersistenceRuntime()?.stopMaintenance()
+  void startedRuntime()?.stopMaintenance()
 }
 
 /**
@@ -234,7 +245,7 @@ export async function shutdownHistory(): Promise<void> {
   // then close the Worker (step 7). `drain()` replaces the old in-process `drainV3Writer()`
   // — the writer is not on this thread any more, so awaiting a local queue would prove
   // nothing about what actually reached disk.
-  const runtime = peekHistoryPersistenceRuntime()
+  const runtime = startedRuntime()
   if (runtime) {
     await runtime.drain()
     await runtime.shutdown()

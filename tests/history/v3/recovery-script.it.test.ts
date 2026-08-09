@@ -72,8 +72,8 @@ describe("History V3 projection recovery script", () => {
       expect(exitCode, stderr).toBe(0)
     }
 
-    openDatabase(dbPath)
-    const stored = getV3StoredOperation(entry.id)!
+    // Explicit handle: db-param reads default to this thread's READONLY registry since the Batch 2b cutover, and this test owns a write handle on its own artifact rather than publishing one.
+    const stored = getV3StoredOperation(entry.id, openDatabase(dbPath))!
     expect(stored).toMatchObject({ endedAt: 901_100, timingSource: "terminal-log-rounded" })
     expect(stored.record.extensions["history-v3.recovery"]).toMatchObject({ source: "projected-history-entry", capturedAt: 5_000 })
   })

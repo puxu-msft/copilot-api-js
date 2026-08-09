@@ -60,10 +60,19 @@ export function historyTestDbPath(): string {
  *
  * WsSink and ConsoleSink are NOT attached: tests that need them install them explicitly (avoids stdout pollution + WS broadcast attempts to non-existent clients).
  */
+/**
+ * Bind the registry to the in-process Worker backend for the rest of this test process.
+ *
+ * A factory rather than a single injected instance because a runtime is single-use: every later re-creation (a `historyDbPath` switch, a test that shut History down, the per-test injector reset) must also resolve to the in-process backend instead of silently spawning a real Worker thread mid-run. Exported so the one test that deliberately wants the REAL Worker can clear it and put it back.
+ */
+export function installInProcessHistoryRuntimeFactory(): void {
+  setHistoryPersistenceRuntimeFactoryForTests(() => createInProcessHistoryPersistenceRuntime())
+}
+
 export async function bootstrapTestRuntime(): Promise<void> {
   if (initialized) return
 
-  setHistoryPersistenceRuntimeFactoryForTests(() => createInProcessHistoryPersistenceRuntime())
+  installInProcessHistoryRuntimeFactory()
   // `clearHistory()` can no longer wipe the persisted store by itself — that would be a main-thread writer against the artifact the Worker owns. Hand it a wipe backed by the fixtures' own write connection, so every existing `clearHistory()` caller keeps its clean slate.
   setHistoryStoreWipeForTests(clearHistoryStoreForTests)
   setStateForTests({ historyDbPath: historyTestDbPath() })

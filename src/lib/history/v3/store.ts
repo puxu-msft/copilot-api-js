@@ -678,6 +678,8 @@ function insertSequenceNode(db: Database, node: PreparedSequenceNode): void {
 }
 
 export function commitPreparedOperation(db: Database, prepared: PreparedOperation): "inserted" | "idempotent" {
+  // The failure seam fires HERE rather than at a caller, so it reaches whichever writer is live. It used to sit in the in-process drain loop, which the Batch 2b cutover took out of the production path — leaving a test that armed it watching a commit that could no longer fail. In-process only by construction: a real Worker thread has its own copy of this module, and nothing arms it there.
+  commitFailureInjectorForTests?.()
   ensureV3Schema(db)
   const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as
     | { revision: number; digest: string }
@@ -896,7 +898,6 @@ async function runDrain(): Promise<void> {
             let attemptConflict = false
             const result = await runHistoryWriteAsync("v3-drain", async () => {
               try {
-                commitFailureInjectorForTests?.() // DI-5 test seam: no-op in prod
                 const commitResult = commitPreparedOperation(getDatabase(), prepared)
                 if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
               } catch (error) {
