@@ -1257,4 +1257,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：这是用户的取舍，不是可以由执行方替他做的判断（`ask-if-scope-shrink`）。本轮的缺陷（两侧不一致）已闭合，语义选择独立于它。
 - **触发条件**：用户对搜索结果「太宽」有反馈时；或要给搜索加 UI 提示（如「匹配任意词」）时——那等于把当前语义暴露给用户，届时最好一并确认。
 
+## 搜索匹配有两份实现：Tantivy 与 JS 手写近似（2026-08-09，A3 合并态复评 round 5 的结构怪味）
+
+- **根因 / 现状**：持久化侧由 Tantivy 的 `SimpleTokenizer` + `QueryParser` 决定「什么算命中」，overlay 侧（`queries.ts` 的 `corpusMatchesSearch`）是一份 JS 手写近似。**近似追了四轮**：子串 → 逐 term AND → Unicode 切分 → OR + 逐 term `includes`，每一版都被以真实索引为 oracle 的探针证伪过一次。
+- **当前行为**：不变量已由机器守住——`tests/history/search/overlay-index-agreement.it.test.ts` 断言 **index ⇒ overlay**（蕴含而非等价），10 组语料真建索引真查询，回退 AND 会报出具体不一致。所以「藏行」这个方向是安全的。**剩余代价是过宽**：多词 needle 里任一 term 只要是语料的子串就算命中，故 `a zzzabsent` 会命中 `cartoon`（"a" 是子串）——实测 native total=0 而 overlay 命中。这只影响 recent/in-flight 那一小段窗口（上限 256），落盘后归属移交 sidecar 自动收敛，不产生 total/cursor 自相矛盾。
+- **理想架构 / 若做需改什么**：把「给定 corpus 与 query 是否命中」下沉为 **native 共用能力**（暴露一个不建索引的 match/evaluate 入口，或让 overlay 行也走一次内存索引），overlay 与持久化侧共用同一个 evaluator，双实现随之消失。届时 agreement gate 从「单向蕴含」升级为「等价」，并可以删掉 `corpusMatchesSearch` 里所有关于切分与 AND/OR 的注释——那些正是反复出错的地方。
+- **为何暂缓**：本轮范围是 A3 六条 finding 的合并态正确性；下沉 tokenizer 要动 native 接口与 napi 签名，是独立改动。**更重要的判断**：继续给手写近似打补丁的边际收益已经很低——四轮下来每一版都更接近但仍不等价，而 GPT 侧 reviewer 明确建议「不要继续扩手写近似」。所以下次再遇到不一致，正确动作是做这次下沉，而不是改第五版正则。
+- **触发条件（值得做）**：① agreement gate 再红一次；② 有人要给 overlay 加第二个匹配维度（如按 model / 按字段搜）——那会让双实现的面积翻倍；③ 要把搜索语义改成 AND（见上一条 backlog）时顺手做，因为那本来就要同时改两侧。
+- **发现方**：A3 合并态复评 round 5（`docs/tmp/2026-08-08-a3-merged-state-review-gpt-round5.md`「结构怪味扫描」节），主会话实测复核过宽反例。
+
 
