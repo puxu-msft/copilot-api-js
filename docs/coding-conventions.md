@@ -61,17 +61,19 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 | 「共 N 个用例」「全量总数是 N」 | 计数是**已观察量**，不是总量——加载期抛错的文件一行不写 |
 | 「用例数没有减少」「规模是 N」 | 增减类结论需要独立的完整性 oracle，退出码给不了 |
 
-**退出码 0 是必要条件，不是充分条件。** 它的含义是「当前已实现的三道门都没触发」，而这三道门都是**部分**覆盖：① `parseJUnit` 用文档**自己声明的** `tests`／`failures`／`skipped` 与解析结果对账，不一致就抛错（挡住「行被静默丢弃」；实测 16/16 份真实产物三项全等，三臂各有独立负控）——**产出方不声明这三个属性时该门不生效**；② discovery↔runtime 文件身份对账，两个方向各配一个标记：`⚠ INCOMPLETE`（发现集合里的文件一行没写 ⇒ 数字是**下界**）与 `⚠ OUT-OF-SCOPE`（未被发现的文件却写了行 ⇒ 数字**超出**预期集合）；③ shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶用 `--isolate` 重跑定位。
+**退出码 0 是必要条件，不是充分条件。** 它的含义是「当前已实现的三道门都没触发」，而这三道门都是**部分**覆盖：① `parseJUnit` 用文档**自己声明的** `tests`／`failures`／`skipped` 与解析结果对账，不一致就抛错——挡的是「**我方 parser** 丢行或误计」（实测 16/16 份真实产物三项全等，三臂各有独立负控）；**产出方不声明这三个属性时该门不生效**，且它**不独立于 producer**（详见下方警告）；② discovery↔runtime 文件身份对账，两个方向各配一个标记：`⚠ INCOMPLETE`（请求的文件没出现在 artifact 的 identity 集合里 ⇒ 数字是**下界**）与 `⚠ OUT-OF-SCOPE`（未被请求的文件却出现了 ⇒ 数字**超出**预期集合）；③ shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶用 `--isolate` 重跑定位。
 
 要把「观察量」升级成「总量」，**必须另外有一个能独立枚举目标成员的 oracle**。注意「独立」的判据是**追溯到不同的上游**，不是「换一种运行方式」。按能判到什么，分三层：
 
-1. **「启动了的文件有没有回报」——可判。** 门 ② 拿 `discover()` 的结果同时做 child 的 `bun test` argv 与期望集，再与 JUnit 回报对账（`scripts/parallel-test.ts` 的 `const files = discover()` 一处两用）。所以「我们让它跑的文件里，有谁一行都没写」是能回答的。
-2. **「仓库里应该有哪些测试文件」——只有部分独立的交叉绊线。** 提交进仓库的发现基线（`tests/infra/entry-test-discovery-baseline.json`）在收尾取证时由 `capture-entry-evidence.ts` 对账，但它**由同一个 checkout、同一套后缀集、同形 `Bun.Glob` 生成与校验**，与 runner 的 discovery **共享上游**。它挡的是「基线随时间漂移」，**不是结构独立的 oracle**——若 discovery 规则本身系统性漏掉某类文件，该文件既不进期望集、也不进 argv、也不进 JUnit，门 ② 照绿。
+1. **「每个请求的文件有没有在 artifact 里被提及」——可判（这就是全部）。** 门 ② 拿 `discover()` 的结果同时做 child 的 `bun test` argv 与期望集，再与 JUnit 回报的 file identity 集合比较（`scripts/parallel-test.ts` 的 `const files = discover()` 一处两用）。**它证明的严格只是「集合相等」**：每个 requested path 至少出现在某个 `<testsuite file>` 或 `<testcase file>` 里。**它不证明**该文件启动了、模块加载成功了、或写出了任何 testcase row——一个只有 `<testsuite file="…"/>`、零 testcase 的空壳同样满足它（实跑：`parseJUnit` 对它得 `files:[…], executed:0`，随后 identity 比较为 `missing:[], unexpected:[]`）。要判「真的跑起来了」，得另找能观察模块执行的来源，**不能从 identity 回声反推**。
+2. **「仓库里应该有哪些测试文件」——只有部分独立的交叉绊线。** 提交进仓库的发现基线（`tests/infra/entry-test-discovery-baseline.json`）**不参与生产门**——它只在收尾取证时由 `capture-entry-evidence.ts` 对账。且它**由同一个 checkout、同一套后缀集、同形 `Bun.Glob` 生成与校验**，与 runner 的 discovery **共享上游**。它挡的是「基线随时间漂移」，**不是结构独立的 oracle**——若 discovery 规则本身系统性漏掉某类文件，该文件既不进期望集、也不进 argv、也不进 JUnit，门 ② 照绿。
 3. **「本应存在哪些 testcase」——不可判。** 没有任何东西独立枚举它；声明属性与行都出自同一份产物。**用例级总量至今不可判，这是已知缺口，不是待补的措辞。**
 
-⚠️ **「同一 commit 连跑 N 次数字一致」不是完整性 oracle**——它与 tally **同源**，三次可以稳定漏掉同一个文件，只能检出**随机漂移**、检不出**系统性缺失**。
+⚠️ **门 ① 的「声明计数对账」也不是独立 oracle。** 根属性与 testcase 行同出一个 Bun JUnit producer、同一份 artifact，所以它是 **producer 内部的自洽检查**：独立于**我方 parser 的计数实现**（能抓到我们丢行），**不独立于 producer**——producer 若把某文件从行与声明里一起省掉（加载期抛错正是如此），两侧一致、该门照过。
 
-（第 1、2 层此前被我写成「文件级有独立枚举」，**是错的**：我误以为门 ② 用的是基线。由第七、八轮独立评审逐次证伪。这两次都是「两个『独立』来源其实同源」的实例——判独立性要问**各自最终追溯到谁**，不是问它们看起来有多不一样。）
+⚠️ **「同一 commit 连跑 N 次数字一致」同样不是完整性 oracle**——它与 tally 同源，三次可以稳定漏掉同一个文件，只能检出**随机漂移**、检不出**系统性缺失**。
+
+（**这一节被独立评审连续三轮各证伪一次「独立性」**：先是 N-run、再是「基线与 runtime 独立」、再是「声明计数是独立 oracle」。三次都是同一个错误形态——判独立性要问**各自最终追溯到谁**，不是问它们看起来有多不一样。**这里现在没有任何一个独立完整性 oracle，别再找第四个。**）
 
 实现新的报告器时同理：**只解析 XML 而不做上述对账，就会把加载期失败算成不存在**。
 

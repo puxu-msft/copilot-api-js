@@ -110,7 +110,7 @@
 - [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
-- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 交叉验证只数叶节点、别按 suite 属性求和
+- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 复算只数叶节点别按 suite 属性求和，且**它与 runner 同源、只抓解析错不抓 producer 漏项**
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段盲

@@ -48,7 +48,11 @@
 bun run test:backend            # 产物目录打印在末行 artifacts=<dir>
 ```
 
-用当前解析器对任意一批产物复算。**这里不数 shard 编号**——上一版数了，而且错了：编号「从 1 连续」检不出**缺末尾一份**（`01..15` 照样满足），实测缺 `shard-16` 时它退出 0 并输出 `6934`，把子集当成了完整批次。正确的完整性 oracle 是 runner 自己用的那个：**把产物里出现的文件集合与仓库的发现基线对账**，缺哪份 shard，它承载的文件就不在集合里。
+用当前解析器对任意一批产物复算。**这里不数 shard 编号**——上一版数了，而且错了：编号「从 1 连续」检不出**缺末尾一份**（`01..15` 照样满足），实测缺 `shard-16` 时它退出 0 并输出 `6934`，把子集当成了完整批次。改用的办法是**把产物里出现的文件集合与仓库提交的发现基线对账**——缺哪份 shard，它承载的文件就不在集合里。
+
+⚠️ **两点别误读**（第八、九轮独立评审各证伪一次，此处留痕）：
+① **生产 runner 并不读这份 baseline**。它拿本次 `discover()` 的结果既做 `bun test` 的 argv、又做期望集，与本次 JUnit identities 对账（`scripts/parallel-test.ts:123,212-214`）。baseline 只在收尾取证（`capture-entry-evidence.ts`）与下面这个离线配方里用。
+② **这也不是「完整性 oracle」**。baseline 与 runner 的 discovery 共享同一个 checkout、同一套后缀集与同形 `Bun.Glob`，是**部分独立的绊线**（挡 baseline 随时间漂移），不是结构独立的枚举者。配方输出的是 **artifact 批次相对该 baseline 的 coverage**，不是「仓库应有的测试集合是完整的」。
 
 ```bash
 bun -e '
@@ -71,7 +75,7 @@ bun -e '
   console.log({ shardFiles: names.length, executed, failed, pass: executed - failed, skipped })
   if (cmp.missing.length > 0) console.log(`INCOMPLETE: ${cmp.missing.length} discovered file(s) absent from these artifacts — the counts above are a FLOOR, not a total. e.g. ${cmp.missing.slice(0, 3).join(", ")}`)
   if (cmp.unexpected.length > 0) console.log(`OUT-OF-SCOPE: ${cmp.unexpected.length} file(s) not in the baseline reported rows`)
-  if (cmp.missing.length === 0 && cmp.unexpected.length === 0) console.log("file identity: complete")
+  if (cmp.missing.length === 0 && cmp.unexpected.length === 0) console.log("artifact files match the committed baseline (coverage check — NOT proof the baseline itself is complete)")
 ' <artifacts-dir>
 ```
 

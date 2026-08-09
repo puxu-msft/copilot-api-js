@@ -190,8 +190,13 @@ describe("parallel-test JUnit artifact parsing", () => {
   // Dropping an unidentifiable row is deliberate (a legacy shape must not crash the run),
   // but dropping it SILENTLY is the exact failure this module exists to prevent: the file
   // still appears on both sides of the identity comparison, every shard exits 0, and the
-  // counts are simply low. The producer's own declared totals are an independent count from
-  // the same artifact, so the disagreement surfaces without enumerating malformed shapes.
+  // counts are simply low. Comparing against the producer's declared totals surfaces that
+  // without enumerating malformed shapes.
+  //
+  // What these cases do NOT establish: the declared totals and the rows come from the same
+  // producer into the same artifact, so this is producer-relative self-consistency -- it
+  // catches OUR parser dropping rows, and cannot catch the producer omitting a file from
+  // both its rows and its totals (which is what a load-time throw does).
   test("throws when the parse disagrees with the document's own declared totals", () => {
     const xml = `<?xml version="1.0"?><testsuites tests="2" failures="0" skipped="0"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="counted" file="/repo/tests/a.unit.test.ts"/><testcase name="no classname" file="/repo/tests/a.unit.test.ts"/></testsuite></testsuites>`
 

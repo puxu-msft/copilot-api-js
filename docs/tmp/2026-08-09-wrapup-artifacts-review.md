@@ -390,3 +390,89 @@
 
 - 复评轮次 8：BLOCKER 0、MAJOR 1、MINOR 0。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 9（整改提交 `b45ff4e9`）
+
+## 复评范围与方法
+
+- 已完整读取前 8 轮报告；读取 `b45ff4e9` 完整 diff、commit message 与最终文件，并直接核对 `scripts/parallel-test.ts` 的 `discover()`、child argv、JUnit 解析及文件身份对账接线。
+- 独立性判据统一采用 provenance：逐侧追溯 producer、observation point 与 upstream；共享生产者或共享上游的证据只算同源佐证，不升级为独立 oracle。
+- 已确认 `b45ff4e9` 只修改 `docs/coding-conventions.md`、`docs/todo/deferred-backlog.md` 与本评审报告；未修改 runner。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 3。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:68` — 第 1 层仍把 argv↔JUnit identity acknowledgement 写强成“文件启动／写行可判”
+
+- **现象**：同一份 `discover()` 结果既形成 child argv，又形成 expected set，确实是同源；但同源本身不使“请求集合与回报 identity 集合是否相等”不可判，因为这道门测的就是 acknowledgement。问题在于正文把这个窄关系写成了“启动了的文件有没有回报”“让它跑的文件里，有谁一行都没写”，而实现只检查该路径是否至少出现在任一 `<testsuite file>`／`<testcase file>` identity 中，不证明文件已启动、模块已加载、或写出了 testcase row。
+- **证据**：`scripts/parallel-test.ts:123,149-158,212-214` 显示 `files = discover()` 经 `balance()` 进入 argv，并原样作为 `compareFileIdentities` expected；`scripts/parallel-test-artifacts.ts:101-105` 在看到 `<testsuite file>` 时就把路径加入 `files`，无需任何 testcase。实跑 `parseJUnit("<testsuites><testsuite name=\"suite\" file=\"/repo/tests/a.unit.test.ts\"/></testsuites>")` 得 `files:["tests/a.unit.test.ts"], executed:0`，随后 identity comparison 为 `missing:[], unexpected:[]`。
+- **接手方错误动作**：接手方会把门 ② 绿升级成“每个 argv 文件确实启动／产出了测试行”，据此排除空 suite、reporter 预登记 identity、或加载前后语义缺失；该门实际只能证明 JUnit artifact **提到了**每个 requested path。
+- **建议处置**：第 1 层不要整体降成不可判，也不要称独立 oracle；改名为“post-discovery argv↔JUnit file-identity acknowledgement 可判”，精确写成“每个 requested path 是否至少出现在 artifact 的 file identity 集合”。显式声明它不证明启动、加载或 testcase rows。若目标确实是“启动／加载成功”，需另取能观察模块执行的来源，不能从 echo identity 反推。
+
+### [MAJOR] `scripts/parallel-test-artifacts.ts:77,211-216`、`tests/infra/parallel-test-artifacts.unit.test.ts:190-195`、`docs/memory/methodology-missing-evidence-counted-as-zero.md:22` — 同一 JUnit 产物的 root totals 仍被称作 independent count／oracle
+
+- **现象**：本轮文档已经正确说“声明属性与行都出自同一份产物”，但生产代码注释、承重测试注释与记忆仍把 producer-declared totals 称为 `INDEPENDENT oracle`／`independent count`／“同一份产物里的独立计数”。两侧的 producer 都是同一个 Bun JUnit reporter，同一 artifact 同时承载 root attributes 与 testcase rows；parser 只是两个 observation point，不改变共同上游。
+- **证据**：`scripts/parallel-test-artifacts.ts:77-78` 写 `INDEPENDENT oracle for our parse`，`:211-216` 写 `independent count from the same artifact`；`tests/infra/parallel-test-artifacts.unit.test.ts:190-195` 重复同一主张；`docs/memory/methodology-missing-evidence-counted-as-zero.md:22` 进一步指导未来会话“去找同一份产物里的独立计数”。按 provenance：两侧 producer 均为 Bun reporter，artifact 为同一 XML，故只能算**同源内部一致性检查**。
+- **接手方错误动作**：维护者会把“root totals 与 rows 一致”升级成结构独立的完整性证明；若 Bun reporter 在生产 root totals 与 rows 时共享同一个漏计／过滤缺陷，两侧会一起错而门全绿。该检查仍能有效发现**我方 parser 丢行或误计**，但不能证明 producer／artifact 完备。
+- **建议处置**：同步把三处改成“producer-relative self-consistency oracle”或“同源内部计数”；写明它独立于**我方 parser 的计数实现**，不独立于 Bun producer，不支持 artifact completeness。尤其修正 memory 的未来动作指令，否则本轮文档收窄后，记忆仍会诱导下一轮立同一个假独立性。代码注释／测试注释建议由 `gpt-souls:implementer` 同步，记忆／文档建议由 `gpt-souls:doc-writer`。
+
+### [MAJOR] `docs/memory/methodology-merge-invalidates-branch-frozen-test-floor.md:11-13`、`docs/memory/MEMORY.md:113` — runner tally 与同批 JUnit leaf recount 被写成“第二种原理交叉验证”
+
+- **现象**：该记忆要求先跑 `bun run test:backend` 取得 executed/skipped，再以 16 份 shard JUnit 叶节点复算，称为“第二种原理交叉验证”；索引也概括成“JUnit 交叉验证”。当前 runner 的 tally 本身就由同一批 JUnit artifacts 调 `parseJUnit` 汇总，手工／脚本重数 leaf nodes 与 runner 共享 producer、artifact 和大部分语义，只是第二个 parser。它能交叉检查 runner parser／聚合实现，不能把 observed count 升级成独立 completeness 证据，也不能满足该文件所引 `feedback-pass-null-clean-not-self-validating` 的独立 oracle 要求。
+- **证据**：`scripts/parallel-test.ts:202-220,228+` 从 shard JUnit identities 汇总 executed/skipped/failed；记忆 `methodology-merge-invalidates-branch-frozen-test-floor.md:11` 明写 runner 数后再数同 16 份 JUnit，`:13` 把它归入“数字口径须第二方法交叉验证”；`docs/memory/MEMORY.md:113` 继续以“JUnit 交叉验证”召回。provenance 两侧共同上游是同一次 Bun JUnit 产物。
+- **接手方错误动作**：合并后冻结 `minimum_executed` 的人会把同一 artifact 的两次解析当成两个独立来源，在 producer 系统性漏掉文件／testcase 时仍将偏低数冻结为合法地板。
+- **建议处置**：把该步骤降为“第二 parser 的同源复算，防 runner parser／聚合错误，不证明 producer completeness”；索引同步收窄。若 `minimum_executed` 要承担“测试没减少”的门，按当前 `docs/coding-conventions.md:62,66-70` 诚实标为缺独立用例级 oracle，不能再靠同批 JUnit 自举。修订建议 `gpt-souls:doc-writer`。
+
+### [MAJOR] `docs/todo/deferred-backlog.md:1190,1195-1198` — 新增收窄句准确，但没有撤销前面的当前指令，backlog 同时要求和禁止用 JUnit name diff 做增减验收
+
+- **现象**：`:1198` 新增的限定本身准确：JUnit names 只能比较已回报成员，不能证明 testcase 总量；但同一当前处置块的 `:1190` 仍说“用 junit 枚举、别用汇总数做增减验收”的纪律继续有效直到 N-run guard 落地，`:1195-1197` 仍把 JUnit name set 称为“可靠替代”，并命令“凡用例数增减类验收，一律用 junit”。这不是纯历史原文：`:1190` 明标“处置”，`:1196-1197` 仍是未划销的触发条件／配套纪律。
+- **证据**：`:1197` 的全称动作与紧随其后的 `:1198`“不能回答用例总数有没有减少”直接相反；`:1190` 又把纪律的解除错误绑到 N-run consistency，而同文件 `:1261` 已正确说 N-run 永远不能证明 completeness。
+- **接手方错误动作**：接手方按 `:1190` 或 `:1197` 做重构的 no-decrease 验收，会用同源 JUnit names 放行；按 `:1198` 则会拒绝。文档没有给出唯一动作，正是轮次 8 要求撤销旧 oracle 而本提交只追加限定未完整闭合。
+- **建议处置**：显式 supersede／划销 `:1190` 中“该纪律继续有效直到 N-run 落地”、`:1195` 的方案中把 name set 当总量替代、`:1196` 的“可靠替代”、`:1197` 的“一律用于增减验收”。保留窄用途：诊断已回报名集合的随机漂移／变化；增减总量继续标“缺独立 testcase population oracle”。修订建议 `gpt-souls:doc-writer`。
+
+### [MAJOR] `exp/junit-tally-false-green/README.md:50,68-73` — 复算配方仍错误声称 runner 用 committed baseline，并把部分绊线称为“正确的完整性 oracle”
+
+- **现象**：README 说“正确的完整性 oracle 是 runner 自己用的那个：把产物文件集合与仓库发现基线对账”，配方随后确实读取 committed baseline；但生产 runner 根本不读该 baseline，它拿本次 live `discover()` 结果对本次 JUnit identities。该 README 因而保留了轮次 8 已证伪的同一事实错误，并把共享 discovery 规则的 baseline 绊线写成无边界的“完整性 oracle”。
+- **证据**：README `:50` 的原句与 `scripts/parallel-test.ts:123,212-214` 冲突；后者 expected set 是本次 `files = discover()`。baseline 只在 README 配方 `:68-73` 与 `capture-entry-evidence.ts` 中使用。`docs/coding-conventions.md:69` 已正确说明 baseline 与 runner Glob 共享 checkout／suffix／同形 Glob，只是部分独立 tripwire，不是结构独立 oracle。
+- **接手方错误动作**：读者会误以为生产门已接入 committed baseline，并把配方输出 `file identity: complete` 理解成仓库 discovery／test population 完整；实际上它只说明“这些 artifacts 覆盖了该 baseline 列出的文件”，baseline 自己可能同源漏项或陈旧。
+- **建议处置**：改成“artifact-batch 相对 committed baseline 的 coverage check”；说明这是离线复算配方额外做的检查，**不是 runner 的门**，也不证明 baseline／仓库应有集合完备。输出把 `file identity: complete` 收窄为 `artifact files match the committed baseline`。修订建议 `gpt-souls:doc-writer`。
+
+> **计数更正**：继续全范围扫描后又发现 backlog 当前指令冲突与实验 README 的同一事实错误；本轮新增 MAJOR 最终为 **5**，不是本节开头暂记的 3。逐条追加纪律下不回改已写段落，以此处及末尾最终计数为准。另：backlog 同类旧话术还命中 `docs/todo/deferred-backlog.md:1267` 的“验收有可靠替代（exit code + 定向套件 + junit 枚举）”，处置时应与 `:1190,1195-1198` 一并收窄，避免另一入口继续把 JUnit 枚举升级成总量 oracle。
+
+## 已确认的整改与证据
+
+- **`discover()` 一处两用描述准确**：`scripts/parallel-test.ts:123` 只调用一次，结果经 `balance()`／bucket 展开进入 child argv（`:149-158`），并在 `:212-214` 原样充当 file identity expected set；生产 runner 不读 committed discovery baseline。
+- **三层中的第 2、3 层方向正确**：baseline 与 runner discovery 共享 checkout／suffix／同形 Glob，只能作部分绊线；testcase population 没有来源独立的枚举者，不可判总量。问题集中在第 1 层谓词写强和其他载体仍冒充独立。
+- **backlog 新增限定句本身准确**：JUnit name set 只能比较已回报名，不能证明 testcase total；但旧当前指令未同步 supersede，故列为 MAJOR。
+- **定向测试**：`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 在本 worktree、commit `b45ff4e9` 下为 `26 pass / 0 fail`。这只确认现实现／测试通过，不消除上述 provenance 与文档合同缺陷。
+- **实现未变**：`scripts/parallel-test.ts` 在 `b45ff4e9^` 与 `b45ff4e9` 的 Git blob 均为 `a27bf46dc41649c90090d6670b391b5b8bf57517`；`scripts/parallel-test-artifacts.ts` 两侧均为 `58def4a954eab7190ade7deb6a6136f7a42b6e2d`。
+- **门禁当前状态只作窄观测**：提交信息逐字含 raw line `[parallel-test] 16 shards · 7544 tests · 7544 pass · 0 fail · 7544 executed · 35 skipped · 64.66s`；按当前 claim policy，这只支持该 commit／命令观察到的计数，不支持总量。未重跑 backend 全量，遵守本轮约束。
+
+## 全仓范围扫描 disposition
+
+- 扫描范围：`docs/todo/deferred-backlog.md`、整个 `docs/memory/`、`exp/junit-tally-false-green/README.md`、`docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md`、`docs/coding-conventions.md`；另为核验承重注释扫描 `scripts/parallel-test-artifacts.ts` 与 `tests/infra/parallel-test-artifacts.unit.test.ts`。
+- 判据：逐条问 producer／observation point／upstream，重点搜索“独立、交叉验证、第二种原理、完整性 oracle、可靠替代、同源、baseline/runtime/JUnit”。
+- 发现并单列的同源冒充独立：① Bun root totals vs testcase rows；② runner tally vs 同批 JUnit leaf recount；③ baseline／live discovery／runtime 的过强描述；④ JUnit names vs tally；⑤ README 把 baseline coverage 写成 runner oracle。
+- 其余命中 disposition：真实外部 counterpart／官方 SDK／精确数学重算等明显不同上游的 oracle 不属于本轮同源缺陷；“独立评审”描述的是评审参与方而非数据 provenance；普通“同源”用于类比关系而非交叉证明。未发现另一个会影响本轮收口、且未被上述 5 条覆盖的 tally 同源主张。
+
+## 结构怪味扫描
+
+- `docs/coding-conventions.md:68` — **抽象泄漏／谓词名实不符**：identity acknowledgement 被命名为“启动／写行”；处置：本轮必须收窄，理由见 MAJOR 1。
+- `scripts/parallel-test-artifacts.ts:77,211-216` 与 `docs/memory/methodology-missing-evidence-counted-as-zero.md:22` — **同一事实多载体且强度不一**：authority 已收窄，代码／测试／memory 仍写 independent；处置：本轮同步修，不留 backlog，因为它会直接诱导下一位复发。
+- `docs/todo/deferred-backlog.md:1190-1198,1267` — **同一段双合同**：旧动作与新限定并存；处置：本轮 supersede 旧动作，不能靠读者自行择一。
+- `exp/junit-tally-false-green/README.md:50` — **陈旧实现叙述**：离线配方被冒充 production runner；处置：本轮同步修。
+
+## 收敛判定
+
+- **当前没有未闭合 BLOCKER。**
+- **当前仍有 5 个未闭合 MAJOR**：第 1 层谓词写强；producer root totals 被冒充 independent；同批 JUnit leaf recount 被冒充第二原理；backlog 旧增减动作未撤销；实验 README 仍误述 runner／baseline。
+- 因而本轮不能收口。前八轮已闭合项未因本轮重新打开；未发现实现行为新缺陷，但文档／注释会直接导致接手方继续用同源证据作独立完整性判断。
+
+## 最终计数
+
+- 复评轮次 9：BLOCKER 0、MAJOR 5、MINOR 0、NIT 0。
+- 当前 verdict：**修复 MAJOR 后可进入下一阶段**。

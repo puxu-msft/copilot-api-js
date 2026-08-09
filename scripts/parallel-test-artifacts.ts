@@ -74,7 +74,8 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   let executed = 0
   let skippedCount = 0
   let failedCount = 0
-  // The producer's own declared totals, used below as an INDEPENDENT oracle for our parse.
+  // The producer's own declared totals. Used below to check OUR PARSE against them --
+  // this is producer-relative self-consistency, NOT an independent oracle (see below).
   let declared: { tests: number; failures: number; skipped: number } | undefined
   let sawRoot = false
   const parser = new SaxesParser({ xmlns: true })
@@ -208,16 +209,21 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   })
   parser.write(xml).close()
   if (elements.length > 0) throw new Error("JUnit document ended with unclosed elements")
-  // Cross-check our parse against the producer's own declared totals. Rows this parser
-  // cannot identify (a `<testcase>` missing `file`/`classname`/`name`) are dropped on
-  // purpose so a legacy shape does not crash the run — but dropping them SILENTLY is the
-  // very failure this whole module exists to prevent: the counts come out low and nothing
-  // says so. The declared attributes are an independent count from the same artifact, so a
-  // disagreement means rows went missing regardless of which shape caused it.
+  // Check our parse against the producer's own declared totals. Rows this parser cannot
+  // identify (a `<testcase>` missing `file`/`classname`/`name`) are dropped on purpose so a
+  // legacy shape does not crash the run — but dropping them SILENTLY is the very failure
+  // this whole module exists to prevent: the counts come out low and nothing says so.
   //
-  // Enforced only when the producer declares all three. That is a real limit, not a
-  // formality: an emitter that omits them is not checked here, and the runner's
-  // discovery/runtime file-identity comparison remains a separate, also-partial guard.
+  // SCOPE, and it is narrower than it looks: the declared attributes and the rows come out
+  // of the SAME Bun JUnit producer, into the same artifact. This is therefore a
+  // producer-relative self-consistency check -- independent of OUR counting implementation,
+  // NOT independent of the producer. If the producer omits a file from both its rows and its
+  // declared totals (exactly what a load-time throw does), both sides agree and this passes.
+  // It does not establish artifact completeness; nothing here does. Earlier revisions called
+  // it an "independent oracle", which was wrong, and was the third same-source claim in this
+  // module's history -- independence is decided by what each side traces back to.
+  //
+  // Enforced only when the producer declares all three, which is another real limit.
   // Measured on 16/16 real bun 1.3.14 shard artifacts: parsed rows === declared `tests`,
   // parsed failures === declared `failures`, parsed skips === declared `skipped`.
   if (declared !== undefined) {
