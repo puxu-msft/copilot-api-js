@@ -40,10 +40,16 @@ describe("requestBucket — a request lands in exactly one bucket", () => {
     expect(requestBucket({ state: "interrupted", responseSuccess: true })).toBe("interrupted")
   })
 
-  test("no terminal verdict → the upstream leg is the fallback", () => {
-    expect(requestBucket({ state: "active", responseSuccess: true })).toBe("success")
-    expect(requestBucket({ state: "active", responseSuccess: false })).toBe("failure")
-    expect(requestBucket({ state: "active" })).toBe("none")
+  test("active states never inherit the upstream leg verdict", () => {
+    for (const state of ["pending", "executing", "streaming"] as const) {
+      expect(requestBucket({ state, responseSuccess: true })).toBe("none")
+      expect(requestBucket({ state, responseSuccess: false })).toBe("none")
+    }
+  })
+
+  test("a missing lifecycle state uses the upstream leg as the legacy fallback", () => {
+    expect(requestBucket({ responseSuccess: true })).toBe("success")
+    expect(requestBucket({ responseSuccess: false })).toBe("failure")
     expect(requestBucket({})).toBe("none")
   })
 

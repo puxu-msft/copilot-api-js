@@ -37,6 +37,7 @@ import type {
   PreprocessInfo,
   SseEventRecord,
 } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
@@ -131,6 +132,7 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -181,9 +183,7 @@ import {
   buildOpenAIResponseData,
   buildResponsesResponseData,
 } from "~/lib/request"
-import { isShutdownCausedAbort } from "~/lib/shutdown"
 import { state } from "~/lib/state"
-import { classifyStreamError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -640,6 +640,10 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     return handleWarmupRequest(c, payload, state.warmupPolicy) as Response
   }
 
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleMessagesV4Admitted(c, payload, historyReservation))
+}
+
+async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, historyReservation: HistoryReservation): Promise<Response> {
   // Resolve the model HERE (before processAnthropicSystem' config reload) and pass
   // it to parse as `preResolved`, matching the legacy handler's order (read model
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
@@ -676,7 +680,15 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     dedupedToolCallCount: pre.dedupedToolCallCount,
   }
 
-  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo, ...(routeOverride && { routeOverride }) })
+  return runMessagesDriver(c, {
+    wireBody,
+    clientRaw,
+    resolvedName,
+    selectedModel,
+    preprocessInfo,
+    historyReservation,
+    ...(routeOverride && { routeOverride }),
+  })
 }
 
 // ============================================================================
@@ -689,6 +701,7 @@ interface RunMessagesDriverArgs {
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
+  historyReservation: HistoryReservation
   /** The client's explicit `@cc/@responses/@messages` leg pin, threaded to the driver via `preResolved`. */
   routeOverride?: RouteOverride
 }
@@ -705,12 +718,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const betaProbe = createBetaProbe(clientAnthropicBeta)
   const codec = createAnthropicCodec({ betaProbe, preprocessInfo })
-  // rewriteShutdownAbort (C1 / H1): a shutdown-caused non-streaming fetch abort is
-  // rewritten to a retryable 529 inside the send core, in the driver loop's place.
   const transport = createUpstreamHttpTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
-    rewriteShutdownAbort: true,
   })
 
   const driver = createPipelineDriver({
@@ -744,6 +754,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     path: c.req.path,
     query: resolveInboundQuery(c.req.url),
     preResolved: { name: resolvedName, model: args.selectedModel, ...(args.routeOverride && { routeOverride: args.routeOverride }) },
+    historyReservation: args.historyReservation,
     clientAbortSignal: clientAbort.signal,
   })
 
@@ -1819,10 +1830,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     return settlement === "handled"
   }
   const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
-    // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
-    // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
+    // Recovery is fail-closed for every request-owned abort. Only a deterministic
+    // upstream transport failure may launch a fresh dispatch.
     if (source !== "upstream-transport") return false
-    if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
     if (error instanceof Error && isAbortError(error)) return false
     const failure = classifyPreContentRecoveryFailure({ error, clientAborted: false, lifecycleSignal: env.ctx.lifecycleSignal })
     return tryReadyLiveRecovery(failure, error)
@@ -1936,40 +1946,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
 
     if (outcome.kind === "stream-error") {
       if (opts.recoveryOriginalError !== undefined) throw new RecoveryAttemptFailure(opts.recoveryOriginalError, outcome.error)
-      if (classifyStreamError(outcome.error) === "shutdown" || isShutdownCausedAbort(outcome.error)) {
-        const shutdownError = new HTTPError(
-          "Server is shutting down",
-          529,
-          JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
-          undefined,
-          undefined,
-          undefined,
-          outcome.error,
-        )
-        const partial = buildAnthropicResponseData(acc, model)
-        const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
-        if (
-          settleMessagesOwnerFailure(
-            ownerDecision,
-            env,
-            acc.model || model,
-            recordForwarded,
-            { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
-            { cause: shutdownError },
-          )
-        )
-          return
-        await sink.writeSynthetic?.(anthropicHttpErrorFrame(shutdownError)).catch(() => undefined)
-        recordForwarded()
-        env.ctx.fail(acc.model || model, shutdownError, {
-          usage: partial.usage,
-          stop_reason: partial.stop_reason,
-          stopDetails: partial.stopDetails,
-          content: partial.content,
-        })
-        await sink.finalize?.()
-        return
-      }
       if (await tryResponseRecovery(outcome.error, outcome.source)) return
       // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
       // Anthropic error frame + record it into the forwarded track (the client receives it, so

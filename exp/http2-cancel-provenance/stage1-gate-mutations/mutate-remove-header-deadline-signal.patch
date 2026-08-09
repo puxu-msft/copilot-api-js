@@ -1,0 +1,10 @@
+diff --git a/src/lib/transport/upstream-fetch.ts b/src/lib/transport/upstream-fetch.ts
+--- a/src/lib/transport/upstream-fetch.ts
++++ b/src/lib/transport/upstream-fetch.ts
+@@ -102,5 +102,5 @@ export function upstreamFetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
+   return activeUpstreamFetch(url, {
+     ...transportInit,
+-    signal: combineAbortSignals(signal, deadline.signal),
++    signal,
+   }).finally(() => deadline.complete())
+ }

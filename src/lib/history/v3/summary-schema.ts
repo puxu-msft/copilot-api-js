@@ -58,9 +58,7 @@ export const readyAssignments = SUMMARY_PROJECTION_FIELDS.filter(
   .join(",")
 
 export const historicalProjectionValues = SUMMARY_PROJECTION_FIELDS.map((field) => field.source("v3_operations")).join(",")
-export const projectionEquality = SUMMARY_PROJECTION_FIELDS.filter(
-  (field) => !["operation_id", "projection_error", "projection_status"].includes(field.column),
-)
+export const projectionEquality = SUMMARY_PROJECTION_FIELDS.filter((field) => !["operation_id", "projection_error", "projection_status"].includes(field.column))
   .map((field) => `s.${field.column} IS (${field.source("o")})`)
   .join(" AND ")
 

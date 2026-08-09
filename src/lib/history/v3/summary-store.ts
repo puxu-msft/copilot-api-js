@@ -9,6 +9,7 @@ import type {
 import type { HistorySearchFreshnessTarget } from "~/lib/history/search/protocol"
 import type { Database } from "~/lib/history/sqlite/connection"
 
+import { lifecycleStatesForQuery } from "~/lib/history/lifecycle-state"
 import {
   //
   deleteMeta,
@@ -55,11 +56,12 @@ function compileSummaryWhere(options: QueryOptions): SummaryWhere {
     terms.push("endpoint=?")
     params.push(options.endpoint)
   }
-  if (options.state) {
-    terms.push("state=?")
-    params.push(options.state)
-  } else if (options.success !== undefined) {
-    terms.push(options.success ? "state='completed'" : "state='failed'")
+  const lifecycleStates = lifecycleStatesForQuery(options)
+  if (lifecycleStates?.length === 0) {
+    terms.push("0=1")
+  } else if (lifecycleStates !== undefined) {
+    terms.push(`state IN (${lifecycleStates.map(() => "?").join(",")})`)
+    params.push(...lifecycleStates)
   }
   if (options.from !== undefined) {
     terms.push("started_at>=?")
@@ -211,37 +213,58 @@ export function explainSessionEntryPagePlan(db: Database, sessionId: string, lim
   return (db.prepare(sessionEntryPageSql("", true)).all(sessionId, limit) as Array<{ detail: string }>).map((row) => row.detail)
 }
 
-export function querySessionEntryPage(db: Database, sessionId: string, cursor: string | undefined, limit: number): PersistedSessionEntryPage {
-  const cursorRow =
-    cursor ?
-      (db
-        .prepare(
-          `SELECT started_at,operation_id
-           FROM v3_operation_summaries
-           WHERE operation_id=? AND session_id=? AND operation_kind='generation' AND projection_status='ready'`,
-        )
-        .get(cursor, sessionId) as { started_at: number; operation_id: string } | undefined)
-    : undefined
-  const boundary = cursorRow ? " AND (started_at>? OR (started_at=? AND operation_id>?))" : ""
-  const boundaryParams = cursorRow ? [cursorRow.started_at, cursorRow.started_at, cursorRow.operation_id] : []
+function sessionGenerationRowsCte(): string {
+  return `WITH overlay_rows AS (
+    SELECT
+      json_extract(value,'$.id') AS operation_id,
+      json_extract(value,'$.sessionId') AS session_id,
+      json_extract(value,'$.agentId') AS agent_id,
+      CAST(json_extract(value,'$.startedAt') AS INTEGER) AS started_at,
+      json_extract(value,'$.state') AS state,
+      json_extract(value,'$.requestModel') AS request_model,
+      json_extract(value,'$.responseModel') AS response_model,
+      CAST(json_extract(value,'$.usage.input_tokens') AS INTEGER) AS input_tokens,
+      CAST(json_extract(value,'$.usage.cache_read_input_tokens') AS INTEGER) AS cache_read_input_tokens,
+      CAST(json_extract(value,'$.usage.cache_creation_input_tokens') AS INTEGER) AS cache_creation_input_tokens,
+      CAST(json_extract(value,'$.usage.output_tokens') AS INTEGER) AS output_tokens,
+      json_extract(value,'$.previewText') AS preview_text
+    FROM json_each(?)
+  ),
+  generation_rows AS (
+    SELECT
+      operation_id,session_id,agent_id,started_at,state,request_model,response_model,
+      input_tokens,cache_read_input_tokens,cache_creation_input_tokens,output_tokens,preview_text
+    FROM v3_operation_summaries
+    WHERE projection_status='ready'
+      AND operation_kind='generation'
+      AND operation_id NOT IN (SELECT operation_id FROM overlay_rows)
+    UNION ALL
+    SELECT
+      operation_id,session_id,agent_id,started_at,state,request_model,response_model,
+      input_tokens,cache_read_input_tokens,cache_creation_input_tokens,output_tokens,preview_text
+    FROM overlay_rows
+  )`
+}
+
+export function querySessionEntryPage(
+  db: Database,
+  sessionId: string,
+  cursor: string | undefined,
+  limit: number,
+  overlay: ReadonlyArray<EntrySummary> = [],
+): PersistedSessionEntryPage {
+  const rows = db
+    .prepare(`${sessionGenerationRowsCte()} SELECT operation_id,started_at FROM generation_rows WHERE session_id=? ORDER BY started_at,operation_id`)
+    .all(JSON.stringify(overlay), sessionId) as Array<{ operation_id: string; started_at: number }>
+  const cursorIndex = cursor === undefined ? -1 : rows.findIndex((row) => row.operation_id === cursor)
+  const startIndex = cursorIndex < 0 ? 0 : cursorIndex + 1
   const boundedLimit = Math.max(0, limit)
-  const rows = db.prepare(sessionEntryPageSql(boundary)).all(sessionId, ...boundaryParams, boundedLimit + 1) as Array<{ operation_id: string }>
-  const hasMore = rows.length > boundedLimit
-  const operationIds = rows.slice(0, boundedLimit).map((row) => row.operation_id)
-  const total = (
-    db
-      .prepare(
-        `SELECT COUNT(*) AS n
-         FROM v3_operation_summaries
-         WHERE session_id=? AND operation_kind='generation' AND projection_status='ready'`,
-      )
-      .get(sessionId) as { n: number }
-  ).n
+  const operationIds = rows.slice(startIndex, startIndex + boundedLimit).map((row) => row.operation_id)
   return {
     operationIds,
-    total,
-    nextCursor: hasMore ? (operationIds.at(-1) ?? null) : null,
-    prevCursor: cursorRow && operationIds.length > 0 ? operationIds[0] : null,
+    total: rows.length,
+    nextCursor: startIndex + boundedLimit < rows.length ? (operationIds.at(-1) ?? null) : null,
+    prevCursor: startIndex > 0 && operationIds.length > 0 ? operationIds[0] : null,
   }
 }
 
@@ -261,16 +284,10 @@ interface PersistedSessionAggregate {
   preview: string | null
 }
 
-export function querySessionSummaries(db: Database, limit: number): Array<SessionSummary> {
+export function querySessionSummaries(db: Database, limit: number, overlay: ReadonlyArray<EntrySummary> = []): Array<SessionSummary> {
   const rows = db
     .prepare(
-      `WITH generation_rows AS (
-         SELECT *
-         FROM v3_operation_summaries
-         WHERE projection_status='ready'
-           AND operation_kind='generation'
-           AND session_id IS NOT NULL
-       ),
+      `${sessionGenerationRowsCte()},
        grouped AS (
          SELECT
            session_id,
@@ -330,7 +347,7 @@ export function querySessionSummaries(db: Database, limit: number): Array<Sessio
        )
        ORDER BY grouped.last_started_at DESC,grouped.session_id DESC`,
     )
-    .all(Math.max(0, limit)) as Array<PersistedSessionAggregate>
+    .all(JSON.stringify(overlay), Math.max(0, limit)) as Array<PersistedSessionAggregate>
 
   return rows.map((row) => ({
     sessionId: row.session_id,

@@ -1,15 +1,46 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import {
+  //
+  afterAll,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test"
 import { createHash } from "node:crypto"
-import { type EntryEvidenceReceiptV1Expected, validateEntryEvidenceReceiptV1 } from "../../scripts/entry-evidence-receipt"
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+  //
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
+import {
+  //
+  type EntryEvidenceReceiptV1Expected,
+  validateEntryEvidenceReceiptV1,
+} from "../../scripts/entry-evidence-receipt"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
 const HANDOVER = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
 const BASELINE = "tests/infra/entry-test-discovery-baseline.json"
 const DEPENDENCY_INTEGRITY_MANIFEST = "scripts/entry-evidence-runtime-dependencies.json"
 const SAX_RUNTIME_FILES = ["saxes/saxes.js", "xmlchars/xml/1.0/ed5.js", "xmlchars/xml/1.1/ed2.js", "xmlchars/xmlns/1.0/ed3.js"]
+
+// Nearly every case here forks the real validator against a freshly built git
+// fixture; the file alone already runs ~45s. Bun's 5s per-test default is a
+// wall-clock budget, not one of this file's provenance invariants — under the
+// 16-shard runner it turns healthy cases red at whichever one happens to be
+// slowest that run. Budget the file for its actual mechanism instead.
+setDefaultTimeout(30_000)
 
 function resolvedPackageRoot(name: string): string {
   let directory = path.dirname(Bun.resolveSync(name, path.join(REPO_ROOT, "scripts/parallel-test-artifacts.ts")))
@@ -99,7 +130,7 @@ function hash(file: string): string {
 function json(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`)
 }
-function git(tree: string, args: string[]): string {
+function git(tree: string, args: Array<string>): string {
   const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
   if (result.exitCode !== 0) throw new Error(result.stderr.toString())
   return result.stdout.toString().trim()
@@ -111,8 +142,9 @@ function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boole
   mkdirSync(tree)
   const dependencyRoot = options.dependencyLocation === "ancestor" ? sandbox : tree
   const unicodeSkips = options.unicodeSkips === true
-  const allowedSkipped = unicodeSkips
-    ? [
+  const allowedSkipped =
+    unicodeSkips ?
+      [
         { kind: "suite", file: "tests/a.unit.test.ts", suite_name: "套件", count: 1, reason: "whole-suite-skip" },
         { kind: "testcase", file: "tests/a.unit.test.ts", classname: "类", name: "跳过", ordinal: 1, count: 1, reason: "todo" },
       ].sort((left, right) => Buffer.from(JSON.stringify(left)).compare(Buffer.from(JSON.stringify(right))))
@@ -163,16 +195,17 @@ function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boole
     const log = path.join(out, `run-${n}.log`)
     writeFileSync(
       junit,
-      unicodeSkips
-        ? '<testsuites><testsuite file="tests/a.unit.test.ts" name="套件" skipped="1"/><testcase classname="类" name="跳过" file="tests/a.unit.test.ts"><skipped/></testcase></testsuites>\n'
-        : '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"/></testsuites>\n',
+      unicodeSkips ?
+        '<testsuites><testsuite file="tests/a.unit.test.ts" name="套件" skipped="1"/><testcase classname="类" name="跳过" file="tests/a.unit.test.ts"><skipped/></testcase></testsuites>\n'
+      : '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"/></testsuites>\n',
     )
     json(runtime, { files: ["tests/a.unit.test.ts"] })
     json(skipped, {
       executed: unicodeSkips ? 0 : 1,
       skipped: unicodeSkips ? 2 : 0,
-      skipped_identities: unicodeSkips
-        ? [
+      skipped_identities:
+        unicodeSkips ?
+          [
             { kind: "suite", file: "tests/a.unit.test.ts", suite_name: "套件", count: 1 },
             { kind: "testcase", file: "tests/a.unit.test.ts", classname: "类", name: "跳过", ordinal: 1, count: 1 },
           ]
@@ -244,8 +277,14 @@ function invoke(f: ReturnType<typeof fixture>): ReturnType<typeof Bun.spawnSync>
   )
 }
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCodePoint(27)}\\[[0-9;]*m`, "g")
+
+function stripAnsi(value: string): string {
+  return value.replaceAll(ANSI_ESCAPE_PATTERN, "")
+}
+
 function error(result: ReturnType<typeof Bun.spawnSync>): string {
-  return new TextDecoder().decode(result.stderr).replaceAll(/\x1b\[[0-9;]*m/g, "")
+  return stripAnsi(new TextDecoder().decode(result.stderr))
 }
 
 function receiptExpected(f: ReturnType<typeof fixture>, receiptRaw = readFileSync(f.receipt, "utf8")): EntryEvidenceReceiptV1Expected {
@@ -378,7 +417,7 @@ function expectEv(id: string, result: { exitCode: number; stderr?: Uint8Array },
   const row = PLAN_MUTATIONS.get(id)
   if (!row || executions.some((entry) => entry.id === id)) throw new Error(`unknown or duplicate execution: ${id}`)
   expect(result.exitCode).toBe(row.expectedExit)
-  expect(new TextDecoder().decode(result.stderr ?? new Uint8Array()).replaceAll(/\x1b\[[0-9;]*m/g, "")).toBe(row.expectedStderr)
+  expect(stripAnsi(new TextDecoder().decode(result.stderr ?? new Uint8Array()))).toBe(row.expectedStderr)
   executions.push({ id, condition: row.condition })
 }
 function reconcileExecuted(planRows: ReadonlyMap<string, PlanMutationRow>, executions: ReadonlyArray<{ id: string; condition: string }>): Array<string> {
@@ -393,7 +432,7 @@ function reconcileExecuted(planRows: ReadonlyMap<string, PlanMutationRow>, execu
   const missing = [...planRows.keys()].filter((id) => !ids.has(id)),
     orphan = [...ids].filter((id) => !planRows.has(id)),
     wrong = executions.filter((entry) => planRows.get(entry.id)?.condition !== entry.condition)
-  if (missing.length || duplicate.size || orphan.length || wrong.length)
+  if (missing.length > 0 || duplicate.size > 0 || orphan.length > 0 || wrong.length > 0)
     throw new Error(
       `mutation reconciliation failed: missing=${missing.join(",")} duplicate=${[...duplicate].join(",")} orphan=${orphan.join(",")} wrong_condition=${wrong.map((entry) => entry.id).join(",")}`,
     )
@@ -565,7 +604,7 @@ describe("entry evidence validator C7-C9", () => {
       expect(result.exitCode).toBe(0)
       expect(error(result)).toBe("")
       expect(new TextDecoder().decode(result.stdout)).toMatch(
-        new RegExp(`^receipt=${f.receipt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\nreceipt_sha256=[0-9a-f]{64}\\n$`),
+        new RegExp(`^receipt=${f.receipt.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}\\nreceipt_sha256=[0-9a-f]{64}\\n$`),
       )
       const receipt = JSON.parse(readFileSync(f.receipt, "utf8"))
       expect(Object.keys(receipt)).toEqual([
@@ -669,7 +708,7 @@ describe("entry evidence validator C7-C9", () => {
       expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerReachableFromMaster: () => false }).valid).toBe(false)
       expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerSha: "0".repeat(40) }).valid).toBe(false)
 
-      const observedPointerShas: string[] = []
+      const observedPointerShas: Array<string> = []
       expect(
         validateEntryEvidenceReceiptV1(correct, {
           ...receiptExpected(f),
@@ -681,7 +720,7 @@ describe("entry evidence validator C7-C9", () => {
       ).toBe(true)
       expect(observedPointerShas).toEqual([f.pointer])
       const tamperedPointerRaw = receiptRawWith(f, (receipt) => (receipt.pointer_sha = "0".repeat(40)))
-      const observedTamperedPointerShas: string[] = []
+      const observedTamperedPointerShas: Array<string> = []
       expect(
         validateEntryEvidenceReceiptV1(tamperedPointerRaw, {
           ...receiptExpected(f, tamperedPointerRaw),
@@ -877,13 +916,10 @@ describe("entry evidence validator C7-C9", () => {
             f,
             () => {
               const parser = path.join(f.tree, "scripts/parallel-test-artifacts.ts")
-              writeFileSync(
-                parser,
-                readFileSync(parser, "utf8").replace(
-                  'import { SaxesParser, type SaxesTagNS } from "saxes"',
-                  'import { SaxesParser, type SaxesTagNS } from "saxes"\nimport "xmlchars"',
-                ),
-              )
+              const source = readFileSync(parser, "utf8")
+              const marker = 'from "saxes"'
+              if (!source.includes(marker)) throw new Error("Saxes import mutation marker is missing")
+              writeFileSync(parser, source.replace(marker, `${marker}\nimport "xmlchars"`))
             },
             "unexpected helper bare import",
           ),
@@ -935,8 +971,8 @@ describe("entry evidence validator C7-C9", () => {
     expect(() =>
       [...forbidden.values()].some(
         (row) =>
-          /／|分别|之一|任一/.test(row.action) &&
-          (() => {
+          /／|分别|之一|任一/.test(row.action)
+          && (() => {
             throw new Error(`forbidden action token: ${row.id}`)
           })(),
       ),
@@ -1295,9 +1331,9 @@ describe("entry evidence validator C7-C9", () => {
         writeFileSync(replacement, readFileSync(source))
         mutateManifest(f, (manifest) => {
           const artifact =
-            field === "junit_artifacts"
-              ? ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Array<Record<string, string>>)[0]
-              : ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Record<string, string>)
+            field === "junit_artifacts" ?
+              ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Array<Record<string, string>>)[0]
+            : ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Record<string, string>)
           artifact.path = replacement
           artifact.sha256 = hash(replacement)
         })
@@ -1337,7 +1373,11 @@ describe("entry evidence validator C7-C9", () => {
         const result = invoke(f)
         expect(result.exitCode).toBe(7)
         expect(error(result)).toBe(
-          `FAIL C10: ${field === "disk_manifest" ? "disk manifest" : field === "runtime_identity_manifest" ? "runtime identity manifest" : "skipped multiset"} hash mismatch\n`,
+          `FAIL C10: ${
+            field === "disk_manifest" ? "disk manifest"
+            : field === "runtime_identity_manifest" ? "runtime identity manifest"
+            : "skipped multiset"
+          } hash mismatch\n`,
         )
         expect(existsSync(f.receipt)).toBe(false)
       } finally {

@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -16,7 +21,10 @@ describe("buffered ⊥ hedge mutual exclusion (spec §5.4, 2026-07-19 新增不�
   // 隔离 retryCap 短路的 teeth-ful 测试需要 binding-present harness — 见 handover backlog（低优先，
   // 不变量由 binding-absence + retryCap 双重防御保证）。
   test("a hedge-enabled driver runs the buffered sink's own sequential path (never a hedge race) when opts carries retryCap", async () => {
-    const frames = [{ event: "response.created", data: JSON.stringify({ type: "response.created" }) }, { event: "response.completed", data: JSON.stringify({ type: "response.completed" }) }]
+    const frames = [
+      { event: "response.created", data: JSON.stringify({ type: "response.created" }) },
+      { event: "response.completed", data: JSON.stringify({ type: "response.completed" }) },
+    ]
     const h = makeBufferedHarness(frames, { sawMessageStop: true })
     const { sink, frames: written } = makeArraySink()
     const policy = createFrozenHedgePolicy({

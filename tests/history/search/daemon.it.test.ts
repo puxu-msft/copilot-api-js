@@ -41,6 +41,7 @@ import {
   //
   createHistorySearchDaemon,
   readTailCursor,
+  writeTailCursor,
 } from "~/lib/history/search/daemon"
 import {
   //
@@ -115,6 +116,8 @@ describe("history-search tail publication boundary", () => {
     commitOperation(dbPath, "publication-op", { conversation: "publicationneedle", responseBody: "resp", upstreamOnly: "up" })
 
     const staged: Array<string> = []
+    let committedDocs = 0
+    let opstamp = 0
     const index: NativeHistoryIndex = {
       async upsert(operationId) {
         staged.push(operationId)
@@ -122,12 +125,21 @@ describe("history-search tail publication boundary", () => {
       async upsertSummary(document) {
         staged.push(document.operationId)
       },
-      async flush() {},
+      async flush() {
+        // Mirror the native protocol rather than being friendlier than it: a commit
+        // publishes what was staged and advances the index's own opstamp, which is what
+        // the tail cursor records to prove it still describes THIS index.
+        committedDocs = staged.length
+        opstamp += 1
+      },
       async search() {
         return []
       },
       async listSearch() {
         return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+      },
+      async generation() {
+        return { docCount: committedDocs, opstamp }
       },
       async close() {},
     }
@@ -207,6 +219,197 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
 
     await index.close()
   })
+
+  /**
+   * A re-indexed operation must appear exactly once, carrying its NEW field values — the
+   * read path evaluates filters against columnar fast fields, so a stale version surviving
+   * anywhere would show up as a duplicate id or a match on a superseded `state`.
+   *
+   * What this does NOT cover: the alive-bitset branch in `list_search_blocking`. Probed
+   * against tantivy 0.26.1, this write pattern materializes the delete during the commit
+   * (live segments report `deletes: null`), so the superseded document is physically gone
+   * rather than tombstoned, and disabling that branch leaves this test green. See the
+   * comment on `let alive = ...` for why the branch is kept regardless.
+   */
+  test("returns only the surviving version of a re-indexed operation, across segment boundaries", async () => {
+    const indexPath = path.join(freshDir("native-list-supersede-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    const base = { operationKind: "generation", createdAt: 100, committedAt: 10, content: "supersede needle", sessionId: "s1" }
+
+    await extended.upsertSummary({ ...base, operationId: "op-a", state: "streaming" })
+    await index.flush()
+    // Second segment: the delete lands as a tombstone over segment one's document.
+    await extended.upsertSummary({ ...base, operationId: "op-a", state: "completed" })
+    await index.flush()
+
+    const query = {
+      query: "supersede needle",
+      operationKinds: [],
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: ["op-a"],
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch(query)).toMatchObject({ operationIds: ["op-a"], total: 1 })
+    // The superseded document's state must not remain matchable.
+    expect(await extended.listSearch({ ...query, states: ["streaming"] })).toMatchObject({ operationIds: [], total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["completed"] })).toMatchObject({ operationIds: ["op-a"], total: 1 })
+
+    await index.close()
+  })
+
+  /**
+   * Optional fields produce no columnar column at all in a segment where no document
+   * carried them, which is distinct from "the column exists and every value differs".
+   * Both must read as "absent", and neither may raise.
+   */
+  test("evaluates filters over fields absent from every document in the segment", async () => {
+    const indexPath = path.join(freshDir("native-list-absent-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    const base = { operationKind: "generation", committedAt: 10, content: "absent needle" }
+
+    // No document here carries pid; only one carries agentId.
+    await extended.upsertSummary({ ...base, operationId: "op-main", createdAt: 100 })
+    await extended.upsertSummary({ ...base, operationId: "op-sub", createdAt: 101, agentId: "agent-1" })
+    await index.flush()
+
+    const query = {
+      query: "absent needle",
+      operationKinds: [],
+      states: [],
+      targetCommittedAt: 10,
+      targetOperationIds: ["op-main", "op-sub"],
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch({ ...query, pid: 4242 })).toMatchObject({ operationIds: [], total: 0 })
+    expect(await extended.listSearch({ ...query, mainAgentOnly: true })).toMatchObject({ operationIds: ["op-main"], total: 1 })
+    expect(await extended.listSearch({ ...query, agentId: "agent-1" })).toMatchObject({ operationIds: ["op-sub"], total: 1 })
+    expect(await extended.listSearch({ ...query, agentId: "agent-absent" })).toMatchObject({ operationIds: [], total: 0 })
+
+    await index.close()
+  })
+
+  /** Each filter that is pushed into the query must still select exactly what the
+   *  per-document filter selects — a pushed clause may narrow the candidate set, never the
+   *  result set. */
+  test("selects the same set whether a filter is answered by the index or per document", async () => {
+    const indexPath = path.join(freshDir("native-list-pushdown-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    const base = { createdAt: 100, committedAt: 10, content: "pushdown needle" }
+    await extended.upsertSummary({
+      ...base,
+      operationId: "op-1",
+      operationKind: "generation",
+      state: "completed",
+      endpoint: "anthropic-messages",
+      pid: 11,
+      sessionId: "s1",
+      requestModel: "claude-opus-4",
+    })
+    await extended.upsertSummary({
+      ...base,
+      operationId: "op-2",
+      operationKind: "count_tokens",
+      state: "failed",
+      endpoint: "openai-responses",
+      pid: 22,
+      sessionId: "s2",
+      responseModel: "gpt-5",
+    })
+    await index.flush()
+
+    const query = {
+      query: "pushdown needle",
+      operationKinds: [] as Array<string>,
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: ["op-1", "op-2"],
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch({ ...query, operationKinds: ["count_tokens"] })).toMatchObject({ operationIds: ["op-2"], total: 1 })
+    expect(await extended.listSearch({ ...query, operationKinds: ["generation", "count_tokens"] })).toMatchObject({ total: 2 })
+    expect(await extended.listSearch({ ...query, states: ["failed"] })).toMatchObject({ operationIds: ["op-2"], total: 1 })
+    expect(await extended.listSearch({ ...query, endpoint: "anthropic-messages" })).toMatchObject({ operationIds: ["op-1"], total: 1 })
+    expect(await extended.listSearch({ ...query, pid: 22 })).toMatchObject({ operationIds: ["op-2"], total: 1 })
+    expect(await extended.listSearch({ ...query, sessionId: "s1" })).toMatchObject({ operationIds: ["op-1"], total: 1 })
+    // Substring, case-insensitive, over either model field — never pushed into the query.
+    expect(await extended.listSearch({ ...query, model: "OPUS" })).toMatchObject({ operationIds: ["op-1"], total: 1 })
+    expect(await extended.listSearch({ ...query, model: "gpt" })).toMatchObject({ operationIds: ["op-2"], total: 1 })
+    // A value no document carries selects nothing rather than everything.
+    expect(await extended.listSearch({ ...query, sessionId: "s-absent" })).toMatchObject({ operationIds: [], total: 0 })
+
+    await index.close()
+  })
+
+  /**
+   * Operation ids are resolved from the term dictionary in one batched pass over ASCENDING
+   * term ordinals, which is NOT the order the documents were visited in. Each resolved id
+   * must land back on its own candidate.
+   *
+   * The fixture needs enough documents to matter: one `flush()` spreads documents across
+   * several segments (measured — 3 documents produce three 1-document segments, 30 produce
+   * 28/1/1), and a segment holding a single survivor maps trivially no matter how wrong the
+   * mapping code is. Twelve documents put ten of them in one segment, with ids whose
+   * lexicographic order is the exact REVERSE of their `created_at` order, so a mis-mapping
+   * inverts the page instead of hiding.
+   */
+  test("pairs each batched-resolved operation id with its own document", async () => {
+    const indexPath = path.join(freshDir("native-list-ordinal-map-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    const count = 12
+    const ids = Array.from({ length: count }, (_, i) => `op-${String(count - 1 - i).padStart(2, "0")}`)
+    for (const [i, operationId] of ids.entries()) {
+      await extended.upsertSummary({
+        operationId,
+        operationKind: "generation",
+        createdAt: 1000 - i,
+        committedAt: 10,
+        content: "ordinal needle",
+      })
+    }
+    await index.flush()
+
+    const query = {
+      query: "ordinal needle",
+      operationKinds: [],
+      states: [],
+      targetCommittedAt: 10,
+      targetOperationIds: ids,
+      direction: "older",
+      limit: 100,
+    }
+    // Newest first by created_at, which is exactly the insertion order and the reverse of
+    // the ordinal order the ids were resolved in.
+    expect(await extended.listSearch(query)).toMatchObject({ operationIds: ids, total: count })
+    // Paging pins the pairing rather than just the id set: the first page must be the id
+    // whose OWN created_at is the largest, and the cursor must carry over to the next one.
+    expect(await extended.listSearch({ ...query, limit: 1 })).toMatchObject({ operationIds: [ids[0]], total: count })
+    expect(await extended.listSearch({ ...query, limit: 1, cursorStartedAt: 1000, cursorOperationId: ids[0] })).toMatchObject({
+      operationIds: [ids[1]],
+      total: count,
+    })
+
+    await index.close()
+  })
 })
 
 describe.skipIf(!NATIVE)("history-search daemon freshness attestation", () => {
@@ -283,6 +486,100 @@ describe.skipIf(!NATIVE)("history-search daemon freshness attestation", () => {
   })
 })
 
+describe.skipIf(!NATIVE)("history-search cursor is bound to the index that produced it", () => {
+  test("a cursor that outlived its index cannot certify the rebuilt one — while an intact index keeps its cursor", async () => {
+    const dbPath = path.join(freshDir("daemon-generation-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-generation-index-"), "index")
+    commitOperation(dbPath, "generation-op", { conversation: "generationneedle", responseBody: "resp", upstreamOnly: "up" })
+    const db = openDatabase(dbPath)
+    const row = db.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("generation-op") as { committed_at: number }
+    closeDatabase()
+    const request = {
+      type: "list-search" as const,
+      query: "generationneedle",
+      filters: { operationKinds: ["generation"] },
+      limit: 10,
+      target: { committedAt: row.committed_at, operationIdsAtBoundary: ["generation-op"] },
+    }
+
+    const first = await openIndex(indexPath)
+    const building = createHistorySearchDaemon({ dbPath, indexPath, index: first })
+    await building.tailOnce()
+    await building.flush()
+    building.close()
+    await first.close()
+    expect(readTailCursor(indexPath)?.indexOpstamp).toBeGreaterThan(0)
+
+    // Positive control FIRST: a restart over the intact index must keep its cursor and
+    // attest immediately, with no re-tail. Without this, the rejection below would also
+    // be satisfied by a binding that simply distrusts every restart.
+    const intact = await openIndex(indexPath)
+    const restarted = createHistorySearchDaemon({ dbPath, indexPath, index: intact })
+    expect((await restarted.listSearch(request)).operationIds).toEqual(["generation-op"])
+    restarted.close()
+    await intact.close()
+
+    // The failure the binding exists for, reproduced through a path the native layer
+    // actually takes: with Tantivy's `meta.json` damaged, `open_index` falls back to
+    // `Index::create_in_dir` — a brand-new EMPTY index — while FORMAT and the cursor file
+    // survive. (Wiping the directory outright is NOT this case: the native refuses a
+    // non-empty directory it does not own, and a FORMAT bump deletes the cursor with it.)
+    fs.rmSync(path.join(indexPath, "meta.json"), { force: true })
+    expect(readTailCursor(indexPath)?.operationId).toBe("generation-op")
+
+    const rebuilt = await openIndex(indexPath)
+    const afterRebuild = createHistorySearchDaemon({ dbPath, indexPath, index: rebuilt })
+    await expect(afterRebuild.listSearch(request)).rejects.toThrow(/has not reached frozen target/)
+
+    // …and it recovers by re-tailing, rather than staying refused forever.
+    await afterRebuild.tailOnce()
+    await afterRebuild.flush()
+    expect((await afterRebuild.listSearch(request)).operationIds).toEqual(["generation-op"])
+
+    afterRebuild.close()
+    await rebuilt.close()
+  })
+})
+
+describe("history-search cursor without a recorded index opstamp", () => {
+  test("re-tails from the beginning instead of trusting a cursor it cannot check", async () => {
+    const dbPath = path.join(freshDir("daemon-legacy-cursor-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-legacy-cursor-index-"), "index")
+    commitOperation(dbPath, "legacy-op", { conversation: "legacyneedle", responseBody: "resp", upstreamOnly: "up" })
+    // A cursor written before the binding existed: it claims a frontier past this row.
+    writeTailCursor(indexPath, { committedAt: Date.now() + 60_000, operationId: "legacy-op", indexedAtBoundaryMs: ["legacy-op"] })
+
+    const staged: Array<string> = []
+    const index: NativeHistoryIndex = {
+      async upsert(operationId) {
+        staged.push(operationId)
+      },
+      async upsertSummary(document) {
+        staged.push(document.operationId)
+      },
+      async flush() {},
+      async search() {
+        return []
+      },
+      async listSearch() {
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+      },
+      // A healthy-looking index — documents present, opstamp far ahead — so the discard
+      // below can only come from the cursor being uncheckable, not from the index.
+      async generation() {
+        return { docCount: 5, opstamp: 99 }
+      },
+      async close() {},
+    }
+
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    await daemon.tailOnce()
+
+    expect(staged).toEqual(["legacy-op"])
+    daemon.close()
+  })
+})
+
 describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", () => {
   test("tails, hydrates, and indexes conversation + response text — excludes upstream-only frames", async () => {
     const dbDir = freshDir("daemon-basic-db-")
@@ -353,7 +650,15 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     // `indexedAtBoundaryMs` (2026-07-22, blocker-2 fix) always carries at least the
     // just-tailed row's own id — see daemon.ts's `advanceCursorPastRow`.
     const persistedCursor = readTailCursor(indexPath)
-    expect(persistedCursor).toEqual({ committedAt: expect.any(Number), operationId: "op-1", indexedAtBoundaryMs: ["op-1"] })
+    // `indexOpstamp` (2026-08-08) binds the cursor to the index commit that published it —
+    // see daemon.ts's `validateCursorAgainstIndex`. It is part of the cross-instance
+    // channel this test pins, so it is asserted here rather than loosened away.
+    expect(persistedCursor).toEqual({
+      committedAt: expect.any(Number),
+      operationId: "op-1",
+      indexedAtBoundaryMs: ["op-1"],
+      indexOpstamp: expect.any(Number),
+    })
 
     const index2 = await openIndex(indexPath)
     const daemon2 = createHistorySearchDaemon({ dbPath, indexPath, index: index2 })

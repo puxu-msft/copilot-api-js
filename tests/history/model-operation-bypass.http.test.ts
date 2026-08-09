@@ -12,15 +12,22 @@ import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import {
   //
   consumeTerminalModelOperation,
+  listInFlightLightweightModelOperations,
   listTerminalModelOperations,
 } from "~/lib/context/lightweight-model-operation"
 import { setModels } from "~/lib/models/cache"
+import {
+  //
+  _resetShutdownState,
+  gracefulShutdown,
+} from "~/lib/shutdown"
 import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
 import { createFullTestApp } from "../helpers/test-app"
+import { waitUntil } from "../helpers/wait-until"
 
 const app = createFullTestApp()
 
@@ -161,7 +168,10 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
     expect(payload(record, record.attempts[0]?.upstreamRequest?.payload as string)).toMatchObject({
       tokenizerText: expect.stringContaining("gemini local input"),
     })
-    expect(record.terminal?.metadata).toEqual({ countTokens: { rawCount: body.totalTokens, calibratedCount: body.totalTokens, source: "local" } })
+    expect(record.terminal?.metadata).toEqual({
+      countTokens: { rawCount: body.totalTokens, calibratedCount: body.totalTokens, source: "local" },
+      historyAdmissionWaitMs: expect.any(Number),
+    })
   })
 
   test("all OpenAI-compatible embeddings entries share one operation path and Azure adds deployment metadata without duplication", async () => {
@@ -259,6 +269,76 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
     expect(response.status).toBe(504)
     expect(JSON.stringify(await response.json())).toContain("timed out before sending response headers")
     expect(onlyTerminal("embeddings", marker).egress?.client.status).toBe(504)
+  })
+
+  test.each([
+    {
+      name: "count_tokens",
+      kind: "count_tokens" as const,
+      path: "/v1/messages/count_tokens",
+      body: { model: "claude-sonnet-4.5", messages: [{ role: "user", content: "keep draining" }] },
+      upstreamBody: { input_tokens: 17 },
+    },
+    {
+      name: "embeddings",
+      kind: "embeddings" as const,
+      path: "/v1/embeddings",
+      body: { model: "text-embedding-3-small", input: "keep draining" },
+      upstreamBody: {
+        object: "list",
+        data: [{ object: "embedding", embedding: [0.1], index: 0 }],
+        model: "text-embedding-3-small",
+        usage: { prompt_tokens: 1, total_tokens: 1 },
+      },
+    },
+  ])("shutdown waits for an accepted $name operation through terminal publication", async ({ kind, path, body, upstreamBody }) => {
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    applyFetchMock(
+      mock(async () => {
+        await barrier
+        return new Response(JSON.stringify(upstreamBody), { status: 200, headers: { "content-type": "application/json" } })
+      }),
+    )
+    const closeOrder: Array<string> = []
+    const request = app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-operation": `shutdown-${kind}` },
+      body: JSON.stringify(body),
+    })
+    await waitUntil(() => listInFlightLightweightModelOperations().some((operation) => operation.kind === kind), {
+      label: `${kind} lightweight operation to register`,
+    })
+
+    const shutdown = gracefulShutdown("SIGTERM", {
+      server: { close: async () => {} },
+      closeTokenRuntimeFn: async () => void closeOrder.push("token"),
+      closeAllClientsFn: () => {},
+      getClientCountFn: () => 0,
+      contextManager: { stopReaper: () => {} },
+      drainModelOperationFinalizationsFn: async () => {},
+      shutdownHistoryFn: async () => void closeOrder.push("history"),
+      shutdownRequestTelemetryFn: async () => void closeOrder.push("telemetry"),
+      shutdownDiagnosticLoggingFn: async () => void closeOrder.push("diagnostic"),
+      drainPollIntervalMs: 1,
+      drainProgressIntervalMs: 50_000,
+    })
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(closeOrder).toEqual([])
+    } finally {
+      release()
+    }
+    expect((await request).status).toBe(200)
+    await shutdown
+
+    expect(listInFlightLightweightModelOperations()).toHaveLength(0)
+    expect(terminalsByMarker(kind, `shutdown-${kind}`)).toHaveLength(1)
+    expect(closeOrder).toEqual(["token", "history", "telemetry", "diagnostic"])
+    _resetShutdownState()
   })
 
   test("embeddings upstream failure captures wire, full error response, client envelope, and failed terminal", async () => {

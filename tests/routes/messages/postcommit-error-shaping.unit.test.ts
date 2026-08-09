@@ -150,7 +150,9 @@ describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pu
     const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
     const legacy: ClientFrame = { event: "error", data: "{}" }
     shapeRawStreamErrorFrame("overloaded_error", "boom", legacy, ctx as never, { terminus: "stream-error", leg: "direct" })
-    expect(features).toEqual([{ feature: "error-shaping-raw-canonical", detail: { wireErrorType: "overloaded_error", terminus: "stream-error", leg: "direct" } }])
+    expect(features).toEqual([
+      { feature: "error-shaping-raw-canonical", detail: { wireErrorType: "overloaded_error", terminus: "stream-error", leg: "direct" } },
+    ])
   })
 
   test("enabled + ctx + meta (translate truncation) → records leg=translate, terminus=truncation", () => {

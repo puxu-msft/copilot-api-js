@@ -297,6 +297,53 @@ describe("GET /api/entries", () => {
     expect((await json<{ error: string }>(res)).error).toContain("could not serve the frozen target")
   })
 
+  test("rejects malformed list query parameters with 400 while valid equivalents still pass", async () => {
+    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
+
+    for (const query of [
+      "operationKind=bogus",
+      "endpoint=not-an-endpoint",
+      "state=active",
+      "direction=sideways",
+      "success=yes",
+      "mainAgentOnly=1",
+      "terminalOnly=1",
+      "limit=abc",
+      "limit=0",
+      "limit=1001",
+      "limit=-5",
+      "pid=-1",
+      "from=not-a-number",
+      "from=200&to=100",
+    ]) {
+      const res = await get(`/api/entries?${query}`)
+      expect(res.status, query).toBe(400)
+      expect((await json<{ error: string }>(res)).error, query).toMatch(/^Invalid /)
+    }
+
+    // Positive control: the same dimensions with legal values are not rejected.
+    for (const query of [
+      "operationKind=all",
+      "endpoint=anthropic-messages",
+      "state=completed",
+      "direction=newer",
+      "success=false",
+      "mainAgentOnly=true",
+      "terminalOnly=true",
+      "limit=1000",
+      "pid=0",
+      "from=100&to=200",
+    ]) {
+      expect((await get(`/api/entries?${query}`)).status, query).toBe(200)
+    }
+  })
+
+  test("keeps the retired-tier rejection ahead of query validation", async () => {
+    const res = await get("/api/entries?tier=archive&limit=abc")
+    expect(res.status).toBe(400)
+    expect(await json<{ error: string }>(res)).toEqual({ error: "The built-in archive tier has been retired" })
+  })
+
   test("ignores empty string params", async () => {
     await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
@@ -517,6 +564,16 @@ describe("search endpoint: sidecar-forwarded contract (no sidecar reachable in t
     const search = await get("/api/search?source=rewrites-req&q=needle")
     expect(search.status).toBe(200)
     expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: true })
+  })
+
+  test("list query validation does not leak into this endpoint's lenient contract", async () => {
+    // Ruled 2026-08-08: strict enum/range rejection is scoped to /api/entries. The same
+    // parameters that the list endpoint answers with 400 stay a lenient 200 here.
+    for (const query of ["operationKind=bogus", "state=active", "limit=abc", "from=200&to=100"]) {
+      const res = await get(`/api/search?source=inbound&q=needle&${query}`)
+      expect(res.status, query).toBe(200)
+      expect((await get(`/api/entries?${query}`)).status, query).toBe(400)
+    }
   })
 })
 

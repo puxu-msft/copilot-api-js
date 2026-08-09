@@ -33,6 +33,22 @@ function envelope(): HistoryOperationEnvelope {
   }
 }
 
+function initializeMessage(persistRetry: Record<string, unknown>): unknown {
+  return {
+    type: "initialize",
+    protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+    workerGeneration: 1,
+    requestId: 1,
+    config: {
+      semanticDbPath: ":memory:",
+      configRevision: 1,
+      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
+      maintenanceIntervalMs: 0,
+      persistRetry,
+    },
+  }
+}
+
 describe("History Worker protocol", () => {
   test("accepts a production-shaped persistence envelope without losing structured-clone values", () => {
     const message = parseMainToWorkerMessage(
@@ -107,6 +123,7 @@ describe("History Worker protocol", () => {
           selectedDriver: "bun:sqlite",
           configRevision: 2,
           rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+          recoveredJournalOperations: 0,
         },
       }),
     ).toThrow("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")
@@ -224,6 +241,29 @@ describe("History Worker protocol", () => {
         },
       }),
     ).toThrow("ModelOperationRecord.attempts must not be serialized; use dispatches")
+  })
+
+  test("preserves the complete persistence retry contract in initialize messages", () => {
+    const message = parseMainToWorkerMessage(structuredClone(initializeMessage({ maxAttempts: 4, backoffMs: 7, maxBackoffMs: 83, maxTotalMs: 901 })))
+
+    expect(message.type).toBe("initialize")
+    if (message.type !== "initialize") throw new Error("wrong message type")
+    expect(message.config.persistRetry).toEqual({ maxAttempts: 4, backoffMs: 7, maxBackoffMs: 83, maxTotalMs: 901 })
+  })
+
+  test("rejects initialize retry contracts without complete non-negative caps", () => {
+    expect(() => parseMainToWorkerMessage(initializeMessage({ maxAttempts: 4, backoffMs: 7, maxTotalMs: 901 }))).toThrow(
+      "initialize.config.persistRetry.maxBackoffMs",
+    )
+    expect(() => parseMainToWorkerMessage(initializeMessage({ maxAttempts: 4, backoffMs: 7, maxBackoffMs: -1, maxTotalMs: 901 }))).toThrow(
+      "initialize.config.persistRetry.maxBackoffMs",
+    )
+    expect(() => parseMainToWorkerMessage(initializeMessage({ maxAttempts: 4, backoffMs: 7, maxBackoffMs: 83 }))).toThrow(
+      "initialize.config.persistRetry.maxTotalMs",
+    )
+    expect(() => parseMainToWorkerMessage(initializeMessage({ maxAttempts: 4, backoffMs: 7, maxBackoffMs: 83, maxTotalMs: -1 }))).toThrow(
+      "initialize.config.persistRetry.maxTotalMs",
+    )
   })
 
   test("rejects malformed nested main-to-Worker payloads", () => {

@@ -71,12 +71,12 @@
 
 - **根因 / 现状**：REST `SearchSource` 有 5 facet（`inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`，[types.ts:729](../../src/lib/history/types.ts#L729)），但独立 sidecar 的 Tantivy 投影（`projectSearchableText`，[v3/projection.ts](../../src/lib/history/v3/projection.ts)）**只索引客户端可见的对话 + 响应**（对应 `inbound`）——native schema（[lib.rs](../../native/history-search/src/lib.rs)）本身只有 `operation_id`/`operation_kind`/`content`/`created_at` 四个字段，没有 facet 维度，`rewrites-*`/`*-headers` 在退役前的嵌入式引擎里是**扁平的逐请求 SQL 列**（`req_aux` 表），从未进入 sidecar 的 schema。
 - **当前行为**：`GET /history/api/search?source=<非 inbound>` 一律返回 `{rows:[], nextCursor:null, partial:true}`——`partial` 在这里表示「该维度尚不支持」，不是「无匹配」也不是「sidecar 不可达」。
-- **理想架构 / 若做需改什么**：① 扩 Rust `schema()`（[lib.rs:33](../../native/history-search/src/lib.rs#L33)）新增至少一个额外 `TEXT` 字段承载扁平文本、或按 facet 建独立 Tantivy field 并在 `search_blocking` 加 facet 过滤子句；② sidecar 的 tail 投影（`daemon.ts`）需读取对应轨（`v3_tracks` 的 `effective-request`/`upstream-request`/`upstream-response` 等，见 [v3/store.ts:397](../../src/lib/history/v3/store.ts#L397) `collectTracks`）而非只读 `ingress`/`egress`；③ 客户端 wire `HistorySearchWireRequest`（[protocol.ts](../../src/lib/history/search/protocol.ts)）需带 `source`/facet 参数；④ 需要 bump Tantivy index 的 `FORMAT_MARKER`（[lib.rs:17](../../native/history-search/src/lib.rs#L17)）触发全量重建（schema 变更）。
+- **理想架构 / 若做需改什么**：① 扩 Rust `schema()`（[lib.rs:103](../../native/history-search/src/lib.rs#L103)）新增至少一个额外 `TEXT` 字段承载扁平文本、或按 facet 建独立 Tantivy field 并在 `search_blocking` 加 facet 过滤子句；② sidecar 的 tail 投影（`daemon.ts`）需读取对应轨（`v3_tracks` 的 `effective-request`/`upstream-request`/`upstream-response` 等，见 [v3/store.ts:397](../../src/lib/history/v3/store.ts#L397) `collectTracks`）而非只读 `ingress`/`egress`；③ 客户端 wire `HistorySearchWireRequest`（[protocol.ts](../../src/lib/history/search/protocol.ts)）需带 `source`/facet 参数；④ 需要 bump Tantivy index 的 `FORMAT_MARKER`（[lib.rs:20](../../native/history-search/src/lib.rs#L20)）触发全量重建（schema 变更）。
 - **为何暂缓**：用户在 plan 制定阶段已明确签核「按既定‘只查对话和响应’收窄」（plan 文档「待用户签核的点」第 5 条），Phase 4 落地时只服务 `inbound`。**触发条件（值得做）**：出现「需要按 rewrites/headers 精确全文检索」的真实运维需求。发现方：history-search-out-of-process plan Phase 4 REST cutover（2026-07-21）。
 
 ## history-search sidecar：/history/api/search 无分页（`nextCursor` 恒 `null`，2026-07-21，同上 plan Phase 4）
 
-- **根因 / 现状**：退役前的嵌入式搜索引擎用 `(started_at DESC, ownerKey ASC)` keyset 做稳定分页；独立 sidecar 的搜索是 Tantivy 的单次 `TopDocs::with_limit(limit).order_by_score()`（[lib.rs:118](../../native/history-search/src/lib.rs#L118)）——按 BM25 相关性打分排序，**没有可稳定翻页的游标**（分数不是单调递增的持久化键，两次调用间索引内容还可能变化）。
+- **根因 / 现状**：退役前的嵌入式搜索引擎用 `(started_at DESC, ownerKey ASC)` keyset 做稳定分页；独立 sidecar 的搜索是 Tantivy 的单次 `TopDocs::with_limit(limit).order_by_score()`（[lib.rs:231](../../native/history-search/src/lib.rs#L231)）——按 BM25 相关性打分排序，**没有可稳定翻页的游标**（分数不是单调递增的持久化键，两次调用间索引内容还可能变化）。
 - **当前行为**：`/history/api/search` 的响应恒 `nextCursor: null`——单页 top-N，`?limit=` 之外无法翻到「下一页」，只能调大 `limit` 重新查一次。
 - **理想架构 / 若做需改什么**：Tantivy 支持 `search_after`（游标式深分页，基于上一页最后一条的 `(score, doc_address)` 元组续查）——需要：① Rust 侧 `search_blocking` 增加一个可选的 `after` 参数并改用 `TopDocs::with_limit(limit).and_offset(...)` 或 `search_after` API；② wire 协议新增 cursor 字段的编解码；③ handler 侧把 `SearchResult.nextCursor` 编码这个 `(score, doc_address)` 元组（而非旧的 `(started_at, id)` 语义，两者不兼容，不能直接复用旧 cursor 编解码）。
 - **为何暂缓**：Phase 4 的验收标准只要求「单页 top-N 结果正确」，分页不是 gating 需求；相关性排序场景下，用户通常只关心排名前几的结果，深分页价值有限。**触发条件（值得做）**：出现「需要翻到搜索结果第 2/3 页」的真实使用场景。发现方：history-search-out-of-process plan Phase 4 REST cutover（2026-07-21）。
@@ -255,7 +255,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## History V3 缺口（History V2 removal 2026-07-18 暴露/收敛）
 
-### D-2 —— 生产 History list 只显示已终结请求（in-flight 不落库）
+### D-2 —— 在线 in-flight 可见，但进程崩溃后不可恢复发现
 
 - **根因**：History V3 由**终端总线单写者**驱动——只在请求 terminal（completed/failed/aborted）时经 `subscribeModelOperationTerminals` → `enqueueModelOperation` 落一条不可变 operation record，**无 ingress/中间态写入**。这与已移除的 V2 不同：V2 请求一进来即 eager 写 `entries_v2` head 行（`status=pending`）+ 逐 attempt 增量 stage，故进行中请求与崩溃残留都在 SQLite 可发现（崩溃行经 `reclaimOrphanedActiveRows` 标 `interrupted`）。
 - **当前行为**：进行中请求仅经 in-flight 内存映射 + WebSocket 实时可见；REST `GET /history/api/entries` 合并 in-flight（在前）+ V3 持久（在后）故**在线时**列表完整，但**进程崩溃/被 SIGKILL 时进行中请求零落盘、不留可发现记录**（V2 会留 `pending`/`interrupted` 半截行）。诊断「卡住/被杀的在途请求」的能力较 V2 退化。
@@ -1204,3 +1204,58 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
 - **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
 - **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。
+
+## shutdown drain source 仍由协调器手工枚举（2026-08-08，无损排空评审整改期间发现）
+
+- **根因 / 现状**：`src/lib/shutdown.ts` 的 production `ShutdownDrainSource.getActive()` 手工拼接 `RequestContextManager.getTrackedOperations()` 与 `listInFlightLightweightModelOperations()`。本轮正是因为旧实现只枚举前者，才漏掉 count_tokens／embeddings；修复后当前两类 operation 已闭合，但模式本身仍要求每新增一种不建 `RequestContext` 的旁路 operation 都记得回来改 shutdown 协调器。
+- **结构怪味**：职责错位 + 开放集合手工枚举。operation producer 决定“什么算已接纳”，shutdown 却在外部维护第二份成员清单；下一位复用者仍会踩同类漏接。
+- **理想架构 / 若做需改什么**：建立单一 accepted-operation registry／registration port，让 generation 与 lightweight producer 都向同一个只读 drain view 注册；shutdown 只消费该 view，不知道 operation 种类。迁移时保留每类日志投影，补“新增第三种测试 operation 不改 shutdown 也会被 drain”的正控，并保留本轮两个 omission mutation。
+- **为何暂缓**：当前只有两类 producer，现有 union 已由真实 HTTP 测试与双 mutation 锁住；抽统一 registry 会改动 `RequestContextManager` 所有权、test bootstrap 与日志类型，是独立架构重构，不影响本轮无损关闭正确性。
+- **触发条件**：新增第三种不建 `RequestContext` 的模型 operation，或下一次需要改 `ShutdownActiveOperation` 联合类型时，先做该收敛，禁止继续追加第三个 spread。
+
+## ~~native `list-search` 在过滤前物化全部全文命中~~（A3 review finding 4 — 已关闭，2026-08-08）
+
+- **原问题**：`list_search_blocking` 先 `TopDocs::with_limit(searcher.num_docs()).order_by_score()` 拿到**全部**全文命中，再逐条 `searcher.doc(address)` 解压 stored document，**之后**才套结构 filter、排序、分页。每次列表请求的代价随「命中数」而非「结果数」线性增长。实测坐实：100k 合成语料下，命中率 1% 的 session 过滤与完全不过滤都是 254 ms——过滤器一毫秒都没省下来。
+- **关闭方式**：读路径改为 `Query::weight(EnableScoring::disabled_from_searcher(…))` + `Weight::for_each_no_score` 逐段遍历，所有谓词改在列式 fast field 上求值；等值维**在每段解析成一个 term ordinal**，逐文档退化为一次列式 `u64` 读；`model` 子串每段流式扫一遍该字段词典得到 ordinal 集合；幸存者的 `operation_id` 用 `sorted_ords_to_term_cb` **每段一次**批量解析。等值维同时下推进 `BooleanQuery`（`Occur::Must`）收窄 docset，但**下推只允许比逐文档过滤更松**，语义权威仍是后者。`schema()` 给列表路径读的字段全部加 `FAST`、`pid` 加 `INDEXED`，故 `FORMAT_MARKER` v3→v4，走既有的 wipe-and-rebuild 自愈路径（tail cursor 就在该目录内，一并重建，不会有陈旧游标幸存）。
+- **冻结契约保持不变**：精确 `total`、`(created_at desc, operation_id desc)` 顺序、keyset 语义、`hasOlder`/`hasNewer`、`invalidCursor` 全部未变——遍历所有命中仍是精确计数的前提，被消除的是评分堆与 stored-doc 物化这两个常数项。
+- **实测结果**：20k 语料无过滤列表页 42.8 → 7.0 ms，state+endpoint 过滤 42.8 → 3.1 ms；100k 无过滤 254 → 54 ms，session 过滤 254 → 9 ms，**所有场景无一变慢**。基线工具、逐场景数字、运行间抖动与「它没有证明什么」见 [exp/history-search-list-perf/](../../exp/history-search-list-perf/README.md)。
+- **过程中被实测推翻的一版**：只把读取换成 fast field、但逐文档 `ord_to_str` 的第一版，让无过滤列表页**劣化 16 倍**（42.8 → 694.8 ms）——`Dictionary::ord_to_term` 每次调用都从所在 sstable block 首个 ordinal 重新解码。「按段批量解析」不是优化细节，而是这条路径成立与否的分界。
+- **未被测试覆盖的一处**：`alive_bitset` 分支。探针实测 tantivy 0.26.1 在本项目写法下 commit 时即物化删除（存活 segment 均为 `deletes: null`），故不可达、禁用它不会让任何测试变红；保留原因与判据写在代码注释与 `daemon.it.test.ts` 对应用例里。
+
+## `pipelineInfo.responseHeaderTimeoutMs` 声明了但从无生产写点（2026-08-08，客户端连接 skill 事实订正的邻域发现）
+
+- **根因 / 现状**：`src/lib/history/types.ts:233` 声明了 `responseHeaderTimeoutMs`，`ctx.setStreamTimeouts()` 的签名（`src/lib/context/types.ts:538`、`src/lib/context/request.ts:1304`）也收这个 patch 键，但**六处生产调用点全都只传 `streamIdleTimeoutMs`**：`src/routes/messages/handler-v4.ts:811,1155`、`src/routes/chat-completions/handler-v4.ts:250`、`src/routes/responses/handler-v4.ts:204`、`src/routes/responses/ws.ts:347`、`src/routes/gemini/handler-v4.ts:221`。唯一写过它的是单测 `tests/context/request-context.unit.test.ts:1225`。
+- **当前行为**：功能无缺陷——这是纯诊断字段，缺失不影响请求处理。代价落在**事后归因**：一条 header-timeout 事故的 entry 里没有任何结构化的阈值快照，而 `stale_request_max_age` / `request_deadline` 反倒能从终端 error 文案里取回嵌入秒数（`src/lib/context/manager.ts:329,440` → `_index.derived.failureReason`，`src/lib/history/v3/projection.ts:437`）。于是**四个 wall-clock terminator 里，最像超时的那一个反而最没有证据**，最容易被凭记忆的默认值补上——正是 2026-07-28 那次「609ms 请求被报成 900s header 超时」的同族陷阱。
+- **理想架构 / 若做需改什么**：在已经调 `resolveStreamIdleTimeoutMs(...)` 的同六处，一并传 `responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(resolvedName)`（该 resolver 已存在，见 `src/lib/transport/send.ts:222`、`src/lib/anthropic/client.ts:164` 等调用点）。`setStreamTimeouts` 本就是 merge 语义（单测 `:1222` 守着「两次调用累加」），无需改契约、无需 schema 变更。**注意 per-model override 与 `0`=禁用两种情形都要能忠实落盘**，否则字段存在却撒谎，比缺失更糟。
+- **为何暂缓**：本轮任务是订正 skill 的陈旧事实，不是补产品接线；且这条要做就该**四个 terminator 一起走结构化字段**（现在 stale/deadline 靠解析错误文案取值，是同一个缺陷的另一面），那是一次独立的可观测性改动，值得自己的判据与 mutation 对照。skill `debugging-claude-client-connection` 已按**当前真实接线**写明取证表（哪一格有值、哪一格必须判「未决」），归因不会因此走错。
+- **触发条件（值得做）**：① 又出现一次 header-timeout 归因争议；② 因别的原因要动 `pipelineInfo` 或 `setStreamTimeouts` 时顺手补全；③ 有人打算把 `failureReason` 文案解析写成正式 oracle 时——那说明结构化字段的缺口已经在制造成本。
+- **发现方**：`debugging-claude-client-connection` skill 事实订正的独立评审（复评轮 major 1，`docs/tmp/2026-08-08-batch1-client-connection-skill-review.md`），主会话逐个调用点复核确认。
+
+## History persistence registry 的两个 test-seam 生命周期缺口（2026-08-08，`owned-singleton-lifecycle` skill 独立评审的邻域发现）
+
+- **根因 / 现状**：`src/lib/history/worker/registry.ts` 的两个 test seam 各缺一半合同。① `setHistoryPersistenceRuntimeForTests`（`:58-60`）**无条件覆盖** `runtime`，既不处置被顶掉的旧实例、也不把它返还调用方——往一个**已持有 Worker runtime** 的 slot 里 inject，owner 从此永久够不到旧实例，`resetHistoryPersistenceRuntimeForTests` 之后只作用于 replacement，旧 Worker 泄漏且无声。当前安全性靠**调用方纪律**（现有测试先自行 `shutdown()`），不是 setter 自身保证。② `resetHistoryPersistenceRuntimeForTests`（`:63-68`）没有**显式的失败策略**：`await current.shutdown()` reject 时异常直接抛出，而 `runtime` 仍挂着那个已死的旧实例——这正是 skill `owned-singleton-lifecycle` 点名的「三种选择里最糟的组合」（失败可见但状态不可用）。
+- **当前行为**：没有已观测的失败。现有调用点都遵守了那条不成文的纪律，`shutdown()` 在现有实现下也不抛。代价是**下一个人照抄它就会中招**——skill 已把它限定为「compare-and-clear 与角色分离的示例，不是完整正例」，并明写「别照抄它的失败处理」，但这是文档层的缓解，不是机制层的。
+- **理想架构 / 若做需改什么**：① setter 改为**非空即抛**（slot 已有实例时拒绝，逼调用方先走 owner reset）——这是最强也最省事的一档，本 registry 无真实并发需求，够用；若确需安全替换非空 slot 才上 owner 级 async `replace(next)`，**注意「写在同一函数里」不会让跨 `await` 的替换原子**，须显式指定线性化点并让**所有读写（含 getter 与 lazy-init）参加同一协议**，否则 dispose 期间普通 getter 会拿到正在关闭的实例（详见 skill `owned-singleton-lifecycle`）。**「返回被顶掉的值」只是辅助接缝、不构成保证**——JS/TS 调用方可以无声忽略返回值，拿到了也可以不 dispose。② reset 显式选一条失败策略并写进注释——推荐「先 compare-and-clear 再把错误抛出去」，这样失败可见**且**状态可用；改完补一条测试：`shutdown()` reject 后 `runtime` 已被清、且异常仍传播。③ 顺带补上 skill 里那条本仓尚无的反向测试：在 `shutdown()` 暂停期装入 replacement，断言它幸存（现有 `tests/history/worker/registry.unit.test.ts:42-62` 只暂停 shutdown、断言旧值仍在与完成后清空，**没有**在暂停期装新实例）。**三项的验收 oracle 统一为「落败实例持有的资源可观测地停了」**，不是「引用换了」。
+- **为何暂缓**：本轮任务是把这套生命周期合同写成 skill，不是改产品代码；且这两处是 **test seam**，误用后果落在测试可信度而非线上行为，与本轮已闭合的其他项不同档。改动虽小但要新增三条测试并选定失败策略，值得自己的一次验证链。
+- **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
+- **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
+
+## `store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败（2026-08-08 合并态验证时发现）
+
+- **根因 / 现状**：`tests/history/v3/store-performance.it.test.ts` 的「prepare and commit do not depend on prior session history length」断言的是**耗时比值**，对 CPU 争用敏感。在 `bun run test:backend` 的 16-shard 负载下会间歇性变红；单文件独跑 3/3 稳定通过。同文件的「CAS live physical bytes …10x smaller」也观测到过一次同类失败。
+- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含本条 + 上述 CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail（仅本条）、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
+- **不是什么**：不是 `worktree-fix-shutdown-review-findings` 引入的——该分支对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交，无直接改动（`git log --first-parent 44457047~1..765bb2be -- tests/history/v3/ src/lib/history/v3/` 为空）。
+- **两条 legacy Vue 守卫（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿**——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
+- **理想架构 / 若做需改什么**：耗时比值不适合在共享 CPU 的分片 runner 里当通过条件。可选路径：①把该断言迁到不并行的档位（如 `test:pty` 之外另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。②最长远——它测的本来就是「不依赖历史长度」这个性质。
+- **为何暂缓**：属既有测试的判据形态问题，不是产品缺陷；且本轮任务未触及 History V3 store，就地改它会把两件事混进同一次验证链。**但它会持续制造 false-red**，按 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 的判据，这正是「wall-clock 预算/比值当通过条件」那一类。
+- **触发条件**：再次在 CI 或全量运行中看到本条变红时，直接做②，不要调阈值——调阈值是打地鼠。
+
+## History Worker 的启动重试无截止时间，Batch 2b 接线时必须补（2026-08-09，Batch 2a 三轮评审的裁决产物）
+
+- **根因 / 现状**：`src/lib/history/worker/restart-policy.ts` 的重启预算**只限速、不限次**——延迟按指数增长并封顶 30s，但尝试次数无上限。配合 `runtime.ts` 的启动路径，这意味着一个**永不清除的可重试**启动错误会让 `start()` 的 promise **既不 resolve 也不 reject**：start waiter 被一路带进每一次 `launchWorker`，而没有任何一条路径会终结它。**「可重试」有精确定义、别按直觉扩大**：`isRetryableStartupError`（`backend.ts`）只认 persist-guard 的 transient 分类，即 `SQLITE_BUSY` / `SQLITE_LOCKED` / `SQLITE_IOERR`（含子码）或消息匹配 `database is locked|database table is locked|database is busy|disk i/o error`。权限或路径问题（`SQLITE_CANTOPEN`）、owner check 失败、payload 损坏都归**永久**，直接走 `fatal`、不会挂起。所以真实触发形态是「某个 peer 长期持有写锁」或「持续 I/O 错误」，**不是**「artifact 不可读」。
+- **为什么这不是实现疏忽**：spec §7.1 明写「普通 crash／可重试启动错误走自动重启」，§7.2 把不可逆 terminal 保留给**已知永久**的条件；「试了 N 次」不是这样的条件，把它当成 fatal 会让一个本可在第 N+1 次恢复的临时故障变成进程生命周期内不可恢复。Batch 2a 实现期曾加过 `maxConsecutiveFailures`（默认 10）上限，**经用户裁决撤回**（2026-08-09）：理由是它单方面改动了冻结 spec 的行为契约，而正确的归属层不在 runtime。
+- **暴露形态（这是本条真正的风险）**：spec §8.1 规定 startup hard gate 失败时**不监听代理端口**。两条叠加的后果是：进程**既不服务、也不退出**，运维看到的是「卡住」而不是「失败」——它取代了一次响亮的 exit 1。**这不是理论推演**：Batch 2a 期间 `SQLITE_BUSY` 在 `test:backend` 负载下真实出现过（3 次里 2 次），当时因为 Worker 把任何 initialize 抛错都当 fatal 才没有挂起；那个 fatal 误判修好之后，挂起路径才被打开。
+- **理想架构 / 若做需改什么**：**「何时放弃启动」属于拥有进程启动的一方，不属于 runtime**。Batch 2b 把 runtime 接进生产启动序列时，须在**调用方**加启动截止时间（deadline），超时后按 §7.2 让 shutdown 进入 `failed` 并 exit 1。runtime 侧已备好可观测出口：`HistoryWorkerStatus` 的 `consecutiveFailures` 与 `nextRetryAt`（`protocol.ts`），deadline 逻辑读它们即可，**不需要**改 restart-policy。若最终判断 runtime 自己也该有上限，那要先修 spec §7.2 的 fatal 成因清单再改代码，顺序不能反。
+- **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
+- **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
+- **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。

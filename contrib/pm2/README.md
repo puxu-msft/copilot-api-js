@@ -12,7 +12,7 @@ pm2 start contrib/pm2/ecosystem.config.cjs --only copilot-api-blue   # 首次只
 pm2 save             # 可选：让 pm2 开机自启时恢复此进程列表
 ```
 
-`wait_ready: true` + `listen_timeout` 让 `pm2 start`/`pm2 restart` 阻塞到应用调用 `process.send('ready')`（`notifyReady()` 的 pm2 腿）才认为启动成功；`kill_timeout` 对齐了 `shutdown.graceful_wait + shutdown.abort_wait` 的默认宽限（60+120=180s），给足 4-phase 优雅 drain 跑完的时间——若你的 `config.yaml` 调大了这两个值，务必同步调大 `kill_timeout`，否则 pm2 会在 drain 完成前发 `SIGKILL`。
+`wait_ready: true` + `listen_timeout` 让 `pm2 start`/`pm2 restart` 阻塞到应用调用 `process.send('ready')`（`notifyReady()` 的 pm2 腿）才认为启动成功。`kill_timeout` 是 pm2 的强退上限，不是应用级请求 deadline。bundled `timeouts.request_deadline=0`，因此任何有限 `kill_timeout` 都无法严格保证无损排空；零停机换代时应先确认旧槽 `activeRequests.count=0`，再执行 `pm2 delete`。样例保留 1300 秒作为防永久挂死的运维上限，并用 `stop_exit_codes:[0]` 明确 clean handoff exit 不触发 autorestart。
 
 ## 为何不用 `pm2 reload`
 
@@ -28,7 +28,7 @@ pm2 托管的实例 `isSupervised()`=true → **不写 pidfile**（pidfile 机�
 # 1. 部署好新代码后，起 green 槽（reusePort 绑定同一端口，wait_ready 等 READY=1）
 pm2 start ecosystem.config.cjs --only copilot-api-green
 
-# 2. green 就绪后，显式向 blue 槽发交接信号（不是杀它——SIGUSR2 触发 4-phase drain）
+# 2. green 就绪后，显式向 blue 槽发交接信号（SIGUSR2 停止 ingress 并无损 drain）
 pm2 sendSignal SIGUSR2 copilot-api-blue
 
 # 3. blue 走完 drain 后以 exit 0 正常退出（pm2 记为进程退出，不会被自动重启）；

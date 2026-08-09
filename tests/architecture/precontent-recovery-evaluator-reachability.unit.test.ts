@@ -76,16 +76,10 @@ describe("pre-content recovery evaluator reachability", () => {
 
     expect(boundaries).toHaveLength(2)
     expect(boundaries.map((boundary) => boundary.tryBlock.getText(evaluator))).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("runResponseSink"),
-        expect.stringContaining("getCandidateSnapshot"),
-      ]),
+      expect.arrayContaining([expect.stringContaining("runResponseSink"), expect.stringContaining("getCandidateSnapshot")]),
     )
     expect(boundaries.map((boundary) => boundary.catchClause?.block.getText(evaluator))).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("recoveryError"),
-        expect.stringContaining("snapshotError"),
-      ]),
+      expect.arrayContaining([expect.stringContaining("recoveryError"), expect.stringContaining("snapshotError")]),
     )
   })
 })

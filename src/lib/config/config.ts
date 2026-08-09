@@ -13,7 +13,11 @@ import fs from "node:fs/promises"
 import { z } from "zod"
 
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
-import { setV3PersistRetryConfig } from "~/lib/history/v3"
+import {
+  //
+  DEFAULT_V3_PERSIST_RETRY_CONFIG,
+  setV3PersistRetryConfig,
+} from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
@@ -40,7 +44,6 @@ import {
   setNegotiationConfig,
   setResponsesConfig,
   setResponsesWsIngressConfig,
-  setShutdownConfig,
   setReactiveRetryConfig,
   setTelemetryConfig,
   setTimeoutConfig,
@@ -76,27 +79,9 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type {
-  AnthropicConfig,
-  Config,
-  EndpointScope,
-  HistoryConfig,
-  RateLimiterConfig,
-  ResponsesConfig,
-  RewriteRule,
-  ShutdownConfig,
-  SystemPromptEntry,
-} from "./schema"
+export type { AnthropicConfig, Config, EndpointScope, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, SystemPromptEntry } from "./schema"
 
-export {
-  AnthropicConfigSchema,
-  ConfigSchema,
-  HistoryConfigSchema,
-  RateLimiterConfigSchema,
-  ResponsesConfigSchema,
-  RewriteRuleSchema,
-  ShutdownConfigSchema,
-} from "./schema"
+export { AnthropicConfigSchema, ConfigSchema, HistoryConfigSchema, RateLimiterConfigSchema, ResponsesConfigSchema, RewriteRuleSchema } from "./schema"
 
 export {
   _resetConfigValidationWarnTrackingForTests,
@@ -971,13 +956,19 @@ export async function applyConfigToState(): Promise<Config> {
       if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
       // DI-5 transient retry budget — consumed only by the V3 store drain (no state
       // field / listener needed), so feed the module setter directly like the other
-      // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
-      // (DI-5-followup-2) defaults inside the setter when omitted.
-      if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
+      // module-local config knobs (setReactiveRetryConfig above). Defaults come from
+      // the store's single authoritative object so config apply cannot drift from it.
+      if (
+        h.persist_retry?.max_attempts !== undefined
+        || h.persist_retry?.backoff_ms !== undefined
+        || h.persist_retry?.max_backoff_ms !== undefined
+        || h.persist_retry?.max_total_ms !== undefined
+      ) {
         setV3PersistRetryConfig({
-          maxAttempts: h.persist_retry.max_attempts ?? 3,
-          backoffMs: h.persist_retry.backoff_ms ?? 10,
-          maxTotalMs: h.persist_retry.max_total_ms,
+          maxAttempts: h.persist_retry.max_attempts ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxAttempts,
+          backoffMs: h.persist_retry.backoff_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.backoffMs,
+          maxBackoffMs: h.persist_retry.max_backoff_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxBackoffMs,
+          maxTotalMs: h.persist_retry.max_total_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs,
         })
       }
     }
@@ -1023,13 +1014,6 @@ export async function applyConfigToState(): Promise<Config> {
       const hk = config.hooks
       if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
       if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
-    }
-
-    // Shutdown timing (scalar: override only when present)
-    if (config.shutdown) {
-      const s = config.shutdown
-      if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
-      if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
     }
 
     // Timeouts section (scalar: override only when present)

@@ -481,6 +481,7 @@ export interface HistoryEntry {
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
+  historyAdmissionWaitMs?: number
   durationMs?: number
   // NOTE (P4c-3): the deprecated top-level scalars `attemptCount` / `currentStrategy`
   // / `failureReason` were REMOVED — they now live in `_index.derived` (recompute-only

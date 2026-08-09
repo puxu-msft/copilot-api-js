@@ -1,14 +1,28 @@
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+import type {
+  //
+  HistoryPersistenceOutcome,
+  ModelOperationTerminalPublication,
+} from "~/lib/history/worker/protocol"
 
-export type ModelOperationTerminalSubscriber = (record: ModelOperationRecord) => void | Promise<void>
+type MainThreadTerminalPublication = ModelOperationTerminalPublication<ModelOperationRecord>
+
+import {
+  //
+  getRecentTerminal,
+  getRecentTerminalDurability,
+  listRecentTerminals,
+  publishPendingTerminal,
+  resetRecentTerminals,
+  settleTerminalDurability,
+} from "../recent-terminal"
+
+export type ModelOperationTerminalSubscriber = (publication: MainThreadTerminalPublication) => void | Promise<void>
 
 const subscribers = new Set<ModelOperationTerminalSubscriber>()
-const pending = new Set<Promise<void>>()
-const recent = new Map<string, ModelOperationRecord>()
-const recentDurability = new Map<string, "pending" | "failed">()
-const RECENT_CAPACITY = 256
+const pendingSubscribers = new Set<Promise<void>>()
 
-/** Subscribe to immutable canonical terminal records. Returns an unsubscribe function. */
+/** Subscribe to complete immutable terminal publications. Returns an unsubscribe function. */
 export function subscribeModelOperationTerminals(subscriber: ModelOperationTerminalSubscriber): () => void {
   subscribers.add(subscriber)
   return () => subscribers.delete(subscriber)
@@ -18,21 +32,14 @@ export function subscribeModelOperationTerminals(subscriber: ModelOperationTermi
  * Publish without delaying the proxy response. Async subscribers are tracked for
  * shutdown/test drains; every rejection is observed so it cannot crash the process.
  */
-export function publishModelOperationTerminal(record: ModelOperationRecord): void {
-  recent.set(record.identity.operationId, record)
-  recentDurability.set(record.identity.operationId, "pending")
-  while (recent.size > RECENT_CAPACITY) {
-    const oldest = recent.keys().next().value
-    if (oldest === undefined) break
-    recent.delete(oldest)
-    recentDurability.delete(oldest)
-  }
+export function publishModelOperationTerminal(publication: MainThreadTerminalPublication): void {
+  publishPendingTerminal(publication)
   for (const subscriber of subscribers) {
     try {
-      const result = subscriber(record)
+      const result = subscriber(publication)
       if (result instanceof Promise) {
-        const tracked = result.catch(() => undefined).finally(() => pending.delete(tracked))
-        pending.add(tracked)
+        const tracked = result.catch(() => undefined).finally(() => pendingSubscribers.delete(tracked))
+        pendingSubscribers.add(tracked)
       }
     } catch {
       // Persistence/derived consumers may fail, but model delivery must not.
@@ -40,42 +47,34 @@ export function publishModelOperationTerminal(record: ModelOperationRecord): voi
   }
 }
 
-export function getRecentModelOperationTerminal(operationId: string): ModelOperationRecord | undefined {
-  return recent.get(operationId)
+export function getRecentModelOperationTerminal(operationId: string) {
+  return getRecentTerminal(operationId)
 }
 
-export function listRecentModelOperationTerminals(): ReadonlyArray<ModelOperationRecord> {
-  return [...recent.values()]
+export function listRecentModelOperationTerminals() {
+  return listRecentTerminals()
 }
 
 export function getRecentModelOperationDurability(operationId: string): "pending" | "failed" | undefined {
-  return recentDurability.get(operationId)
+  return getRecentTerminalDurability(operationId)
 }
 
-export function settleRecentModelOperationDurability(record: ModelOperationRecord, outcome: "persisted" | "failed" | "conflict"): void {
-  const operationId = record.identity.operationId
-  if (recent.get(operationId) !== record) return
-  if (outcome === "persisted") {
-    recentDurability.delete(operationId)
-  } else {
-    recentDurability.set(operationId, "failed")
-  }
+export function settleRecentModelOperationDurability(publication: MainThreadTerminalPublication, outcome: HistoryPersistenceOutcome): void {
+  settleTerminalDurability(publication, outcome)
 }
 
 /** Test-only cache clear used by the legacy fixture reset surface. */
 export function clearRecentModelOperationTerminalsForTests(): void {
-  recent.clear()
-  recentDurability.clear()
+  resetRecentTerminals()
 }
 
 /** Drain to quiescence, including work published while a prior batch settles. */
 export async function drainModelOperationTerminalSubscribers(): Promise<void> {
-  while (pending.size > 0) await Promise.allSettled(pending)
+  while (pendingSubscribers.size > 0) await Promise.allSettled(pendingSubscribers)
 }
 
 export function resetModelOperationTerminalBusForTests(): void {
   subscribers.clear()
-  pending.clear()
-  recent.clear()
-  recentDurability.clear()
+  pendingSubscribers.clear()
+  resetRecentTerminals()
 }

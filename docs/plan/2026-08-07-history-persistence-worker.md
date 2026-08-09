@@ -61,6 +61,7 @@ status: active
 
 新增文件路径与职责固定如下；若实现证据表明路径必须改变，先修改并重新评审本计划，不能由执行者静默改名：
 
+- `src/lib/history/persist-retry-config.ts`：主线程 V3 store 与 Worker protocol 共享的完整四字段持久化重试类型 owner；两侧禁止平行重定义。
 - `src/lib/history/worker/protocol.ts`：structured-clone-safe 消息、envelope、status 和 type guards。
 - `src/lib/history/worker/runtime.ts`：主线程 `HistoryPersistenceRuntime`、generation、未 ACK、restart、ACK tombstone。
 - `src/lib/history/worker/history-worker.ts`：Worker entry；文件 basename 固定产出 `dist/history-worker.mjs`，只接 protocol 并调用 backend。
@@ -74,9 +75,17 @@ status: active
 - `src/lib/history/recent-terminal.ts`：未 ACK 全量 overlay 与已 ACK 有界 recent cache。
 - `src/lib/history/sqlite/read-connection.ts`：写入先行阶段的主线程 readonly handle registry；Batch 2b 安装，Batch 6c 删除。
 - `tests/history/worker/fixtures/worker-entry.ts`：协议测试 Worker fixture。
+- `tests/history/worker/fixtures/semantic-envelope.ts`：共享 record／envelope／start-config／临时 DB builder（record 刻意做得「富」，否则 `v3_tracks` 为空、落盘断言分不出真提交与桩）。
+- `tests/history/worker/fixtures/scripted-transport.ts`：逐条手写回复的 transport；用于伪造正确 Worker 绝不会发的流量（退休 generation 的 ACK、指定时刻的 `fatal`）。
+- `tests/history/worker/fixtures/in-process-runtime.ts`：跑真实消息循环＋真实 backend 的进程内 runtime（spec §12.1）。
+- `tests/history/worker/fixtures/crash-window-worker.ts`：在四个指定时刻 `process.exit()` 的 Worker entry；marker 文件记录崩溃瞬间的行数，用于证明注入点确实落在它命名的时刻。
+- `tests/history/worker/fixtures/retry-observer-worker.ts`：注入 delay seam 与 transient 提交失败，把每次实测等待写文件回读。
+- `tests/history/worker/fixtures/permanent-failure-worker.ts`：注入**永久**写失败，使 `failed` outcome 可达（否则该分支无判别力）。
+- `tests/history/worker/fixtures/retryable-startup-worker.ts`：前 N 次 initialize 抛 transient 失败，验 spec §7.1 的可重试启动错误走重启而非 fatal。
 - `tests/history/worker/*.unit.test.ts`：纯状态机与 fake backend。
 - `tests/history/worker/*.it.test.ts`：真 Worker、SQLite、crash、source/dist runtime。
-- `tests/architecture/history-worker-boundaries.unit.test.ts`：生产 import／owner／入口集合守卫。
+- `tests/history/sqlite/read-connection.unit.test.ts`：主线程 readonly handle registry 的状态机（spec §11.2 要求未接线代码必须被测试真实执行）。
+- `tests/architecture/history-worker-boundaries.unit.test.ts`：生产 import／owner／入口集合守卫，含 Worker-only 模块不得进主线程模块图的线程归属守卫。
 
 现有承重文件：
 
@@ -154,7 +163,8 @@ export interface HistoryWorkerRawConfig {
 export interface HistoryPersistRetryConfig {
   readonly maxAttempts: number
   readonly backoffMs: number
-  readonly maxTotalMs?: number
+  readonly maxBackoffMs: number
+  readonly maxTotalMs: number
 }
 
 export interface HistoryWorkerHotConfig {
@@ -374,6 +384,8 @@ Commit: `feat(history): add persistence admission controller`
 
 ### Task 1b / Batch 1b: Production Admission Wiring
 
+**状态：已完成（`d3b4ac77`，2026-08-08 fast-forward 合入 `master`；最终实现候选 `94205e89`，后续提交仅闭合文档与评审记录）。**
+
 **Files:**
 - Create: `src/lib/history/worker/http-admission.ts`
 - Create: `src/lib/history/worker/legacy-terminal-sink.ts`
@@ -401,37 +413,37 @@ Commit: `feat(history): add persistence admission controller`
 
 **Wiring rule:** 不把同步 `manager.create()` 改 async。模型 route 在 parse/dispatch 前 await reservation，并把 `HistoryReservation` 作为显式参数传给 codec／lightweight producer。dry-run 不传 reservation。Responses WS 每条 `response.create` 独立 acquire。Terminal publication 只有一个 owner：`ModelOperationTerminalPublication { record, rawAttachment }` 经 terminal bus 发布，subscriber 消费；context/lightweight 不直接 enqueue persistence。
 
-- [ ] **Step 1b.1: 写入口矩阵 red test**
+- [x] **Step 1b.1: 写入口矩阵 red test**
 
 从 route registration 与 operation producers 枚举：OpenAI CC／Responses、Anthropic Messages／count_tokens、Gemini generate／stream／count、embeddings、Azure、Responses WS。使用 capacity=1 且预先持有唯一 reservation 的 test controller，使每个新模型入口必须等待；liveness、status、metrics、History、dry-run 必须通过。
 
-- [ ] **Step 1b.2: 冻结 terminal publication 与 raw attachment ownership**
+- [x] **Step 1b.2: 冻结 terminal publication 与 raw attachment ownership**
 
 新增 `ModelOperationTerminalPublication { record, rawAttachment }`。`rawAttachment` 是 operation-owned、一次性 seal/transfer 对象：Batch 1b 先为空 attachment，Batch 3a 扩为 commands/descriptor。RequestContext 和 lightweight operation 在 terminal commit 时 seal attachment，并把完整 publication 交 `publishModelOperationTerminal()`；terminal bus subscriber 类型同步升级。subscriber 是唯一 `acceptTerminal()` 调用者。attachment 第二次 seal/transfer 必须抛错；finalizer publish 前失败由 manager 调 `failBeforeTerminal`。这条接缝必须在 Batch 1b 落地，Batch 3a 不再另造全局 registry。
 
-- [ ] **Step 1b.3: 扩展 context/lightweight reservation 接口**
+- [x] **Step 1b.3: 扩展 context/lightweight reservation 接口**
 
-`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；创建 operation ID 后立即调用 `bindOperationId(id)`。context/lightweight 不直接 enqueue persistence。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
+`RequestContextManager.create` 与 `createLightweightModelOperation` 接受必填于生产、可选于 direct tests 的 `historyReservation`；manager 先把新 context 发布到 operation registry，再调用 `bindOperationId(id)`，使 shutdown 的首次 registry snapshot 不会漏掉已绑定 operation；direct 构造与 lightweight operation 在创建 ID 后立即 bind。context/lightweight 不直接 enqueue persistence。绑定前失败调用 `releaseBeforeBinding`；绑定后 canonical finalizer 拒绝时 manager 调 `failBeforeTerminal(operationId,error)`。用 compile-time helper 避免生产 codec／lightweight producer 漏传。
 
-- [ ] **Step 1b.4: 接 HTTP routes 与 shutdown Step 1**
+- [x] **Step 1b.4: 接 HTTP routes 与 shutdown Step 1**
 
-新增 `withHistoryAdmission(c, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper 监听 `c.req.raw.signal` 和专用 admission-stop signal。生产 controller 安装 `LegacyHistoryTerminalSink`：它把 publication.record 交现有 `enqueueModelOperationWithOutcome`，再回调 outcome；Batch 2b 删除 adapter。`gracefulShutdown` Step 1 必须在统计 active context 前同步调用 `stopHistoryAdmission(shutdownError)`，拒绝全部 pre-context waiter；新增 `drainHistoryAdmissionWaiters()` barrier，确保 waiter 全 settled 后才允许 History close。不得等到 Batch 5 才接。
+新增 `withHistoryAdmission(requestOrSignal, operationKind, fn)`；History disabled 时返回 no-op reservation。wrapper监听客户端AbortSignal和专用admission-stop signal，并从acquire开始跟踪到reservation首次bind／release。生产 controller 安装 `LegacyHistoryTerminalSink`：它把 publication.record 交现有 `enqueueModelOperationWithOutcome`，再回调 outcome；Batch 2b 删除 adapter。`gracefulShutdown` Step 1 必须在统计 active context 前同步调用 `stopHistoryAdmission(shutdownError)`，拒绝全部pre-context waiter；随后调用 `drainHistoryAdmissionHandoffs()`，确保已grant reservation的async continuation完成bind／release，且已绑定operation先进入registry，再读取首次active snapshot。不得等到Batch 5才接。
 
-- [ ] **Step 1b.5: 接 Responses WS**
+- [x] **Step 1b.5: 接 Responses WS**
 
 在每个合法 `response.create` 解析后、创建 abort controller 后 acquire；socket close abort waiter；每条 operation 独立 release。
 
-- [ ] **Step 1b.6: 接 pending/recent overlay 与 status/metrics**
+- [x] **Step 1b.6: 接 pending/recent overlay 与 status/metrics**
 
 Terminal publication 立即进入全量 `pendingDurability` map，直到 legacy/Worker sink outcome；该 map 不受 256 recent cap，天然受 admission capacity 上限。ACK 后从 pending 移到独立 256 条 acknowledged-recent cache。所有 History overlay 查询合并 pending＋acknowledged recent＋DB。用 capacity=512、Worker/sink outcome 暂停、发布 512 条 terminal 的测试证明最早 256 条仍可见；临时恢复旧 `RECENT_CAPACITY` FIFO 行为时测试必须红。
 
 `HistoryReservation.historyAdmissionWaitMs` 在 bind 时写入 RequestContext／lightweight operation，并在 terminal telemetry assembly 进入独立 `history_admission_wait_ms` histogram；不得复用上游 rate-limit `queueWaitMs`。`/api/status` 使用 `history-worker/status.ts` 聚合 admission snapshot 与 runtime snapshot；聚合层断言 `admission.unacked === runtime.pendingEnvelopes`（legacy sink 阶段 runtime pending 为 0，聚合明确标 backend=`legacy`，不做该等式）。Runtime status 不含 reserved/waiting。Prometheus 增加 gauges/counters 与 histogram。扩展 pure renderer 测试，并断言管理请求不产生 observation。
 
-- [ ] **Step 1b.7: shutdown/pending-overlay 正负控与 mutation**
+- [x] **Step 1b.7: shutdown/pending-overlay 正负控与 mutation**
 
 冻结 exact patch，临时移除任一入口 wrapper，确认 architecture/wiring test 红。另在 pre-context waiter pending 时触发 shutdown：waiter 必须立即 reject，active tracker 可为 0，History close 后不得出现新 context/terminal。临时移除 Step 1 `stopHistoryAdmission` 时测试必须红。反向应用 patch 后全绿。
 
-- [ ] **Step 1b.8: 门禁与提交**
+- [x] **Step 1b.8: 门禁与提交**
 
 ```bash
 bun test tests/history/worker/admission-wiring.http.test.ts tests/history/worker/admission-ws.it.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/history/worker/pending-overlay.it.test.ts tests/architecture/history-worker-boundaries.unit.test.ts tests/infra/basic-routes.http.test.ts
@@ -446,6 +458,8 @@ bun run test:backend
 Commit: `feat(history): gate model operations on persistence capacity`
 
 ### Task 2a / Batch 2a: Semantic Worker Backend
+
+**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/tmp/2026-08-08-history-worker-progress-impl-2a.md](../tmp/2026-08-08-history-worker-progress-impl-2a.md)。
 
 **Files:**
 - Create: `src/lib/history/worker/backend.ts`
@@ -462,7 +476,7 @@ Commit: `feat(history): gate model operations on persistence capacity`
 
 - [ ] **Step 2a.1: 写真实 semantic write red test**
 
-用临时磁盘 DB，启动真 Worker，发送 fixture record，等待 ACK，再用独立 readonly connection 验 operation、summary、tracks、journal empty。
+用临时磁盘 DB，启动真 Worker，发送 fixture record，等待 ACK，再用独立 readonly connection 验 operation、summary、tracks、journal empty。Initialize 必须携完整 `maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`；用非默认 `maxBackoffMs` 和 injectable delay 证明真实 Worker backend 的每次等待上限消费该值，不能只断言 protocol round-trip。缺失或负值须在 protocol 边界拒绝。删除 backend 对 `maxBackoffMs` 的传递后，该用例必须红。
 
 - [ ] **Step 2a.2: 抽取 backend primitives**
 

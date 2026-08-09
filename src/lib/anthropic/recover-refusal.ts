@@ -64,39 +64,24 @@ import type {
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
+import type { RefusalDetail } from "./refusal-detail"
+
 import {
+  //
   extractRefusalDetail,
   refusalCategoryLabel,
 } from "./refusal-detail"
-import type { RefusalDetail } from "./refusal-detail"
-import { DEFAULT_REFUSAL_ERROR_TYPE, type RefusalPolicy } from "./refusal-policy"
-
+import {
+  //
+  DEFAULT_REFUSAL_ERROR_TYPE,
+  type RefusalPolicy,
+} from "./refusal-policy"
 import { anthropicSseFrame } from "./sse-frame"
 
-export {
-  extractRefusalDetail,
-  isNamedCategory,
-  refusalCategoryForDiagnostics,
-} from "./refusal-detail"
-export type {
-  RefusalDetail,
-  RefusalTranslationDegradation,
-  RefusalTranslationDegradationReporter,
-} from "./refusal-detail"
+export { extractRefusalDetail, isNamedCategory, refusalCategoryForDiagnostics } from "./refusal-detail"
+export type { RefusalDetail, RefusalTranslationDegradation, RefusalTranslationDegradationReporter } from "./refusal-detail"
 
-/**
- * All three `DEFAULT_REFUSAL_*` values are OWNED by the zero-import leaf `./refusal-policy` and only
- * re-exported here, so this module's public path is unchanged for existing consumers.
- *
- * Why they live there rather than here: `state-defaults.ts` reads them, and that single value edge
- * dragged `state` + `state-defaults` into 52 and 50 of the repo's 70 import cycles. A leaf has no
- * out-edges, so nothing depending on it can close a cycle; redirecting that edge measured 70 cycles
- * /63 members → 30/43. See docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.2. Do NOT
- * re-declare a copy here to save an import — the single-owner guard in
- * `tests/architecture/state-defaults-value-owners.unit.test.ts` parses this file's declarations,
- * precisely because two identical string literals pass every value-equality check.
- */
-export { DEFAULT_REFUSAL_END_TURN_TEXT, DEFAULT_REFUSAL_ERROR_MESSAGE, DEFAULT_REFUSAL_ERROR_TYPE } from "./refusal-policy"
+export { categoryProvenance, type CategoryProvenance, refusalCategoryLabel } from "./refusal-detail"
 
 /**
  * Provenance-preserving normalization of the upstream `stop_details`. The RAW object is stored
@@ -183,10 +168,7 @@ export function isContentlessRefusal(stopReason: string | null | undefined, sawR
 
 /** Whole-response counterpart that reuses the single client-visible-content predicate. */
 export function isContentlessRefusalResponse(response: Pick<AnthropicMessageResponse, "stop_reason" | "content">): boolean {
-  return isContentlessRefusal(
-    response.stop_reason,
-    hasClientVisibleContent(response.content as unknown as ReadonlyArray<{ type: string }>),
-  )
+  return isContentlessRefusal(response.stop_reason, hasClientVisibleContent(response.content as unknown as ReadonlyArray<{ type: string }>))
 }
 
 /** Static vars a stream knows before any frame arrives. */
@@ -257,8 +239,20 @@ export function rewriteRefusalMessageDelta(parsed: RawMessageDeltaEvent): RawMes
   return { ...parsed, delta: { ...parsed.delta, stop_reason: "end_turn", stop_details: null } }
 }
 
+/**
+ * All three `DEFAULT_REFUSAL_*` values are OWNED by the zero-import leaf `./refusal-policy` and only
+ * re-exported here, so this module's public path is unchanged for existing consumers.
+ *
+ * Why they live there rather than here: `state-defaults.ts` reads them, and that single value edge
+ * dragged `state` + `state-defaults` into 52 and 50 of the repo's 70 import cycles. A leaf has no
+ * out-edges, so nothing depending on it can close a cycle; redirecting that edge measured 70 cycles
+ * /63 members → 30/43. See docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.2. Do NOT
+ * re-declare a copy here to save an import — the single-owner guard in
+ * `tests/architecture/state-defaults-value-owners.unit.test.ts` parses this file's declarations,
+ * precisely because two identical string literals pass every value-equality check.
+ */
+export { DEFAULT_REFUSAL_END_TURN_TEXT, DEFAULT_REFUSAL_ERROR_MESSAGE, DEFAULT_REFUSAL_ERROR_TYPE } from "./refusal-policy"
 export type { RefusalMode, RefusalPolicy } from "./refusal-policy"
-export { categoryProvenance, refusalCategoryLabel, type CategoryProvenance } from "./refusal-detail"
 
 /** Does this accumulated block list carry anything the client can read as an answer? */
 export function hasClientVisibleContent(blocks: ReadonlyArray<{ type: string }>): boolean {

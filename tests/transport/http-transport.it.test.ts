@@ -9,7 +9,6 @@
 
 import {
   //
-  afterEach,
   beforeEach,
   describe,
   expect,
@@ -26,11 +25,7 @@ import type {
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import {
-  //
-  _resetShutdownState,
-  gracefulShutdown,
-} from "~/lib/shutdown"
+import { setStateForTests } from "~/lib/state"
 import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
@@ -39,8 +34,6 @@ import {
   autoRestoreFetch,
   setFetchMock,
 } from "../helpers/mock-fetch"
-import { createMockServer } from "../helpers/mock-server"
-import { createMockTracker } from "../helpers/mock-tracker"
 import {
   //
   createSseResponse,
@@ -93,6 +86,52 @@ describe("createUpstreamHttpTransport", () => {
     expect(upstream.lifecycle).toBeDefined()
     await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
     await expect(upstream.lifecycle!.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+
+  test("shared HTTP send passes the configured response-header deadline into the live fetch signal", async () => {
+    setStateForTests({ responseHeaderTimeout: 0.01 })
+    setFetchMock(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason as Error), { once: true })
+        }),
+    )
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const error = await Promise.race([
+      transport.send(makeWire({ stream: true }), makeEnv()).catch((value: unknown) => value),
+      new Promise((resolve) => setTimeout(() => resolve(new Error("test guard expired")), 100)),
+    ])
+
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as Error).name).toBe("TimeoutError")
+  })
+
+  test("response-header timeout is disarmed before a delayed streaming body", async () => {
+    setStateForTests({ responseHeaderTimeout: 0.01 })
+    setFetchMock((_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            init?.signal?.removeEventListener("abort", onAbort)
+            controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"late"}}]}\n\n'))
+            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+            controller.close()
+          }, 40)
+          const onAbort = () => {
+            clearTimeout(timer)
+            controller.error(init?.signal?.reason)
+          }
+          init?.signal?.addEventListener("abort", onAbort, { once: true })
+        },
+      })
+      return new Response(body, { status: 200 })
+    })
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+
+    expect((await collect(upstream.frames)).map((frame) => frame.data)).toEqual(['{"choices":[{"delta":{"content":"late"}}]}', "[DONE]"])
   })
 
   test("physical open returns a mandatory stream lifecycle", async () => {
@@ -216,24 +255,11 @@ describe("createUpstreamHttpTransport", () => {
   })
 })
 
-// ── C1: rewriteShutdownAbort 529 hook (RFC §12.1) ──────────────────────────
-// The Anthropic v4 transport opts in: a shutdown-caused non-streaming AbortError
-// becomes a retryable 529 (parity with the legacy Anthropic client). Every other
-// caller (and the client-disconnect case) re-throws the ORIGINAL AbortError.
-
-describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => {
-  autoRestoreState()
+// ── Request cancellation identity ──────────────────────────────────────────
+describe("createUpstreamHttpTransport — request cancellation identity", () => {
   autoRestoreFetch()
 
-  beforeEach(() => {
-    resetAdaptiveRateLimiter()
-  })
-  afterEach(() => {
-    // gracefulShutdown aborts the shutdown controller; reset so it doesn't leak.
-    _resetShutdownState()
-  })
-
-  test("hook OFF (default): a fetch AbortError re-throws the ORIGINAL object unchanged (CC/Responses parity, identity preserved)", async () => {
+  test("a request AbortError re-throws the original object unchanged", async () => {
     const abortErr = new DOMException("The operation was aborted", "AbortError")
     setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
@@ -241,102 +267,9 @@ describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => 
     let caught: unknown
     try {
       await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
-    } catch (e) {
-      caught = e
+    } catch (error) {
+      caught = error
     }
-    expect(caught).toBe(abortErr) // same object — not rewritten to a 529 HTTPError
-  })
-
-  test("hook ON but NO shutdown (client-disconnect): AbortError NEVER becomes 529 — re-throws the original", async () => {
-    const abortErr = new DOMException("The operation was aborted", "AbortError")
-    setFetchMock(() => new Promise<Response>((_resolve, reject) => reject(abortErr)))
-    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
-
-    let caught: unknown
-    try {
-      await transport.send(makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }), makeEnv())
-    } catch (e) {
-      caught = e
-    }
-    expect(caught).toBe(abortErr) // getShutdownSignal().aborted is false → original, not 529
-  })
-
-  test("hook ON + shutdown abort: a non-streaming AbortError → retryable HTTPError 529 (Anthropic parity)", async () => {
-    // Upstream rejects with AbortError once the (shutdown-folded) fetch signal aborts.
-    setFetchMock(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = init?.signal
-          const onAbort = (): void => reject(new DOMException("The operation was aborted", "AbortError"))
-          if (signal?.aborted) return onAbort()
-          signal?.addEventListener("abort", onAbort, { once: true })
-        }),
-    )
-    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
-
-    const shutdownPromise = gracefulShutdown("SIGTERM", {
-      tracker: createMockTracker([{ status: "streaming" }]),
-      server: createMockServer(),
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
-      closeAllClientsFn: () => {},
-      getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
-      gracefulWaitMs: 50,
-      abortWaitMs: 500,
-      drainPollIntervalMs: 10,
-      drainProgressIntervalMs: 50_000,
-    })
-
-    await expect(transport.send(makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }), makeEnv())).rejects.toMatchObject({
-      status: 529,
-    })
-    await shutdownPromise
-  })
-
-  test("hook ON, shutting down, but the REAPER cancelled it: NOT 529 — the reason is what decides, not the clock", async () => {
-    // The whole point of the causal gate: during the 60s+120s drain a request can be
-    // cancelled by the stale reaper or the hard deadline. Those are not shutdowns, and
-    // reporting them as "Server is shutting down" would be a fresh lie in place of the
-    // old one. A temporal `getIsShuttingDown()` gate would fail this test.
-    const reaper = new AbortController()
-    setFetchMock(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = init?.signal
-          const onAbort = (): void => reject((signal?.reason as Error | undefined) ?? new DOMException("aborted", "AbortError"))
-          if (signal?.aborted) return onAbort()
-          signal?.addEventListener("abort", onAbort, { once: true })
-        }),
-    )
-    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
-
-    const shutdownPromise = gracefulShutdown("SIGTERM", {
-      tracker: createMockTracker([{ status: "streaming" }]),
-      server: createMockServer(),
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
-      closeAllClientsFn: () => {},
-      getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
-      gracefulWaitMs: 500,
-      abortWaitMs: 500,
-      drainPollIntervalMs: 10,
-      drainProgressIntervalMs: 50_000,
-    })
-
-    const reaperReason = cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")
-    const sent = transport.send(
-      makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }),
-      makeEnv({ lifecycleSignal: reaper.signal }),
-    )
-    reaper.abort(reaperReason) // reaper wins the race, so IT owns the composite signal's reason
-    const caught = await sent.then(
-      () => undefined,
-      (e: unknown) => e,
-    )
-    expect(caught).toBe(reaperReason) // original object, never rewritten
-    expect((caught as { status?: number }).status).toBeUndefined() // definitively not the 529 HTTPError
-    await shutdownPromise
+    expect(caught).toBe(abortErr)
   })
 })

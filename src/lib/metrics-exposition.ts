@@ -35,6 +35,11 @@ import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
 import {
   //
+  getHistoryPersistenceStatus,
+  type HistoryPersistenceStatus,
+} from "./history/worker/status"
+import {
+  //
   type AbortProvenanceGapCount,
   getAbortProvenanceGapCounts,
 } from "./observability/abort-provenance-gaps"
@@ -104,6 +109,19 @@ export function renderPrometheusMetrics(
   retryStrategyFires: Readonly<Record<string, number>> = {},
   retryGiveUps: ReadonlyArray<RetryGiveUpCount> = [],
   abortProvenanceGaps: ReadonlyArray<AbortProvenanceGapCount> = [],
+  history?: Pick<
+    HistoryPersistenceStatus,
+    | "backend"
+    | "capacity"
+    | "reserved"
+    | "unacked"
+    | "waiting"
+    | "estimatedBytes"
+    | "overCapacity"
+    | "preTerminalFailuresTotal"
+    | "sinkEnqueueErrorsTotal"
+    | "pendingEnvelopes"
+  >,
 ): string {
   const lines: Array<string> = [
     "# Each settled request is counted under EVERY dimension (model/endpoint/client/agentKind/tool);",
@@ -206,6 +224,35 @@ export function renderPrometheusMetrics(
     ...gapSamples,
   )
 
+  if (history) {
+    const historyGauges: ReadonlyArray<[name: string, help: string, value: number]> = [
+      ["history_admission_capacity", "Configured History operation reservation capacity.", history.capacity],
+      ["history_admission_reserved", "History operations holding a reservation.", history.reserved],
+      ["history_admission_unacked", "Terminal History operations awaiting persistence outcome.", history.unacked],
+      ["history_admission_waiting", "Model operations waiting for a History reservation.", history.waiting],
+      ["history_admission_estimated_bytes", "Estimated raw bytes held by unacknowledged History operations.", history.estimatedBytes],
+      ["history_admission_over_capacity", "Whether existing reservations exceed the current capacity after a shrink.", history.overCapacity ? 1 : 0],
+      ["history_worker_pending_envelopes", "History envelopes currently pending in the Worker runtime.", history.pendingEnvelopes],
+    ]
+    lines.push(
+      "# HELP copilot_api_history_backend_info Active History persistence backend.",
+      "# TYPE copilot_api_history_backend_info gauge",
+      `copilot_api_history_backend_info{backend="${history.backend}"} 1`,
+    )
+    for (const [name, help, value] of historyGauges) {
+      const metric = `${METRIC_PREFIX}${name}`
+      lines.push(`# HELP ${metric} ${help}`, `# TYPE ${metric} gauge`, `${metric} ${formatValue(value)}`)
+    }
+    lines.push(
+      "# HELP copilot_api_history_pre_terminal_failures_total History operations released before terminal publication.",
+      "# TYPE copilot_api_history_pre_terminal_failures_total counter",
+      `copilot_api_history_pre_terminal_failures_total ${formatValue(history.preTerminalFailuresTotal)}`,
+      "# HELP copilot_api_history_sink_enqueue_errors_total Contract-violating terminal sink enqueue throws.",
+      "# TYPE copilot_api_history_sink_enqueue_errors_total counter",
+      `copilot_api_history_sink_enqueue_errors_total ${formatValue(history.sinkEnqueueErrorsTotal)}`,
+    )
+  }
+
   // Prometheus requires a trailing newline.
   return `${lines.join("\n")}\n`
 }
@@ -215,5 +262,12 @@ export function buildMetricsExposition(now = Date.now()): string {
   const telemetry = getTelemetryRuntime()
   const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => telemetry.getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
   const acceptedSinceStart = telemetry.getSnapshot(now).acceptedSinceStart
-  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts(), getRetryGiveUpCounts(), getAbortProvenanceGapCounts())
+  return renderPrometheusMetrics(
+    breakdowns,
+    acceptedSinceStart,
+    getRetryStrategyFireCounts(),
+    getRetryGiveUpCounts(),
+    getAbortProvenanceGapCounts(),
+    getHistoryPersistenceStatus(),
+  )
 }

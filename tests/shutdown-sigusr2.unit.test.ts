@@ -1,9 +1,9 @@
 /**
- * SIGUSR2 = 交接信号（lifecycle.md「优雅重启」）：与 SIGTERM 完全一致的 4-phase
- * drain，仅日志标签区分。裸手动/systemd/pm2 三环境共用同一 handler，差异仅在
+ * SIGUSR2 = 交接信号（lifecycle.md「优雅重启」）：与 SIGTERM 完全一致地停止
+ * ingress 并无损 drain，仅日志标签区分。裸手动/systemd/pm2 三环境共用同一 handler，差异仅在
  * 「谁按下」。本测试锁定三条契约：
  *   1. handleShutdownSignal 对 SIGUSR2 与其它 signal 一样透传标签给 gracefulShutdown。
- *   2. graceful shutdown 进行中，SIGUSR2 幂等复用在途 task，不进入终止信号强退分支。
+ *   2. lifecycle 进行中，SIGUSR2 幂等复用在途 task，不进入终止信号强退分支。
  *   3. setupShutdownHandlers 额外注册了 SIGUSR2 监听（与既有 SIGINT/SIGTERM 并存）。
  */
 import {

@@ -8,21 +8,20 @@ import {
   resolveResponseUsage,
   resolveStopReason,
 } from "./entry-view"
+import { toEntrySummary } from "./in-flight"
+import { requestBucket } from "./lifecycle-state"
 import {
   //
-  listInFlight,
-  toEntrySummary,
-} from "./in-flight"
-import { getHistory } from "./queries"
+  getHistory,
+  listHistoryOverlaySummaries,
+} from "./queries"
 import { getDatabase } from "./sqlite/connection"
-import { recordToEntrySummary } from "./v3/projection"
 import { visitV3Summaries } from "./v3/store"
 import {
   //
   isSummaryProjectionReady,
   queryPersistedStats,
 } from "./v3/summary-store"
-import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
 function formatLocalTimestamp(ts: number): string {
   const date = new Date(ts)
@@ -44,42 +43,7 @@ function escapeCsvValue(value: unknown): string {
   return str
 }
 
-/** The one request-count bucket a summary belongs to. */
-export type RequestBucket = "success" | "failure" | "aborted" | "interrupted" | "none"
-
-/**
- * Assign a request to EXACTLY ONE count bucket. Mutual exclusivity is structural (a single return),
- * not four independent `if`s that could each fire.
- *
- * The REQUEST VERDICT is the authority. `responseSuccess` describes the UPSTREAM leg, and it is
- * deliberately `true` for a proxy-introduced failure — a suppressed contentless refusal or an
- * unrepairable tool_use, where the upstream really did deliver a complete 200 that the proxy then
- * re-judged. The previous `state === "completed" || responseSuccess === true` /
- * `state === "failed" || responseSuccess === false` pair incremented BOTH counters for one such
- * request, so success + failure could exceed the total. The leg is consulted ONLY as a fallback,
- * when the entry carries no terminal verdict at all.
- */
-export function requestBucket(summary: { state?: string; responseSuccess?: boolean }): RequestBucket {
-  switch (summary.state) {
-    case "completed": {
-      return "success"
-    }
-    case "failed": {
-      return "failure"
-    }
-    case "aborted": {
-      return "aborted"
-    }
-    case "interrupted": {
-      return "interrupted"
-    }
-    default: {
-      if (summary.responseSuccess === true) return "success"
-      if (summary.responseSuccess === false) return "failure"
-      return "none"
-    }
-  }
-}
+export { requestBucket } from "./lifecycle-state"
 
 export function getStats(): HistoryStats {
   const stats: HistoryStats = {
@@ -96,10 +60,7 @@ export function getStats(): HistoryStats {
     recentActivity: [],
     activeSessions: 0,
   }
-  const overlay = [
-    ...listInFlight().map((entry) => toEntrySummary(entry)),
-    ...listRecentModelOperationTerminals().map((record) => recordToEntrySummary(record)),
-  ]
+  const overlay = listHistoryOverlaySummaries()
   let totalDurationMs = 0
   const sessions = new Set<string>()
   const seen = new Set<string>()

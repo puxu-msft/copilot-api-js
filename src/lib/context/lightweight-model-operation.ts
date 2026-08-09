@@ -1,4 +1,13 @@
+import type { HistoryReservation } from "~/lib/history/worker/admission"
+
+import {
+  //
+  createModelOperationTerminalPublication,
+  createRawOperationAttachmentOwner,
+} from "~/lib/history/terminal-publication"
 import { publishModelOperationTerminal as publishTerminalToBus } from "~/lib/history/v3/terminal-bus"
+import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
+import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
 import { getProcessIdentity } from "~/lib/process-identity"
 
 import type {
@@ -17,6 +26,17 @@ import { createModelOperationRecorder } from "./model-operation-record"
 export const MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY = 256
 
 const terminalRegistry = new Map<string, ModelOperationRecord>()
+
+export interface LightweightInFlightOperation {
+  readonly operationId: string
+  readonly kind: Extract<OperationKind, "count_tokens" | "embeddings">
+  readonly method: string
+  readonly path: string
+  readonly startTime: number
+  readonly requestedModel?: string
+}
+
+const inFlightRegistry = new Map<string, LightweightInFlightOperation>()
 
 export type LightweightOperationSource = "upstream" | "local"
 
@@ -72,6 +92,7 @@ export interface CreateLightweightModelOperationInput {
   readonly format?: string
   readonly requestedModel?: string
   readonly metadata?: unknown
+  readonly historyReservation?: HistoryReservation
 }
 
 export interface LightweightModelOperation {
@@ -134,9 +155,13 @@ function rawCaptureGap(): OperationTrackInput["rawCapture"] {
   }
 }
 
-function publishTerminal(record: ModelOperationRecord): void {
+function publishTerminal(
+  record: ModelOperationRecord,
+  rawAttachmentOwner: ReturnType<typeof createRawOperationAttachmentOwner>,
+  publishPersistence: boolean,
+): void {
   terminalRegistry.set(record.identity.operationId, record)
-  publishTerminalToBus(record)
+  if (publishPersistence) publishTerminalToBus(createModelOperationTerminalPublication(record, rawAttachmentOwner))
   while (terminalRegistry.size > MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY) {
     const oldest = terminalRegistry.keys().next().value
     if (oldest === undefined) break
@@ -161,9 +186,15 @@ export function consumeTerminalModelOperation(operationId: string): ModelOperati
   return record
 }
 
-/** Test isolation for the module-global bounded registry. */
+/** Read active lightweight operations for process drain and diagnostics. */
+export function listInFlightLightweightModelOperations(): ReadonlyArray<LightweightInFlightOperation> {
+  return Object.freeze([...inFlightRegistry.values()])
+}
+
+/** Test isolation for both module-global registries. */
 export function resetModelOperationTerminalRegistryForTests(): void {
   terminalRegistry.clear()
+  inFlightRegistry.clear()
 }
 
 /**
@@ -172,11 +203,26 @@ export function resetModelOperationTerminalRegistryForTests(): void {
  */
 export function createLightweightModelOperation(input: CreateLightweightModelOperationInput): LightweightModelOperation {
   const operationId = crypto.randomUUID()
+  const createdAt = Date.now()
+  const path = new URL(input.request.url).pathname
+  input.historyReservation?.bindOperationId(operationId)
+  const rawAttachmentOwner = createRawOperationAttachmentOwner()
+  inFlightRegistry.set(
+    operationId,
+    Object.freeze({
+      operationId,
+      kind: input.kind,
+      method: input.request.method,
+      path,
+      startTime: createdAt,
+      ...(input.requestedModel === undefined ? {} : { requestedModel: input.requestedModel }),
+    }),
+  )
   const recorder = createModelOperationRecorder({
     identity: {
       operationId,
       kind: input.kind,
-      createdAt: Date.now(),
+      createdAt,
       clientRequestId: input.request.headers.get("x-request-id") ?? input.request.headers.get("request-id") ?? undefined,
       process: getProcessIdentity(),
     },
@@ -193,7 +239,7 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
     },
     format: input.format,
     method: input.request.method,
-    path: new URL(input.request.url).pathname,
+    path,
     metadata: input.metadata,
   })
 
@@ -202,6 +248,7 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
   let committedAttempt: DispatchHandle | undefined
   let latestResultTrack: OperationTrackInput | undefined
   let terminalRecord: ModelOperationRecord | null = null
+  let terminalPromise: Promise<ModelOperationRecord> | undefined
 
   function recordRouting(routing: LightweightOperationRoutingInput): void {
     recorder.recordRouting({
@@ -296,44 +343,54 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
     })
   }
 
-  async function finalize(
-    response: Response,
-    outcome: TerminalOutcome,
-    error: unknown,
-    terminalInput: LightweightTerminalInput,
-  ): Promise<ModelOperationRecord> {
-    if (terminalRecord) return terminalRecord
-    const clientEnvelope = await responseEnvelope(response)
-    const clientPayload = recorder.registerPayload(clientEnvelope, {
-      origin: { stage: "client-egress", track: "client" },
-      mediaType: response.headers.get("content-type") ?? "application/json",
-    })
-    recorder.recordEgress({
-      upstream: latestResultTrack,
-      client: {
-        payload: clientPayload,
-        status: response.status,
-        headers: headersToFields(response.headers),
-        rawCapture: rawCaptureGap(),
-      },
-    })
-    if (primaryCandidate !== undefined) {
-      const candidate = recorder.snapshot().candidates.find((item) => item.handle === primaryCandidate)
-      if (candidate?.verdict === undefined) {
-        recorder.settleCandidate(primaryCandidate, { verdict: committedAttempt === undefined ? "failed" : "winner", reason: `terminal:${outcome}` })
+  function finalize(response: Response, outcome: TerminalOutcome, error: unknown, terminalInput: LightweightTerminalInput): Promise<ModelOperationRecord> {
+    terminalPromise ??= (async () => {
+      try {
+        if (terminalRecord) return terminalRecord
+        const clientEnvelope = await responseEnvelope(response)
+        const clientPayload = recorder.registerPayload(clientEnvelope, {
+          origin: { stage: "client-egress", track: "client" },
+          mediaType: response.headers.get("content-type") ?? "application/json",
+        })
+        recorder.recordEgress({
+          upstream: latestResultTrack,
+          client: {
+            payload: clientPayload,
+            status: response.status,
+            headers: headersToFields(response.headers),
+            rawCapture: rawCaptureGap(),
+          },
+        })
+        if (primaryCandidate !== undefined) {
+          const candidate = recorder.snapshot().candidates.find((item) => item.handle === primaryCandidate)
+          if (candidate?.verdict === undefined) {
+            recorder.settleCandidate(primaryCandidate, { verdict: committedAttempt === undefined ? "failed" : "winner", reason: `terminal:${outcome}` })
+          }
+        }
+        terminalRecord = recorder.commitTerminal({
+          outcome,
+          ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
+          committedDispatch: committedAttempt,
+          ...(error === undefined ? {} : { error: serializeError(error) }),
+          usage: terminalInput.usage,
+          attribution: terminalInput.attribution,
+          metadata: {
+            ...(terminalInput.metadata as Record<string, unknown> | undefined),
+            ...(isHistoryPersistenceReservation(input.historyReservation) && { historyAdmissionWaitMs: input.historyReservation.historyAdmissionWaitMs }),
+          },
+        })
+        publishTerminal(terminalRecord, rawAttachmentOwner, isHistoryPersistenceReservation(input.historyReservation))
+        return terminalRecord
+      } catch (finalizeError) {
+        if (isHistoryPersistenceReservation(input.historyReservation)) {
+          getHistoryAdmissionController().failBeforeTerminal(operationId, finalizeError)
+        }
+        throw finalizeError
+      } finally {
+        inFlightRegistry.delete(operationId)
       }
-    }
-    terminalRecord = recorder.commitTerminal({
-      outcome,
-      ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
-      committedDispatch: committedAttempt,
-      ...(error === undefined ? {} : { error: serializeError(error) }),
-      usage: terminalInput.usage,
-      attribution: terminalInput.attribution,
-      metadata: terminalInput.metadata,
-    })
-    publishTerminal(terminalRecord)
-    return terminalRecord
+    })()
+    return terminalPromise
   }
 
   return Object.freeze({

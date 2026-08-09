@@ -2793,6 +2793,18 @@
                         }
                       ]
                     },
+                    "max_backoff_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "max_total_ms": {
                       "anyOf": [
                         {
@@ -2840,43 +2852,6 @@
               "anyOf": [
                 {
                   "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "shutdown": {
-      "anyOf": [
-        {
-          "type": "object",
-          "properties": {
-            "graceful_wait": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "abort_wait": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
                 },
                 {
                   "type": "null"

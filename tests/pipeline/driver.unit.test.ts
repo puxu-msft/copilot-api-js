@@ -6,6 +6,7 @@
  * and the non-streaming variant.
  */
 
+import { HTTPError as FoundationHTTPError } from "@hsupu/ghc-proxy-foundation/error/http-error"
 import {
   //
   afterEach,
@@ -42,7 +43,11 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
-import { HTTPError } from "~/lib/error"
+import {
+  //
+  classifyError,
+  HTTPError,
+} from "~/lib/error"
 import {
   //
   getRetryGiveUpCounts,
@@ -458,6 +463,38 @@ describe("driver.runExchange — error-driven retry", () => {
     } finally {
       clock.restore()
     }
+  })
+
+  test.each([
+    ["ordinary 408", '{"error":{"code":"request_timeout","message":"Request deadline exceeded"}}'],
+    ["matching code with another message", '{"error":{"code":"user_request_timeout","message":"Generation timed out"}}'],
+    ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
+    ["plain-text body", "Timed out reading request body."],
+  ])("does not retry %s through the production Responses strategy stack", async (_label, responseText) => {
+    const { ctx, calls } = makeCtx()
+    const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+    const env = makeEnv(ctx, payload)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const error = new HTTPError("Failed to create responses", 408, responseText)
+    expect(HTTPError).toBe(FoundationHTTPError)
+    expect(error).toBeInstanceOf(FoundationHTTPError)
+    expect(classifyError(error).type).toBe("bad_request")
+    const transport = makeTransport(async () => {
+      attempts++
+      throw error
+    })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport,
+      strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
+    })
+
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toBe(error)
+    expect(attempts).toBe(1)
+    expect(calls.recordAttemptFailure).toEqual([])
   })
 
   test("retries once via a strategy, then succeeds", async () => {

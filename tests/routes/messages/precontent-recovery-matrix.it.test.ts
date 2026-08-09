@@ -26,11 +26,7 @@ import { subscribeModelOperationTerminals } from "~/lib/history/v3/terminal-bus"
 import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
-import {
-  //
-  StreamClientAbortError,
-  StreamShutdownError,
-} from "~/lib/stream"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import {
   //
@@ -144,8 +140,8 @@ describe("Task 4.3b pre-content recovery matrix", () => {
   // the expected first recovery-visible frame encodes the frozen three-mode wire contract.
   test("canonical terminal record and V2 entry agree when empty-text recovery wins", async () => {
     const canonical: Array<ModelOperationRecord> = []
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      canonical.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      canonical.push(publication.record)
     })
     const clock = new FakeClock()
     let firstFetchStarted!: () => void
@@ -224,8 +220,8 @@ describe("Task 4.3b pre-content recovery matrix", () => {
 
   test("canonical terminal record and V2 entry retain the primary when empty-text recovery falls back", async () => {
     const canonical: Array<ModelOperationRecord> = []
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      canonical.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      canonical.push(publication.record)
     })
     const clock = new FakeClock()
     let firstFetchStarted!: () => void
@@ -885,23 +881,6 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts).toHaveLength(1)
   })
 
-  test("shutdown-classified ready error is never replayed", async () => {
-    let calls = 0
-    applyFetchMock(
-      mock(() => {
-        calls += 1
-        return Promise.resolve(createSseResponseThenError([messageStartFrame({ id: "msg_shutdown", model: MODEL, inputTokens: 5 })], new StreamShutdownError()))
-      }),
-    )
-
-    const { createFullTestApp } = await import("../../helpers/test-app")
-    const response = await request(createFullTestApp(), "precontent-shutdown-no-replay")
-    const text = await response.text()
-
-    expect(calls).toBe(1)
-    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "overloaded_error" })
-  })
-
   test.each([
     [
       "H2 event:error",
@@ -975,9 +954,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     applyFetchMock(
       mock(() => {
         calls += 1
-        return Promise.resolve(
-          createSseResponse([messageStartFrame({ id: `msg_ready_open_${_name}`, model: MODEL, inputTokens: 5 }), blockStart()]),
-        )
+        return Promise.resolve(createSseResponse([messageStartFrame({ id: `msg_ready_open_${_name}`, model: MODEL, inputTokens: 5 }), blockStart()]))
       }),
     )
 

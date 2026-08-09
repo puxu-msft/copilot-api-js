@@ -47,8 +47,8 @@ import type {
   ToolCall,
 } from "~/types/api/openai-chat-completions"
 
-import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
 import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
+import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
 import { netInputTokens } from "~/lib/request/usage-normalize"
 
 /** The default repair cascade for a malformed tool-call `arguments` JSON string (full battle-tested stack). */
@@ -119,7 +119,8 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
     const msgExt = message as { reasoning?: unknown; reasoning_content?: unknown; reasoning_encrypted_content?: unknown }
     const reasoningRaw = msgExt.reasoning ?? msgExt.reasoning_content
     if (typeof reasoningRaw === "string") reasoningText += reasoningRaw
-    if (typeof msgExt.reasoning_encrypted_content === "string" && msgExt.reasoning_encrypted_content.length > 0) reasoningEncrypted = msgExt.reasoning_encrypted_content
+    if (typeof msgExt.reasoning_encrypted_content === "string" && msgExt.reasoning_encrypted_content.length > 0)
+      reasoningEncrypted = msgExt.reasoning_encrypted_content
     if (typeof message.content === "string" && message.content.length > 0) {
       content.push({ type: "text", text: message.content } satisfies TextBlockParam)
     }

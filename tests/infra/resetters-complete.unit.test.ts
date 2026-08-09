@@ -71,6 +71,9 @@ const EXEMPT: Record<string, string> = {
   // Handled inside resetTestRuntime (runtime trio), not the RESETTERS table.
   resetBusForTests: "handled by resetTestRuntime",
   resetRequestContextManagerForTests: "handled by resetTestRuntime",
+  resetModelOperationTerminalBusForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  resetHistoryAdmissionLifecycleForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  setHistoryAdmissionControllerForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
   // Path/config injector setters: per-test opt-in, not a default reset. Their
@@ -90,8 +93,7 @@ const EXEMPT: Record<string, string> = {
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
   drainScheduledCalibrationPersistenceForTests: "action hook — consumes calibration's existing timer; resetAllLimitsForTesting owns reset",
-  drainScheduledNegotiationPersistenceForTests:
-    "action hook — consumes negotiation's existing timer; clearAnthropicFeatureNegotiationForTests owns reset",
+  drainScheduledNegotiationPersistenceForTests: "action hook — consumes negotiation's existing timer; clearAnthropicFeatureNegotiationForTests owns reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
   // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
   // no module-global state of its own to reset; the timer itself is

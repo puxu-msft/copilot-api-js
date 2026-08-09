@@ -20,6 +20,7 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   DriverRequestResult,
@@ -32,6 +33,7 @@ import type {
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import {
   //
   ENDPOINT,
@@ -230,7 +232,18 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   const clientAbort = new AbortController()
   wsClientAborts.set(ws, clientAbort)
 
-  return handleResponseCreateV4(ws, rawPayload, clientAbort)
+  try {
+    await withHistoryAdmission(
+      clientAbort.signal,
+      "responses_ws",
+      async (historyReservation) => await handleResponseCreateV4(ws, rawPayload, clientAbort, historyReservation),
+    )
+  } catch (error) {
+    if (clientAbort.signal.aborted) return
+    const message = error instanceof Error ? error.message : String(error)
+    consola.error(`[WS] Responses admission error: ${message}`)
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+  }
 }
 
 // ============================================================================
@@ -256,7 +269,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * `flushResponse`. Responses has no `[DONE]` / no H2; the WS sink now runs a forward-idle app-layer
  * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
-async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+async function handleResponseCreateV4(
+  ws: WSContext,
+  rawPayload: ResponsesPayload,
+  clientAbort: AbortController,
+  historyReservation: HistoryReservation,
+): Promise<void> {
   const operationIdentity = {
     kind: "responses_ws" as const,
     connectionId: stableWsConnectionId(ws),
@@ -299,6 +317,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       path: "/v1/responses",
       preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
       operationIdentity,
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

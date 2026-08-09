@@ -169,7 +169,7 @@ context/types → error/index → error/forward → context/request
 
 ### N3 —— 词汇归属的常驻约定　【依赖 §5-1 的裁决与 N1 的落地】
 
-**做什么**：把「**产物/诊断类型不跟着产它的实现模块走，归零依赖词汇叶子**」写进 [docs/coding-conventions.md](../coding-conventions.md)（新增一节，SoT），并在 [docs/DESIGN.md](../DESIGN.md) 的「类型架构（single-source-of-truth）」节留**指针**（同一事实只写一处）。
+**做什么**：把「**产物/诊断类型不跟着产它的实现模块走，归零依赖词汇叶子**」写进 [docs/coding-conventions.md](../coding-conventions.md)，由该节权威维护约定；[docs/DESIGN.md](../DESIGN.md) 的「类型架构（single-source-of-truth）」节可按架构读者需要完整概述该约定并引用 coding-conventions。易变的具体落点／类型清单须引用权威节或带同一基线，不另维护一套独立状态。
 
 **为什么必须做**：N1 只修了当前四个；**下一个写 reducer 的人还会把 diag 类型定义在 reducer 里**。不立约定，环会长回来。
 

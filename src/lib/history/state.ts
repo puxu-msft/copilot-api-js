@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type { ScopedPublisher } from "~/lib/observability"
 
 import { PATHS } from "~/lib/config/paths"
@@ -44,6 +46,9 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
+import { LegacyHistoryTerminalSink } from "./worker/legacy-terminal-sink"
+import { HISTORY_WORKER_PROTOCOL_VERSION } from "./worker/protocol"
+import { getHistoryAdmissionController } from "./worker/registry"
 
 let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
@@ -123,11 +128,25 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
   // migration must refuse to start, not silently continue.
   await applyForwardMigrations(getDatabase())
-  recoverV3Journal(getDatabase())
+  const journalRecovery = recoverV3Journal(getDatabase())
+  // The legacy main-thread writer deliberately CONTINUES on an unrecoverable journal row:
+  // this path is still the production authority until Batch 2b, and turning a corrupt row
+  // into a startup failure here would change existing production behavior. The Worker's
+  // startup gate (`worker/backend.ts`) is where spec §8.1 refuses to become ready. Logging
+  // it is not optional though — the previous code stamped the DB column and said nothing,
+  // so an operation that could never be replayed was lost with no operator-visible signal.
+  if (journalRecovery.failures.length > 0) {
+    consola.error(
+      `[history] ${journalRecovery.failures.length} journal row(s) could not be recovered and remain uncommitted:`,
+      journalRecovery.failures.map((failure) => `${failure.operationId}@${failure.revision}: ${failure.error}`).join("; "),
+    )
+  }
+  const admission = getHistoryAdmissionController()
+  admission.replaceTerminalSink(new LegacyHistoryTerminalSink({ enqueueRecord: enqueueModelOperationWithOutcome }))
   unsubscribeV3Terminal?.()
-  unsubscribeV3Terminal = subscribeModelOperationTerminals(async (record) => {
-    const outcome = await enqueueModelOperationWithOutcome(record)
-    settleRecentModelOperationDurability(record, outcome)
+  unsubscribeV3Terminal = subscribeModelOperationTerminals(async (publication) => {
+    const outcome = await admission.acceptTerminal({ protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, publication })
+    settleRecentModelOperationDurability(publication, outcome)
   })
   // History-search sidecar (Phase 3′): construct ONLY the UDS client — never
   // spawn/supervise a process. The client is a lightweight, stateless-per-

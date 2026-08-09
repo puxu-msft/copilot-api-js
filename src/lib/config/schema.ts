@@ -799,13 +799,6 @@ export const AnthropicConfigSchema = z
   })
   .strict()
 
-export const ShutdownConfigSchema = z
-  .object({
-    graceful_wait: nullableNonnegativeInt(),
-    abort_wait: nullableNonnegativeInt(),
-  })
-  .strict()
-
 export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
@@ -912,22 +905,21 @@ export const HistoryConfigSchema = z
     ),
     /**
      * Terminal-persistence transient retry (DI-5). A commit that fails with a
-     * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
+     * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with exponential
      * backoff instead of dropping the entry on the first failure. `max_attempts`
-     * caps the retries (a transient storm can't spin forever); `backoff_ms` is
-     * the base linear step. `max_total_ms` is a per-commit wall-clock soft cap
-     * (DI-5-followup-2): the linear backoff sum grows quadratically and each
-     * attempt can itself block (SQLite busy_timeout), so a large
-     * `max_attempts × backoff_ms` product or slow attempts could wedge the drain —
-     * and shutdown, which has no abort signal here — for minutes; the cap bounds
-     * the total elapsed time one entry spends retrying (`0` = disabled). Permanent
-     * failures / conflicts are never retried.
+     * caps the attempts; `backoff_ms` is the initial delay and `max_backoff_ms`
+     * caps each wait. `max_total_ms` is a per-commit wall-clock soft cap that also
+     * counts each attempt's own blocking time (SQLite busy_timeout), preventing a
+     * transient storm from wedging shutdown. `max_total_ms: 0` disables the total
+     * time cap; `max_backoff_ms: 0` makes retries immediate. Permanent failures and
+     * conflicts are never retried.
      */
     persist_retry: nullableSection(
       z
         .object({
           max_attempts: nullableNonnegativeInt(),
           backoff_ms: nullableNonnegativeInt(),
+          max_backoff_ms: nullableNonnegativeInt(),
           max_total_ms: nullableNonnegativeInt(),
         })
         .strict(),
@@ -1462,7 +1454,6 @@ export const ConfigSchema = z
     forward_client_query_exclude: z.array(z.string()).optional(),
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
-    shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     upstream_transport: nullableSection(UpstreamTransportConfigSchema),
     server: nullableSection(ServerConfigSchema),
@@ -1565,7 +1556,6 @@ export type SystemPromptEntry = z.infer<typeof SystemPromptEntrySchema>
 export type EndpointScope = (typeof ENDPOINT_SCOPE_VALUES)[number]
 export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
-export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>

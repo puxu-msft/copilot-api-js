@@ -10,6 +10,9 @@ import {
   initHistory,
   setHistoryPublisher,
 } from "~/lib/history"
+import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
+import { setHistoryAdmissionControllerForTests } from "~/lib/history/worker/registry"
 import {
   //
   initBus,
@@ -59,6 +62,9 @@ export async function bootstrapTestRuntime(): Promise<void> {
 
 export async function resetTestRuntime(): Promise<void> {
   _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
+  setHistoryAdmissionControllerForTests(undefined)
+  resetModelOperationTerminalBusForTests()
   // Re-initialize history (idempotent reopen of the SQLite DB) before clearing.
   // A preceding test that called shutdownHistory()/closeDatabase() would otherwise
   // leave the shared DB closed, so the next file's getHistory()/queryEntries()
