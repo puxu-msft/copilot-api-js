@@ -459,6 +459,8 @@ Commit: `feat(history): gate model operations on persistence capacity`
 
 ### Task 2a / Batch 2a: Semantic Worker Backend
 
+**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/tmp/2026-08-08-history-worker-progress-impl-2a.md](../tmp/2026-08-08-history-worker-progress-impl-2a.md)。
+
 **Files:**
 - Create: `src/lib/history/worker/backend.ts`
 - Create: `src/lib/history/worker/restart-policy.ts`
