@@ -393,17 +393,20 @@ export function queryPersistedStats(
   const params = overlayIds.length === 0 ? [] : [exclusion.param]
   const aggregate = db
     .prepare(
+      // The success/failure buckets mirror `requestBucket` in `../lifecycle-state.ts`, which is the
+      // contract: an ACTIVE state (pending/executing/streaming) is always `none`, and
+      // `response_success` is consulted only when there is no state at all. This CASE used to fall
+      // back to `response_success` for every non-terminal state, so one streaming summary landed in
+      // different buckets depending on whether it was counted from the overlay or from here.
       `SELECT
          COUNT(*) AS total_requests,
          SUM(CASE
            WHEN state='completed' THEN 1
-           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=1 THEN 1
            WHEN state IS NULL AND response_success=1 THEN 1
            ELSE 0
          END) AS successful_requests,
          SUM(CASE
            WHEN state='failed' THEN 1
-           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=0 THEN 1
            WHEN state IS NULL AND response_success=0 THEN 1
            ELSE 0
          END) AS failed_requests,
