@@ -73,38 +73,43 @@ export function openOwnedHistoryDatabase(dbPath: string): Database {
   }
   const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
   const database = createDatabase(dbPath)
+  // The WHOLE initialization sequence is guarded, not just the owner check. Before this
+  // opener existed, a half-initialized handle was already published to the module
+  // singleton and `closeDatabase()` could still reach it; an owned handle has no such
+  // second owner, so a throwing PRAGMA would strand the file descriptor and its SQLite
+  // locks with nobody left holding a reference.
   try {
     assertV3Owner(database, existed, dbPath)
+    // auto_vacuum MUST be set before ANY other write to the new file — switching
+    // to WAL first initializes the DB header and locks auto_vacuum at mode 0
+    // (verified empirically). Set on the still-empty file, it makes
+    // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
+    // maintenance tick's incremental_vacuum reclaims from the first tick. On an
+    // existing DB this is a no-op until a full VACUUM runs (handled by
+    // maybeVacuumOnStartup).
+    database.exec("PRAGMA auto_vacuum = INCREMENTAL;")
+    database.exec("PRAGMA journal_mode = WAL;")
+    database.exec("PRAGMA synchronous = NORMAL;")
+    database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    database.exec("PRAGMA foreign_keys = ON;")
+    // History V3 is the sole persistence implementation (History V2 removal
+    // Phase 4a) — there is now only ONE open path, unconditionally, for every
+    // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
+    // used to fall through to the V2 schema branch because it never matched the
+    // `history-v3.db` basename check).
+    //
+    // DB-health (Phase 4b): unlike the retired V2 open path, there is no
+    // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
+    // stores terminal (committed) rows, with no pending/executing/streaming
+    // concept, so there is no "another process may still be writing an in-flight
+    // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
+    // gate is deliberately NOT adopted from V2). Both run unconditionally.
+    maybeVacuumOnStartup(database, dbPath)
+    seedAnalyzeIfNeeded(database)
   } catch (err) {
     database.close()
     throw err
   }
-  // auto_vacuum MUST be set before ANY other write to the new file — switching
-  // to WAL first initializes the DB header and locks auto_vacuum at mode 0
-  // (verified empirically). Set on the still-empty file, it makes
-  // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
-  // maintenance tick's incremental_vacuum reclaims from the first tick. On an
-  // existing DB this is a no-op until a full VACUUM runs (handled by
-  // maybeVacuumOnStartup).
-  database.exec("PRAGMA auto_vacuum = INCREMENTAL;")
-  database.exec("PRAGMA journal_mode = WAL;")
-  database.exec("PRAGMA synchronous = NORMAL;")
-  database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
-  database.exec("PRAGMA foreign_keys = ON;")
-  // History V3 is the sole persistence implementation (History V2 removal
-  // Phase 4a) — there is now only ONE open path, unconditionally, for every
-  // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
-  // used to fall through to the V2 schema branch because it never matched the
-  // `history-v3.db` basename check).
-  //
-  // DB-health (Phase 4b): unlike the retired V2 open path, there is no
-  // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
-  // stores terminal (committed) rows, with no pending/executing/streaming
-  // concept, so there is no "another process may still be writing an in-flight
-  // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
-  // gate is deliberately NOT adopted from V2). Both run unconditionally.
-  maybeVacuumOnStartup(database, dbPath)
-  seedAnalyzeIfNeeded(database)
   if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
   return database
 }
