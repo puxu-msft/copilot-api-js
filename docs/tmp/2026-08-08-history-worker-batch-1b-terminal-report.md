@@ -1,7 +1,7 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**已集成主线**（Batch 1b 实现于 `master@d3b4ac77`，收尾证据首次 fast-forward 至 `master@d1011fe7`）。终审两轮闭环：首轮 0 blocker／2 major，整改后复审 **0 blocker／0 major、可定稿**。此后共享 `master` 前进至 `475bed45`，已合入并范围化复验通过；本报告与教训沉淀的剩余提交待再次 fast-forward。
-> 核验基线：候选 `bc8af51f`（含 `master@475bed45`）；日期 2026-08-08。
+> 状态：**已完整集成主线**。Batch 1b 实现于 `master@d3b4ac77`；收尾证据、教训沉淀与 skill 条款迁移经多次 fast-forward 全部落地，最终合并点 `4c30e6eb` 已是 `master@58f4c45d` 的祖先，本分支 0 笔待合、工作树干净。
+> 核验基线：`4c30e6eb`（在 `master@58f4c45d` 祖先中）；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
 ## 交付内容
@@ -27,8 +27,7 @@
 
 ## Git、发布与工作树状态
 
-- **fast-forward 已由用户执行并落地**：`master` 现为 `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`，与候选分支 HEAD `d1011fe7` **完全相同**（无额外提交、无 merge commit）；`git merge-base --is-ancestor d1011fe7 master` 成立，`22c8e08b` 亦在 `master` 祖先中。
-- 本报告与临时清单的最后一笔闭环提交将在 `d1011fe7` 之上另增一笔，需再次 fast-forward。
+- **全部 fast-forward 均已由用户执行并落地**（共五次，随共享 `master` 前进逐次进行）。**终态**：最终合并点 `4c30e6eb` 已在 `master@58f4c45d` 祖先中，本分支 `git rev-list --count master..HEAD` = **0**，工作树干净。`22c8e08b`（reviewed-plan anchor）亦在 `master` 祖先中。
 - **安装位置复验（从共享 checkout `/home/xp/src/copilot-api-js` 实跑，`pwd -P` 已确认）**：
   - reviewed-plan blob 门：`22c8e08b` 与 `master` 两侧 `docs/plan/2026-08-07-history-persistence-worker.md` 的 blob 同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`，PASS。
   - `bun run typecheck`：通过。
@@ -69,6 +68,20 @@
 - **未升为 skill 正文条目：** 上述形态在 `session-closeout/verification-log.md` 2026-08-08 节标为「新增负样本、建议入表」，**未自行改写 SKILL.md 正文**——按 `instruction-text-must-be-reviewed`，是否升为正式自验条目须另经评审裁决。
 
 ## 尚待动作
+
+**无。** 本交付已完整集成主线：`4c30e6eb` 在 `master@58f4c45d` 祖先中，分支 0 笔待合、工作树干净。
+
+**最终验证证据（每项标注新跑／复用，锚到 commit）**：
+
+| 项 | 结果 | 来源 |
+| --- | --- | --- |
+| `bun run typecheck` | 通过 | **新跑** @ `4c30e6eb`（合入 `master@5720855` 后） |
+| Batch 1b 目标集（17 文件） | **115 pass／0 fail**、374 expect | **新跑** @ `4c30e6eb` |
+| 完整 backend（16 shards、7255 executed、30 skipped） | 0 fail、52.45s | **复用** @ `94205e89`——按项目 `moving-shared-head-is-not-failure` 与「同一交付合并后不因刚合并主动重跑全量」，该交付的合并前证据继续有效 |
+| user-level skill 守卫 | 8/8 通过、`render_skill.py --check` 一致 | **新跑**（`~/.claude/skills/closing-a-development-session/`，未提交） |
+| 新依赖边变异对照 | 删除该边 → 目标守卫变红；精确逆转后复绿 | **新跑** |
+
+⚠️ 上表两次「测试档 exit 1」均**非回归**：一次是 bun 写覆盖率的 `WriteFailed` 叠加 `| tail -8` 截掉汇总行，一次是 `| rg` 无匹配返回 1 并吞掉输出。去掉过滤重跑均为 exit 0。教训已落 `docs/memory/methodology-output-filter-fakes-a-failure.md`。
 
 1. ~~重新冻结共享index并确认碰撞集为0~~ **已完成**（`0ecbca65` 基线，13条净路径、碰撞0）。
 2. ~~在共享checkout执行 `git merge --ff-only`~~ **已由用户完成**，`master@d1011fe7`。

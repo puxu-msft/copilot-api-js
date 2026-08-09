@@ -1,6 +1,7 @@
 # History Worker Batch 1b 临时证据处置清单
 
-> 状态：Batch 1b 已集成主线（收尾证据止于 `master@eea7a646`）。终审两轮闭环（首轮 0 blocker／2 major → 整改后复审 0 blocker／0 major、可定稿）。**归档价值逐类审计已执行（2026-08-08）：56 项无一需归档**，逐类判定与两处实测发现见终态报告「临时证据」节——不要因为「没人审过」而重做这次审计。
+> 状态：Batch 1b 已完整集成主线（最终合并点 `4c30e6eb`，在 `master@58f4c45d` 祖先中）。终审两轮闭环（首轮 0 blocker／2 major → 复审 0 blocker／0 major）。**归档价值逐类审计已执行（2026-08-08）：56 项无一需归档**，逐类判定与两处实测发现见终态报告「临时证据」节——不要因为「没人审过」而重做这次审计。
+> **清理动作：本会话未删除任何一项**，56 项全部保留至 harness 自动回收；每项的长期价值均已在已提交的接收者中，故清理何时发生都不删唯一副本。
 > 清单根：`/home/xp/.claude/jobs/0ff74836/tmp`
 > 冻结边界：2026-08-08，在 `batch1b-terminal-report-message.txt` 与 `shared-main-index.terminal-review.snapshot` 产生后重新枚举；递归包含 regular file 与 symlink，不含目录。
 > 总计：56 项路径；字节快照 6568459 bytes（初次冻结）／6568699 bytes（终审前重枚举）／6568699 bytes（fast-forward 落地后重枚举，无漂移）。
