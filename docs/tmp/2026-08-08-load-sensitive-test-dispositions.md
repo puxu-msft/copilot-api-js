@@ -398,7 +398,9 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 5. **`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。** 实测（第 8 条 Mutation F）：放宽到 2000 就抓不到「deadline 实际等待时长 = 请求值的 6 倍」这一类了，因为因果 oracle 断言的 message 里嵌的是**请求值**、不是实际时长。所以本轮**保持 200 不变**。放宽 = 放弃该覆盖，属放宽既有 guard，须独立裁决。若要既保覆盖又降敏感，需改生产契约（把**实际**等待时长放进 failure）或注入可控时钟 seam——**两条都未实施、未验证**。
-6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码三次 `test:backend` 报 4856 / 5396 / 6394，而 `executed`/`skipped`/`fail` 三次一致（7297 / 31 / 0）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**（包括本文件前半段引用的 `4856 tests`——已在该处保留原样并由本条限定其口径）。建议单独派一次排查。
+6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后恒 35）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。
+7. **`store-performance.it.test.ts` 的「commit 成本不随历史长度增长」判据对该缺陷类鉴别力弱。** 实测：注入「按 hash 点查退化为全表扫描 + 逐行解压」后，**改前写法 ratio 3.37、改后写法 ratio 4.62，双双低于阈值 5，都不红**。根因是 ratio 的自归一化——该缺陷让冷热两端一起变慢。这是**既有局限**（改前改后同样存在，已用并跑对照钉死），不是 M1 引入的。收紧阈值或换判据形状都属于改既有 guard，须独立裁决。
+8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
 
 ## 本轮的分类判断被实测推翻过几次
 
@@ -433,7 +435,58 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 **表头、小节标题、列表行首最危险**——它们看起来像定位符、不像内容。
 
 
+## 评审 major 处置
+
+评审报告：`docs/tmp/2026-08-08-load-sensitive-test-dispositions-review.md`（blocker 0 / major 4）。基线已换到集成分支 `command-algebra-entry-gate-fix`，本 worktree 已 fast-forward 到 `aa79ad57`。
+
+### M1 · `store-performance.it.test.ts` 的 `commitRatio < 5`（已处置）
+
+**为什么必须现在修（不是「以后再说」）**：三次合并态全量运行 —— `405d459c` 56.80s 绿 / `aa79ad57` 99.02s **红 8.295** / `aa79ad57` 132.61s 绿，**失败率 ≈ 1/3**。T0.0f 要求连续 15 次全绿，按此比率通过概率 ≈ (2/3)^15 ≈ **0.2%**。它是事实上的阻塞项。注意耗时与是否变红**不单调**（56.8 绿 / 99.0 红 / 132.6 绿），所以「多跑几次都绿」不构成收口，必须给机制层面的论据。
+
+**先复核评审给的机制归因——它对了一半，另一半我实测证否**：
+
+- ✅ 评审说对的：`:134`/`:138` 的调用点**本来就**在给冷热两次采样造不同的 `operationId`（`target-cold` / `target-hot`）。所以我在未处置#2 写的「要正确修必须为每个样本造不同的 operationId」指错了一层——真正的去重键是**内容哈希**，不是 operationId。
+- ❌ 评审据此建议「样本用形状相同、内容不同的 fixture（`highBranchFixture` 已按 name 取种子）」——**这个前提不成立**。`tests/history/v3/performance-fixtures.ts:64-101` 里 `highBranchFixture` 的载荷文本全部来自**常量种子**：`deterministicText(1, branchBytes)`、`deterministicText(index + 10, …)`、`deterministicText(index + 100, 2_048)`，**与 `id` 无关**；`id` 只进 `beginRecord(id)`。也就是说**不同 name 造出的 fixture 内容逐字节相同**，照它的建议做，样本 2..N 仍会命中既有 CAS 对象（`insertObject` 在 `:651` 命中已有 hash 即早返回），中位数量到的是去重查表而不是插入。
+
+**处置**（形状由我定，理由如下）：
+
+1. `timedCommit` 改为与 `timedPrepare` 同构的 **5 样本中位数**。
+2. 每个样本用 `saltedSample()` 给每个 payload 注入 `__sample` salt —— **形状与体积不变、内容不同**，保证每次都是真实插入。这是上面那条证否的直接后果：光换 `operationId` 不够。
+3. 判据从 `commitRatio < 5` 改为 `hotCommitMs < max(coldCommitMs * 5, 60ms)`。**5x 的语义一字未改**，只是分母不再能塌到噪声量级。
+
+`60ms` 的推导：分片下**健康**的 hot commit 已被观测到 23.6ms（就是那次 false-red 的现场值），60ms 给约 2.5x 余量；隔离下 hot 实测 1.65–2.00ms，余量约 30x。
+
+**方向一：正确状态不被误拒**
+
+隔离连跑 5 次（同一 HEAD）：`hotCommitMs` = 1.90 / 1.84 / 1.91 / 1.65 / 2.00 ms，`commitRatio` = 0.70 / 0.36 / 0.65 / 0.66 / 0.88 —— 对比改前同一份代码在 0.617 与 8.295 之间摆动 13 倍。
+
+真实并发（`bun run test:backend` = `parallel-test.ts` 16 分片，**不是 spinner**）三次：
+
+| 运行 | 耗时 | store-performance | 结果 |
+|---|---|---|---|
+| 1 | 92.29s | 绿 | 0 fail |
+| 2 | 95.52s | **绿** | 1 fail —— **但失败的是另一条测试**，见下 |
+| 3 | 106.23s | 绿 | 0 fail |
+
+**机制层面的论据**（这才是收口依据，不是「跑了三次绿」）：改前判据 = `单次 2.8ms 级采样` 做分母，分母的相对标准差直接乘进比值；改后 = 5 样本中位数 **且** 分母有 60ms 地板，**比值不再可能被单次毫秒级采样支配**——分母低于 12ms 时判据完全脱离比值、退化成一条固定的 60ms 预算。
+
+**方向二：错误状态仍被拦住——这里有一个必须点名的否定结果**
+
+注入真实的「commit 成本随历史长度增长」缺陷（冻结件 `/tmp/mut-m1-commit-cost-grows-with-history.patch`：`store.ts:651` 的按 hash 点查退化为**全表扫描 + 逐行解压**）：
+
+| 形态 | coldCommitMs | hotCommitMs | ratio | 判定 |
+|---|---|---|---|---|
+| 改后（本次） | 51.39 | 237.61 | 4.62 | **仍绿**（budget 256.9） |
+| **改前的单次采样写法**（临时并跑，跑完即撤） | 12.12 | 40.79 | 3.37 | **仍绿**（`wouldPass: true`） |
+
+**两种写法都抓不住它。** 根因是 ratio 判据的自归一化：该缺陷让**冷热两端一起**变慢（冷端此时已有前几次采样写入的对象），比值因此被吸收。**这是既有局限，不是本次改动引入的**——上表第二行就是为了把这一点钉死才跑的。
+
+因此我**没有**为 M1 交出「注入缺陷即变红」的证据，也**不会**为了凑这个证据去收紧阈值（那是放宽/收紧既有 guard，须独立裁决）。作为新发现登记进未处置清单第 7 条。
+
+**顺带发现（不在本轮范围，但会同样打掉 T0.0f）**：run 2 的那次 `1 fail` **不是** store-performance，而是 `tests/transport/http2-generation-reconcile.it.test.ts:377`「row 1 — pre-header req.error」，错误文本 `test setup: server stream/session missing`。同 HEAD 隔离单跑该文件 **11 pass / 0 fail**。本轮改动只碰了 `tests/history/v3/store-performance.it.test.ts` 一个文件（`git diff --stat HEAD` 可证），与它无关。**这是套件里的又一条同族 flaky**，登记进未处置第 8 条。
+
 ## 第二批收口验收（第 5–8 条全部落地后）
+
 
 `bun run typecheck` —— 绿。源码残留核验：`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数 **0**。
 
