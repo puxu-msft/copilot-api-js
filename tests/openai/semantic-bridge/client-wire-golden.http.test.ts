@@ -58,11 +58,30 @@ interface ClientWireCapture {
   bodyHex: string
 }
 
-function containsDirectionalReasoningMarker(direction: "A→R" | "R→A", capture: ClientWireCapture): boolean {
+interface GoldenCoverage {
+  direction: "A→R" | "R→A"
+  hasThinking: boolean
+  hasSignature: boolean
+  hasReasoning: boolean
+  hasEncrypted: boolean
+}
+
+const goldenCoverage = new Map<ClientWireDigestKey, GoldenCoverage>()
+
+function wireCoverage(direction: GoldenCoverage["direction"], capture: ClientWireCapture): GoldenCoverage {
   const wire = Buffer.from(capture.bodyHex, "hex").toString("utf8")
-  return direction === "A→R" ?
-      wire.includes('"type":"thinking"') && wire.includes('"type":"signature_delta"')
-    : wire.includes("response.reasoning_summary_text.delta") && wire.includes('"encrypted_content"')
+  return {
+    direction,
+    hasThinking: wire.includes('"type":"thinking"'),
+    hasSignature: wire.includes('"type":"signature_delta"'),
+    hasReasoning: wire.includes("response.reasoning_summary_text.delta"),
+    hasEncrypted: wire.includes('"encrypted_content"'),
+  }
+}
+
+function containsDirectionalReasoningMarker(direction: GoldenCoverage["direction"], capture: ClientWireCapture): boolean {
+  const coverage = wireCoverage(direction, capture)
+  return direction === "A→R" ? coverage.hasThinking && coverage.hasSignature : coverage.hasReasoning && coverage.hasEncrypted
 }
 
 async function assertFixedClientWireDigest(key: ClientWireDigestKey, capture: ClientWireCapture): Promise<void> {
@@ -71,6 +90,7 @@ async function assertFixedClientWireDigest(key: ClientWireDigestKey, capture: Cl
   const expected = CLIENT_WIRE_DIGESTS[key]
   expect(bytes.byteLength).toBe(expected.byteLength)
   expect(actualHash).toBe(expected.sha256)
+  goldenCoverage.set(key, wireCoverage(key.startsWith("A→R:") ? "A→R" : "R→A", capture))
 }
 
 /**
@@ -424,12 +444,10 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(await captureResponsesClientWire({ stream: false, retry: true })).toMatchSnapshot()
   })
 
-  test("coverage guard：A→R 与 R→A 各有至少一条客户端 wire 含方向对应的 thinking／reasoning marker", async () => {
-    const anthropicWire = await captureAnthropicClientThinkingWire()
-    captures.length = 0
-    const responsesWire = await captureResponsesClientReasoningWire()
-    expect(containsDirectionalReasoningMarker("A→R", anthropicWire)).toBe(true)
-    expect(containsDirectionalReasoningMarker("R→A", responsesWire)).toBe(true)
+  test("coverage guard：已执行 golden 集合中 A→R 与 R→A 各有方向对应的 thinking／reasoning marker", () => {
+    const entries = [...goldenCoverage.values()]
+    expect(entries.some((entry) => entry.direction === "A→R" && entry.hasThinking && entry.hasSignature)).toBe(true)
+    expect(entries.some((entry) => entry.direction === "R→A" && entry.hasReasoning && entry.hasEncrypted)).toBe(true)
   })
 
   test("coverage guard negative control：纯 text wire 不能冒充任一方向的 thinking／reasoning 覆盖", async () => {
