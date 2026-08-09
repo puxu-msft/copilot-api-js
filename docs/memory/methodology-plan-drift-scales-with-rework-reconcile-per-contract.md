@@ -1,6 +1,6 @@
 ---
 name: methodology-plan-drift-scales-with-rework-reconcile-per-contract
-description: 实现被返工 N 轮，plan 文档就积了 N 代旧契约；按已知形态 grep 结构性查不全，必须逐契约对账
+description: plan 变陈旧有两条独立机制——自己被返工 N 轮积 N 代旧契约、以及交付与执行之间共享 master 前进；前者逐契约对账，后者绝不写行号锚点
 metadata:
   type: feedback
 ---
@@ -21,3 +21,21 @@ metadata:
 **配套的一条**：写完新表格/新小节后，**它比被修补的旧文字更容易出错**——新写的内容没有历史校验，本轮连续三轮的发现都集中在我当轮新增的表上。新增段落要单独再过一遍「与代码逐格核对」。
 
 **Related:** [[methodology-dont-specify-across-a-seam-you-havent-read]]（别跨没读过的缝规定行为）[[feedback-pass-null-clean-not-self-validating]]（doc-vs-code 结论不自证）[[methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam]]
+
+## 第二条机制（独立于返工）：交付与执行之间，共享 master 自己会前进
+
+上面讲的是**我自己返工**造成的陈旧。还有一条与我无关的：**plan 写完到被执行之间隔着几天，而本仓库常有并发 agent 会话在推 master。**
+
+**实证（2026-08-09）**：语义桥实施计划写于 master `2c9b5d66`（08-06），三天后复审时 master 已是 `837fe522`——**前进 541 提交**。计划里 4 处 `file:line` 锚点，**3 处已漂移**：
+- `openai-responses-cell.ts:88-101` 本来指 S2 `translateOut`，现在指向 `3bfb5a3d` 新插入的 `responsesToolNameSanitize`（一条 S3 rewrite）——**漂移后的锚点仍指向一个存在的、看起来合理的接缝**，这是最危险的形态：照着改会改错地方且不报错。
+- `driver.ts:347-369`、`driver.ts:539-547` 各自指向了完全无关的函数。
+
+三处的**实质结论都仍然成立**（renderer 早于 session 创建、非流式绕过 candidate session），错的只是位置——所以「结论还对」不能用来推断「锚点还对」，反之亦然，两者要分开验。
+
+**How to apply:**
+- **交给未来会话执行的计划，锚点一律写符号名（函数/常量/类型），不写行号。** 行号在这种时间尺度上几乎必然漂移，而符号名漂移时会 grep 不到、**当场暴露**。这条比「改文档时用内容匹配」更早一步：那条管的是写的时候，这条管的是被读的时候。
+- **复查动作要按 phase 的路径集合收敛，别写「逐条读命中提交的 diff」**——全路径集合在这种 churn 下命中数是三位数，那个指令不可执行，于是会被整条跳过。（我第一版就写成了不可执行的形态，自己读一遍才发现。）
+- **跨 phase 的公共接缝**（本项目是 `driver.ts` / `cell-assembly.ts` / `hub-translate.ts` / `request-state.ts`）**每个 phase 开工都要重查一次**，不是开工时查一次就够。
+- **顺带检查 churn 里有没有新落地的契约要吸收**：本轮 `3bfb5a3d` 建立了「Responses-wire 工具名合法化归 S3 rewrite 所有」，而我的计划对此零提及——不是锚点问题，是**规格与计划之间被插进来一条它不知道的约束**。查锚点时顺手问一句「这些新提交有没有立下我该遵守的规矩」。
+
+**Related:** [[feedback-moving-shared-head-is-not-failure]]（master 前进本身不是失败信号、不触发全量复验；本条只要求重锚与吸收新契约，两者不冲突）
