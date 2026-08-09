@@ -207,3 +207,12 @@
 - **当前两条探针的能力边界：** 对Messages direct已足够区分“单终态＋真实原因＋shaping on/off”；但它们不覆盖上述reverse/translate入口，也未直接断言History failureReason。Messages direct客户端wire已闭合，History cause仍建议补强，但不再单独作为同一路径blocker。
 - **handler死参数／反向注释：意见不变，仍MAJOR。** `anthropicCommitBoundaries`采用共享原语只证明函数本身正确，不改变production传参仍被candidate projection静默覆盖的事实；应删除死传参与反向注释，而不是重组merge恢复第二classifier。I1判据缺口仍MAJOR。
 - **最终 verdict：修复D9、handler死参数与I1判据后可进入下一阶段。当前0 blocker、3 major、既有Task 4阶段性major债务、2 minor。**
+
+
+# 最终确认（`34be4660`）
+
+- **D9：闭合。** `nameAnthropicEventFromWire` 已覆盖六个 accumulator入口与两个translator；保持各调用点原有parse失败处理，且提交说明诚实限定为Messages direct端到端＋其余结构性覆盖。
+- **handler死参数／反向注释：闭合。** inert `commitBoundaries` 已删除，现注释准确说明candidate grammar projection的所有权及未来扩展边界；未恢复第二classifier。
+- **I1判据缺口：闭合。** rich-frame用例现在同时钉client flat projection与History capture保留`ParsedSseFrame`，并已有目标mutation正控。
+- **剩余项不阻塞本门关闭。** 两个零production-consumer legacy predicate维持MINOR并已登记；mid-block H2与混合写路径明确归属Task 4且有gated正确判据；这些不构成本轮Task 1b × Task 3 seam的未决major。
+- **最终 verdict：可进入下一阶段／Task 4已解除该门。0 blocker，0 major。** `.superpowers/sdd/progress.md` 的关闭记录与当前事实一致，无需回改。
