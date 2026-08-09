@@ -6,6 +6,12 @@
 
 **Goal:** 原子迁移 function call／output、tool_use／tool_result、custom declaration／forced choice 与 stream arguments 三源裁决，保持 call identity、block顺序与完整 tool input。
 
+> **既有约束（master `3bfb5a3d`，2026-08-07 落地，晚于本规格初稿）**：工具名的 Responses-wire 合法化**已由 S3 request rewrite `responsesToolNameSanitize` 拥有**（`src/lib/codec/openai-responses/openai-responses-cell.ts`），它在 S2 `translateOut` **之后**运行，并把 mapper 写回 `env.ctx.setToolNameMapper`。配套的 provenance 是 `RequestState.sourceToolNameMapper`——parse 时捕获一次、跨 retry 不变，区别于每 attempt 可变的 `ctx.toolNameMapper`。
+>
+> 本 phase 的 function-call family **一律不得自行 sanitize 工具名**，也不得读写 `ctx.toolNameMapper`：语义桥只产出**客户端原始名**，合法化留给那条 S3 rewrite，否则会双重改名并破坏还原映射。
+>
+> 顺带一提，`sourceToolNameMapper`（稳定供给放 `RequestState`）与 `ctx.toolNameMapper`（每 attempt 可变）的这一分工，正是本计划 diagnostics 采用 **S2-local `RequestTranslationRuntime` + 只把 frozen 结果放进 `RequestState`** 的同一条既有契约；执行时按同样的口径处理，别把可变累加器塞进 `RequestState`。
+
 ### Task 6.1: Shared complete-arguments mapper
 
 **Files:**

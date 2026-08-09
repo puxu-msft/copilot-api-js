@@ -2,7 +2,7 @@
 
 > **状态**：草稿，待独立评审
 >
-> **核验基线**：`2c9b5d6688c4c2d267d951647e0187224654a55c`（2026-08-07）
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09）
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`（推荐）or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

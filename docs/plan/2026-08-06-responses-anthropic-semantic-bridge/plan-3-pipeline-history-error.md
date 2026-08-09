@@ -26,7 +26,7 @@
 **Files:**
 - Modify: `src/lib/pipeline/generation/candidate-state.ts`
 - Modify: `src/lib/pipeline/generation/candidate-response-session.ts`
-- Modify: `src/lib/pipeline/driver.ts:539-547`
+- Modify: `src/lib/pipeline/driver.ts`（`createDriverCoordinator` 内的 `createProcessor`——当前 renderer 先于 session 创建，本 Task 要在两者之前插入 collector）
 - Modify: `src/lib/pipeline/types.ts`（`FormatCodec.createCandidateRenderer(env, bridgeDiagnostics)`）
 - Modify: `src/lib/codec/anthropic/codec.ts`
 - Modify: `src/lib/codec/openai-responses/codec.ts`
@@ -77,9 +77,9 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 - Modify: `src/lib/pipeline/request-state.ts`
 - Modify: `src/lib/pipeline/cell-assembly.ts`（`translateOut(env, requestTranslation?)`）
 - Modify: `src/lib/pipeline/hub-translate.ts`（profile resolver + `RequestTranslationRuntime`）
-- Modify: `src/lib/pipeline/driver.ts:347-369`
-- Modify: `src/lib/codec/anthropic/anthropic-cell.ts:103-106`
-- Modify: `src/lib/codec/openai-responses/openai-responses-cell.ts:88-101`
+- Modify: `src/lib/pipeline/driver.ts`（`outboundTranslateOut`——S2 translateOut 的唯一分派点，migrated cell 与 legacy codec 二选一）
+- Modify: `src/lib/codec/anthropic/anthropic-cell.ts`（`translateOut`——reverse 腿的真实 S2 producer）
+- Modify: `src/lib/codec/openai-responses/openai-responses-cell.ts`（`translateOut`——forward 腿的真实 S2 producer；注意它与 `responsesToolNameSanitize` 这条 S3 rewrite 是两个不同接缝，别改错）
 - Test: `tests/semantic-bridge/migration-dispatch.unit.test.ts`
 - Test: `tests/pipeline/hub-translate.unit.test.ts`
 - Test: `tests/pipeline/request-bridge-wiring.it.test.ts`

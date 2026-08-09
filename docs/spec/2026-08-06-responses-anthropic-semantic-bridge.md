@@ -2,7 +2,7 @@
 
 > **状态**：计划评审发现 WebSearch 外层 oracle 与 error renderer 契约缺口，更正待复审
 >
-> **核验基线**：`b6fb0947686ea6620bfafb63a4fd151d18599483`（2026-08-06；定稿分支重基后的最新 master）
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09；计划评审整改后重基的最新 master）
 >
 > **适用范围**：OpenAI Responses 与 Anthropic Messages 之间的请求、非流式响应与流式响应双向翻译
 

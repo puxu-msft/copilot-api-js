@@ -2,7 +2,7 @@
 
 > **状态**：草稿，待计划独立评审
 >
-> **核验基线**：`2c9b5d6688c4c2d267d951647e0187224654a55c`（2026-08-07；执行前必须重取）
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09；执行前必须重取）
 
 复制以下内容开启实施会话：
 
@@ -36,10 +36,11 @@
 
 第一步动作：
 
-1. 运行 `git rev-parse HEAD master`、`git status --short`，再运行 `git log --oneline 2c9b5d6688c4c2d267d951647e0187224654a55c..master -- src/lib/semantic-bridge src/lib/openai/translate src/lib/pipeline src/lib/context src/lib/history src/routes/messages src/routes/responses tests/semantic-bridge tests/openai tests/pipeline tests/history tests/e2e-client`；命中提交时逐个读其 diff，更新当前 phase 的文件锚点与事实后再动手。
-2. 打开README的DAG与Global Constraints；创建P0/P1各自progress文件。
-3. P0先建脱敏实验骨架；P1先写`types.typecheck.unit.test.ts`红灯。P0与P1可并行，但任何mutation writer必须独立worktree，不能与权威测试并发。
-4. 未取得P0裁决前，不实现Web Search carrier、structured-output name或`context_management`兼容策略。
+1. 运行 `git rev-parse HEAD master`、`git status --short`。**本仓库 master churn 很快（2026-08-06→08-09 三天 541 提交），全路径集合的命中数会到三位数，逐条读 diff 不可行。** 改为按当前 phase 收敛：只对**该 phase「Files」里列出的路径**跑 `git log --oneline <本文核验基线>..master -- <该 phase 的路径>`，命中提交逐个读 diff。跨 phase 的公共接缝（`src/lib/pipeline/driver.ts`、`cell-assembly.ts`、`hub-translate.ts`、`request-state.ts`）每个 phase 开工时都要重查一次。
+2. 计划里的文件锚点一律用**符号名**（函数/常量）而非行号——行号在执行前几乎必然漂移；进场时用 `rg -n '<符号名>' <文件>` 重新定位。
+3. 打开README的DAG与Global Constraints；创建P0/P1各自progress文件。
+4. P0先建脱敏实验骨架；P1先写`types.typecheck.unit.test.ts`红灯。P0与P1可并行，但任何mutation writer必须独立worktree，不能与权威测试并发。
+5. 未取得P0裁决前，不实现Web Search carrier、structured-output name或`context_management`兼容策略。
 
 批准状态：规格已由用户批准并合入master；计划必须先经独立review并合入master，之后才允许执行。若计划头仍写“草稿／待评审”，停止实施并完成计划评审门。
 
