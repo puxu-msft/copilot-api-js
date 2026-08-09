@@ -1,7 +1,7 @@
 ---
 slug: task9-ready-snapshot
 status: 已完成 —— 活跃写入权已移交 `.superpowers/sdd/progress.md`（2026-08-09，闭合于 `7016435e`）
-closed-at: 7016435e
+closed-at: 30559e07
 base: 0dca450e951b1c1ba72acb041501f8b5a3f65453
 branch: worktree-placeholder
 worktree: /home/xp/src/copilot-api-js/.claude/worktrees/placeholder
@@ -41,7 +41,9 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 2. ~~对完整 Task 9 候选做双视角独立评审并闭合~~ —— 已闭合。Task 9 自身的两个正交视角见 `docs/tmp/2026-08-08-task9-review-{spec,acceptance}.md`；本轮合并态另跑两个视角（`docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md`）与一轮收尾产物评审（`docs/tmp/2026-08-09-wrapup-artifacts-review.md`）。
 3. ~~转移活跃写入权~~ —— 即本次。持久结论已折入 `.superpowers/sdd/progress.md`；本文件转为历史档案。
 
-## 在途意图
+## 在途意图（历史 —— 全部已落地或已作废，**不是待办**）
+
+> 下列各条写于实施当时，用的是当时的时态（「应」「必须」「继续」）。**它们描述的是那一刻的打算，不是给接手方的指令**；结果见上面的「剩余项」与「裁决结果」两节。保留原文是为了让后来人看得到判断依据，不是让人照着做。
 
 - Ready snapshot 已实现：共享 `withValidatedSummarySnapshot` 用短同步 SQLite transaction 绑定 marker 与窄 SQL；get/list/cursor/session/stats 均接入，search 在 sidecar await 后开启新 snapshot 复核。真实 WAL 双连接竞态矩阵、search await 撤 marker、healthy narrow performance 均已转绿。
 - 修改 migration wiring 测试前已记录其守护不变量：默认 ledger 必须精确列出全部生产 migrations；注入 migration 必须追加且 run-once；失败 migration 必须不入 ledger；schema-5 fixture 必须在生产 002 所依赖的 conceptual baseline 上验证原子回滚。新增 002 后旧精确数组与 bare fixture 已漂移，应同步 fixture／oracle，绝不删除或跳过 002。
@@ -49,7 +51,7 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - 修改History重入生命周期前已记录其守护不变量与依据：任何会关闭或替换SQLite handle的 `initHistory(false/true)` 必须先cooperative stop并await当前summary backfill；依据是 `shutdownHistory()` 已冻结的“stop→drain→close”顺序与 `initHistory` 在config reload／test runtime中可重复调用的生产图。测试以合法canonical rows＋删除派生summary＋batch size 1确定性停在worker yield，不用sleep；旧实现应因closed handle拒绝，修复后disable返回时DB已关且旧promise已drain。
 - 放宽 `store-performance.it.test.ts` 的wall-clock ratio前已记录其守护不变量与依据：原断言试图守“prepare／commit不随既有history长度退化”，但同一候选在并行Task 9集合得 `prepareRatio=7.08`、隔离单跑得 `0.74`，无法区分实现回归与CPU争用；项目SDD ledger与全局约束已冻结performance为report-only，canonical capture的真实复杂度另由deterministic work counter＋reachable recursive SCC gate守护。处置为保留真实timing／ratio日志、移除wall-clock pass/fail断言；这属于既有guard放宽，合并前必须由独立reviewer裁决，未审不得提交或关闭Task 9。
 - 修改management status测试前已记录其守护不变量与依据：`GET /api/status` 的persisted count必须只数 `v3_operations`，不能解析坏 `summary_json`；依据是测试名、注释与status count专用SQL。旧fixture通过DROP `v3_operation_summaries_after_summary_update` 构造pre-trigger artifact，但该trigger已被002矩阵退役；当前protected-update trigger允许canonical update并只poison／撤marker，所以直接写坏 `summary_json` 已足以激活原oracle。删除硬编码DROP不放宽count断言，也不改产品行为。
-- 继续每个语义 commit 同步本文件，禁止 amend 历史。
+- ~~继续每个语义 commit 同步本文件，禁止 amend 历史。~~ —— **已停止**：本文件于 2026-08-09 关闭，活跃写入权在 `.superpowers/sdd/progress.md`。
 
 ## 本轮红绿证据
 
@@ -65,7 +67,7 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - Startup正控红绿：合法真实operation经过上述002后，旧backfill只扫描缺失row或 `summary_json IS NULL`，重启后marker仍为null。Strict owner改为成功hydrate后从canonical record＋timing overlay重算 `summary_json` 并调用 `publishValidatedOperationSummary`，真实on-disk shutdown→reopen→drain后row恢复ready、marker为1。
 - Lifecycle泄漏红绿：clear测试最初在明确 `deleteMeta` 后仍观察到marker=1；根因是 `resetV3WriterForTests` 丢弃仍运行的summary backfill promise句柄，旧worker跨测试写回新DB。Reset现在只请求stop而保留句柄，isolated fixture和store suite teardown先drain；完整store suite `13 pass / 0 fail`。
 - GC红绿：分别删operation normalized refs与pending journal normalized refs中的sequence 2，并另插真orphan；旧GC仍删除orphan。现在GC在任何DELETE前对manifest／journal envelope与normalized refs做ordered六元组精确对账，两种mismatch均抛错且evidence count保持3；完整store＋evidence组 `44 pass / 0 fail`。
-- 当前分组验证：summary／migration／performance `71 pass / 0 fail`；History API／shutdown／resetter `27 pass / 0 fail`；identity／evidence／legacy／readonly最新组合 `45 pass / 0 fail`，单独evidence suite `34 pass / 0 fail`；typecheck通过；目标ESLint零error，仅输出第三方 `baseline-browser-mapping` 数据陈旧提示。完整backend与architecture门禁待跑，不能据此提前关闭Task 9。
+- 当前分组验证：summary／migration／performance `71 pass / 0 fail`；History API／shutdown／resetter `27 pass / 0 fail`；identity／evidence／legacy／readonly最新组合 `45 pass / 0 fail`，单独evidence suite `34 pass / 0 fail`；typecheck通过；目标ESLint零error，仅输出第三方 `baseline-browser-mapping` 数据陈旧提示。（写于当时）完整 backend 与 architecture 门禁待跑，不能据此提前关闭 Task 9。**——已跑完，结果见上面「剩余项」第 1 条。**
 - Row identity红绿：把operation A的 `manifest_gz`／digest换成合法operation B，同时保留A row与shared evidence refs；旧strict repair错误返回ready并把B summary发布到A，`hydrateTransportEvidence(A)`与GC也信任B manifest。现在 `hydrateManifest` 的expected operation ID为必填，detail／list／visit／strict repair／backfill／search sidecar全部从SQL row透传；evidence hydrate与GC复用同一identity assertion。三条负控均红→绿，shared-digest正样本保持绿。
 - Evidence读取契约红绿：删除manifest-v3 operation normalized refs中的sequence 2后，旧 `hydrateTransportEvidence` 仍返回manifest bytes。该入口现复用 `validatePersistedOperationEvidenceRefs`，按identity→ordered refs→entities完整验证并返回已hydrate结果，不重复解压。
 - 既有 `evidence-missing.patch` 因strict primitive重构已无法apply；按当前真实实现重建后，三份patch均通过 `git apply --check`。实际注入新patch并确认目标hunk退化后，`transport-evidence.it.test.ts` 的normalized-ref detail oracle按目标失败；`git apply --reverse --check`通过、用同一冻结patch恢复，完整evidence suite重新 `34 pass / 0 fail`。复跑配方：`git apply --check tests/history/v3/fixtures/transport-evidence/mutations/{evidence-missing,consumer-format,startup-bypass}.patch`；未在文档写裸hash，避免无生成命令的易腐指纹。

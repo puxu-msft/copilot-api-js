@@ -4,7 +4,7 @@
 
 `scripts/parallel-test.ts` 的汇总行原本从各 shard 的 stdout 解析 `N pass` / `N fail`。本目录保存的是**促使它改为从 JUnit XML 取数的那次运行的机器生成产物**——因为该论断在提交信息（`e24de3a1`）里被当作事实引用，而产生它的运行日志与产物原本只在临时目录（`$CLAUDE_JOB_DIR/tmp`、`/tmp/parallel-test-*`），会随会话消失。
 
-> **本节的第一版只保存了人工转录的两行，并自称「原始证据」。** 独立评审指出：那样一来，仓库里能确认的只是「作者在多个载体重复了同一说法」，而不是可独立审计的 primary evidence——恰好重犯本目录要防的那个错误。现已收入原件（见下），本文的数字都可以从原件复算，不必采信本文。
+> **本节的第一版只保存了人工转录的两行，并自称「原始证据」。** 独立评审指出：那样一来，仓库里能确认的只是「作者在多个载体重复了同一说法」，而不是可独立审计的 primary evidence——恰好重犯本目录要防的那个错误。现已收入原件（见下）。**注意范围**：能从本目录原件复算的只有 shard-06 那一份的计数与那条失败行；全量的 `7529 executed` 需要全部 16 份 XML，本目录**没有**，只能重跑。
 
 ## 原件（机器生成，未经编辑）
 
@@ -48,7 +48,7 @@
 bun run test:backend            # 产物目录打印在末行 artifacts=<dir>
 ```
 
-用当前解析器对任意一批产物复算。**shard 数由 `os.cpus().length` 决定，不是常数 16**，所以从目录枚举而不是数到 16：
+用当前解析器对任意一批产物复算。**shard 数由 `os.cpus().length` 决定，不是常数 16**，所以从目录枚举而不是数到 16；并且**断言编号连续**——缺一份 XML 时静默把子集当成完整批次，正是本目录要防的那个错误的翻版：
 
 ```bash
 bun -e '
@@ -56,20 +56,21 @@ bun -e '
   import path from "node:path"
   import { parseJUnit } from "./scripts/parallel-test-artifacts"
   const dir = process.argv[1]
-  const shards = readdirSync(dir).filter((n) => /^shard-\d+\.xml$/.test(n)).sort()
-  if (shards.length === 0) throw new Error(`no shard-*.xml under ${dir}`)
+  const names = readdirSync(dir).filter((n) => /^shard-\d+\.xml$/.test(n))
+  const numbers = names.map((n) => Number(/^shard-(\d+)\.xml$/.exec(n)[1])).sort((a, b) => a - b)
+  if (numbers.length === 0) throw new Error(`no shard-*.xml under ${dir}`)
+  for (const [index, value] of numbers.entries()) {
+    if (value !== index + 1) throw new Error(`shard numbering is not contiguous from 1: got ${numbers.join(",")} — this batch is a SUBSET, its counts are not a total`)
+  }
   let executed = 0, failed = 0
-  for (const name of shards) {
+  for (const value of numbers) {
+    const name = `shard-${String(value).padStart(2, "0")}.xml`
     const id = parseJUnit(readFileSync(path.join(dir, name), "utf8"), process.cwd())
     executed += id.executed; failed += id.failed
     for (const f of id.failedIdentities) console.log("FAIL", f.file, "›", f.name, `(${f.type})`)
   }
-  console.log({ shards: shards.length, executed, failed, pass: executed - failed })
+  console.log({ shards: numbers.length, executed, failed, pass: executed - failed })
 ' <artifacts-dir>
 ```
 
-对本目录保存的那一份复算（只有 shard-06，所以数字是该 shard 的，不是全量）：
-
-```bash
-bun -e '...上面同一段...' exp/junit-tally-false-green/artifacts
-```
+**对本目录保存的那一份复算会故意失败**——它只有 `shard-06.xml`，编号不从 1 开始连续，脚本会抛 `this batch is a SUBSET`。这是设计如此：想单看那一份，直接读 `artifacts/shard-06.xml` 里的 `<failure type="TimeoutError" />` 行，或对单文件调用 `parseJUnit`，**但不要把它的计数当作那次运行的总量**。
