@@ -111,6 +111,40 @@ RFC §6 的不变量原文是：
 - 于是「至多一个 active」变成 **candidate 之间**的性质 —— 由 C2.2 的 lineage 与 C2.3 的 transfer 临界区保证，**与写出点数量无关**。
 - 写出点枚举**只对一个窄得多的问题有用**：**哪个写出点负责记录 terminal wire 的 ACK 或 delivery failure**。这个集合小且有界，且它的遗漏是**可观测的**（terminal 记录缺失），不像「某处绕过 authority」那样静默。
 
+#### 这个形状不是新设计，生产代码里已有先例
+
+`[hard]` **动手前先读 `src/lib/error/forward.ts:504` `finalizeErrorDelivery`** —— 它已经是本节所述形状的现成实现：
+
+```
+:505  const response = c.json(body, status)              // 写客户端字节
+:506-507  从 Hono context 取 requestContext（Partial，可缺）
+:508-514  四个方法齐全才认（结构性能力检测）
+:516-519  setForwardedResponse / setInboundResponseHeaders /
+          setClientResponseStatus / finalizeModelOperationDelivery
+```
+
+它说明三件事：
+
+1. **请求上下文从共享错误出口够得到** —— 包括 `server.ts:90` 那条 app 级兜底。所以「authority 在请求作用域建立、写出继承它」在当前结构下**做得到**，不是纸面设计。
+2. **「拿不到 requestContext」不是漏洞，是作用域边界** —— 没有请求上下文，就没有模型操作可归属，那次写出按定义在范围外。`:508` 的 `if (candidate && …)` 已经是这条边界的实现。
+3. **遗漏是可观测的** —— 某个写出点若没接上，`finalizeModelOperationDelivery` 不会被调用，History 记录里就**看得见缺失**；这与旧形状「某处悄悄绕过 authority 检查而无人知晓」有本质区别。**这正是换轴之后递归能终止的原因。**
+   `[hard]` **但这句话本身必须由判据兑现，否则它只是一句断言、新旧形状同样静默。** 兑现它的是 **C3.2 的 terminal-completeness 不变量**：**任何已 settle 的请求，其 History 记录必须为 `lifecycle:"terminal"`**。漏记的请求会永远停在 `lifecycle:"in-flight"` —— 而 C3.2 原有的类型保证只约束「已经是 terminal 的记录」，**不约束「请求结束了却没变成 terminal」**，正是这个状态没人断言。补上之后，「遗漏可观测」从断言变成机械事实，写出点清单是否穷尽才真的不再重要。
+
+C2.3 应当**沿用并扩展这个既有模式**（在它记录交付的地方一并记 authority 与 terminal wire ACK），而不是另发明一套。
+
+#### 未闭合的角：请求作用域建立**之前**抛出的错误 —— 裁决 (a)+(b)
+
+`requestContext` 是**在 handler 中途**才 `c.set` 的：`messages/handler-v4.ts:774`／`:799`／`:938`、`chat-completions/handler-v4.ts:225`／`:236`（后者写成 `if (ctx) c.set(...)`，本身就承认 ctx 可能不存在）、`gemini:205`／`:213`。
+
+因此**在 ctx 建立之前抛出的错误**（body 解析、鉴权、模型解析、限流等）会走到 `server.ts:90` 的 app 级 onError，由 `forwardError` 按 `c.req.path` 判出模型 wire 格式、写出**模型形态的错误字节** —— 而此时结构上**没有任何请求作用域可继承**。这与 C2.3 不变量 5「preflight fail-closed 也必须建立唯一 authority」正面冲突。
+
+`[hard]` **本计划的裁决（两条一起，不是二选一）**：
+
+- **(a) authority 的建立点前移到真 ingress** —— 与 C2.1 捕获 `translationConfigSnapshot` **同一个点**。理由不只是「更正确」：C2.1 已经在那儿了，两者共用同一作用域锚，能消掉一整类「这一刻它存在吗」的问题。C2.3 的 authority 建立**不得**依赖 handler 中途的 `c.set("requestContext")`。
+- **(b) 早于该锚点的错误，显式声明为「不属于任何请求 authority」** —— 前移之后仍有更早的失败（Hono 路由本身、锚点代码自身抛出）。这类写出的 History `[hard]` **记为 unknown-capability，不得记成 `actual:[]`** —— 否则又回到「空数组＝确无 degradation」那种撒谎形态（RFC §10.1 明确区分「已捕获且确无」与「未捕获」）。
+
+**WS 侧两处 `ws.ts:614`／`:686` 发生在 `onOpen`、连接级、尚无请求**，按新形状归入范围外是正确的；`server.ts:86` 升级后的 `c.text("",500)` 同理。这两条属于上文作用域声明，非遗漏。
+
 #### 因此本计划的作用域声明
 
 `[hard]` **在范围内**（必须归入某个请求的 authority）：承载**模型请求的响应或其终态错误**的写出。当前已知：
@@ -404,7 +438,8 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Steps**
 1. snapshot 含 `snapshotId` + 冻结的 `model_translation` 视图。
 2. 接线：ingress 捕获一次，后代 candidate 只读。
-3. 热重载测试：ingress 后改配置，**在飞请求的 snapshot 不变**，下一次 ingress 才变。
+3. `[hard]` **这个捕获点同时是 C2.3 的 authority 建立锚点**（见 C-0 附小节的裁决 (a)）。本片把它选在**真 ingress**、早于任何可能抛进 app 级 onError 的代码；**不得**放在 handler 中途（现有 `c.set("requestContext")` 在 `messages/handler-v4.ts:774`／`:799`、`chat-completions:225`／`:236` 都是中途，**那个位置对 authority 不够早**）。两者共用同一作用域锚，能消掉一整类「这一刻它存在吗」的问题。把你最终选定的锚点写进进度文件，C2.3 会用它。
+4. 热重载测试：ingress 后改配置，**在飞请求的 snapshot 不变**，下一次 ingress 才变。
 
 **Commit invariant**：snapshot 仅被捕获与读取，无消费者改变行为；既有 config 热重载测试全绿；G2 wire golden 逐字节不变。
 
@@ -576,14 +611,20 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 5. opaque hash 固定 `SHA-256("semantic-bridge-opaque-v2\0" || kind || "\0" || rawOpaqueUtf8Bytes)` lowercase hex；**不存正文**（G8）。
 6. `candidateDiagnostics` 不可省略：`captured` 要求 `total === candidates.length`；`pruned` 要求 `total > retained` 且 `retained === candidates.length`。
 7. 旧记录无 `semanticBridgeV2` 按 unknown capability 处理，**不回填虚构默认**。
+8. `[hard]` **terminal-completeness：任何已 settle 的请求，其 History 记录必须为 `lifecycle:"terminal"`。**
+   **这是整个「换轴」方案的承重判据**（见锚点 C-0 附小节）：新形状把「写出点清单是否穷尽」降级为不重要，靠的正是「漏记 terminal 是可观测的」。而第 1–7 条**没有一条**能发现这种遗漏 —— 第 4 条的非空 tuple 只约束**已经是 terminal 的记录**，漏记的请求会永远停在 `lifecycle:"in-flight"`，那个状态没人断言。**缺这条，新旧形状的失效同样静默，换轴的关键优势就没兑现。**
+9. 承接 C-0 的裁决 (b)：**早于 ingress authority 锚点的错误**，History 记为 **unknown-capability**，`[hard]` **不得记成 `actual:[]`** —— 后者按公开契约表示「已捕获且确无 actual observation」，那是撒谎。
 
-**Commit invariant**：新槽只写不读（除测试）；旧 `anthropicToResponses` 读者行为不变；G8 有守护测试。
+**Commit invariant**：新槽只写不读（除测试）；旧 `anthropicToResponses` 读者行为不变；G8 有守护测试；**terminal-completeness 有测试**。
 
 **Verify**：`bun run typecheck` + `bun test tests/history/` + `bun run test:backend` + **G2 wire 字节 golden 逐字节对账**（本片改 History 生产代码，本地测试全绿证不了客户端字节没变）
 
-**Mutation**（两条）
+**Mutation**（四条）
 - 让 History 写入 opaque 正文 → G8 守护变红；
-- 只更新 terminal 投影不更新 in-flight → in-flight 可见性用例变红（**这条专防「只改 V3 projection 就以为接完了」**）。
+- 只更新 terminal 投影不更新 in-flight → in-flight 可见性用例变红（**专防「只改 V3 projection 就以为接完了」**）；
+- `[hard]` **让 C-0 附表 ① 或 ④ 中任一写出点不记 terminal wire ACK** → **第 8 条 terminal-completeness 变红**。
+  **这条是换轴方案的兑现证明** —— 它证明「写出点遗漏会被看见」不是断言而是机械事实。不红则说明第 8 条没咬住、整套换轴论证失去支撑，**回去查，别改断言**；
+- 让某个 pre-ingress 错误记成 `actual:[]` 而非 unknown-capability → 第 9 条变红。
 
 ---
 
