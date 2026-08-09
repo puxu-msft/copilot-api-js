@@ -1239,3 +1239,22 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：本轮任务是把这套生命周期合同写成 skill，不是改产品代码；且这两处是 **test seam**，误用后果落在测试可信度而非线上行为，与本轮已闭合的其他项不同档。改动虽小但要新增三条测试并选定失败策略，值得自己的一次验证链。
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
+
+## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-09，A3 合并态复评 round 4 的邻域发现）
+
+- **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条：`store-performance.it.test.ts` 的 CAS 用例（18.3s）、`summary-query-performance.it.test.ts`、`uds-transport.it.test.ts` 的 socket 重组用例（5004ms）、乃至纯静态守卫 `stream-error outcomes are minted in exactly one place`（5028ms）。后两条撞的是 bun 的 **5000ms 默认单测超时**；`summary-query-performance.it.test.ts:162-163` 的判据是 `elapsedMs < Math.max(50, small.elapsedMs * 5)`——比值部分稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
+- **当前行为**：机器安静时全绿。同一提交、同一份代码实测对照：负载下 98.91s / 4 fail，安静时 71.68s / **0 fail**。所以这些红**不是**确定性回归；但代价是每次全后端跑完都要人工分辨「这条红是真的吗」，而**分辨成本本身会训练人挥手放过红灯**——本仓 2026-07-28 已经因此吃过一次亏。
+- **理想架构 / 若做需改什么**：交 `perf-engineer` 建**可复现基线**后重定预算：① 判据里去掉 wall-clock 绝对地板，只保留比值与事件循环 gap（这两项对负载稳健）；② 确需绝对值的，按机器实测校准而非拍脑袋，并给这些文件单独的 `--timeout`；③ 超时型（非断言型）的红要能区分「机器慢」与「真的卡住」，否则每次都得靠隔离复跑来判。**注意**：`60-evidence-and-criteria` 的 `false-red-from-process-global-quantities` 与「污染型 flaky」签名相同（单跑绿、全量红），两者要并列排查、可同时成立。
+- **为何暂缓**：A3 合并态复评的范围是那六条 finding 的合并态正确性，不是测试预算工程；重定预算需要先建基线，是独立的一次验证链。本轮已按最小判别动作取证（记测试名与断言、看判据里有无 wall-clock 绝对值、安静/负载对照），结论足以支撑「不阻塞本轮收口」。
+- **触发条件（值得做）**：① 有人开始例行性地把全后端的红当噪声；② 要把 `test:backend` 接进任何自动门禁时——那时 flake 会直接变成假红拦路；③ 这类红开始出现在**断言型**而非超时型判据上，那说明预算问题已经蔓延。
+- **发现方**：A3 合并态复评 round 4 两位 reviewer——GPT 侧裁决我的 flake 归因「成立但须限定为『不是本轮修复造成』」，Claude 侧进一步指出依据里「只有 perf 文件会红」不成立并给出最小判别动作（`docs/tmp/2026-08-08-a3-merged-state-review-{gpt,claude}-round4.md`）。
+
+## History 搜索的多词语义是 OR，未与用户确认（2026-08-09，A3 合并态复评 round 4 派生的产品问题）
+
+- **现状**：持久化侧走 Tantivy `QueryParser` 的**默认 OR**——实测 `bug zzzabsent` 命中只含 `bug` 的文档。本轮把 overlay 对齐到了它（`corpusMatchesSearch` 用 `some`），因此**两侧一致**、不再有「未索引行被藏起来」的缺陷。但「一致」不等于「这是用户想要的语义」。
+- **为什么是个问题**：多数搜索框（含各家 IDE 与 issue tracker）默认 AND，多词查询越多词结果越少；这里恰好相反，词越多结果越宽。用户搜「anthropic 超时」会得到所有含「anthropic」**或**含「超时」的记录。
+- **若改需动什么**：native 侧 `QueryParser::set_conjunction_by_default()`，overlay 侧 `some` → `every`（并保持 `\p{L}\p{N}` 切分）。**注意这会改变所有已索引行的搜索语义**，属产品决策而非缺陷修复；改完 `tests/history/search/overlay-index-agreement.it.test.ts` 的样本表要重取（它以真实索引为 oracle，会自动跟着变），并补一条「多词收窄结果」的正控。
+- **为何暂缓**：这是用户的取舍，不是可以由执行方替他做的判断（`ask-if-scope-shrink`）。本轮的缺陷（两侧不一致）已闭合，语义选择独立于它。
+- **触发条件**：用户对搜索结果「太宽」有反馈时；或要给搜索加 UI 提示（如「匹配任意词」）时——那等于把当前语义暴露给用户，届时最好一并确认。
+
+

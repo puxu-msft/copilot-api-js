@@ -57,7 +57,29 @@
 - [x] 全后端 `test:backend`（3609/3610，唯一失败为既有 flake，见上）
 - [x] round 2 复评：GPT 0 blocker/1 major、Claude 0 blocker/3 major（去重后 3 条），全部复核成立并修复
 - [x] round 3 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major（去重后 3 条），全部复核成立并修复
-- [ ] round 4 复评到 0 blocker / 0 major
+- [ ] round 4 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major，全部复核成立并修复；round 5 待发
+
+## Round 4 复评
+
+报告：`2026-08-08-a3-merged-state-review-gpt-round4.md`；Claude 侧转录进 `2026-08-08-a3-merged-state-review-claude-round4.md`。
+
+| # | 发现 | 我的复核 | 处置 |
+|---|---|---|---|
+| U1（GPT） | round-3 新写的 term 切分是 ASCII-only，非拉丁 needle 切出**零个 term**→ 退回整串子串匹配，与索引不一致 | **成立**。探针实测：索引匹配 `你好 世界`（语料 `你好，世界`）与 `значение умолчанию`，而 ASCII 切分两例都漏；改 `\p{L}\p{N}` 后两例对上，其余判定不变 | 采纳（C）·`0365614f` |
+| U2（Claude） | Tantivy `QueryParser` **默认 OR**，而我用 `every`（AND）；只要多词查询含一个该行没有的词，未索引的行就被藏起来 | **成立**。9 组对照实测：索引对 `bug zzzabsent qqqabsent` 命中，`every` 藏掉 **6/9**，`some` 9 组全对齐 | 采纳（C）·`d3683824`：`every` → `some` |
+| U3（Claude） | 我 round-4 新加的「负控」方向反了：断言 `hello absent` 必须返回空，而真索引对该对**是命中的**——它守的是「overlay 必须比索引更严」，即缺陷本身 | **成立**。修 U2 后它必红，而最省力的「修法」就是撤销 U2 | 采纳（C）·`d3683824`：换成真负控（所有 term 都不在语料）+ 正控（缺一个 term 仍应命中） |
+
+**Claude 推翻了我 perf 归因的一条依据（我接受）**：我说「本轮只改带 search 的异步路径」是**事实错误**——`corpusMatchesSearch` 是共用原语，且我 round-2 重构时把早退 `if (!needle) return true` 弄丢了，导致 `recentMatchesSearch` 对 recent bus 上最多 256 条记录**无条件**做全量 `projectSearchableText` 序列化，**包括不带 search 的普通列表请求、落在同步路径**。这是我引入的确定性开销，已在 `d3683824` 修复；断言在提交信息里撤回。
+
+**我自己的一个错误结论（round 4 期间）**：曾判断「索引侧完全搜不到中文」并准备记 backlog。**错的**——我用 `缓存` 搜 `请修复缓存穿透的缺陷`，整串中文无分隔符、tokenizer 视作**一个 token**，子串自然不中；换 `请修复、缓存穿透、的缺陷` 就命中。命令跑了、输出是真的，错在**查询本身选错**。纠正写进 `exp/history-search-list-perf/cjk-probe.ts`。
+
+**对「同一方向性断言连续三轮被证伪」的根治**：采纳 Claude 建议，不再写方向断言，改为**让真实索引当 oracle**——新增 `tests/history/search/overlay-index-agreement.it.test.ts`（`138ab1ae`），10 组语料真建索引真查询，断言「索引返回的行 overlay 必须也返回」（蕴含而非等价：多匹配是早显示、少匹配才是缺陷）。变异回 AND 时它报出 4 条具体 corpus/needle 不一致。
+
+**perf flake 的判别性证据（按 Claude 给的最小动作取得）**：记下测试名与断言后可见，四条红全是 **wall-clock 超时**型（两条正好撞 bun 5000ms 默认超时，且其中一条是与 History 无关的**静态守卫**）。同一提交安静机器复跑：**6118 pass / 0 fail、71.68s**，负载下 98.91s / 4 fail。据此判为负载敏感；但按 Claude 的意见，正确修法是让这些 oracle 不依赖 wall-clock 绝对值——已记入 `docs/todo/deferred-backlog.md`，不在本轮范围。
+
+**Round 4 验证**：`typecheck` 绿、eslint 干净；`tests/history/ tests/infra/ --parallel` 1185 pass/0 fail（单进程合跑时 UDS 那条超时，属既有跨文件单例污染，而项目各档脚本本来就带 `--parallel`）；**全后端 6118 pass / 0 fail**（executed 7337，较上轮 7335 +2，与新增的两条 agreement 用例一致）。
+
+**派生的产品问题（已记 backlog，需用户裁决）**：搜索的多词语义现在两侧一致地是 **OR**（词越多结果越宽），与多数搜索框的 AND 直觉相反。缺陷已闭合，语义选择是用户的取舍。
 
 ## Round 3 复评（第三次「新缺陷长在上一轮修复上」）
 
