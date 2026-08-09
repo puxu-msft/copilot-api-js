@@ -37,9 +37,13 @@ if (!parentPort) throw new Error("crash-window-worker fixture requires a parent 
 
 const fixture = workerData as CrashWindowFixture
 let armed = false
+let database: Database | undefined
 
 const backend = createHistoryWorkerBackend({
-  openSemanticDatabase: (dbPath) => withCrashWindow(openOwnedHistoryDatabase(dbPath)),
+  openSemanticDatabase: (dbPath) => {
+    database = openOwnedHistoryDatabase(dbPath)
+    return withCrashWindow(database)
+  },
 })
 
 installHistoryWorkerMessageLoop(parentPort, {
@@ -96,6 +100,21 @@ function crashAfterRun(statement: SqliteStatement): SqliteStatement {
 
 function crashOnce(): void {
   if (!armed || fs.existsSync(fixture.markerPath)) return
-  fs.writeFileSync(fixture.markerPath, fixture.window)
+  // Record the persisted state AT the crash instant, read through the Worker's own
+  // connection so an open transaction's uncommitted rows are visible. Without this the
+  // tests can only prove that a crash happened somewhere — an injection point that drifts
+  // to a different moment (or collapses two windows into one) stays invisible.
+  fs.writeFileSync(fixture.markerPath, JSON.stringify({ window: fixture.window, ...countRows() }))
   process.exit(17)
+}
+
+function countRows(): { journal: number; operations: number } {
+  try {
+    const journal = (database?.prepare("SELECT COUNT(*) AS n FROM v3_journal").get() as { n: number } | undefined)?.n ?? -1
+    const operations = (database?.prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number } | undefined)?.n ?? -1
+    return { journal, operations }
+  } catch {
+    // Reading must never be what kills the crash: -1 is a reportable "could not observe".
+    return { journal: -1, operations: -1 }
+  }
 }

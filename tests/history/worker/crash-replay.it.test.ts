@@ -72,6 +72,18 @@ const CRASH_WINDOWS = [
   "after-commit",
 ] as const
 
+/**
+ * Persisted state each window must observe at the instant it crashes, measured (not reasoned)
+ * through the Worker's own connection — so `mid-transaction` sees its own uncommitted row,
+ * which is what distinguishes it from `after-journal`.
+ */
+const EXPECTED_CRASH_STATE: Record<(typeof CRASH_WINDOWS)[number], { journal: number; operations: number }> = {
+  "before-journal": { journal: 0, operations: 0 },
+  "after-journal": { journal: 1, operations: 0 },
+  "mid-transaction": { journal: 1, operations: 1 },
+  "after-commit": { journal: 0, operations: 1 },
+}
+
 describe("History Worker crash windows", () => {
   for (const window of CRASH_WINDOWS) {
     test(`converges to exactly one operation after a crash ${window}`, async () => {
@@ -84,6 +96,10 @@ describe("History Worker crash windows", () => {
 
       // The crash must actually have happened, or this asserts nothing about recovery.
       expect(fs.existsSync(markerPath)).toBe(true)
+      // ...and it must have happened at the moment this window is NAMED for. The marker
+      // carries the persisted state read at the crash instant through the Worker's own
+      // connection, so an injection point that drifts elsewhere cannot stay green.
+      expect(JSON.parse(fs.readFileSync(markerPath, "utf8")) as unknown).toEqual({ window, ...EXPECTED_CRASH_STATE[window] })
       expect(runtime.snapshot().restartsTotal).toBe(1)
       expect(runtime.snapshot().replaysTotal).toBe(1)
       expect(outcome).toBe("persisted")
