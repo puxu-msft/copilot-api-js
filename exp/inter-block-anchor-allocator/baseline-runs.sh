@@ -54,8 +54,11 @@
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
 #   MIN_TESTS    REQUIRED, no default: a run whose summary line reports fewer
-#                than this many tests is not counted green. Set it to the test
-#                count you expect at this commit.
+#                than this many executed test cases is not counted green. Set it
+#                to the executed population you expect at this commit. When the
+#                summary reports both, the executed count is used rather than the
+#                runner's own scheduling-unit count -- those are different
+#                quantities and mixing them fails healthy runs.
 #                There is deliberately no default. A default of 1 is a paper
 #                floor -- a degenerate selector reporting "1 tests · 1 pass"
 #                walks straight past it, which is exactly how the fake-`bun`
@@ -212,12 +215,28 @@ for i in $(seq 1 "$RUNS"); do
     fi
   } >> "$log"
 
-  tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
+  # Pick the run's summary line, not merely the last line that mentions the
+  # runner. Since the artifact-transfer contract landed, the runner prints
+  # `[parallel-test] artifacts=<dir>` AFTER the summary, so `tail -1` selected a
+  # line carrying no counts at all and every run read as "no tests" -- a hard
+  # false red on a suite that had just reported thousands of passing tests.
+  tail_line="$(grep -a 'parallel-test' "$log" | grep -aE '[0-9]+ (executed|tests)' | tail -1)"
+  if [ -z "$tail_line" ]; then tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"; fi
 
-  # A run that executed no tests is not a green run. Reported test count is the
+  # A run that executed no tests is not a green run. Reported count is the
   # cheapest thing that distinguishes "the suite ran" from "something printed
-  # nothing and exited 0".
-  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"
+  # nothing and exited 0". Prefer the executed count: `N tests` counts the
+  # runner's own scheduling units, while `N executed` counts the test cases the
+  # shards actually ran -- the population MIN_TESTS is frozen from. Comparing an
+  # executed-derived floor against the units count is a different quantity and
+  # goes red on healthy runs (observed: 6719 units, 7255 executed).
+  #
+  # This floor is a weak, text-layer copy of a population check whose authority
+  # lives elsewhere: the versioned discovery baseline and the per-shard JUnit that
+  # capture-entry-evidence.ts reconciles. Keep it (it is the only check available
+  # when REQUIRE_TEST_ARTIFACTS=0), but change the authoritative side too.
+  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ executed' | head -1 | grep -aoE '[0-9]+')"
+  if [ -z "$ntests" ]; then ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"; fi
   printf '=== tests seen   : %s\n' "${ntests:-none}" >> "$log"
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"

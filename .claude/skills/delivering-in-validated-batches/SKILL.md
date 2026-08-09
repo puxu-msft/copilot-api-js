@@ -123,7 +123,7 @@ description: Use when a plan or implementation spans multiple semantic commits o
 
 父项目关闭点的未完成正确事项必须由用户或**未卷入方**逐项明确决定：继续排入后续批、依据证据 `superseded／retired`，或完成真实转移；没有裁决就不能关闭父项。这里“未卷入”是机械资格：没有参与该事项的提出、实现、既有处置，也没有发起或执行本次关闭申请；具名、有治理授权、现任 owner 都不自动满足。若没有满足资格的项目方，交用户裁决；用户未裁决时父项保持开放。既有已批准批次内部的普通排序仍可由具名治理 owner 处理，但它不能替代关闭点裁决。当作者既提出后续项又想在关闭时消项，属于自我裁决；记录理由与级别，使用 `adopting-agent-findings` 的独立 adjudication 流程。沉默不是裁决。
 
-阶段结束时使用 `session-closeout`，把未完成项枚举与父项状态纳入独立核验。
+阶段结束时使用 user-level skill `closing-a-development-session`，把未完成项枚举与父项状态纳入独立核验。
 
 上述外部 skill 是流程委托，不是本 skill 状态判据的隐藏实现。目标缺失或 frontmatter 身份不符时停止并报告依赖错误，不回退为手写平行流程；目标 skill 可正常演进，故只校验身份与可达性，不锁定全文 hash。
 

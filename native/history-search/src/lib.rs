@@ -1,21 +1,23 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::columnar::{Column, StrColumn};
+use tantivy::query::{AllQuery, BooleanQuery, EnableScoring, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
-    FAST, Field, IndexRecordOption, STORED, STRING, Schema, TEXT, TantivyDocument, Value,
+    FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT, TantivyDocument, Value,
 };
-use tantivy::{Index, IndexReader, IndexWriter, Term, doc};
+use tantivy::{DocId, Index, IndexReader, IndexWriter, SegmentReader, Term, doc};
 
 // Bump this whenever the on-disk index layout or the indexed corpus semantics change.
 // A directory that carries an OLDER copilot-owned marker is transparently wiped and
 // rebuilt (the index is disposable and never authoritative), so incompatible legacy
 // indexes self-heal instead of degrading forever. See `assert_identity`.
-const FORMAT_MARKER: &str = "copilot-api-history-search-tantivy-v3\n";
+const FORMAT_MARKER: &str = "copilot-api-history-search-tantivy-v4\n";
 const FORMAT_FILE: &str = "FORMAT";
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
 
@@ -95,20 +97,25 @@ fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
 
+/// Every field `list_search` filters, sorts, or paginates on is `FAST` (columnar), because
+/// that path reads them per candidate document. `STORED` is kept alongside for the
+/// score-search path and for debuggability; only `content` stays purely inverted.
 fn schema() -> Schema {
     let mut builder = Schema::builder();
     builder.add_text_field("operation_id", STRING | STORED | FAST);
-    builder.add_text_field("operation_kind", STRING | STORED);
+    builder.add_text_field("operation_kind", STRING | STORED | FAST);
     builder.add_text_field("content", TEXT);
     builder.add_u64_field("created_at", STORED | FAST);
     builder.add_u64_field("committed_at", STORED | FAST);
-    builder.add_text_field("endpoint", STRING | STORED);
-    builder.add_text_field("state", STRING | STORED);
-    builder.add_i64_field("pid", STORED);
-    builder.add_text_field("session_id", STRING | STORED);
-    builder.add_text_field("agent_id", STRING | STORED);
-    builder.add_text_field("request_model", STRING | STORED);
-    builder.add_text_field("response_model", STRING | STORED);
+    builder.add_text_field("endpoint", STRING | STORED | FAST);
+    builder.add_text_field("state", STRING | STORED | FAST);
+    // INDEXED so an exact-pid list query can be answered by the inverted index instead of
+    // by visiting every document; FAST so the post-filter can read it columnar-side.
+    builder.add_i64_field("pid", INDEXED | STORED | FAST);
+    builder.add_text_field("session_id", STRING | STORED | FAST);
+    builder.add_text_field("agent_id", STRING | STORED | FAST);
+    builder.add_text_field("request_model", STRING | STORED | FAST);
+    builder.add_text_field("response_model", STRING | STORED | FAST);
     builder.build()
 }
 
@@ -252,16 +259,216 @@ fn search_blocking(
     Ok(hits)
 }
 
-fn document_text(document: &TantivyDocument, field: Field) -> Option<&str> {
-    document.get_first(field).and_then(|value| value.as_str())
+/// Columnar (fast-field) readers for one segment, opened once per `list_search` call.
+///
+/// `list_search` reads every field it filters and orders on from these columns rather than
+/// from the stored document. A stored-field read decompresses a whole block per hit, so the
+/// previous `searcher.doc(address)`-per-hit shape made a page cost track the number of
+/// *hits* instead of the number of *results* — measured on a synthetic corpus by
+/// `exp/history-search-list-perf/bench.ts`, a 1%-selective session filter over 100k
+/// documents cost the same 254 ms as no filter at all.
+///
+/// Numeric columns are `Option` because a segment in which no document carried the field
+/// has no column for it at all (`pid` is optional in `SearchDocument`); that is an ordinary
+/// state meaning "absent for every document here", not an error.
+struct SegmentColumns {
+    operation_id: Option<StrColumn>,
+    operation_kind: Option<StrColumn>,
+    endpoint: Option<StrColumn>,
+    state: Option<StrColumn>,
+    session_id: Option<StrColumn>,
+    agent_id: Option<StrColumn>,
+    request_model: Option<StrColumn>,
+    response_model: Option<StrColumn>,
+    created_at: Option<Column<u64>>,
+    committed_at: Option<Column<u64>>,
+    pid: Option<Column<i64>>,
 }
 
-fn document_u64(document: &TantivyDocument, field: Field) -> Option<u64> {
-    document.get_first(field).and_then(|value| value.as_u64())
+impl SegmentColumns {
+    fn open(reader: &SegmentReader) -> Result<Self> {
+        let readers = reader.fast_fields();
+        Ok(Self {
+            operation_id: readers.str("operation_id").map_err(native_error)?,
+            operation_kind: readers.str("operation_kind").map_err(native_error)?,
+            endpoint: readers.str("endpoint").map_err(native_error)?,
+            state: readers.str("state").map_err(native_error)?,
+            session_id: readers.str("session_id").map_err(native_error)?,
+            agent_id: readers.str("agent_id").map_err(native_error)?,
+            request_model: readers.str("request_model").map_err(native_error)?,
+            response_model: readers.str("response_model").map_err(native_error)?,
+            created_at: readers.column_opt("created_at").map_err(native_error)?,
+            committed_at: readers.column_opt("committed_at").map_err(native_error)?,
+            pid: readers.column_opt("pid").map_err(native_error)?,
+        })
+    }
 }
 
-fn document_i64(document: &TantivyDocument, field: Field) -> Option<i64> {
-    document.get_first(field).and_then(|value| value.as_i64())
+/// Resolve one text filter to the term ordinals that can satisfy it in this segment.
+///
+/// `None` means "no filter". `Some(ordinals)` is the allowed set, and an EMPTY set is a
+/// meaningful answer — the value exists nowhere in this segment, so nothing here matches.
+///
+/// Filters are compared by ordinal rather than by string because a term lookup is not free:
+/// `Dictionary::ord_to_term` re-decodes an sstable block from its first ordinal on every
+/// call, so resolving per document is quadratic in block size. Resolving once per segment
+/// turns each per-document check into a single columnar `u64` read.
+fn resolve_any_of(column: Option<&StrColumn>, values: &[String]) -> Result<Option<Vec<u64>>> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    let Some(column) = column else {
+        return Ok(Some(Vec::new()));
+    };
+    let mut ordinals = Vec::with_capacity(values.len());
+    for value in values {
+        if let Some(ordinal) = column
+            .dictionary()
+            .term_ord(value.as_bytes())
+            .map_err(native_error)?
+        {
+            ordinals.push(ordinal);
+        }
+    }
+    Ok(Some(ordinals))
+}
+
+fn resolve_equals(column: Option<&StrColumn>, value: Option<&str>) -> Result<Option<Vec<u64>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(column) = column else {
+        return Ok(Some(Vec::new()));
+    };
+    Ok(Some(
+        column
+            .dictionary()
+            .term_ord(value.as_bytes())
+            .map_err(native_error)?
+            .into_iter()
+            .collect(),
+    ))
+}
+
+/// Ordinals whose term contains `needle` (case-insensitive), by streaming the segment's
+/// dictionary once. A model field holds a handful of distinct values, so this replaces a
+/// per-document lowercase+substring test with a set membership check on a small vector.
+fn resolve_contains(column: Option<&StrColumn>, needle: &str) -> Result<Vec<u64>> {
+    let Some(column) = column else {
+        return Ok(Vec::new());
+    };
+    let term_count = column.num_terms() as u64;
+    let mut ordinals = Vec::new();
+    let mut ordinal = 0u64;
+    let complete = column
+        .dictionary()
+        .sorted_ords_to_term_cb(0..term_count, |bytes| {
+            let term = std::str::from_utf8(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if term.to_lowercase().contains(needle) {
+                ordinals.push(ordinal);
+            }
+            ordinal += 1;
+            Ok(())
+        })
+        .map_err(native_error)?;
+    // Silently returning a short ordinal set here would under-match the filter rather than
+    // fail, so a dictionary that does not yield every ordinal it claims is an error.
+    if !complete || ordinal != term_count {
+        return Err(native_error(
+            "term dictionary did not yield every ordinal while resolving a substring filter",
+        ));
+    }
+    Ok(ordinals)
+}
+
+/// The first term ordinal for `doc`, mirroring the stored-document `get_first` semantics
+/// the filters were written against: no value reads as absent, not as an empty string.
+fn first_ord(column: Option<&StrColumn>, doc: DocId) -> Option<u64> {
+    column?.ords().first(doc)
+}
+
+fn ord_allowed(column: Option<&StrColumn>, doc: DocId, allowed: &[u64]) -> bool {
+    first_ord(column, doc).is_some_and(|ordinal| allowed.contains(&ordinal))
+}
+
+/// Turn one segment's surviving `(operation-id ordinal, created_at)` pairs into candidates,
+/// resolving every id in a SINGLE forward pass over the segment's term dictionary.
+///
+/// `sorted_ords_to_term_cb` requires ascending ordinals and streams the sstable once, where
+/// `ord_to_term` re-decodes a block from its first ordinal per call. Resolving per document
+/// measured 16x SLOWER than the stored-document read this path replaced, on an unfiltered
+/// page over 20k documents — the batched pass is what makes the columnar path a win rather
+/// than a regression.
+fn resolve_operation_ids(
+    column: Option<&StrColumn>,
+    survivors: &[(u64, i64)],
+    matches: &mut Vec<ListCandidate>,
+) -> Result<()> {
+    if survivors.is_empty() {
+        return Ok(());
+    }
+    let Some(column) = column else {
+        return Err(native_error(
+            "operation_id fast field missing for a segment with matching documents",
+        ));
+    };
+    let mut order: Vec<usize> = (0..survivors.len()).collect();
+    order.sort_unstable_by_key(|&index| survivors[index].0);
+    let base = matches.len();
+    matches.extend(survivors.iter().map(|&(_, created_at)| ListCandidate {
+        operation_id: String::new(),
+        created_at,
+    }));
+    let mut cursor = 0usize;
+    let complete = column
+        .dictionary()
+        .sorted_ords_to_term_cb(order.iter().map(|&index| survivors[index].0), |bytes| {
+            let term = std::str::from_utf8(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            matches[base + order[cursor]].operation_id = term.to_owned();
+            cursor += 1;
+            Ok(())
+        })
+        .map_err(native_error)?;
+    if !complete || cursor != survivors.len() {
+        return Err(native_error(
+            "operation_id term dictionary did not resolve every matching document",
+        ));
+    }
+    Ok(())
+}
+
+fn text_term_query(field: Field, value: &str) -> Box<dyn Query> {
+    Box::new(TermQuery::new(
+        Term::from_field_text(field, value),
+        IndexRecordOption::Basic,
+    ))
+}
+
+/// A `Must` clause matching any of `values`, or `None` when the filter cannot be pushed.
+///
+/// Pushdown is only ever allowed to be *looser* than the per-document filter, which stays
+/// the semantic authority. An empty string is therefore never pushed: the raw tokenizer
+/// emits no term for it, so a pushed clause would drop documents the post-filter keeps.
+fn any_of_query(field: Field, values: &[String]) -> Option<Box<dyn Query>> {
+    if values.is_empty() || values.iter().any(|value| value.is_empty()) {
+        return None;
+    }
+    Some(Box::new(BooleanQuery::new(
+        values
+            .iter()
+            .map(|value| (Occur::Should, text_term_query(field, value)))
+            .collect(),
+    )))
+}
+
+fn equals_query(field: Field, value: Option<&str>) -> Option<Box<dyn Query>> {
+    let value = value?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(text_term_query(field, value))
 }
 
 #[derive(Debug)]
@@ -278,119 +485,178 @@ fn list_search_blocking(
 ) -> Result<ListSearchResult> {
     reader.reload().map_err(native_error)?;
     let searcher = reader.searcher();
-    let query: Box<dyn Query> = if request.query.trim().is_empty() {
+    let content_query: Box<dyn Query> = if request.query.trim().is_empty() {
         Box::new(AllQuery)
     } else {
         let parser = QueryParser::for_index(index, vec![fields.content]);
         parser.parse_query(&request.query).map_err(native_error)?
     };
-    let document_count = usize::try_from(searcher.num_docs()).map_err(native_error)?;
-    let addresses = if document_count == 0 {
-        Vec::new()
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, content_query)];
+    clauses.extend(
+        [
+            any_of_query(fields.operation_kind, &request.operation_kinds),
+            any_of_query(fields.state, &request.states),
+            equals_query(fields.endpoint, request.endpoint.as_deref()),
+            equals_query(fields.session_id, request.session_id.as_deref()),
+            equals_query(fields.agent_id, request.agent_id.as_deref()),
+            request.pid.map(|value| -> Box<dyn Query> {
+                Box::new(TermQuery::new(
+                    Term::from_field_i64(fields.pid, value),
+                    IndexRecordOption::Basic,
+                ))
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|query| (Occur::Must, query)),
+    );
+    let query: Box<dyn Query> = if clauses.len() == 1 {
+        clauses.remove(0).1
     } else {
-        searcher
-            .search(
-                &query,
-                &TopDocs::with_limit(document_count).order_by_score(),
-            )
-            .map_err(native_error)?
+        Box::new(BooleanQuery::new(clauses))
     };
-    let target_ids = request
-        .target_operation_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<std::collections::HashSet<_>>();
-    let model_needle = request.model.as_ref().map(|value| value.to_lowercase());
+    // Scoring is dead weight here: the result order is (created_at desc, operation_id desc),
+    // never relevance.
+    let weight = query
+        .weight(EnableScoring::disabled_from_searcher(&searcher))
+        .map_err(native_error)?;
+    // An empty needle matched every document under the previous `unwrap_or_default()`
+    // substring test (`"".contains("") == true`), including documents carrying no model at
+    // all — so it is not a filter.
+    let model_needle = request
+        .model
+        .as_ref()
+        .map(|value| value.to_lowercase())
+        .filter(|value| !value.is_empty());
     let mut matches = Vec::new();
-    for (_, address) in addresses {
-        let document: TantivyDocument = searcher.doc(address).map_err(native_error)?;
-        let Some(operation_id) = document_text(&document, fields.operation_id) else {
-            continue;
+    for segment_reader in searcher.segment_readers() {
+        let columns = SegmentColumns::open(segment_reader)?;
+        let operation_kind_ords = resolve_any_of(
+            columns.operation_kind.as_ref(),
+            &request.operation_kinds,
+        )?;
+        let state_ords = resolve_any_of(columns.state.as_ref(), &request.states)?;
+        let endpoint_ords = resolve_equals(columns.endpoint.as_ref(), request.endpoint.as_deref())?;
+        let session_ords =
+            resolve_equals(columns.session_id.as_ref(), request.session_id.as_deref())?;
+        let agent_ords = resolve_equals(columns.agent_id.as_ref(), request.agent_id.as_deref())?;
+        let target_ords = resolve_any_of(
+            columns.operation_id.as_ref(),
+            &request.target_operation_ids,
+        )?
+        .unwrap_or_default();
+        let model_ords = match &model_needle {
+            None => None,
+            Some(needle) => Some((
+                resolve_contains(columns.request_model.as_ref(), needle)?,
+                resolve_contains(columns.response_model.as_ref(), needle)?,
+            )),
         };
-        let committed_at = document_u64(&document, fields.committed_at).ok_or_else(|| {
-            native_error(format!("committed_at missing for operation {operation_id}"))
-        })?;
-        let committed_at = i64::try_from(committed_at)
-            .map_err(|_| native_error("committed_at out of i64 range"))?;
-        if committed_at > request.target_committed_at
-            || (committed_at == request.target_committed_at && !target_ids.contains(operation_id))
-        {
-            continue;
-        }
-        let Some(operation_kind) = document_text(&document, fields.operation_kind) else {
-            continue;
-        };
-        if !request.operation_kinds.is_empty()
-            && !request
-                .operation_kinds
-                .iter()
-                .any(|kind| kind == operation_kind)
-        {
-            continue;
-        }
-        if request
-            .endpoint
-            .as_deref()
-            .is_some_and(|value| document_text(&document, fields.endpoint) != Some(value))
-        {
-            continue;
-        }
-        if !request.states.is_empty()
-            && !document_text(&document, fields.state)
-                .is_some_and(|state| request.states.iter().any(|value| value == state))
-        {
-            continue;
-        }
-        if request
-            .pid
-            .is_some_and(|value| document_i64(&document, fields.pid) != Some(value))
-        {
-            continue;
-        }
-        if request
-            .session_id
-            .as_deref()
-            .is_some_and(|value| document_text(&document, fields.session_id) != Some(value))
-        {
-            continue;
-        }
-        if request
-            .agent_id
-            .as_deref()
-            .is_some_and(|value| document_text(&document, fields.agent_id) != Some(value))
-        {
-            continue;
-        }
-        if request.main_agent_only.unwrap_or(false)
-            && document_text(&document, fields.agent_id).is_some()
-        {
-            continue;
-        }
-        if let Some(needle) = &model_needle {
-            let request_model = document_text(&document, fields.request_model)
-                .unwrap_or_default()
-                .to_lowercase();
-            let response_model = document_text(&document, fields.response_model)
-                .unwrap_or_default()
-                .to_lowercase();
-            if !request_model.contains(needle) && !response_model.contains(needle) {
+        // `Weight::for_each_no_score` walks the raw docset, which CAN contain deleted
+        // documents — unlike a collector-driven search, where the searcher filters them.
+        //
+        // Unproven by test, deliberately kept: probed against tantivy 0.26.1 with this
+        // writer usage (`delete_term` then `add_document` on one long-lived writer, commit
+        // per flush), every live segment reports `deletes: null` — the delete is materialized
+        // during the commit, and a segment left with no live document is dropped outright.
+        // So no reachable fixture produces a tombstone here today, and a mutation disabling
+        // this branch does not turn any test red. It stays because the previous
+        // collector-driven path got this filtering for free: if tantivy's policy ever leaves
+        // a `.del` behind, dropping it would silently resurrect superseded operations, which
+        // is a data-correctness bug the read path must not be one policy change away from.
+        let alive = segment_reader.alive_bitset();
+        let mut docs: Vec<DocId> = Vec::new();
+        weight
+            .for_each_no_score(segment_reader, &mut |batch| docs.extend_from_slice(batch))
+            .map_err(native_error)?;
+        // (operation-id ordinal, created_at) for the survivors; ids are resolved in one
+        // dictionary pass below rather than one lookup per document.
+        let mut survivors: Vec<(u64, i64)> = Vec::new();
+        for doc in docs {
+            if alive.is_some_and(|bitset| !bitset.is_alive(doc)) {
                 continue;
             }
+            let Some(operation_ord) = first_ord(columns.operation_id.as_ref(), doc) else {
+                continue;
+            };
+            let committed_at = columns
+                .committed_at
+                .as_ref()
+                .and_then(|column| column.first(doc))
+                .ok_or_else(|| native_error("committed_at missing for an indexed operation"))?;
+            let committed_at = i64::try_from(committed_at)
+                .map_err(|_| native_error("committed_at out of i64 range"))?;
+            if committed_at > request.target_committed_at
+                || (committed_at == request.target_committed_at
+                    && !target_ords.contains(&operation_ord))
+            {
+                continue;
+            }
+            // operation_kind is required, filtered or not — matching the previous
+            // `let Some(kind) = ... else { continue }`.
+            if first_ord(columns.operation_kind.as_ref(), doc).is_none() {
+                continue;
+            }
+            if let Some(allowed) = &operation_kind_ords
+                && !ord_allowed(columns.operation_kind.as_ref(), doc, allowed)
+            {
+                continue;
+            }
+            if let Some(allowed) = &endpoint_ords
+                && !ord_allowed(columns.endpoint.as_ref(), doc, allowed)
+            {
+                continue;
+            }
+            if let Some(allowed) = &state_ords
+                && !ord_allowed(columns.state.as_ref(), doc, allowed)
+            {
+                continue;
+            }
+            if let Some(pid) = request.pid
+                && columns
+                    .pid
+                    .as_ref()
+                    .and_then(|column| column.first(doc))
+                    .is_none_or(|value| value != pid)
+            {
+                continue;
+            }
+            if let Some(allowed) = &session_ords
+                && !ord_allowed(columns.session_id.as_ref(), doc, allowed)
+            {
+                continue;
+            }
+            if let Some(allowed) = &agent_ords
+                && !ord_allowed(columns.agent_id.as_ref(), doc, allowed)
+            {
+                continue;
+            }
+            if request.main_agent_only.unwrap_or(false)
+                && first_ord(columns.agent_id.as_ref(), doc).is_some()
+            {
+                continue;
+            }
+            if let Some((request_models, response_models)) = &model_ords
+                && !ord_allowed(columns.request_model.as_ref(), doc, request_models)
+                && !ord_allowed(columns.response_model.as_ref(), doc, response_models)
+            {
+                continue;
+            }
+            let created_at = columns
+                .created_at
+                .as_ref()
+                .and_then(|column| column.first(doc))
+                .ok_or_else(|| native_error("created_at missing for an indexed operation"))?;
+            let created_at = i64::try_from(created_at)
+                .map_err(|_| native_error("created_at out of i64 range"))?;
+            if request.from.is_some_and(|value| created_at < value)
+                || request.to.is_some_and(|value| created_at > value)
+            {
+                continue;
+            }
+            survivors.push((operation_ord, created_at));
         }
-        let created_at = document_u64(&document, fields.created_at).ok_or_else(|| {
-            native_error(format!("created_at missing for operation {operation_id}"))
-        })?;
-        let created_at =
-            i64::try_from(created_at).map_err(|_| native_error("created_at out of i64 range"))?;
-        if request.from.is_some_and(|value| created_at < value)
-            || request.to.is_some_and(|value| created_at > value)
-        {
-            continue;
-        }
-        matches.push(ListCandidate {
-            operation_id: operation_id.to_owned(),
-            created_at,
-        });
+        resolve_operation_ids(columns.operation_id.as_ref(), &survivors, &mut matches)?;
     }
     matches.sort_by(|left, right| {
         right

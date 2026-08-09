@@ -1,3 +1,5 @@
+> **模板归档说明（2026-08-08）**：本模板原属已删除的项目 skill `session-closeout`。通用方法已迁入 user-level skill `writing-handover-docs`；**这份可照抄的骨架含本仓专有路径，故留在项目侧**。写交接前先读那个 skill 的正文（必含项、状态行、一致性门），再用本骨架填。
+
 # 归档 plan 头部实施状态注解 · 模板
 
 本模板定义 `docs/plan/*.md` 归档 plan 的**头部实施状态注解**格式，是该注解的唯一格式源。所有归档 plan（plan-mode 自动存档 + 手工精选）落库后都应带此注解，让读者一眼分辨「已落地 / 待办 / 废弃 / 研究」，避免把已实施的 plan 误当 todo、或把废弃方案误当路线图。是 CLAUDE.md `session-closeout` 步骤 3「归档 plan」的产物约定之一。

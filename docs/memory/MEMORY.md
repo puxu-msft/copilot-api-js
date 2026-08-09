@@ -6,7 +6,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
-- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — 收尾六步 + HANDOVER/KICKOFF 唯一归属
+- [收尾与跨会话交接](session-closeout-and-handover.md) → user-level skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF、进度文件、容量终态接力）— 项目 skill `session-closeout` 已于 2026-08-08 并入两者并删除
 - [审自己测试类型错配派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → `choosing-test-type`
 - [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` — §1 不变量 / §2 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）/ §3 [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱 + model key 成功失败分裂](pattern-extensible-telemetry-registry.md) → `telemetry-architecture` 一/二 — 成功=规范名·失败=别名，见 [key-split](reference-telemetry-model-key-split-success-vs-failure.md)
@@ -32,8 +32,11 @@
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
 - [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 一天四次同形翻车（agent id 尚不存在／目标函数是 private／pump 返回 `Promise<void>`／owner 够不到 AnchorState）；**动机都是「定死以消除歧义」而假指令比留白更坏**；写形状前先答三问（导出了吗·调用方返回什么·那一刻它存在吗），答不上就只冻结性质 + 调查 task + 停下回报硬门；候选方案也要过同一道检查；证据不同就不能合并同类项。**缝不只是代码缝**——另有角色边界／数据可得性／数据格式三型（2026-08-03），推广三问：执行者有这权限吗·是行为拿不到还是数据拿不到·落到具体字段是哪个
+- [我写的门总在执行接缝上失效](methodology-gates-i-write-fail-at-the-execution-seam.md) — 写 skill/rule/验收条款时反复犯同一族错：**裁决点不可达**（挂在流程已越过的步骤）·**自证空结果**（0 候选就免评审，而漏项那轮恰好为空）·**评审无 oracle**（只送自述，reviewer 看不到事件源）·**判定了没有回路**·**按对象类型分叉**（回流只覆盖文件、漏掉非文件）·**不可逆动作 fail-open**·**顺序写反**（先删后发现）·**声明单源实际双判**（且非文件候选填不进文件专用 schema）·**无边界+入列前自评过滤**（作者在评审看到它之前就筛掉了）。九形态各配可观察修法；写完每条门问四问：谁在哪个尚未越过的时刻执行·判否后回到哪步且旧结论是否作废·执行者当时拿得到输入吗·动作可逆吗（不可逆必须 fail-closed）。**实证：「交事件源+双向对账」条款连咬作者两次**——首跑我只列 2 项，补成 10 项后再对账仍漏 2 格、且我自称「无新增」的两类被证否；**补全后必须再对一次，直到 diff 为空**
+- [`--ff-only` 被拒别按成因清单对号入座](methodology-ff-only-refusal-is-not-a-conflict.md) — **看 in-progress operation 状态 + `ls-files -u`，再按实际 stderr 分流**：`Not possible to fast-forward`=拓扑分叉，`would be overwritten`=**重叠**脏路径，可并存、解决一个要重跑。已知三种前置状态会拒（未解决 unmerged／已 add 未提交的 merge（`ls-files -u` 为 0、报 `MERGE_HEAD exists`）／rebase-cherry-pick 未收尾），**清单不保证完整**；⚠️**别把「工作区干净」当前置条件**——不重叠的 staged dirt 不妨碍快进，共享树永远有别人的 WIP，那是过严的门。共享树里的前置状态**只报告确认归属、不自行解决**。重复编辑用 exact reverse patch 清除、**绝不整文件 `checkout`**；附**`git ls-tree` 第二列是类型不是 OID**（误读产出 63 个假碰撞而「共享树很脏」恰好为它提供合理解释）。**本条被连打四轮，每次都是「用记得的清单替代读实际输出」**（三次枚举不全、一次反向过严）
+- [顺序前置先分型再判](methodology-ordering-gate-needs-a-trigger-that-reads-it.md) — 写「X 必须晚于 Y」前先声明它是哪型：**状态门**=每入口放行控制依赖于该谓词 + 读不到即阻断 + 原子/lease/锁或 Y 单调（**「权威」按可验证一致性契约定义、不按物理载体**——线性一致副本·lease 保护状态·带 version 校验的快照都合格，拒的是未经验证可能滞后的副本）；**因果·capability 门**=permit 只可能由 Y 产生·不可伪造·每入口都必须消费它（此型**不需要**再读 Y 真相源）。两型共同验收须**隔离目标门**：**不能假定 Y 是 X 的充分条件**，正控写成「其他前置全满足时该 Y 门不再挡」而非「X 一定发生」，负控固定其他前置只翻转 Y 并核对阻断 provenance 来自目标门（否则兄弟门代咬，假门也能通过），再加入口全集 + 只破坏目标 gate 的失效对照。都不成立就消门。**判据被连打四轮、方向各异，根因是想用一条判据管两类门**——反复朝相反方向被打回时先去分型，别调措辞
 - [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 判官与记录位置好补、**触发点最容易只写成一句陈述**（还要带 level + 说出来让用户可否决）；判据=未来会话在必经流程里会不会真走到；连打回**三轮**（①搬进 skill 只修好三分之二 ②指针不可达：字面只裁三条断言里的一条、且漏了 leaf 转交分支 ③触发点寄生在会被删除的宿主上）；**「永不闭合」不是安全的保守选项**。另含两条配套：**手工汇总+明细无对账门必漂**（指定明细为 SSOT、汇总降派生视图）·**写进文档的指纹要给可复跑命令别给裸值**
-- [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=skill `session-closeout`
+- [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=user-level skill `closing-a-development-session` 的 `verification-log.md`（投票规则唯一权威）
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制（对偶于核实他人断言）
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错
 - [收尾汇总的表述系统性强于其证据](methodology-closeout-summaries-overstate-their-evidence.md) — 五种形态全由评审而非自查抓到：数字无 selector（34/34）、汇总压掉真实计数（「四路 0/0」）、描述自己刚做的动作写反方向（3 处）、全称词没穷举范围（「无穷回归」）、判据里集合名词没定义（「本批」）；定稿前对每个概括问五问、每问带失败动作。**本条第一版自己又犯了其中两条**（搬错计数、把三轮压成两轮）
@@ -63,6 +66,7 @@
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 不用的大 BLOB 白读 + ORDER BY 末项不在索引→temp B-tree
+- [Tantivy 读路径：等值比 ordinal、字符串按段批量解析](methodology-fastfield-ordinal-not-per-doc-dictionary-lookup.md) — 逐文档 `ord_to_str` 让无过滤列表页慢 16 倍（`ord_to_term` 每次从 block 首序号重解码）；基线必须含无过滤场景否则劣化隐身
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；后者可能是 prune orphan，见 [node_modules](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 的隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④命令可能跑错树⑤不同基线 merge 会夹带无关祖先；树向 gate → skill `proving-where-a-command-ran`，集成单元/ancestry/恢复 → skill `git-preference:isolating-from-a-shared-git-worktree`
@@ -74,7 +78,7 @@
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
 - [阻断式 guard 的目的／false-red 成本／粒度未决时先确认](feedback-confirm-guard-purpose-before-hardening.md) — 加固前先确认 guard 守什么，不替用户把未决粒度定死
 - [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态** → skill `reshaping-a-bypassed-guard`；**第三例新增**：信号是「几次 witness 利用同一事实」非次数、推断型判据要**加独立 intent 输入**而非换一种推断、**轴的选择本身也要交未卷入方**；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」
-- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有两解=测试没咬住 vs mutation 根本没生效
+- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有**三**解=测试没咬住 vs mutation 没生效 vs **fixture 造不出被测状态**（排除前两条后先写探针问「这状态真存在吗」，别改断言）
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；**事后归因同形**（diff 只证明结果、区分不了三种机制），分辨判据=我的解释能预测出别的可观测后果吗；编出来的根因会连带产出不防复发的修法
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
@@ -154,5 +158,5 @@
 
 ## 已删除记忆的话题去向
 
-通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
+通用工作原则 → user-rule + CLAUDE.md + user-level skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
 **两个从未存在的 memory 文件已改指正式归属**（2026-08-02，避免制造双源）：语言规则 `feedback-chinese-only-never-japanese` → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec/2026-07-14-unknown-endpoint-logging.md](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。
