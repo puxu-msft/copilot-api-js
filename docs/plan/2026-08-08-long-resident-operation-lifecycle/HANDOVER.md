@@ -2,6 +2,7 @@
 
 **状态：已评审定稿（2026-08-09）** —— 经独立 reviewer 逐条核验：0 blocker，两条 major（行数衍生数字错误、Task 4 门禁数字陈旧）已修，1 条 minor 已补入正文。评审报告存档于 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-handover-review.md`。
 
+- **文档在主线、代码在分支**（2026-08-09 落地）：本目录连同 spec / plan / 两份评审 / `docs/tmp/` 全部证据，已由 `6bda73d8` 合入 **master**——按 CLAUDE.md `docs-merge-before-execute`，定稿文档不留在特性分支。**代码没有合**，仍只在 `fix-long-resident-operations` 上，是否合并、何时合并由用户单独决定。所以：在 master 上读到本文是正常的，但你**读不到 Tasks 1–4 的实现**，要看代码得切到该分支或那个 worktree。
 - **核验基线**：`3e418cdb03b93162e57c540ee4361d35f602835e`（2026-08-08）。下方所有「当前状态」断言都在该 commit 上取证。
 - **分支 / worktree**：`fix-long-resident-operations` @ `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`。
 - **未提交改动**：无（`git status --short` 为空）。**未追踪文件**：无。
@@ -29,11 +30,16 @@
 
 **这是本次交接最重要的一条，不做会白干。**
 
-- **证据**：本分支基线 `92858d08` 之后，master 已前进 **287** 个提交，其中 **11** 个改过 `src/lib/shutdown.ts`。复现命令与原始输出（**别引用二次算出的衍生数字**）：`git diff --numstat 92858d08 master -- src/lib/shutdown.ts` → `102	301`（即 102 增、301 删，合计 403 行变动、净减 **199** 行）；`git show 92858d08:src/lib/shutdown.ts | wc -l` = 849、`git show master:src/lib/shutdown.ts | wc -l` = 650，849−650 = 199，两法互证。同期 master 也改过 `src/lib/context/manager.ts`（+20）与 `src/lib/context/request.ts`（+23）——**正是 Task 4 与 Task 2 改的两个文件**。
+- **证据（别引用写死的数字，跑命令）**：这里的每个量都随 master 前进而变，所以只给复现命令——**2026-08-08 首次写下时的 287 个提交，到 2026-08-09 已是 459**，写死的值一天就烂了。
+  - 落后多少个提交：`git rev-list --count fix-long-resident-operations..master`
+  - 其中多少个改过主战场文件：`git log --oneline fix-long-resident-operations..master -- src/lib/shutdown.ts | wc -l`
+  - `shutdown.ts` 被改成什么样：`git diff --numstat $(git merge-base fix-long-resident-operations master) master -- src/lib/shutdown.ts`，并用 `git show <ref>:src/lib/shutdown.ts | wc -l` 两端各数一次交叉验证（**两法必须互证**，2026-08-08 那次两法都得净减 199 行）。
+  - 同期 master 也改过 `src/lib/context/manager.ts` 与 `src/lib/context/request.ts`——**正是 Task 4 与 Task 2 改的两个文件**，一并按上面的 numstat 命令重取。
 - **为什么阻塞**：Tasks 5–8 的主要战场就是 `shutdown.ts`（Task 6「暴露 tracked-operation 运维真相」、Task 8 文案与验收）。master 的 lossless-shutdown 重写已经删改了计划正文引用的结构，照旧基线施工等于对着不存在的代码写。
 - **前提仍成立（已核实，不必重查）**：master 版 `formatActiveRequestsSummary`（`master:src/lib/shutdown.ts:246-256`）**仍然打印 `request.state`**——正是产生 `(failed, 17620s)` 的那个字段。所以本项目要修的缺陷在当前 master 上依然存在，工作没有作废。措辞已由 `active request(s)` 改为 `accepted operation(s)`，**Task 8 里任何按旧文案写的断言都要重新校准**。
 - **合并策略**：按 memory `methodology-remerge-stale-feature-across-subsystem-rewrite`——**取 master 的结构，重放我们的 delta**，不要把 master 的重写往回改成旧形状。
-- **实测会撞 3 处冲突**（独立评审代跑确认，**撞上是预期的，不是你弄坏了**）：`src/lib/context/manager.ts`、`src/lib/shutdown.ts`、以及 `docs/memory/MEMORY.md`（本分支加过一条 memory 索引行，纯文档、按行取并集即可）。前两个是真正需要判断的地方。
+- **实测会撞 3 处冲突**（独立评审代跑确认，**撞上是预期的，不是你弄坏了**）：`src/lib/context/manager.ts`、`src/lib/shutdown.ts`、以及 `docs/memory/MEMORY.md`。前两个是真正需要判断的地方。
+  ⚠️ 第三处的成因在 2026-08-09 变了：本分支加的那条 memory 索引行**现在已经独立存在于 master**（措辞略有调整），所以合并时它不是「新增 vs 未有」而是「两份措辞不同的同一行」——**取 master 那份**，别把分支的旧措辞放回去。本目录下的文档文件同理：master 版是权威，分支版是旧快照。
 - **合并后必须重跑**：十文件 focused gate + `bun run typecheck` + `bun run test:backend`（只看 `0 fail`）。
 
 ## 已确证的硬事实（别再重新推导）
