@@ -294,7 +294,9 @@ C0.1 ─┬─ C0.2 ─ C0.3 ─┐
 
 ### C0.2 —— 缺陷语料与现状锁定
 
-**Goal**：为 RFC §1 列出的九类已确认缺陷各建一条 fixture，**在旧码上跑通并显式标注当前是「已知有损」**，作为 C8 之后逐条转绿的对照。
+**Goal**：为 RFC §1 列出的九类已确认缺陷各建一条 fixture，**在旧码上跑通并显式标注当前是「已知有损」**，作为 C9/C10 方向 cutover 时逐条转绿的对照。
+
+`[hard]` **这九条断言在 C1–C8 期间必然一直绿，「没红」不代表没欠账。** 它们直接 import 六个 legacy translator 符号，而 C8.0a/C8.0b/C8.1/C8.2/C8.3 清一色是 `Create` 新模块、不改这些 translator，且 G2 本就禁止 C1–C8 改 production writer。真正让它们转绿的动作写在 C9 与 C10 的 `Files` 里：`Modify tests/openai/semantic-bridge/known-defects.unit.test.ts`（该方向的 KNOWN-LOSS 断言转为目标行为断言）。**C8 的实施者不得把「九条全绿」读作自己这片无遗漏**——那九条根本不观测新模块。（本条由 C0.2 的独立评审实测发现并核实：初稿写的「修复这些缺陷时旧断言会变红、迫使 C8–C10 更新」与本计划自己的 C9/C10 条目矛盾。）
 
 **Files**
 - Create `tests/openai/semantic-bridge/known-defects.unit.test.ts`
@@ -302,14 +304,16 @@ C0.1 ─┬─ C0.2 ─ C0.3 ─┐
 - Create `tests/openai/semantic-bridge/client-wire-golden.http.test.ts` —— **G2 的字节基线**
 
 **Interfaces**
-- Produces：具名 fixture 导出，供 C1–C8 直接 import；每条附 `expectedAfterMigration` 注释说明目标行为由哪个 commit 兑现。
-- Produces：**客户端 wire 字节 golden**（两方向 × stream/non-stream × 有无 retry，至少 6 条）。这是 G2 在 C2.1–C8.3 每片的机械判据，**不是可选项**。
+- Produces：具名 fixture 导出，供 C1–C8 直接 import；每条附 `expectedAfterMigration` 注释说明目标行为由哪个 commit 兑现。`[hard]` 该注释命名的是**在新模块里实现该行为的那一片**，**不是本断言变红的那一片**（变红一律在 C9/C10）；两者混写会制造上面那个错误心智模型。
+- Produces：**客户端 wire 字节 golden**。这是 G2 在 C2.1–C8.3 每片的机械判据，**不是可选项**。
+  `[hard]` **覆盖面按「片 → 内容形态」矩阵反推，不按方向 × stream × retry 的笛卡尔积凑数**：逐片过一遍 C2.1–C8.3，列出每片触碰的内容形态（text／tool 调用与 `input_json_delta`／`function_call_arguments.delta`／reasoning 与 thinking／encrypted carrier／错误腿 envelope／响应头），取并集作为 golden 集必须覆盖的形态清单，矩阵落盘到 `progress/c0-2.md`。**没被任何 golden 走到的形态，对应片的 G2 对账就是空转。** 本片实测踩过三次同形态缺口：只有一个方向有 reasoning、守卫审 helper 不审集合、tool 与 non-stream reasoning 与错误腿零覆盖——三次都是「凭记忆列内容类型」列漏的，所以判据必须从被保护对象反推。
 
 **Steps**
-1. 每条缺陷写一个断言，断言**当前（有损）行为**，并在测试名与注释里写明「KNOWN-LOSS，C<N> 后应改为 X」。
+1. 每条缺陷写一个断言，断言**当前（有损）行为**，并在测试名与注释里写明「KNOWN-LOSS，目标行为由 C<N> 在新模块实现，本断言在 C9/C10 转绿」。
 2. 九类逐条覆盖，缺一即本片未完成。
 3. 同模型 Claude 原样回送那条是 **G4 的守护**，它从现在到 C11 必须一直绿。
 4. **锁 G2 的客户端 wire 字节 golden**（见 Interfaces）。
+5. **golden 集合的覆盖面本身要有机械守卫**：登记键必须**用例级**（方向 + 形态 + stream/retry 变体都要区分），末尾断言已执行的登记集合与冻结集合**精确相等**。`[hard]` **不得用 digest key 当登记键**——本片实测中 retry 与 no-retry 变体共用同一个 digest key、互相覆盖，导致「删掉一条 golden 守卫会红」只对少数几条成立。守卫的判据是「删掉任意一条被守护的用例，它会不会红」，不是「有没有某种 marker」。
 
 **⚠️ fixture 清单按「旧码可否表达」二分（防结构性 false-red）**
 
