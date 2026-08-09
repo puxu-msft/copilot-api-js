@@ -1539,6 +1539,17 @@ export function createRequestContext(opts: {
       ctx.setAttemptError(error)
     },
 
+    recordGenerationDispatchDiagnostic(dispatch, diagnostic) {
+      // Sealed-first, mirroring setGenerationDispatchTimingEpoch: a transport producer can still be
+      // draining when the record seals, and a late observation is not a programming error.
+      if (modelOperationRecorder.sealed) return
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      // Deliberately NOT selectGenerationAttempt + recordAttemptDiagnostic: that pair writes through
+      // the ambient current attempt and, worse, leaves it moved for every later ambient write.
+      recordAttemptDiagnostic(diagnostic.kind, diagnostic.severity, diagnostic.data, diagnostic.message, generationAttempt)
+    },
+
     setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)

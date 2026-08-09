@@ -369,6 +369,62 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(terminal.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.verdict).toBe("failed")
   })
 
+  /**
+   * A4 explicit dispatch ownership.
+   * Transport-level producers (H2 stream/session observers) run concurrently with the rest of the request, so they must name the dispatch they belong to rather than write through whatever attempt is ambiently "current".
+   *
+   * The second half of this test is the part with discriminating power.
+   * Recording against the PRIMARY handle while RECOVERY is the active attempt is easy to satisfy by simply re-pointing the ambient cursor first — which is what the sibling `setGenerationDispatch*` helpers do.
+   * That implementation would pass the attribution assertion and then silently redirect every later ambient write to the primary leg, so we also assert the cursor did not move.
+   */
+  test("records a diagnostic against the named dispatch without moving the ambient current attempt", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+
+    ctx.recordGenerationDispatchDiagnostic(primaryDispatch, {
+      kind: "transport.h2_stream",
+      severity: "warning",
+      data: { rstCode: 8, rstName: "NGHTTP2_CANCEL" },
+      message: "peer reset",
+    })
+    // Ambient write AFTER the explicit one: it must still land on recovery, the attempt that was current all along.
+    ctx.setAttemptTransport("upstream-ws")
+
+    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", reason: "transport" })
+    ctx.settleGenerationDispatch(recoveryDispatch, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.settleGenerationCandidate(recovery, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.settleGenerationCandidate(primary, { verdict: "failed", reason: "transport" })
+    ctx.fail("test", new Error("done"))
+    ctx.finalizeModelOperationDelivery()
+
+    const terminal = await ctx.whenModelOperationFinalized()
+    const primaryRecord = terminal.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)
+    const recoveryRecord = terminal.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)
+
+    expect(primaryRecord?.diagnostics.find((d) => d.kind === "transport.h2_stream")).toMatchObject({
+      severity: "warning",
+      message: "peer reset",
+      data: { rstCode: 8, rstName: "NGHTTP2_CANCEL" },
+    })
+    expect(recoveryRecord?.diagnostics.some((d) => d.kind === "transport.h2_stream")).toBe(false)
+    expect(recoveryRecord?.transport).toBe("upstream-ws")
+    // Primary keeps the `beginGenerationDispatch` default. Had the explicit recorder re-pointed the ambient cursor, these two would be swapped: primary "upstream-ws", recovery still "http".
+    expect(primaryRecord?.transport).toBe("http")
+  })
+
+  test("rejects a diagnostic for an unknown dispatch instead of guessing an owner", () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+
+    expect(() => ctx.recordGenerationDispatchDiagnostic("no-such-dispatch" as never, { kind: "transport.h2_stream", severity: "info" })).toThrow(
+      /unknown generation dispatch/i,
+    )
+  })
+
   test("routes active recovery attempt fields away from a pinned primary terminal", () => {
     const { ctx } = makeContext()
     const primary = ctx.beginGenerationCandidate({ role: "primary" })
