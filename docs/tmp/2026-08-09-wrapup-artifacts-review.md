@@ -234,3 +234,55 @@
 - 复评轮次 4：BLOCKER 0、MAJOR 1、MINOR 1。
 - 复评轮次 5：BLOCKER 0、MAJOR 1、MINOR 1。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 6（整改提交 `45c9114a`）
+
+## 复评范围与方法
+
+- 读取 `45c9114a` 完整 diff，通读 tally 权威段、backlog 当前入口、progress 完成态入口和 memory 新增教训。
+- 全仓搜索 `退出码 0`、`exit 0`、`充分判据/条件`、`判据是退出码与标记`、`无 INCOMPLETE 即可` 等同义载体；区分 tally 语境与其他命令的普通 exit-code 记录。
+- 用 Git object 核对数字谱系和改测试文件的提交集合；复核 runner blob 三处仍为 `a27bf46dc41649c90090d6670b391b5b8bf57517`。
+- 以接手方第一人称从 backlog 与 progress 两个入口走到权威段，判断指针是否削掉执行所需上下文。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 1。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:52`、`docs/todo/deferred-backlog.md:1258` — 单一权威建立了，但“有条件解除”仍没有可执行的终端条件
+
+- **现象**：backlog 说 tally 引用纪律“有条件解除”，并正确把条件路由到唯一权威；权威段却只定义“exit 0 是必要非充分”、三道部分门和一个已知缺口，没有回答接手方最终要问的“在什么限定下可以引用、允许把数字表述成什么强度”。消除重复载体解决了漂移，却把原本过强的 gate 变成了未闭合的 action contract。
+- **证据／命令输出**：`docs/coding-conventions.md:52` 明写 necessary-not-sufficient 和 producer 不声明 totals 时门不生效；`docs/todo/deferred-backlog.md:1258` 明写“有条件解除”但刻意不复述条件。沿指针读完后仍只有必要条件，没有充分条件或允许的窄 claim 形状。全仓同义搜索确认没有另一个当前载体补上这个终端动作，因此不是“我漏读了另一份定义”。
+- **接手方错误动作**：谨慎的接手方会因条件永远未定义而不敢引用任何新 tally；激进的接手方会自行把“exit 0 + 三道门”补成充分条件，重新制造第五种未经批准的充分性主张。两种动作都不是文档明确授权的结果。
+- **建议处置**：不要再寻找一个跨版本／跨 producer 的万能充分判据。权威段应定义**允许的窄结论**：例如“可按 `<commit> + <command> + 原始 tally 行` 引用为该次运行的 observed count；不得称完整总量、不得作增减证据，除非另有与目标集合对齐的独立 completeness oracle”。若要对当前 Bun 1.3.14/backend 口径给更强结论，则把版本、三属性存在、逐 artifact 对账、文件集合精确相等与 exit 0 全部写进限定命题，并明确不外推。backlog 的“有条件解除”随后只需指向这个 claim policy。文档修订建议 `gpt-souls:doc-writer`。
+
+## 指针取舍判定
+
+- **progress 指针没有削成裸指针**：它保留了要运行的命令、历史数字及 commit provenance、为什么不在此复述、权威文档的精确章节，并显式提醒 necessary-not-sufficient。接手方无需猜“去哪读”或“为什么要读”。
+- **backlog 指针也没有削过头**：它保留当前处置状态、旧数字不追认、3-run consistency 未建立且不是 completeness 替代、权威路径与路由理由。对 backlog 读者而言，这些是决定是否开工／是否继续调查所需的本地上下文。
+- 因此问题不在“指针太短”，而在**被指向的权威仍缺终端 claim policy**。不要通过把完整条件复制回两个入口来修；应在 authority 补齐一次。
+
+## 已确认无新增问题的范围
+
+- 数字谱系已正确：`7536@30559e07 → 7538@dd0bcd2d → 7542@eb2493ad → 7544@eba4f21a`；`bb1f81f3` 为纯文档提交、沿用 7542。Git first-parent 顺序与测试文件 path log 均支持该表。
+- 同义搜索未发现 progress/backlog 之外仍把 tally 的 exit code／marker 写成充分条件的第五载体；历史 review 原文均有时间点或更正链，不冒充当前权威。
+- memory 的“四轮／四种措辞”与实际四次 sufficiency 失效相符；多臂逐臂负控教训与当前测试事实一致。
+- runner 本轮未改，工作树 blob、HEAD blob、baseline `runner_git_blob` 三处一致。
+
+## 收敛判定
+
+- **当前没有未闭合 BLOCKER。**
+- **当前仍有 1 个未闭合 MAJOR**：tally 引用政策缺少终端、可执行的 claim scope；所以本轮不能给出最终收口。
+- 其余前五轮 BLOCKER/MAJOR 均已由当前代码或带 provenance 的文档更正闭合，没有因“改成指针”重新打开。
+
+## 最终计数
+
+- 轮次 1：BLOCKER 0、MAJOR 7、MINOR 1。
+- 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
+- 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
+- 复评轮次 4：BLOCKER 0、MAJOR 1、MINOR 1。
+- 复评轮次 5：BLOCKER 0、MAJOR 1、MINOR 1。
+- 复评轮次 6：BLOCKER 0、MAJOR 1、MINOR 0。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。
