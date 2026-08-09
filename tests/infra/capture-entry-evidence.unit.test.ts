@@ -118,7 +118,7 @@ function replaceOut(fixture: { tree: string; out: string; entrySha: string }, ou
 }
 
 describe("capture-entry-evidence", () => {
-  function runBaselineSummaryFixture(runnerExitCode: number): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
+  function runBaselineSummaryFixture(runnerExitCode: number, summary?: string): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
     const tree = mkdtempSync(path.join(os.tmpdir(), "baseline-summary-"))
     const out = path.join(tree, "out")
     const scriptDir = path.join(tree, "exp/inter-block-anchor-allocator")
@@ -127,10 +127,11 @@ describe("capture-entry-evidence", () => {
     cpSync(BASELINE_RUNS, path.join(scriptDir, "baseline-runs.sh"))
     const failed = runnerExitCode === 0 ? 0 : 1
     const passed = 10 - failed
+    const summaryLine = summary ?? `[parallel-test] 2 shards · 10 tests · ${passed} pass · ${failed} fail · 10 executed · 0 skipped · 1s`
     writeFileSync(
       fakeRunner,
       `#!/usr/bin/env bash
-printf '[parallel-test] 2 shards · 10 tests · ${passed} pass · ${failed} fail · 10 executed · 0 skipped · 1s\\n'
+printf '%s\\n' '${summaryLine}'
 printf '[parallel-test] artifacts=/tmp/fake-artifacts\\n'
 exit ${runnerExitCode}
 `,
@@ -166,6 +167,25 @@ exit ${runnerExitCode}
     expect(log).toContain("=== tests seen   : 10")
     expect(stderr).toContain("run 01 exited 7")
     expect(stderr).not.toContain("reported no tests")
+  })
+
+  test("baseline runner accepts the producer's optional crash summary suffix", () => {
+    const { result, log } = runBaselineSummaryFixture(
+      0,
+      "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped · 1 shard(s) crashed (see isolated re-run above) · 1.25s",
+    )
+    expect(result.exitCode).toBe(0)
+    expect(log).toContain("=== tests seen   : 10")
+  })
+
+  test.each([
+    "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped · 1s artifacts=/tmp/forged",
+    "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped",
+  ])("baseline runner rejects count-shaped non-summary lines: %s", (summary) => {
+    const { result, log } = runBaselineSummaryFixture(0, summary)
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== tests seen   : none")
+    expect(new TextDecoder().decode(result.stderr)).toContain("reported no tests")
   })
 
   test("rejects a lexical outside symlink parent whose missing child resolves inside TREE", () => {

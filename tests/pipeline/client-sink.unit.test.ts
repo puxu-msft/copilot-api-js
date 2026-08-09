@@ -31,6 +31,31 @@ import { FakeClock } from "../helpers/fake-clock"
 
 import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
+describe("FakeClock selective interception", () => {
+  test("intercepts matching business timers while leaving unrelated deadlines on real time", async () => {
+    const clock = new FakeClock()
+    clock.install({ intercept: (ms) => ms === 1 })
+    let fakeFired = false
+    let realFired = false
+    try {
+      setTimeout(() => {
+        fakeFired = true
+      }, 1)
+      setTimeout(() => {
+        realFired = true
+      }, 30)
+      expect(clock.liveTimerDelaysMs).toEqual([1])
+      await clock.advance(1)
+      expect(fakeFired).toBe(true)
+      expect(realFired).toBe(false)
+      await new Promise((resolve) => clock.realSetTimeout(resolve, 50))
+      expect(realFired).toBe(true)
+    } finally {
+      clock.restore()
+    }
+  })
+})
+
 describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {
   // Root fix: writeSynthetic previously sampled the forwarded track with a hardcoded `undefined`
   // synthetic kind (unlike write(), which reads readSyntheticKind(frame)). A handler-tagged terminal

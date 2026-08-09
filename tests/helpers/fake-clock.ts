@@ -12,18 +12,36 @@ export class FakeClock {
   private origSet = globalThis.setTimeout
   private origClear = globalThis.clearTimeout
   private origNow = Date.now
+  private realTimers = new Set<ReturnType<typeof setTimeout>>()
 
-  install(): void {
+  readonly realSetTimeout = this.origSet.bind(globalThis)
+
+  install(options: { intercept?: (delayMs: number) => boolean } = {}): void {
     this.now = 1_000_000
     this.nextId = 1
     this.timers.clear()
+    this.realTimers.clear()
     Date.now = () => this.now
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
+      const delayMs = ms || 0
+      if (options.intercept && !options.intercept(delayMs)) {
+        let id: ReturnType<typeof setTimeout>
+        id = this.origSet(() => {
+          this.realTimers.delete(id)
+          cb()
+        }, delayMs)
+        this.realTimers.add(id)
+        return id
+      }
       const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + (ms || 0), cb })
+      this.timers.set(id, { fireAt: this.now + delayMs, cb })
       return id as unknown as ReturnType<typeof setTimeout>
     }) as typeof setTimeout
     ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+      if (this.realTimers.delete(id)) {
+        this.origClear(id)
+        return
+      }
       const e = this.timers.get(id as unknown as number)
       if (e) e.cleared = true
     }) as typeof clearTimeout
@@ -33,6 +51,8 @@ export class FakeClock {
     Date.now = this.origNow
     globalThis.setTimeout = this.origSet
     globalThis.clearTimeout = this.origClear
+    for (const timer of this.realTimers) this.origClear(timer)
+    this.realTimers.clear()
   }
 
   /**

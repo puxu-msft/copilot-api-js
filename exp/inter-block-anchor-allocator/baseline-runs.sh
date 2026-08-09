@@ -212,7 +212,7 @@ for i in $(seq 1 "$RUNS"); do
     fi
   } >> "$log"
 
-  tail_line="$(grep -aE '^\[parallel-test\] [0-9]+ shards · [0-9]+ tests · [0-9]+ pass · [0-9]+ fail · [0-9]+ executed · [0-9]+ skipped · ' "$log" | tail -1)"
+  tail_line="$(grep -aE '^\[parallel-test\] [0-9]+ shards · [0-9]+ tests · [0-9]+ pass · [0-9]+ fail · [0-9]+ executed · [0-9]+ skipped( · [0-9]+ shard\(s\) crashed \(see isolated re-run above\))? · [0-9]+(\.[0-9]+)?s$' "$log" | tail -1)"
 
   # A run that executed no tests is not a green run. Reported test count is the
   # cheapest thing that distinguishes "the suite ran" from "something printed

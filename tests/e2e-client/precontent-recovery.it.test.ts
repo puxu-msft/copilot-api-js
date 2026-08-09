@@ -50,7 +50,7 @@ const MODEL = "claude-opus-4.8"
 const REQUEST = { model: MODEL, max_tokens: 64, messages: [{ role: "user" as const, content: "recover" }] }
 const SESSION_HEADER = { "x-session-id": "sdk-precontent-recovery" }
 const CLIENT_TIMEOUT_MS = 5_000
-// Bun test escape hatch only. Ready-live business timing and the SDK timeout are driven by FakeClock below.
+// Bun test escape hatch only. FakeClock drives 1ms proxy business timers; SDK deadlines and localhost I/O stay on real time.
 const TEST_WATCHDOG_MS = 30_000
 
 function completeFrames(id: string, text: string): Array<string> {
@@ -131,7 +131,7 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
         return createSseResponse(completeFrames(`msg_sdk_pre_ready_${mode}`, `${mode} recovered`))
       })
 
-      clock.install()
+      clock.install({ intercept: (delayMs) => delayMs === 1 })
       try {
         const finalP = client.messages.stream(REQUEST, { headers: SESSION_HEADER }).finalMessage()
         await primaryReachedP
@@ -155,6 +155,22 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
     },
     TEST_WATCHDOG_MS,
   )
+
+  test("selective business clock leaves the SDK request timeout on real wall time", async () => {
+    const timeoutClient = new Anthropic({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0, timeout: 50 })
+    setUpstreamFetchForTests(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init.signal
+          const rejectAbort = (): void => reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"))
+          if (signal?.aborted) rejectAbort()
+          else signal?.addEventListener("abort", rejectAbort, { once: true })
+        }),
+    )
+    clock.install({ intercept: (delayMs) => delayMs === 1 })
+
+    await expect(timeoutClient.messages.stream(REQUEST).finalMessage()).rejects.toBeInstanceOf(Anthropic.APIConnectionTimeoutError)
+  })
 
   test("ready-live clean EOF before semantic content recovers one coherent SDK message", async () => {
     const upstream = sequencedUpstream([
