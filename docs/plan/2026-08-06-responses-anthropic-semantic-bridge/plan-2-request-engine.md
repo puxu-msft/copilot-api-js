@@ -60,6 +60,7 @@ export function runRequestBridge<
   KnownTopLevelCapability extends string,
   KnownTopLevelTargetField extends string,
   TargetItemsField extends string,
+  TargetFormat extends BridgeTargetFormat,
 >(
   profile: RequestBridgeProfile<
     Payload,
@@ -69,7 +70,8 @@ export function runRequestBridge<
     Emission,
     KnownTopLevelCapability,
     KnownTopLevelTargetField,
-    TargetItemsField
+    TargetItemsField,
+    TargetFormat
   >,
   payload: Payload,
   ctx: RequestBridgeContext,

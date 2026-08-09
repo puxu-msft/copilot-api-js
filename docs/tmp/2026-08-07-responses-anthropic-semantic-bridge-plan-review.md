@@ -1,10 +1,12 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：首轮发现 1 BLOCKER、4 MAJOR，均已采纳整改，待原 reviewer 复审
+> **状态**：第二轮（复审）发现 3 MAJOR，均已核实并整改，待第三轮复评
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
 > **首轮基线**：`0c6ad2d783a90c39044034cd427858527f925a64`
+>
+> **第二轮基线**：`90cccdb6`（代码基线 master `837fe522`）
 
 ## 评审视角
 
@@ -14,6 +16,8 @@
 | 实施者第一人称走查 | 文件／符号、producer→consumer顺序、DAG、过渡owner、命令与测试真相域 |
 
 ## 首轮结论
+
+> ⚠️ **本节及以下 B1／M1–M4 各条里的 `file:line` 是首轮（基线 `0c6ad2d7`／master `2c9b5d66`）的读数，现已全部漂移**——master 在 08-06→08-09 三天内前进 541 提交。这些行号**只作历史记录，不可据以定位**；当前位置见第二轮小节与计划正文的符号锚点（`outboundTranslateOut`／`createProcessor`／`runResponseNonStreaming`／两个 cell 的 `translateOut`）。各条的**实质结论仍成立**，漂的只是位置。
 
 - 协议 verifier：1 BLOCKER、1 MAJOR；不可定稿。
 - 架构 reviewer：首次长报告因 API `Server error mid-response` 中断；恢复同一 agent 后返回 0 BLOCKER、3 MAJOR。
@@ -66,3 +70,50 @@
 3. Candidate collector是否在renderer前创建且whole／stream共用candidate-local owner。
 4. Request collector是否真实贯穿driver→两个outbound cells→hub，并在candidate前freeze。
 5. 整改是否引入新BLOCKER／MAJOR；若只剩minor，明确写“计划可定稿”。
+
+## 第二轮（复审，基线 `90cccdb6` / master `837fe522`）
+
+两位 reviewer 均恢复原实例（`SendMessage`），逐条判定我提出的 5 条可验证命题。**两侧的 5 条命题全部判定成立**，但各自另发现新问题。两位的隔离 worktree 事后均确认干净。
+
+### 结论
+
+| 视角 | BLOCKER | MAJOR |
+|---|---|---|
+| 协议契约 | 0 | 1 |
+| 管线接线 | 0 | 2 |
+
+### MAJOR 1（协议）：`errorRenderer` 与 profile 的 `targetFormat` 无类型级绑定
+
+`RequestBridgeProfile` / `ResponseBridgeProfile` 各自独立声明 `targetFormat` 与 `errorRenderer: CompatibilityErrorRenderer`，而后者是**自带判别键**的 union，不接收 profile 的 `targetFormat` 作参数——因此把 Responses renderer 挂到 `targetFormat:"anthropic-messages"` 的 profile 上**照样编译通过**。
+
+**我方复核**：已亲自读 spec 两个 profile 接口，确认两字段确实互不约束，claim 成立。
+
+**整改**：新增 `BridgeTargetFormat` 与条件类型 `CompatibilityErrorRendererFor<TF>`；两个 profile 增加 `TargetFormat` 类型参数，`targetFormat: TargetFormat` 且 `errorRenderer: CompatibilityErrorRendererFor<TargetFormat>`。同步更新 plan-2 runner 签名的类型参数列表（原为 8 参，现 9 参）与 spec 两处散文（§11 约束、第 14 条不变量）。
+
+**并补上原先缺失的 mutation**：plan-1 Task 1.6 新增 Step 5b——negative type fixture 断言错配**编译失败**。这一格不可省：8 格运行时测试测的是各协议内部正确性，**覆盖不到装配错配**。这正是「判据之间留缝」的实例，不是某条判据写错。
+
+### MAJOR 2（接线）：Task 3.1 自相矛盾，照步骤实现会被本 Task 自己的判据判红
+
+Produces 要求「candidate fork 原样共享 records 值」，mutation 要求「每 candidate 复制 records 后红」，而实现步骤却写「实现 `snapshotStableState` clone+freeze」。
+
+**我方复核**：读 `candidate-state.ts` 确认——该函数多数字段走 `cloneAndFreeze`（内部 `structuredClone`，每 candidate 得到**不同对象**），唯独 `sourceToolNameMapper` 带注释 “share by reference across candidates”、不 clone。claim 成立，且我原文确实指向了相反写法。
+
+**整改**：步骤改为「按 `sourceToolNameMapper` 的形状追加按引用共享的 spread，freeze 只在 S2 finally 做一次」，断言明确为**引用相等 `toBe`**；并写明那条**危险歧路**——遇红时把断言放宽成深相等会永久落地 per-candidate 副本，使 mutation 从此不可实现，故只许改实现不许改断言。
+
+### MAJOR 3（接线）：`outboundTranslateOut` 是「唯一分派实现」但有两个调用点
+
+`runRequest`（受 try/finally 覆盖）与 `inspectRequest`（dry-run 探针，`stopAfter="translate"` 直接 return、**无 finally**）。原文「唯一分派点」的措辞会诱导实施者把 `resolveRequestTranslationRuntime` 塞进 `outboundTranslateOut` 内部，导致 inspect 路径也创建**永不 freeze、永不 publish** 的 open collector。
+
+**我方复核**：读 `driver.ts` 确认两个调用点及 `inspectRequest` 无 finally、提前 return，且该路径由 dry-run 调试端点使用。claim 成立。
+
+**整改**：Files 备注改为点名两个调用点及其生命周期归属差异；Step 3 明确禁止把 resolver 塞进 `outboundTranslateOut`；Step 5 改为「共路但不产生诊断」，写明 inspect 路径只解析、不 freeze、不 publish、不计 dispatch，并给出断言。
+
+### 采纳的 minor
+
+- **纠正我自己写错的理由**（重要，非措辞）：我原先称 open collector 进 `RequestState` 会「违反 request-lifecycle-stable 契约」。reviewer 指出这与代码不符——`RequestState` 本就收纳 `betaProbe`／`reverseMapperHolder`／`responsesFallbackScratch` 等共享**可变**句柄。真正的机械理由是 **fork 语义**：`validateOpaqueFactories` 要求进入 `RequestState` 的 opaque 可变句柄注册 per-candidate 工厂，于是会按 candidate 分裂，破坏 request-level 单份记录。结论不变，理由已在 spec 与 plan 两处替换。**留此记录是因为错误的理由比错误的结论更隐蔽**：结论正确会让人以为整段都对，而后来者会照着错理由去推别的结论。
+- Task 3.2 改为**复用既有的 `CandidateState.responseState`** 槽（已存在但零生产消费者：`forkEnv` 只挂回 `requestState`、丢弃 `responseState`），避免实施者新造一套 supply，并顺手了结该死槽。
+- 点明 `createCandidateRenderer` 共有**四个**实现（另有 gemini、openai-cc，不在本对内），第二参数可选故不破编译，但清单不得让人误以为只有两个。
+
+### 未采纳
+
+无。本轮 3 条 MAJOR 与 3 条 minor 全部采纳。

@@ -1,6 +1,8 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：计划评审发现 WebSearch 外层 oracle 与 error renderer 契约缺口，更正待复审
+> **状态**：首版已合入 master（`a0a53a6f`）。**本文件当前含尚未合并的更正**——计划两轮评审共触发 4 处规格更正（WebSearch oracle、error renderer exact 契约、renderer↔profile 类型级绑定、S2-local collector 的理由更正），待第三轮复评后随计划一并合并。
+>
+> 判定本文是否已合并，别读上面这句，跑：`git merge-base --is-ancestor HEAD master && echo merged || echo unmerged`（在本文所在分支执行）。
 >
 > **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09；计划评审整改后重基的最新 master）
 >
@@ -289,6 +291,19 @@ interface ResponsesCompatibilityErrorRenderer {
 
 type CompatibilityErrorRenderer = AnthropicCompatibilityErrorRenderer | ResponsesCompatibilityErrorRenderer
 
+/**
+ * 目标协议 → 该协议唯一合法的 renderer。profile 必须用它绑定 `errorRenderer`，
+ * 不得直接写 `CompatibilityErrorRenderer` 联合体——否则 `targetFormat` 与
+ * `errorRenderer` 是两个互不约束的字段，把 Responses renderer 挂到
+ * `targetFormat:"anthropic-messages"` 的 profile 上照样编译通过，
+ * 错配只能等运行时的 8 格测试撞见。
+ */
+type BridgeTargetFormat = "anthropic-messages" | "openai-responses"
+
+type CompatibilityErrorRendererFor<TF extends BridgeTargetFormat> = TF extends "anthropic-messages"
+  ? AnthropicCompatibilityErrorRenderer
+  : ResponsesCompatibilityErrorRenderer
+
 interface RequestBridgeProfile<
   Payload,
   TargetPayload,
@@ -298,16 +313,17 @@ interface RequestBridgeProfile<
   KnownTopLevelCapability extends string,
   KnownTopLevelTargetField extends string,
   TargetItemsField extends string,
+  TargetFormat extends BridgeTargetFormat,
 > {
   readonly sourceFormat: "openai-responses" | "anthropic-messages"
-  readonly targetFormat: "anthropic-messages" | "openai-responses"
+  readonly targetFormat: TargetFormat
   readonly itemHandlers: RequestHandlerRegistry<SourceByKind, Emission>
   readonly orderingPolicy: RequestOrderingPolicy<Emission>
   readonly topLevelCapabilities: TopLevelCapabilityRegistry<Payload, KnownTopLevelCapability, KnownTopLevelTargetField>
   readonly topLevelCapabilityOrder: readonly KnownTopLevelCapability[]
   readonly targetItemsField: TargetItemsField
   readonly coordinatePayload: RequestPayloadCoordinator<Emission, TargetItem>
-  readonly errorRenderer: CompatibilityErrorRenderer
+  readonly errorRenderer: CompatibilityErrorRendererFor<TargetFormat>
   readonly unknownPolicy: "passthrough" | "reject"
 }
 
@@ -316,14 +332,15 @@ interface ResponseBridgeProfile<
   LifecycleByKind extends { [K in keyof WholeSourceByKind]: SemanticItemLifecycleEvent },
   Emission,
   TargetWhole,
+  TargetFormat extends BridgeTargetFormat,
 > {
   readonly sourceFormat: "openai-responses" | "anthropic-messages"
-  readonly targetFormat: "anthropic-messages" | "openai-responses"
+  readonly targetFormat: TargetFormat
   readonly itemHandlers: ResponseHandlerRegistry<WholeSourceByKind, LifecycleByKind, Emission>
   readonly lifecycleAdapter: ProtocolLifecycleAdapter<unknown>
   readonly renderWhole: WholeRenderer<Emission, TargetWhole>
   readonly renderStream: StreamRenderer<Emission>
-  readonly errorRenderer: CompatibilityErrorRenderer
+  readonly errorRenderer: CompatibilityErrorRendererFor<TargetFormat>
   readonly unknownPolicy: "passthrough" | "reject"
 }
 ```
@@ -832,7 +849,7 @@ declare function isBridgeCompatibilityError(error: unknown): error is BridgeComp
 ```
 
 - Identity Responses→Responses 路径原样透传；
-- 每个 non-identity profile 必须提供 `CompatibilityErrorRenderer`，不得让 handler、driver 或 route 临场拼错误 wire；
+- 每个 non-identity profile 必须提供 `CompatibilityErrorRendererFor<TargetFormat>`（**不是**裸的 `CompatibilityErrorRenderer` 联合体），不得让 handler、driver 或 route 临场拼错误 wire；
 - HTTP status 只由错误方向与 code 决定：request-side `incompatible-continuation` 为 422，其他 request-side code 为 400；所有 response-side compatibility error 为 502。`BridgeCompatibilityError` 本身不保存第二份 status；
 - Anthropic HTTP body 固定为 `{type:"error",error:{type,message}}`：request-side `type="invalid_request_error"`，response-side `type="api_error"`；
 - OpenAI HTTP body 固定为 `{error:{message,type,code,param:null}}`：request-side `type="invalid_request_error"`，response-side `type="server_error"`，`code` 原样取 `BridgeCompatibilityError.code`；
@@ -851,7 +868,7 @@ declare function isBridgeCompatibilityError(error: unknown): error is BridgeComp
 
 ### 11.2 错误路径验收
 
-必须分别测试 request headers-uncommitted、whole-response headers-uncommitted、stream headers-committed/body-uncommitted、stream body-committed 四条路径；每条都断言客户端 wire、HTTP status／terminal frame、History failure reason、`bodyCommitted` 和 typed fields。只断言“抛错”不满足验收。
+必须分别测试 request headers-uncommitted、whole-response headers-uncommitted、stream headers-committed/body-uncommitted、stream body-committed 四个阶段，**每个阶段在两个目标协议（`anthropic-messages`／`openai-responses`）上各测一次，合计 8 格**（与 AC12 同一集合）；每格都断言客户端 wire、HTTP status／terminal frame、History failure reason、`bodyCommitted` 和 typed fields。只断言“抛错”不满足验收。
 
 ## 12. 可观测性与候选所有权
 
@@ -909,7 +926,7 @@ interface CandidateBridgeDiagnostics {
 
 所有权与写入规则：
 
-1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。Driver 从 hub profile resolver 获取一个 S2-local `RequestTranslationRuntime {collector, context, profile}`，并以显式参数传给 `CellAssembly.translateOut`／`OutboundLeg.translateOut`／`translateRequestVia`；open collector 不进入 request-lifecycle-stable `RequestState`，也不进入任何 candidate。
+1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。Driver 从 hub profile resolver 获取一个 S2-local `RequestTranslationRuntime {collector, context, profile}`，并以显式参数传给 `CellAssembly.translateOut`／`OutboundLeg.translateOut`／`translateRequestVia`；open collector 不进入 `RequestState`，也不进入任何 candidate。**理由是 fork 语义、不是「`RequestState` 不许放可变对象」**（后者与代码不符——`RequestState` 本就收纳 `betaProbe`／`reverseMapperHolder`／`responsesFallbackScratch` 等共享可变句柄）：`candidate-state.ts` 的 `validateOpaqueFactories` 要求进入 `RequestState` 的 opaque 可变句柄**必须注册 per-candidate 工厂**，因而会按 candidate 分裂，而 request-level diagnostics 要的正是**全 request 单份记录**。只有 frozen 结果进 `RequestState`。
 2. S2 以 `try/finally` 驱动 runtime collector：item／coordinator 每产生一个 disposition 就 `append`；无论成功、`BridgeCompatibilityError` reject 或意外 throw，`finally` 都恰好一次 `freeze()`。freeze 后 append／再次 freeze 必须 fail-loud。
 3. `freeze()` 生成稳定 id，并对 canonical JSON 计算 hash。Canonical input 精确为 `{version:1, records}`：对象 key 按字典序、array 保序、undefined 字段省略、UTF-8 编码；id 不进入 hash。测试用同 records 不同对象构造顺序证明 hash 相同，record 顺序变化证明 hash 不同。
 4. 只有 frozen `RequestBridgeDiagnostics {id,hash,records}` 挂入 `RequestState.requestBridgeDiagnostics`。`snapshotStableState` 与 candidate fork 原样共享该 deep-frozen 值；每个 candidate／dispatch metadata 只投影 `id/hash`，表示它消费了哪一版已翻译请求。
@@ -1134,7 +1151,7 @@ Responses response
 11. v1 carrier decoder 在 v2 落地后仍有 fixture；
 12. unknown translation 路径必须 fail-loud，并区分 request／whole／stream headers-committed/body-uncommitted／stream body-committed；
 13. request disposition collector 必须 request-level append-only 并在 candidate 前冻结；response collector 必须 candidate-local append-only；顶层由 request + winner response 派生；
-14. 每个 non-identity profile 必须有 `CompatibilityErrorRenderer`；stream error outcome 必须保留 typed error 与 `bodyCommitted`；
+14. 每个 non-identity profile 必须有 `CompatibilityErrorRendererFor<TargetFormat>`（类型级绑定 `targetFormat`，错配编译失败）；stream error outcome 必须保留 typed error 与 `bodyCommitted`；
 15. whole-on-done／stateful response handler 都必须经 typed factory 生成 `BoundResponseItemHandler`；router 不保存泛型 handler 或裸 state；业务 handler／registry／router 调用面不得 cast。唯一类型擦除只允许在 bridge-core factory 内，并必须有 runtime kind guard 与错误 kind mutation；
 16. 删除注册项或把 degraded 改成空 emission 的 mutation 必须变红；
 17. `BridgeCompatibilityError` 必须在 buffered／semantic retry 之前 fail-fast；request error=0 dispatch；response error 观测后 dispatch 增量=0 且无 recovery／continuation，只有无前置 retry／hedge fixture 断言总数=1；

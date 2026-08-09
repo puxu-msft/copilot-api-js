@@ -16,20 +16,23 @@
 
 **Produces:** `RequestState.requestBridgeDiagnostics?: RequestBridgeDiagnostics`，deep-frozen request-stable；candidate fork 原样共享 id/hash/records值，不复制 mutable collector。
 
-- [ ] 写 fork tests：多 candidate 引用同一 frozen值；mutation attempt不可 append；没有 diagnostics 不改变现状。
-- [ ] 实现 snapshotStableState clone+freeze。
-- [ ] mutation：把 open collector放进 RequestState 或每 candidate复制 records 后红。
+> **为什么 open collector 不进 `RequestState`**（机械理由，别写成「违反 request-lifecycle-stable 契约」——那个说法与代码不符：`RequestState` 本来就收纳共享**可变**句柄，见 `request-state.ts` 的 `betaProbe`／`reverseMapperHolder`／`responsesFallbackScratch`）：真正的机械理由是 **fork 语义**。`candidate-state.ts` 的 `validateOpaqueFactories` 要求凡是进 `RequestState` 的 opaque 可变句柄**必须注册 per-candidate 工厂**，于是它会按 candidate 分裂——而 request-level diagnostics 要的恰恰是**全 request 单份记录**。所以 open collector 留在 S2-local `RequestTranslationRuntime`，只有 frozen 结果进 `RequestState`。
+
+- [ ] 写 fork tests：多 candidate 引用同一 frozen值（**断引用相等 `toBe`，不是深相等**）；mutation attempt不可 append；没有 diagnostics 不改变现状。
+- [ ] 在 `snapshotStableState` 里**按 `sourceToolNameMapper` 的形状追加一行按引用共享的 spread**——`sourceToolNameMapper` 那行明确注释 “share by reference across candidates”、**不走 `cloneAndFreeze`**。**切勿套用同函数里其余字段的 `cloneAndFreeze`**：它内部是 `structuredClone`，每个 candidate 会拿到**不同对象**，上一条的引用相等断言立刻红。freeze 只在 S2 `finally` 做一次。
+- [ ] mutation：把 open collector放进 RequestState 或每 candidate复制 records 后红。**注意**：若上一步误用 `cloneAndFreeze`，最省事的「修法」是把引用相等放宽成深相等——那会**永久落地 per-candidate 副本**，使本行的 mutation 从此不可实现。遇到红灯时改实现，不要改这条断言。
 - [ ] Commit: `feat(pipeline): carry frozen request bridge diagnostics`
 
 ### Task 3.2: Candidate-local response collector 先于 renderer 创建
 
 **Files:**
-- Modify: `src/lib/pipeline/generation/candidate-state.ts`
+- Modify: `src/lib/pipeline/generation/candidate-state.ts`（**复用既有的 per-candidate 槽 `CandidateState.responseState` + `supplies.createResponseState`，别新造一套 supply**——该槽已存在但目前**零生产消费者**：`driver.ts` 的 `forkEnv` 只把 `requestState` 挂回 env、丢弃 `responseState`。本 Task 顺手了结这个死槽）
 - Modify: `src/lib/pipeline/generation/candidate-response-session.ts`
-- Modify: `src/lib/pipeline/driver.ts`（`createDriverCoordinator` 内的 `createProcessor`——当前 renderer 先于 session 创建，本 Task 要在两者之前插入 collector）
+- Modify: `src/lib/pipeline/driver.ts`（`createDriverCoordinator` 内的 `createProcessor`——当前 renderer 先于 session 创建，本 Task 要在两者之前插入 collector；另需让 `forkEnv` 真正传递 `responseState`）
 - Modify: `src/lib/pipeline/types.ts`（`FormatCodec.createCandidateRenderer(env, bridgeDiagnostics)`）
 - Modify: `src/lib/codec/anthropic/codec.ts`
 - Modify: `src/lib/codec/openai-responses/codec.ts`
+- 另两个 `createCandidateRenderer` 实现（`src/lib/codec/gemini/codec.ts`、`src/lib/codec/openai-cc/codec.ts`）**不在 Responses↔Anthropic 对内**；第二参数可选故不破编译，但签名变更时需确认这两处仍成立，别以为只有两个实现。
 - Test: `tests/pipeline/candidate-state.unit.test.ts`
 - Test: `tests/pipeline/candidate-response-session.unit.test.ts`
 
@@ -77,7 +80,7 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 - Modify: `src/lib/pipeline/request-state.ts`
 - Modify: `src/lib/pipeline/cell-assembly.ts`（`translateOut(env, requestTranslation?)`）
 - Modify: `src/lib/pipeline/hub-translate.ts`（profile resolver + `RequestTranslationRuntime`）
-- Modify: `src/lib/pipeline/driver.ts`（`outboundTranslateOut`——S2 translateOut 的唯一分派点，migrated cell 与 legacy codec 二选一）
+- Modify: `src/lib/pipeline/driver.ts`（`outboundTranslateOut`——S2 translateOut 的唯一**分派实现**，migrated cell 与 legacy codec 二选一。**注意它有两个调用点**：`runRequest`（正式请求，受 Step 4 的 try/finally 覆盖）与 `inspectRequest`（dry-run 探针，`stopAfter="translate"` 直接 return、**没有 finally**）。两者生命周期归属不同，见 Step 5）
 - Modify: `src/lib/codec/anthropic/anthropic-cell.ts`（`translateOut`——reverse 腿的真实 S2 producer）
 - Modify: `src/lib/codec/openai-responses/openai-responses-cell.ts`（`translateOut`——forward 腿的真实 S2 producer；注意它与 `responsesToolNameSanitize` 这条 S3 rewrite 是两个不同接缝，别改错）
 - Test: `tests/semantic-bridge/migration-dispatch.unit.test.ts`
@@ -88,9 +91,9 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 
 - [ ] **Step 1: 写 dispatcher 红灯。** 空集合只调 legacy；已迁 kind只调 semantic；semantic throw不回退legacy；同kind双调用计数必须失败。
 - [ ] **Step 2: 跑红灯。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts`。Expected: FAIL，模块不存在。
-- [ ] **Step 3: 建S2-local supply。** `hub-translate.ts`导出`resolveRequestTranslationRuntime(env, profileOverride?)`，只在non-identity且有migrated kind／fixture override时返回`{collector,context,profile}`。Driver在route decision后、`outboundTranslateOut`前调用一次，并以显式参数传给`CellAssembly.translateOut(env,runtime)`；两个outbound cell继续传给`translateRequestVia`。Open collector不进入`RequestState`。空production集合且无override时resolver返回undefined、dispatcher不append、不改变body。
+- [ ] **Step 3: 建S2-local supply。** `hub-translate.ts`导出`resolveRequestTranslationRuntime(env, profileOverride?)`，只在non-identity且有migrated kind／fixture override时返回`{collector,context,profile}`。**在 `runRequest` 里**于route decision后、`outboundTranslateOut`前调用一次，并以显式参数传给`CellAssembly.translateOut(env,runtime)`；两个outbound cell继续传给`translateRequestVia`。**不要把该调用塞进 `outboundTranslateOut` 内部**——它同时服务 `inspectRequest`，那样会让 dry-run 路径也创建 open collector（见 Step 5）。Open collector不进入`RequestState`。空production集合且无override时resolver返回undefined、dispatcher不append、不改变body。
 - [ ] **Step 4: Driver S2 finally。** Success／compatibility reject／unexpected throw都freeze同一runtime collector；成功时`env.with({requestState:{...stableState,requestBridgeDiagnostics:frozen}})`，reject／throw时直接`ctx.publishRequestBridgeDiagnostics(frozen)`供失败History。Candidate fork只见frozen diagnostics，永不接触open collector。
-- [ ] **Step 5: inspector共路。** `inspectRequest(stopAfter=translate)` 调同一S2 helper，不复制bridge runner。
+- [ ] **Step 5: inspector共路，但不产生诊断。** `inspectRequest(stopAfter=translate)` 调同一S2 helper、不复制bridge runner，但它是 **dry-run 探针路径**（`routes/debug/dry-run-pipeline.ts` 走这条），**没有 finally 收尾**：因此该路径**只解析、不 freeze、不 publish、不计入 dispatch 计数**，且不得留下永不关闭的 open collector。断言：跑一次 `inspectRequest` 后 `ctx` 上没有任何 bridge diagnostics 被 publish、dispatch 计数不变。
 - [ ] **Step 6: mutation。** Empty dispatcher创建diagnostic／改变body、semantic失败回legacy、reject绕过finally后目标测试红。
 - [ ] **Step 7: 运行与提交。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts tests/pipeline/hub-translate.unit.test.ts tests/pipeline/request-bridge-wiring.it.test.ts`。Expected: PASS。Commit: `feat(pipeline): add inert semantic bridge dispatcher`。
 
