@@ -340,3 +340,53 @@
 
 - 复评轮次 7：BLOCKER 0、MAJOR 1、MINOR 1。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 8（整改提交 `727cdbba`）
+
+## 复评范围与方法
+
+- 读取 `727cdbba` 完整 diff，并通读 claim policy 的文件级／用例级分层、backlog 三条 tally 条目及实验 README 配方。
+- 为两侧画 provenance：expected file set 的 producer／观测点／上游，对照 runtime JUnit identity 的 producer／观测点／上游；核实生产 runner 门 ② 实际读取什么。
+- 用三种方法交叉枚举当前 backend 文件集合：baseline JSON、runner 同形 `Bun.Glob`、`git ls-files tests | rg '\.(unit|it|http)\.test\.ts$'`，三者均为 727 且集合全等。
+- 核验 commit message 是否逐字携带 raw tally line，并按 claim scope 表走查本轮交付话术。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 1。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:68`、`docs/todo/deferred-backlog.md:1190-1197` — 文件级只能判“live discovery 后是否漏报”，不能称 baseline 与 runtime 来源独立；旧条目还把同源 testcase 名单当可靠替代
+
+- **现象**：权威段说发现 baseline “独立枚举”应有文件且门 ② 正拿它对账。实际生产 runner 不读取 baseline；门 ② 用的是**同一次 `discover()` 返回的 live `files`**，而这些路径又直接作为 child Bun 的 argv。baseline 只是另一个持久载体，并由同样的 `Bun.Glob(**/*.{unit,it,http}.test.ts)` 规则从同一 checkout 生成／校验。两侧在 discovery 边界上有共同上游和共同控制者，只在“Bun 收到 argv 后有没有为每个已发现文件写 JUnit identity”这一后半段使用不同观测通道。
+- **provenance 证据**：
+  - expected/live side：`scripts/parallel-test.ts:59-65 discover()` 扫当前 `tests/` 文件系统；`files` 在 `:157` 作为 child Bun argv，并在 `:213` 直接送入 `compareFileIdentities`。生产门 ②没有读取 `entry-test-discovery-baseline.json`。
+  - baseline side：`tests/infra/entry-evidence-schema.unit.test.ts:16-25` 和 `scripts/capture-entry-evidence.ts:145-150,265` 用同一目录、同一 suffix 集和同形 `Bun.Glob` 重新扫描；baseline 还 pin runner blob。它能防 baseline 陈旧，但不是“不同上游”的独立枚举。
+  - runtime side：Bun 消费上述 argv，JUnit `testsuite/testcase file=` 由 `parseJUnit` 观测。若 discover 系统性漏一个文件，它既不进 expected set、也不进 argv/JUnit，门 ②全绿；若文件已被 discover 但 Bun 未产任何行，门 ②会红。
+- **额外冲突**：`docs/todo/deferred-backlog.md:1195,1197` 仍把“JUnit 用例名集合枚举／diff”称作增减验收的可靠替代并声明配套纪律继续有效；但权威段第 69 行已正确认定 testcase 名单与 tally 同源、用例级总量不可判。后续第 1260 行否定 N-run completeness，却未显式撤销 1195/1197 的同源 testcase-name oracle。
+- **接手方错误动作**：接手方会把门 ②或 baseline 当成能证明“所有应有测试文件都进入运行”的独立 oracle；若 discovery 规则自身漏文件，仍会宣布文件级完整。另一位接手方会按 1197 用 JUnit name diff 证明“用例没减少”，直接违反当前 claim scope。
+- **建议处置**：把分层收窄为：① **discovery 后文件覆盖可判**——对 live-discovered argv 集合，JUnit 是否逐文件回报；② **仓库应发现文件集合只有部分独立交叉检查**——baseline／Git tracked paths／Glob 可发现陈旧或部分规则漂移，但 baseline 与 runner Glob 同源，不能单独证明 discovery 完备；③ **用例级仍不可判**。文档中不要说门 ②拿 baseline 对账，改成 live discovery↔runtime；baseline 另列为持久快照／交叉绊线。同步在 1190-1197 追加 superseded 注记，撤销“JUnit 名称 diff 是增减验收可靠替代”，保留其随机漂移诊断用途。修订建议 `gpt-souls:doc-writer`。
+
+## 交付话术复核
+
+- 本轮话术符合 claim scope：锚定 `727cdbba`，点名命令 `bun run test:backend`，使用“观察到 7544 通过／0 失败”而非“共有 7544”，并逐字附上 raw line：`[parallel-test] 16 shards · 7544 tests · 7544 pass · 0 fail · 7544 executed · 35 skipped · 64.62s`。
+- “退出码 0、无完整性标记”只是该次运行的附加观测，没有被写成总量或 no-decrease 证明；未越界。
+
+## 已确认无新增问题的范围
+
+- **用例级分层正确**：root declared totals 与 testcase rows 同属 Bun/JUnit artifact；没有独立 expected testcase population，故不能主张 testcase total 或 no-decrease。
+- **N-run 定位正确**：只能检测随机漂移，不能检测系统性缺失；权威段与 backlog 1260 当前一致。
+- **当前集合事实**：baseline、Bun Glob、Git tracked backend paths 均为 727 且集合全等；这支持当前 snapshot 自洽，不把同源关系升级为结构性独立。
+- runner blob 三处仍为 `a27bf46dc41649c90090d6670b391b5b8bf57517`；`727cdbba` 仅改文档。
+
+## 收敛判定
+
+- **当前无未闭合 BLOCKER。**
+- **当前仍有 1 个未闭合 MAJOR**：文件级 provenance 被写强一档，且旧 backlog 仍保留同源 testcase-name 增减 oracle。因此尚不能最终收口。
+- 除本条外，前七轮 BLOCKER/MAJOR 均已闭合；本轮未发现实现行为新缺陷。
+
+## 最终计数
+
+- 复评轮次 8：BLOCKER 0、MAJOR 1、MINOR 0。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。
