@@ -103,3 +103,63 @@
 
 新增两个测试文件让 `tests/infra/entry-evidence-schema.unit.test.ts` 的「tracks the current backend discovery population」变红。**只改了 `baseline.files`（+2 行），没有整份重建。** 理由：本工作树**已构建** native history-search 产物，整份重建会连 `allowed_skipped` 一起重写，把基线里 34 条 `native-unavailable` 从 master 一贯假设的「产物缺席」环境**静默翻到「产物存在」环境**，使所有没构建产物的树反过来变红。该潜伏问题已单独记入 `docs/todo/deferred-backlog.md`。
 
+---
+
+# 第二轮：复审、裁决与再整改
+
+## D1 —— 已由未卷入的第三方裁决
+
+争议交 `gpt-souls:arbiter`（未参与此前任何一方评审）。**裁决：乙方成立，甲方 BLOCKER 撤销**，理由与本文件第一轮的四条证据一致。甲方随后在自己的报告里接受该反证并撤回。
+
+裁决者另给一条细分，值得照录：甲方**准确识别了**「新 owner 接线与 owner 外 write helper 并存」这个混合写路径，只是把归属判错了。该结构问题定级 **Major、非当前 blocker**，且**已由冻结计划的 Task 4 记录在案，不应重复建项、也不应描述成「提前实施」**。
+
+## 第一轮修复被判不完整 —— 两个新 BLOCKER，都成立
+
+我第一轮只修了 adapter 缺 `case "error"`，复审证明那还差两块，**每块都有独立的端到端复现，两种形状都仍然重试四次**。
+
+### D4：修复寄生在一个可关闭的配置上
+
+adapter 的分类键只读 canonical payload 的 `type`。Anthropic 的 error 帧实际以 `event: error` 到达、body 只有 `{ error: {...} }`；那个顶层 `type` 是**前置的 canonical error rewrite** 补上的，而它是用户可关的设置（关掉时是配置明确支持的 byte-identical passthrough）。于是 `errorShapingEnabled=false` 时 adapter 又看回 `unexpected-frame`。
+
+**修法**：`frameType` 在 payload 未声明 `type` 时回落到 SSE `event` 行。**这是加法**——任何已带 payload `type` 的帧分类结果与从前逐字节相同；姊妹的 `adapters/responses.ts` 本来就先读 event 行。
+
+### D5：grammar 把「上游中途失败」误判成协议违规
+
+`grammar.ts` 的 `acceptTerminal` 对**任何**在 open unit 期间到达的终态一视同仁：丢弃半块，并把终态**整个替换成** `terminal-with-open-unit` 错误——`response-terminal` outcome 根本不发出。对**成功**终态这是对的（生产者声称响应结束，却有块没关）。对**失败**终态不对：上游随时可能死，包括块进行到一半时；把它压成协议错误，恰好毁掉重试判定唯一需要的那个事实，因为 `terminal-with-open-unit` 不算上游失败。
+
+**修法**：按 `terminal.semantic` 分流。两条冻结规则同时满足——半块照旧丢弃（不泄漏部分块），失败仍以终态身份浮现。
+
+**先查了它守什么再改**：`delivery-grammar.unit.test.ts:103-106` 的既有断言用的是 `semantic: "complete"`，走的仍是错误分支、仍然通过。**这是加法，不是放宽既有守卫。**
+
+## D3 —— 我自己写的判据是 false-green，已改正声称而非粉饰
+
+复审实测：把 adapter 的 `case "error"` 删掉，我那条 `h2-committed-block-delivery` **照样绿**。原因是结构性的——前面的 `content_block_stop` 已经 flush 了块，而字节一旦提交，重试闸门无论 error 如何分类都拒绝重试，`upstreamCalls` 恒为 1。
+
+**处置：不把它拧强，而是改正它的声称。** 头部现在写明它钉住什么、以及它**判别不了**哪两个机制，并注明两条非声称都是**实测的、不是推断的**。
+
+## 我在这一轮自己犯的错（由我自己的正控抓到）
+
+我把 D4 的控制点**加错了地方**——parameterize 到了 `h2-committed-block-delivery` 上。跑正控时发现：移除 event 行回落后它**两格都还是绿的**。这正是我上一段刚写下的结论（该形状结构上无法判别任何 error 分类机制），我却在同一轮里又踩了一次。判据已挪到「无前置内容」那条探针上（重试闸门仍开），并给两格独立 session id 以免互读 history。
+
+**教训形态**：「把一个判据参数化」看起来像增强，但**参数化一个本就无鉴别力的形状，只会得到两格绿，而不是一格更强的判据**。
+
+## 三处修复的变异正控（全部实测，逐条复原）
+
+每次变异后先 `git diff` 冻结成 patch，`git apply --reverse --check` 通过后再反向应用，复原后确认 `git diff -- src/` 为空。
+
+| 变异 | 目标判据 | 结果 |
+| --- | --- | --- |
+| adapter `case "error"` 停用 | `i9-h2-buffered-probe` | `Expected: 1, Received: 4` |
+| event 行回落移除 | `i9-h2-buffered-probe`（`errorShapingEnabled=false` 那格） | `Expected: 1, Received: 4` |
+| grammar 的 failed-terminal 分支停用 | `i9-followup-midblock-error` | `Expected: 1, Received: 4` |
+
+门禁：`16 shards · 7652 tests · 7652 pass · 0 fail · 9 skipped`，exit 0，零 crashed shard；typecheck 与 `lint:all` 均 exit 0。
+
+## 仍未处置，继续挂账
+
+第一轮列的四条**一条都没有被本轮解决**，原样有效：`mergeCandidateResponseOpts` 仍不重组 `commitBoundaries`；handler 那个死参数与自相矛盾的注释；`isResponsesCommitBoundary` 无生产消费者；I1 的判据缺口。另加两条：
+
+5. **视角 B 报的 D6（MAJOR）**：两条新测试只断言 `state=failed`，没有证明 History 保留了**真实的 upstream error 因果**、排除了被重标成 truncation。我没有补这条断言。
+6. **裁决者判定的混合写路径 Major**：归属属冻结计划的 Task 4，不另建项，但收口 Task 4 时必须一次性收敛。
+
+

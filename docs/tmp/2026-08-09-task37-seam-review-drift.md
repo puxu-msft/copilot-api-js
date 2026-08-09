@@ -72,3 +72,69 @@
 - **计数：1 BLOCKER，1 MAJOR，0 MINOR。**
 - 先裁定并闭合 D1 的阶段归属，再修 D2；完成后应由原复审链路重新做合并态复审。
 - 工作树 clean 状态：本评审没有写入 `/home/xp/src/copilot-api-js/.worktrees/task37-seam-review-2`；但运行时护栏禁止对子工作树执行 `git status --porcelain`，因此无法机械确认最终状态，需主会话在该树运行该命令复核。
+
+
+# 复审（`434c99c8`）
+
+## R1：`h2-committed-block-delivery` 是 false-green，未钉住所声称的 error commit boundary
+
+- **ID：D3**
+- **所在路径或形态：** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/tests/pipeline/h2-committed-block-delivery.http.test.ts:72-87` 的正控。
+- **严重级别：MAJOR**
+- **证据：** 在 `434c99c8cccb67a1aea75a2de9896a037b998c8c` 上，用预先冻结的 exact patch 暂时删除 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/lib/pipeline/delivery/adapters/anthropic.ts:78-87` 的 `case "error"`，单跑该测试仍为 **1 pass／0 fail**；同一变异下姊妹 `i9-h2-buffered-probe` 按目标以 `upstreamCalls Expected: 1, Received: 4` 失败。随后 `git apply --reverse --check` 通过并反向应用同一 patch恢复，两个测试复跑 2 pass／0 fail。该用例先发完整块，`content_block_stop` 已在 error 之前触发 `commitBoundaries` 并把块写出；因此后续 error 是否自身成为 commit boundary，不影响 `committed-prefix`／`content_block_stop` 断言。
+- **接手方会做出的错误动作：** 维护者会把“测试绿”误当成 error 帧已经进入 grammar-derived `commitBoundaries` 的证据，继而删除旧 predicate 或推进 owner cutover；实际上该测试只证明已由前一个 `content_block_stop` 提交的前缀不会消失，完全没有判别 error boundary。
+- **建议处置：** 由 `gpt-souls:implementer` 重写此判据，使目标机制不可由先前 block boundary 代偿。至少同时加入：① error 到来时 buffer 中含尚未由其他 boundary flush 的可观察尾部；②对 error frame 自身的 boundary 触发有独立观测，或在 focused driver seam 注入只对 error 返回 true 的 projection；③保留真实 HTTP 用例验证 wire 与 upstream call count。修后再次做 exact mutation 正控。
+
+
+## R2：修复只在 error shaping 开启时成立，关闭配置仍重试四次
+
+- **ID：D4**
+- **所在路径或形态：** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/lib/pipeline/delivery/adapters/anthropic.ts:36-39,82-86` 与 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts:49-58` 的配置接缝。
+- **严重级别：BLOCKER**
+- **证据：** 新分支只检查 JSON `payload.type === "error"`，不看 SSE `frame.event`。两条新 HTTP fixture 都发送 `event: error`，但 data 只有 `{ error: {...} }`、没有顶层 `type`（`i9-h2-buffered-probe.http.test.ts:40-45`、`h2-committed-block-delivery.http.test.ts:30-38`）。默认 `errorShapingEnabled=true` 时，先行 S5 rewrite 根据 `frame.event` 重写为带顶层 `type:"error"` 的 canonical frame，恰好替 adapter 补齐输入；临时只在 I9 probe 的 `setStateForTests` 加 `errorShapingEnabled:false` 后，生产 HTTP 路径稳定失败为 `upstreamCalls Expected: 1, Received: 4`。测试 patch 已用 exact reverse patch恢复。该配置关闭态是代码明确支持的 byte-identical passthrough（`error-frame-canonical-rewrite.ts:49-52`），不是无效输入。
+- **接手方会做出的错误动作：** 维护者会认为 adapter 已能识别 Anthropic H2，并据此关闭 D2；实际用户关闭 error shaping 后仍把相同终态决策当截断重试，既浪费四次上游调用，又改写真实失败因果。
+- **建议处置：** 由 `gpt-souls:implementer` 在唯一 adapter classifier 中按 Anthropic wire语义同时识别 SSE `event:"error"` 与 canonical payload `type:"error"`，不要依赖可关闭的先行 rewrite。两条 HTTP 测试至少参数化 `errorShapingEnabled=true/false`，并对两种合法 error data shape做正样本；再对每个分支做目标 mutation。
+
+## R3：两条新判据共同漏掉“半块后 H2”，当前实现仍把它重试四次
+
+- **ID：D5**
+- **所在路径或形态：** unit grammar 的 open-unit terminal seam，`/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/lib/pipeline/delivery/grammar.ts:63-75` 与 `candidate-response-session.ts:125-131,162-166,221-227`。
+- **严重级别：BLOCKER**
+- **证据：** 当前 D4 修复保留、error shaping 保持默认开启，只把 `h2-committed-block-delivery` fixture 的 `content_block_stop` 临时删掉，构造 `message_start → content_block_start → delta → event:error`。同时把断言改为半块不泄漏、error可见、一次上游调用。真实 HTTP 路径失败为 `upstreamCalls Expected: 1, Received: 4`；`committed-prefix` 与 `content_block_stop` 均未泄漏且 error可见，但 error 与 open unit 相遇后 grammar 产生 `terminal-with-open-unit` protocol error，而 `isUpstreamFailure` 不把该 semantic 视为终态失败，故 `sawUpstreamError=false`，继续当截断重试。临时测试 patch 已 exact reverse恢复。现有 I9 只测零内容 H2；新 companion 在 error 前先由 `content_block_stop` 关闭并提交完整块，二者都不覆盖 open partial unit。
+- **接手方会做出的错误动作：** 接手者会依据“两条互补测试”声称 H2 的 retry 与 delivery 两半均闭合；现实中上游在块中途发合法终态 error 时仍被重复请求，且 grammar 的真实 error outcome被降成结构错误，后续 owner会收到错误因果。
+- **建议处置：** 由 `gpt-souls:architect-advisor` 明确冻结此组合的 outcome：推荐“原子丢弃 open half-unit，同时保留 failed response terminal”，从而不泄漏半块且不重试终态决策；随后由 `gpt-souls:implementer` 在 grammar共享基座实现并补真实 HTTP判据。不要仅把 `terminal-with-open-unit` 加进 `isUpstreamFailure`，那会停止重试但仍可能丢掉真实 terminal frame／错误因果。
+
+
+## R4：两条新测试仍未验证 H2 的真实失败因果
+
+- **ID：D6**
+- **所在路径或形态：** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/tests/pipeline/i9-h2-buffered-probe.http.test.ts:80-96` 与 companion `:72-87`。
+- **严重级别：MAJOR**
+- **证据：** I9 只断言 History `state === "failed"`，companion不读 History原因；两者都不断言 `_index.derived.failureReason` 包含上游 `overloaded_error`／`upstream overloaded`，也不排除包含 `truncated`。变异掉修复时 I9先因 `upstreamCalls===4` 失败，但它没有证明最终一次耗尽后的失败因果没有被重标为截断；当前 fixed run日志仍打印 `[Stream] Upstream truncated ...`，这是由于 fixture data缺顶层`type`导致 upstream accumulator也把它记为 unknown event，进一步说明“state failed”不是足够的 oracle。
+- **接手方会做出的错误动作：** 接手者会把“一次调用 + failed”解读成真实 H2 cause已完整保留，随后在诊断、History或client error语义上依赖该结论；测试其实允许用任意失败原因甚至截断原因过关。
+- **建议处置：** 两条真实 HTTP测试统一使用协议真实的 `{type:"error",error:{...}}` data，并断言 History failureReason保留 upstream type/message且不含 truncation；error-shaping开／关两种 wire可不同，但失败因果必须相同。
+
+## 四条未处置项的裁决建议
+
+1. **`mergeCandidateResponseOpts` 不重组 `commitBoundaries`：MINOR（结构正确性）。** 当前 frozen Task 3契约要求唯一 classifier，candidate projection应拥有该字段；因此不应 OR 组合 outer raw-frame predicate。问题不在“不重组”，而在类型仍允许 outer传入一个必被覆盖的字段。建议把 `commitBoundaries` 从 public outer opts拆成 candidate-owned internal projection，或在存在candidate binding时对outer字段fail-fast，消除静默遮蔽。
+2. **handler死传参与反向注释：MAJOR。** `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/src/routes/messages/handler-v4.ts:1873-1876` 明说“must not shadow”却实际永远被shadow，且让后人误改死代码。修法是删掉生产传参与反向注释；不要让merge尊重第二classifier。保留 `anthropicCommitBoundaries` 作为spec oracle须改名／移到测试或文档标明非生产。
+3. **`isResponsesCommitBoundary` 无生产消费者：MINOR。** 它与专属测试当前是陈旧的第二classifier形状。先读两条测试守护的不变量；若只是冻结legacy predicate，应把它降为test oracle并明确标注，不得让人误以为生产可达。若其规则尚未全部由Responses adapter/grammar覆盖，先迁移缺口再移除。
+4. **I1 History rich carrier判据缺口：MAJOR。** 应补一条processor/History capture seam测试，直接断言capture收到`kind:"parsed-sse"`与`idField`，并在capture前临时投影时按目标失败；现有wire投影测试只能证下游扁平，不能证上游History仍rich。
+
+## D1 复审意见
+
+接受协调方对D1的独立反证：Task 4清单定义的是在既有session/allocation port上新增outcome consumption并删除owner外helper；这些基础设施早于计划且定义性交付物仍不存在。无新证据维持原D1；本轮撤回该blocker。
+
+## 复审总表与 verdict
+
+| ID | 严重级别 | 结论 |
+| --- | --- | --- |
+| D3 | MAJOR | companion测试对删除adapter error分支的变异仍绿。 |
+| D4 | BLOCKER | `errorShapingEnabled=false` 时修复失效，真实HTTP仍请求4次。 |
+| D5 | BLOCKER | open partial block后H2仍请求4次，两条新测试共同漏检。 |
+| D6 | MAJOR | 未验证History保留真实upstream error cause。 |
+
+- **最终 verdict：存在 blocker，不可进入下一阶段。**
+- **计数：2 BLOCKER，4 MAJOR（含四条未处置项中的handler死参数与I1判据缺口；D3/D6另两条），2 MINOR。**
+- 测试变异均以预先冻结exact patch注入并通过`git apply --reverse --check`后反向恢复；复跑原两测试为2 pass／0 fail。
+- 最终`git diff`不含本轮变异；`git status --porcelain`仅见并发方新增的未跟踪 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-09-task37-d1-arbitration.md`，不是本评审创建或修改，未触碰。报告文件本身由调用方指定，已按要求追加。
