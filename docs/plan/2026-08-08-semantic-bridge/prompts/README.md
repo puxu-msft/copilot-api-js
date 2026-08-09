@@ -2,11 +2,13 @@
 
 每个文件是一个**可直接粘给独立 implementer 的 self-contained kick-off prompt**。设计契约见 [RFC](../../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)，任务锚点与 commit invariant 见 [../plan.md](../plan.md)。
 
-> **增量产出与硬触发**：C0–C3.4 的 kickoff 已就绪可执行；C4 及之后标为「待写」。
+> **增量产出与硬触发**：**C0.1–C3.4 共十片 kickoff 已就绪可执行**（文件确实存在，见下表链接）；C4 及之后标为「待写」。
 >
-> `[hard]` **分派任一片之前，必须先写好它的 kickoff。** 导航表的「kickoff」列就是这条触发点——要派活就得先看这张表，看到「待写」即先补。
+> `[hard]` **分派任一片之前，必须先写好它的 kickoff，并在同一次改动里把本表该行从「待写」改成链接。** 导航表的「kickoff」列就是这条触发点——要派活就得先看这张表。
 >
-> 理由：kickoff 的价值在于给零上下文的实施者**当前真实的锚点**，而 C4 之后的锚点会被 C1–C3 的 commit 改变（新模块路径、新导出名、行号整体推移）。提前写会产出**看起来正常但已失效**的指令——比留白更坏。裁决记录见 [../plan.md](../plan.md) 末节。
+> ⚠️ **表本身会陈旧，这不是假想**：本仓库既有的 `docs/plan/anthropic-via-openai-translation/prompts/README.md` 用的正是同一套增量做法，其特性已 landed、`phase-1.md`…`phase-5.md` 也都写出来了，**但那张导航表至今仍写着「待写」**。所以写 kickoff 与更新本表必须是**同一次改动**，不是两件事。
+>
+> 理由：kickoff 的价值在于给零上下文的实施者**当前真实的锚点**，而 C4 之后的锚点会被 C1–C3.4 的 commit 改变（新模块路径、新导出名、行号整体推移）。提前写会产出**看起来正常但已失效**的指令——比留白更坏。本计划前两轮评审抓到的最大两条 blocker 正是这种失效：措辞肯定、看起来完全合理、但事实已不成立。裁决记录与仍存的分歧见 [../plan.md](../plan.md) 末节。
 
 ## 阶段导航表
 
@@ -24,7 +26,7 @@
 | C3.1 observation stage + 冲突 producer | [c3-1.md](c3-1.md) | C2.3 | — | 否 |
 | C3.2 History 双路径投影 | [c3-2.md](c3-2.md) | C3.1 | — | 否 |
 | C3.3 REST/WS + docs | [c3-3.md](c3-3.md) | C3.2 | — | 否 |
-| C3.4 共享 JSON-value validator | **待写** | C3.3 | — | 否 |
+| C3.4 共享 JSON-value validator | [c3-4.md](c3-4.md) | C3.3 | — | 否 |
 | C4.1 / C4.2 ordered-turn | **待写** | C3.4 | 与 C5/C6/C7 并行 | 否 |
 | C5.1 / C5.2 server-tool 四格 | **待写** | C3.4 | 同上 | 否 |
 | C6.1 / C6.2 capability policy | **待写** | C3.4 | 同上 | 否 |
@@ -78,7 +80,8 @@ C0.1 → C0.2 → C0.3
 
 1. **中文对话**，回答与思考都用中文。
 2. **不改变 production writer** `[hard]` —— C1–C8 一律不得让新路径成为客户端 writer。只有 C9/C10 切换，且必须原子。
-   **机械判据（不接受自评）**：`test:backend` 不回归**证不了**字节不变，它只证明没人断言到差异。C0.2 冻结了一组**客户端 wire 字节 golden**（`tests/openai/semantic-bridge/client-wire-golden.http.test.ts`），你的片在**改动前后各跑一次并逐字节对账**，出现差异即本片失败。这条 golden 直到 C9/C10 才允许按方向更新。
+   **机械判据（不接受自评）**：`test:backend` 不回归**证不了**字节不变，它只证明没人断言到差异。C0.2 冻结了一组**客户端 wire 字节 golden**（`tests/openai/semantic-bridge/client-wire-golden.http.test.ts`）。
+   `[hard]` **C2.1 起每片都要在改动前后各跑一次并逐字节对账**，差异即该片失败，**对账结果（相同／差异）写进你的进度文件**。这条对**每一片**都成立，即使你那片的验收段没有逐字写出。这组 golden 直到 C9/C10 才允许按方向更新。
 3. **shadow 零副作用** `[hard]` —— 只写 request-local 内存比较器。写客户端／日志／History／指标／共享状态即失败。
 4. **4141 保护** `[hard]` —— 绝不 `kill`/`pkill`/`killall` 用户在 4141 端口的主服务器。需要测试服务器就起在其它端口、用完按**记录的 PID** 精确清理。
 5. **不可逆动作 fail-closed** —— 无法确定 opaque 来源、schema dialect 不接受、context-management 混合策略，一律 reject，不猜。

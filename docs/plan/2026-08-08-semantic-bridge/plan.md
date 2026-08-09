@@ -28,7 +28,9 @@ TypeScript / Bun；SSE + WebSocket 流式；官方 `openai@^6.45.0`（`ResponseA
 - **G1 每 commit 可运行**：`bun run typecheck` 绿 + 目标测试可跑。中间态显式无害，绝不半坏。
 - **G2 绝不双发** `[hard]`：旧 production path 仍是唯一 writer，**或**新 path 在同一 commit 原子取代该方向全部 cells。C1–C8 一律不得改变 production writer；只有 C9/C10 切换。
   **G2 的机械判据（C2.1 起每片必跑，不接受自评）**：`test:backend` 不回归**证不了**字节不变——它只证明没人断言到差异。C0.2 必须额外冻结一组**客户端 wire 字节 golden**（两方向 × stream/non-stream × 有无 retry，至少 6 条），C2.1–C8.3 每片在**改动前后各跑一次并逐字节对账**，差异即该片失败。这组 golden 直到 C9/C10 才允许按方向更新，且更新必须与 cutover 同 commit。
-  **配套的穷尽性判据**：`writeToSink`（锚点 C-1）是客户端字节的单一漏斗；加一条结构守卫断言**其调用方集合被冻结**（当前四个，见 C-2）。新增第五个调用方即 fail —— 否则「所有写出都经过 authority」这句话随时可能被一个新路径悄悄证伪。
+  `[hard]` **这组 golden 自己必须有灵敏度对照**：C0.2 要证明「production wire 改一个字节 → 至少一条 golden 变红」。**没有这条对照，后续十余片的 G2 对账可能全是空转而毫无信号** —— 捕获点取浅（捕在 translator 输出而非真实客户端字节）或归一化过度，都会让它对真实差异失明。
+  `[hard]` **每片的 Verify 都隐含包含这条对账**，即使该片的 Verify 段没有逐字写出；执行者须把对账结果（相同／差异）写进自己的进度文件。**逐片写出的地方以本条为准，本条是权威**。
+  **配套的穷尽性判据**：`writeToSink`（锚点 C-1）是**流式**客户端字节的单一漏斗；加一条结构守卫断言**其调用方集合被冻结**（当前四个，见 C-2）。⚠️ **该守卫只覆盖流式**，非流式走 `c.json`（见 C-0），由 C2.3 的非流式存在性正控覆盖 —— **不要把这条守卫读成「所有客户端写出都在此」**。
 - **G3 shadow 无副作用** `[hard]`：shadow 只写 request-local 内存比较器。写客户端／日志／History／指标／任何共享状态即该 commit 失败。
 - **G4 同模型原样回送** `[hard]`：同模型 Anthropic tool-use assistant content 完整、原序回送原生 thinking／redacted_thinking，不经 envelope 重建（RFC §3.3 第 7 条）。
 - **G5 stream/non-stream 同源**：每个已切方向的两条路径语义来自同一 ledger snapshot。
@@ -75,8 +77,9 @@ TypeScript / Bun；SSE + WebSocket 流式；官方 `openai@^6.45.0`（`ResponseA
 
 | ID | 锚点 | 说明 |
 |---|---|---|
-| C-1 | `src/lib/pipeline/delivery/session.ts:687` `writeToSink` | **所有客户端字节的单一漏斗**。它有**四个**调用方（见 C-2）。⚠️ **不要把 `writeCommittedBatch` 当成唯一 writer** —— 这是本计划初稿犯过的错：`writeCommittedBatch` 确实在首次外部写前同步 `commit()`（`:378-379`）并据此分裂 `committed:false\|true`，但它**只覆盖 allocation 帧与 recovery batch**，主流式路径根本不走它 |
-| C-2 | 四个 `writeToSink` 调用方：`:165` `write()`（**主路径** —— `clientSink` 的 `write`/`writeSynthetic`/`writeKeepalive`/`writeSyntheticEnvelope`/`writeAnchor` 与 `writeScaffold`/`terminate` 全走它；driver 的 `sink.write` 五处 `driver.ts:1164,1168,1310,1540,1608` 落在这里）、`:387` `writeCommittedBatch`、`:531` `closeOpenAnchor`、`:564` `writeBlockFrame` | ⚠️ **四条路径的 commit 语义各不相同**：`write()` 无 commit 概念；`writeCommittedBatch` 的 commit 回调由调用方传入，且两个调用点传的还不一样（`:423-424` 传 `reservation.commit()`、`:492` `publish-recovery-batch` 传**空回调 `() => {}`**）；`closeOpenAnchor` 与 `writeBlockFrame` 各自内联写。**authority epoch 必须覆盖全部四条**，挂在任何单一调用方上都会漏掉主路径 |
+| C-0 | `src/lib/pipeline/client-sink.ts:494` `makeDeliverySseSink`、`:697` `makeDeliveryWsSink` —— **`createDownstreamDeliverySession` 的仅有两个创建点**；`src/routes/messages/handler-v4.ts:1377` `c.json(finalResponse)`、`:1344` `c.json(errorBody, 500)` | ⚠️ **客户端字节有两条互不相交的路径**：**流式**（SSE／WS）经 delivery session；**非流式**由 handler 直接 `c.json` 返回，**根本不创建 delivery session、不经 `writeToSink`**。下面 C-1/C-2 只描述**流式**那条。**给 authority 设计边界前必须先认这条分界** —— 本计划两版初稿都在这里写出了过宽的全称断言（先是「`writeCommittedBatch` 是唯一 writer」，改完又变成「`writeToSink` 是所有客户端字节的漏斗」），第二次的 writer 集合守卫甚至会**为那个假全称背书** |
+| C-1 | `src/lib/pipeline/delivery/session.ts:687` `writeToSink` | **流式客户端字节的单一漏斗**（**仅流式**，见 C-0）。它有**四个**调用方（见 C-2）。⚠️ **不要把 `writeCommittedBatch` 当成唯一 writer**：它确实在首次外部写前同步 `commit()`（`:378-379`）并据此分裂 `committed:false\|true`，但只覆盖 allocation 帧与 recovery batch，主流式路径根本不走它 |
+| C-2 | 四个 `writeToSink` 调用方：`:165` `write()`（**流式主路径** —— `clientSink` 的 `write`/`writeSynthetic`/`writeKeepalive`/`writeSyntheticEnvelope`/`writeAnchor` 与 `writeScaffold`/`terminate` 全走它；driver 的 `sink.write` 五处 `driver.ts:1164,1168,1310,1540,1608` 落在这里）、`:387` `writeCommittedBatch`、`:531` `closeOpenAnchor`、`:564` `writeBlockFrame` | ⚠️ **四条路径的 commit 语义各不相同**：`write()` 无 commit 概念；`writeCommittedBatch` 的 commit 回调由调用方传入，且两个调用点传的还不一样（`:423-424` 传 `reservation.commit()`、`:492` `publish-recovery-batch` 传**空回调 `() => {}`**）；`closeOpenAnchor` 与 `writeBlockFrame` 各自内联写。**authority epoch 必须覆盖全部四条**，挂在任何单一调用方上都会漏掉主路径 |
 | C-3 | `src/lib/pipeline/types.ts:509` `GenerationWireState`，:513 `activeLeg`，:514 `openAnchorIndex` | wire 状态 SSOT。`reservation.commit()` 只改 allocator 计数器，**不改变 owner 归属语义** → authority epoch 需要在此新增字段 |
 | C-4 | `src/lib/pipeline/generation/coordinator.ts:182` `runRecovery`（:197 父 settle failed）、:215 `runContinuation`（:221-222 父 settle continued）、:234 `raceReadyCandidates` | segment boundary 的天然产生点。**`runRecovery` 与 `runContinuation` 性质不同**：前者「父失败、子重开」，后者「父已部分交付、子续接」——RFC §3.4 的 fallback 与 continuation 分别对应，**不得用同一个函数处理**。`raceReadyCandidates` 是「哪个段成为权威」的判定点，不是新建点 |
 | C-5 | `src/lib/pipeline/generation/candidate-response-session.ts:104` `createState()`，:110 `captureTerminalSnapshot`，:184 `snapshot()`，:189 缓存返回 | candidate-local 状态宿主。`State` 是不透明类型参数，**可以**承载 per-candidate ledger segment。⚠️ **已知阻碍**：:189 在 `terminalSnapshot !== undefined` 时直接返回缓存，不再读最新 `state`；continuation 若要读父 ledger，必须在 `captureTerminalSnapshot` 冻结前取，或新增直接持有 `State` 的旁路（当前无此旁路） |
@@ -157,6 +160,12 @@ C0.1 ─┬─ C0.2 ─ C0.3 ─┐
 每片的固定字段：**Files / Interfaces / Steps / Commit invariant / Verify / Mutation**。
 「Verify」列出的命令是**该片的最小充分集**；交付前另跑 `bun run test:backend`。
 
+`[hard]` **C2.1 起每片的 Verify 都额外包含「G2 wire 字节 golden 逐字节对账」**（改动前后各跑一次），**无论该片的 Verify 段有没有逐字写出**。对账结果（相同／差异）写进该片的进度文件。
+
+这条之所以放在这里而不是只写在 G2 里：**kickoff 是自包含分派的**，实施者读的是自己那一片。凡是给某片写 kickoff 的人，必须把这条抄进该片的验收段 —— 一条只在全局声明一次的规则，对只读自己那一片的执行者等于不存在。
+
+改 History／REST／删代码／把 shadow 塞进生产路径的几片（C3.2、C3.3、C8.3、C11.1）**尤其**不能省：它们改的是生产代码，而其本地测试全绿并不能证明客户端收到的字节没变。
+
 ---
 
 ### C0.1 —— 共享 SDK oracle harness
@@ -217,9 +226,11 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **Verify**：`bun test tests/openai/semantic-bridge/` + `bun run test:fast`。**用例集合用运行时枚举冻结**，`[hard]` 不要用 `rg -c 'KNOWN-LOSS'` 当计数判据 —— 注释里写九次同样能满足它，与断言是否存在无关（参数化与模板名也会让 grep 结构性失明）。
 
-**Mutation**（两条，各自指名期望变红的用例）
+**Mutation**（三条，各自指名期望变红的用例）
 - **encrypted-only**：翻转 `responses-to-anthropic.ts:210` 的 `if (reasoningText.length > 0)` 条件（改为 `>= 0`）→ encrypted-only 那条 KNOWN-LOSS 变红。⚠️ **不要用「把 `reasoningEncrypted` 改成数组」当这条的 mutation** —— 该字段的基数与 `:210` 这道门无关，改它**不可能**让 encrypted-only 变红（本计划初稿就是这么写的，是错的；而且改成数组会先撞 `buildSyntheticReasoningSignature` 的签名，patch 本身跑不通）。
 - **multi-reasoning**：把 `:172` 的覆盖赋值（`reasoningEncrypted = item.encrypted_content`）改为累加 → multi-reasoning 那条 KNOWN-LOSS 变红。
+- `[hard]` **wire golden 的灵敏度对照**：改动 production wire 的**一个字节**（例如改 A-3 某个 `event:` 名，或改一个 usage 字段值）→ **至少一条 wire golden 变红**。
+  **这条不做，整组 golden 就没有判别力** —— 它是 C2.1–C8.3 十余片 G2 的唯一机械判据，若捕获点取浅（捕在 translator 输出而非真实客户端字节）或归一化过度，后续每一片的对账都是空转，而且不会有任何信号提示你。本条结论记进 C0.3 的 registry。
 
 ---
 
@@ -391,26 +402,36 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Goal**：落 `DeliveryAuthorityState` 与 RFC §6 的唯一 writer 不变量。**本片是整个 RFC 最容易做错的一片。**
 
 **Files**
-- Modify `src/lib/pipeline/delivery/session.ts`（**四条写出路径全覆盖**，见 C-1/C-2）
+- Modify `src/lib/pipeline/delivery/session.ts`（**流式四条写出路径全覆盖**，见 C-1/C-2）
+- Modify `src/routes/messages/handler-v4.ts`（**非流式 authority 落点**，`:1377` 成功与 `:1344` 错误两处，见 C-0）
 - Modify `src/lib/pipeline/types.ts`（C-3 `GenerationWireState` 新增 authority 字段）
 - Modify `src/lib/pipeline/semantic/lineage.ts`
-- Create `tests/pipeline/semantic/delivery-authority.it.test.ts`
-- Create `tests/architecture/delivery-writer-set.unit.test.ts`（写出路径集合冻结守卫）
+- Create `tests/pipeline/semantic/delivery-authority.it.test.ts`（**流式与非流式各一组**）
+- Create `tests/architecture/delivery-writer-set.unit.test.ts`（**流式**漏斗调用方集合冻结守卫）
 
-**Step 0（前置，不得跳过）：重新枚举客户端 writer 集合**
+**Step 0（前置，不得跳过）：枚举客户端字节的全部路径**
 
-`[hard]` **不要假定 `writeCommittedBatch` 是唯一 writer** —— 本计划初稿正是这么写的，是错的。开工第一件事是自己枚举一遍 `writeToSink` 的调用方，把结果写进进度文件。基线 `82c0664e` 的事实是四条：
+`[hard]` **先认 C-0 的分界：客户端字节有两条互不相交的路径。** 本计划两版初稿都在这里写出了过宽的全称断言，你**不要**继承任何一个：
 
-| 调用方 | 覆盖什么 | commit 语义 |
+- **流式**（SSE／WS）：经 delivery session，`writeToSink`（`:687`）是漏斗，四个调用方见下表。
+- **非流式**：handler 直接 `c.json` 返回（`handler-v4.ts:1377` 成功、`:1344` 错误），**根本不创建 delivery session、不经 `writeToSink`**。
+
+开工第一件事：自己跑 `rg -n 'writeToSink\(' src/lib/pipeline/delivery/session.ts` 与 `rg -rn 'createDownstreamDeliverySession' src/`，把两条路径的实际边界写进进度文件。
+
+| 流式漏斗的调用方 | 覆盖什么 | commit 语义 |
 |---|---|---|
-| `session.ts:165` `write()` | **主路径**。`clientSink.write`/`writeSynthetic`/`writeKeepalive`/`writeSyntheticEnvelope`/`writeAnchor`、`writeScaffold`、`terminate` 全走它；driver 的五处 `sink.write`（`driver.ts:1164,1168,1310,1540,1608`）落在这里 | **无 commit 概念** |
-| `session.ts:387` `writeCommittedBatch` | allocation 帧 + recovery batch | commit 回调由调用方传入，且两处不同：`:423-424` 传 `reservation.commit()`、`:492` 传空回调 |
+| `session.ts:165` `write()` | **流式主路径**。`clientSink` 全部写法 + `writeScaffold`/`terminate`；driver 五处 `sink.write`（`driver.ts:1164,1168,1310,1540,1608`） | **无 commit 概念** |
+| `session.ts:387` `writeCommittedBatch` | allocation 帧 + recovery batch | commit 回调由调用方传入，两处不同：`:423-424` `reservation.commit()`、`:492` **空回调** |
 | `session.ts:531` `closeOpenAnchor` | anchor 关闭帧 | 内联写 |
 | `session.ts:564` `writeBlockFrame` | 真实 block 帧 | 内联写 |
 
 **Steps**
-1. authority epoch 覆盖**全部四条路径**。落点选择由你决定（下沉到 `writeToSink`，或在四个调用方各自接入），但**必须给出「不存在绕过 authority 的客户端写出」的穷尽性证据**，不是逐个路径的自评。
-2. **写出路径集合冻结守卫**（新建的架构测试）：断言 `writeToSink` 的调用方集合等于上表四项。新增第五个调用方即 fail —— 这条守卫是「所有写出都经 authority」这句话的**唯一机械保障**，没有它，一个新路径随时能悄悄证伪它。
+1. **流式**：authority epoch 覆盖全部四条 `writeToSink` 路径。
+2. `[hard]` **非流式：同样必须建立唯一 authority**。RFC §6 的不变量不区分流式与否 —— 一个非流式请求同样是「恰一个 writer 产出恰一个 response terminal」。落点在 handler 的 `c.json` 之前建 `active(epoch=0)`，响应构造确认后转 `terminal`；错误路径（`:1344`）走 preflight/failed 终态的同一套。
+   **漏掉这一条的后果是静默的**：非流式请求永不建 authority → C3.1 的 observation 永停 `proposed` → C3.2 投出 `actual:[]`，而 C3.2 契约 5 规定空数组表示「已捕获且确无 actual observation」→ **每个非流式请求的 History 都在系统性撒谎**，且 C3.2 的两条 mutation 都抓不到。
+3. **写出路径集合冻结守卫**（`tests/architecture/delivery-writer-set.unit.test.ts`）：断言 `writeToSink` 的调用方集合等于上表四项。
+   `[hard]` **守卫的名称与断言消息必须写明它只覆盖流式漏斗** —— 否则它会被读成「所有客户端写出都在此」，反而**为一个假全称背书**。非流式路径由第 2 步的存在性正控覆盖，不由这条守卫覆盖。
+4. 落下面「要落的不变量」十七条。
 3. 初始 commit：首次不可逆客户端 emission 建立 `active(epoch=0)`。
 4. 两类无内容帧终态也必须建立唯一 authority：**preflight fail-closed**（driver 接受 typed rejection 时建 `active(0)`、冻结 `failed/preflight-reject`、由该 authority 发错误 wire 并等 sink 结果后转 terminal）与 **contentless success**（同样先建 active、发完并确认 terminal wire 后转 terminal）。
 5. post-commit transfer：祖先先把开放 part／item 按真实 provenance 终结为 partial → 按目标协议顺序发送并确认全部 closing wire effects → 在**同一临界动作**内把祖先改 `transferred(epoch=N,toCandidateId)`、后代改 `active(epoch=N+1)`。准备／ACK／校验任一失败都不发布 transfer，authority 仍归祖先。
@@ -431,7 +452,18 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 - **让主路径 `write()`（`:165`）不带 epoch** → 普通流式请求的 authority 用例变红。**这条是四条旧 mutation 全都漏掉的那个失效**，缺它则「epoch 只挂在 allocation 路径」这个错误实现可以全绿通过；
 - **让 `publish-recovery-batch`（`:492`，空 commit 回调）那条路径不带 epoch** → 以 `onBeforeRecoveryBatchCommit` hook 为中点探针的正控变红。
 
-**正控（不只防 false-green）**：`active` 数为 0 时「至多一个」同样成立，所以唯一性断言必须配**存在性正控** —— 普通流式请求在首帧写出后必须存在**恰一个** `active`，恢复批次发布后同样。
+**正控（不只防 false-green）** —— `active` 数为 0 时「至多一个」同样成立，所以唯一性断言**必须**配存在性正控，且**两条路径各一条**：
+- **流式**：普通流式请求首帧写出后存在**恰一个** `active`；恢复批次发布后同样。
+- **非流式**：`c.json` 返回前存在**恰一个** `active`，返回后转 `terminal`。⚠️ 只写流式那条，会让「非流式一律不建 authority」这个错误实现**全绿通过**。
+
+**Mutation**（七条，逐条核对失败来自目标机制）
+- 让 transfer 在 closing ACK 前发布 → 中点探针断言「恰一个 active」变红；
+- 让 preflight reject 不建 authority → 该终态的 lineage 用例变红；
+- 让 pre-commit 空 segment 也产生 transferred ancestor → 分支②用例变红；
+- 让 flush 失败仍 transfer → 分支①失败支用例变红；
+- **让流式主路径 `write()`（`:165`）不带 epoch** → 流式存在性正控变红。这条是原四条 mutation 全都漏掉的失效；
+- **让 `publish-recovery-batch`（`:492`，空 commit 回调）那条路径不带 epoch** → 以 `onBeforeRecoveryBatchCommit` 为中点探针的正控变红；
+- `[hard]` **让非流式路径不建 authority** → 非流式存在性正控变红。**这条对应的是一个「写出路径集合守卫仍然全绿、六条 mutation 全部如期变红、25 次连跑全绿、G2 golden 也不变」的坏实现** —— 缺它则整片的判据对非流式请求完全失明。
 
 ---
 
@@ -490,7 +522,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **Commit invariant**：新槽只写不读（除测试）；旧 `anthropicToResponses` 读者行为不变；G8 有守护测试。
 
-**Verify**：`bun run typecheck` + `bun test tests/history/` + `bun run test:backend`
+**Verify**：`bun run typecheck` + `bun test tests/history/` + `bun run test:backend` + **G2 wire 字节 golden 逐字节对账**（本片改 History 生产代码，本地测试全绿证不了客户端字节没变）
 
 **Mutation**（两条）
 - 让 History 写入 opaque 正文 → G8 守护变红；
@@ -517,7 +549,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **Commit invariant**：REST／WS 既有契约无破坏（既有 History 测试全绿）；文档与实现同 commit 落地。
 
-**Verify**：`bun run typecheck` + `bun test tests/history/` + `rg -n 'semanticBridgeV2' docs/API.md docs/history.md`（非空）
+**Verify**：`bun run typecheck` + `bun test tests/history/` + `rg -n 'semanticBridgeV2' docs/API.md docs/history.md`（非空）+ **G2 wire 字节 golden 逐字节对账**（本片改 REST／WS 生产代码）
 
 **Mutation**：让 list 端点也返回 `actual` 全数组 → 「列表不复制大数组」用例变红。
 
@@ -849,7 +881,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **Commit invariant** `[hard]`：**production dispatch 仍全部指向旧 translator**；shadow 有任何客户端／日志／History／指标／共享状态副作用即本片失败（G3）。加一条守护测试断言 shadow 运行前后 History 条目数与日志行数不变。
 
-**Verify**：`bun run typecheck` + `bun run test:backend` + shadow parity 测试连跑 10 次
+**Verify**：`bun run typecheck` + `bun run test:backend` + shadow parity 测试连跑 10 次 + **G2 wire 字节 golden 逐字节对账**（本片把 shadow 接进生产路径，是 G3 最脆的一片 —— golden 差异即证明 shadow 产生了副作用）
 
 **Mutation**：让 shadow 写一条 History → G3 守护变红。
 
@@ -922,7 +954,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **Commit invariant**：删除项逐个有「无消费者」的独立证据（`rg` + typecheck + 全量测试三重）；`bun run test:ci` 全绿。
 
-**Verify**：`bun run typecheck` + `bun run test:backend` + `bun run test:it`
+**Verify**：`bun run typecheck` + `bun run test:backend` + `bun run test:it` + **G2 wire 字节 golden 逐字节对账**（删代码最容易连带删掉仍被走到的分支）
 
 ---
 
@@ -979,15 +1011,30 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 两处都只是**补上 DAG 的隐含层**，未改变任何公共契约。若评审认为这构成对 RFC 的实质改动，应回到 RFC 层裁决而非在计划层消化。
 
-### 裁决记录：kickoff 提示词增量产出
+### 裁决记录：kickoff 提示词增量产出（**仍存分歧，待用户裁决**）
 
-**RFC §16 要求把 C0–C11 拆成可直接派给独立 implementer 的小片，并为每片定义进度文件、commit invariant、测试、mutation 和 review 闭环。**
+**RFC §16 原文要求**：「实施计划必须把 C0–C11 拆成可直接派给独立 implementer 的小片，并为每片定义进度文件、commit invariant、测试、mutation 和 review 闭环。」
 
-- **已满足的部分**：plan.md 为**全部 30 片**逐片给出了 Files／Interfaces／Steps／Commit invariant／Verify／Mutation，进度文件协议见 `progress/README.md`，review 闭环见本节与 C11.2。
-- **有意偏离的部分**：`prompts/` 下的 kickoff 提示词**只先写到 C3.4**，C4 及之后标为「待写」。
-- **理由**：kickoff 的价值在于给零上下文的实施者**当前真实的锚点**。C4 之后的锚点会被 C1–C3 的 commit 改变（新模块路径、新导出名、行号整体推移）。提前写会产出**看起来正常但已失效**的指令——这比留白更坏。
-- **不使其落空的硬触发**：`prompts/README.md` 的导航表把每片的 kickoff 状态写成一行，**分派任一片之前必须先写好它的 kickoff**。这条触发点在必经流程上（要派活就得看导航表），不是一句期望。
-- **级别**：C（落进产物但可逆）。若评审认为这偏离了 RFC §16 的字面要求，请明确指出，本条可改为「plan 定稿时一次性补齐全部 kickoff」。
+**已满足**：plan.md 为**全部 30 片**逐片给出 Files／Interfaces／Steps／Commit invariant／Verify／Mutation；进度文件协议见 `progress/README.md`；review 闭环见本节与 C11.2。按字面读，§16 列举的五样每片都有。
+
+**当前状态**：`prompts/` 下已写 **C0.1–C3.4 共十片**；C4 及之后（15 片）标为「待写」。
+
+**评审意见（第 2 轮，契约对齐 reviewer）**：坚持要求全部补齐。理由是「plan 定稿产物应当已经为每片提供可直接派发的 kickoff；『分派前再写』是未来流程门，不满足**当前交付物**的完整性」。它同时抓到一个我确实写错的事实（导航称已就绪而 `c3-4.md` 当时不存在），该事实错误已修复 —— c3-4.md 已补写。
+
+**我的理由（未采纳其「立即补齐」的部分）**：
+
+1. kickoff 的价值在于给零上下文实施者**当前真实的锚点**。C4 之后的锚点会被 C1–C3.4 的 commit 改变。
+2. **本计划两轮评审的两条最大 blocker，都正是「措辞肯定、看起来合理、但事实已不成立」的指令** —— 先是「`writeCommittedBatch` 是唯一 writer」，修完又变成「`writeToSink` 覆盖所有客户端字节」。提前写 15 片，等于批量制造这类失效。
+3. **项目已有先例，且该特性已落地**：`docs/plan/anthropic-via-openai-translation/prompts/README.md:16` 写着「per-phase kickoff 增量产出：Phase 0 已就绪可执行；后续 phase 在推进到该阶段前展开（避免一次性写全、上下文腐化）」；该 plan 的 Phase 0–4 均标注 landed，`prompts/` 下的 `phase-1.md`…`phase-5.md` 也确实随推进被逐个写出。
+   ⚠️ **但这个先例同时暴露了一个失效**：那张导航表**至今仍写着「待写」**，而文件早已存在。所以本计划的硬触发**要求写 kickoff 与更新导航表是同一次改动**（已写进 `prompts/README.md`）——先例证明了做法可行，也证明了不加这一条会陈旧。
+4. 「分派前必须先写」不是空头承诺，而是挂在**必经流程**上的触发点：要派活就得看导航表。
+
+**这一条我不自行终裁**：提出方是当事人（我），复核方也是当事人（它自己的发现），双方各执一词。**请用户裁决**——
+
+- **维持现状**（增量产出 + 硬触发），或
+- **一次性补齐全部 15 片 kickoff** 后再定稿。
+
+级别 C（落进产物但可逆）。在用户裁决前，本计划按「维持现状」执行；若裁定补齐，只需新增 15 个文件，不影响已定稿的任何契约。
 
 ## 未采纳与暂缓
 
