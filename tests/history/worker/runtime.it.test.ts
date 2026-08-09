@@ -16,11 +16,9 @@ import type { HistoryWorkerTransport } from "~/lib/history/worker/runtime"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
-import {
-  //
-  HistoryPersistenceRuntimeImpl,
-  createInProcessHistoryPersistenceRuntime,
-} from "~/lib/history/worker/runtime"
+import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
+
+import { createInProcessHistoryPersistenceRuntime } from "./fixtures/in-process-runtime"
 
 const workerUrl = new URL("../../../src/lib/history/worker/history-worker.ts", import.meta.url)
 const fixtureWorkerUrl = new URL("./fixtures/worker-entry.ts", import.meta.url)
@@ -66,16 +64,19 @@ async function exerciseRuntime(runtime: HistoryPersistenceRuntimeImpl): Promise<
   await runtime.stopMaintenance()
 
   const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => runtime.enqueue(envelope(), resolve))
-  expect(await outcome).toBe("failed")
+  // Batch 0 asserted "failed" here because no backend existed yet. Batch 2a gives both
+  // runtimes the real semantic backend, so the contract is now a real durable commit into
+  // the `:memory:` artifact opened by `initialize`.
+  expect(await outcome).toBe("persisted")
   expect(runtime.snapshot().pendingEnvelopes).toBe(0)
 
-  expect(await runtime.drain()).toEqual({ outcomes: { 1: "failed" } })
+  expect(await runtime.drain()).toEqual({ outcomes: { 1: "persisted" } })
   await runtime.shutdown()
   expect(runtime.snapshot().ready).toBe(false)
 }
 
 describe("HistoryPersistenceRuntime contract", () => {
-  test("real source Worker executes ready, SQLite probe, failed ACK, drain, and close", async () => {
+  test("real source Worker executes ready, SQLite probe, persisted ACK, drain, and close", async () => {
     await exerciseRuntime(new HistoryPersistenceRuntimeImpl({ workerUrl }))
   })
 
@@ -200,6 +201,23 @@ function readyMessage(generation: number, requestId = 1, configRevision = 1): un
       rawTarget: { configRevision, requested: false, maxObjectBytes: 1024 },
     },
   }
+}
+
+/** Fires the restart callback synchronously so a crash/replay assertion needs no wall clock. */
+function immediateTimer(fn: () => void): () => void {
+  fn()
+  return () => undefined
+}
+
+/**
+ * A `fatal` from the Worker: the one outcome that is NOT recoverable by a restart.
+ *
+ * These tests used to trigger the same transition with a transport `error`. Batch 2a makes
+ * a bare crash recoverable — the un-ACKed envelopes are retained and replayed — so `fatal`
+ * is now the only way to reach terminal-failed, and it is what these assertions guard.
+ */
+function fatalMessage(generation: number, error: string): unknown {
+  return { type: "fatal", protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, workerGeneration: generation, error }
 }
 
 function configAppliedMessage(generation: number, requestId: number, revision: number): unknown {
@@ -448,7 +466,7 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     const start = runtime.start(startConfig())
     transport.emitMessage(readyMessage(1))
     await start
-    transport.emitError(new Error("sticky fatal"))
+    transport.emitMessage(fatalMessage(1, "sticky fatal"))
     const failed = runtime.snapshot()
 
     transport.emitMessage({
@@ -491,7 +509,7 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
   })
 
-  test("settles callbacks and requests before isolating status observer errors", async () => {
+  test("isolates status observer errors without preventing callback and request settlement", async () => {
     const transport = new ControllableTransport()
     const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
     const start = runtime.start(startConfig())
@@ -515,16 +533,19 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     })
     const drain = runtime.drain()
 
-    expect(() => transport.emitError(new Error("worker exploded"))).not.toThrow()
+    expect(() => transport.emitMessage(fatalMessage(1, "worker exploded"))).not.toThrow()
     expect(outcome).toBe("failed")
     await expect(drain).rejects.toThrow("worker exploded")
-    expect(firstCalls).toBe(1)
-    expect(secondCalls).toBe(1)
+    // Terminal-failed is published twice: once as the "close admission now" signal BEFORE the
+    // un-ACKed set is settled (spec §7.2 steps 2→3), and once afterwards with the final
+    // counters. Both must reach every observer even though the first one throws.
+    expect(firstCalls).toBe(2)
+    expect(secondCalls).toBe(2)
     expect(runtime.snapshot()).toMatchObject({
       terminalFailed: true,
       pendingEnvelopes: 0,
       lastError: "worker exploded",
-      statusObserverErrorsTotal: 1,
+      statusObserverErrorsTotal: 2,
       lastStatusObserverError: "status observer exploded",
     })
   })
@@ -556,7 +577,7 @@ describe("HistoryPersistenceRuntime ACK state", () => {
       secondCalls++
     })
 
-    expect(() => transport.emitError(new Error("worker exploded"))).not.toThrow()
+    expect(() => transport.emitMessage(fatalMessage(1, "worker exploded"))).not.toThrow()
     expect(secondCalls).toBe(1)
     expect(runtime.snapshot()).toMatchObject({
       terminalFailed: true,
@@ -631,17 +652,32 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     expect(outcomes).toBe(1)
   })
 
-  test("rejects startup when the Worker exits before ready", async () => {
-    const transport = new ControllableTransport()
-    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+  test("restarts instead of failing when the Worker exits before ready, and the retry resolves start", async () => {
+    const transports: Array<ControllableTransport> = []
+    const runtime = new HistoryPersistenceRuntimeImpl({
+      workerFactory: () => {
+        const transport = new ControllableTransport()
+        transports.push(transport)
+        return transport
+      },
+      restart: { setTimer: (fn) => immediateTimer(fn) },
+    })
     const start = runtime.start(startConfig())
-    transport.emitExit(2)
 
-    await expect(start).rejects.toThrow("exited unexpectedly with code 2")
-    expect(runtime.snapshot().terminalFailed).toBe(true)
+    // Spec §7.1: a bare exit is a retryable startup error, not the `fatal` hard gate. The old
+    // Batch 0 assertion (start rejects) froze the pre-backend behaviour.
+    transports[0]?.emitExit(2)
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, restartsTotal: 1, consecutiveFailures: 1 })
+    expect(runtime.snapshot().nextRetryAt).toBeGreaterThan(0)
+    expect(transports).toHaveLength(2)
+
+    transports[1]?.emitMessage(readyMessage(2, 2))
+    expect((await start).workerGeneration).toBe(2)
+    expect(runtime.snapshot()).toMatchObject({ ready: true, consecutiveFailures: 0, terminalFailed: false })
+    expect(runtime.snapshot().nextRetryAt).toBeUndefined()
   })
 
-  test("surfaces transport failure and settles pending outcomes as failed", async () => {
+  test("surfaces a Worker fatal and settles pending outcomes as failed", async () => {
     const transport = new ControllableTransport()
     const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
     const start = runtime.start(startConfig())
@@ -649,7 +685,7 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     await start
 
     const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => runtime.enqueue(envelope(), resolve))
-    transport.emitError(new Error("worker exploded"))
+    transport.emitMessage(fatalMessage(1, "worker exploded"))
     expect(await outcome).toBe("failed")
     expect(runtime.snapshot().terminalFailed).toBe(true)
     expect(runtime.snapshot().lastError).toContain("worker exploded")

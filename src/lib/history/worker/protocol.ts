@@ -85,6 +85,10 @@ export interface HistoryWorkerStatus {
   readonly publishedRevision: number
   readonly restartsTotal: number
   readonly replaysTotal: number
+  /** Crashes since the last `ready`; reset to 0 the moment a generation becomes ready. */
+  readonly consecutiveFailures: number
+  /** Epoch ms of the scheduled restart, present only while a restart is pending. */
+  readonly nextRetryAt?: number
   readonly staleMessagesTotal: number
   readonly duplicateAcksTotal: number
   readonly outcomeCallbackErrorsTotal: number

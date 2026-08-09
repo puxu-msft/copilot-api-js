@@ -41,6 +41,7 @@ const EMPTY_RUNTIME_STATUS: HistoryWorkerStatus = {
   publishedRevision: 0,
   restartsTotal: 0,
   replaysTotal: 0,
+  consecutiveFailures: 0,
   staleMessagesTotal: 0,
   duplicateAcksTotal: 0,
   outcomeCallbackErrorsTotal: 0,

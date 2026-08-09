@@ -788,6 +788,13 @@ export interface TransientRetryOptions {
    * timer — mirroring the `abortableDelay` scale seam.
    */
   now?: () => number
+  /**
+   * Backoff seam, defaulting to `abortableDelay`. The History Worker injects a
+   * recording implementation so a test can adjudicate the ACTUAL per-wait value the
+   * backend asked for — asserting the config round-tripped through the protocol
+   * proves nothing about whether the commit loop consumed it.
+   */
+  delay?: (ms: number, signal?: AbortSignal) => Promise<void>
 }
 
 export interface TransientRetryOutcome {
@@ -828,6 +835,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
   const maxAttempts = Math.max(1, opts.maxAttempts)
   const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
   const now = opts.now ?? Date.now
+  const delay = opts.delay ?? abortableDelay
   const startedAt = now()
   let attempts = 0
   for (;;) {
@@ -847,7 +855,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
       return { ok: false, conflict: false, attempts, capReason: "max-total-ms" }
     }
     try {
-      await abortableDelay(backoffMs, opts.signal)
+      await delay(backoffMs, opts.signal)
     } catch {
       // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
       // but keep retrying up to the cap — abort shortens backoff, it doesn't stop

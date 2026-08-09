@@ -16,18 +16,18 @@ import type {
   RawTargetDescriptor,
   WorkerGeneration,
 } from "./protocol"
+import type { HistoryWorkerRestartPolicyOptions } from "./restart-policy"
 
 import {
   //
   HISTORY_WORKER_PROTOCOL_VERSION,
   HistoryWorkerProtocolError,
   assertStructuredCloneSafe,
-  createRawTargetDescriptor,
-  detectHistorySqliteDriver,
   estimateHistoryEnvelopeBytes,
   parseMainToWorkerMessage,
   parseWorkerToMainMessage,
 } from "./protocol"
+import { HistoryWorkerRestartPolicy } from "./restart-policy"
 
 const DEFAULT_TOMBSTONE_CAPACITY = 256
 
@@ -51,13 +51,20 @@ export interface HistoryPersistenceRuntime extends HistoryTerminalSink {
 
 interface RuntimeOptions {
   readonly workerUrl?: URL
+  readonly workerData?: unknown
   readonly workerFactory?: (generation: WorkerGeneration) => HistoryWorkerTransport
   readonly tombstoneCapacity?: number
+  readonly restart?: HistoryWorkerRestartPolicyOptions & {
+    /** Timer seam; returns a cancel function. Tests drive restarts without real time. */
+    readonly setTimer?: (fn: () => void, ms: number) => () => void
+  }
 }
 
 interface PendingEnvelope {
   readonly envelope: HistoryOperationEnvelope
   readonly onOutcome: (outcome: HistoryPersistenceOutcome) => void
+  /** Generation this envelope was last handed to; `undefined` means never sent. */
+  sentGeneration?: WorkerGeneration
 }
 
 interface CompletedAck {
@@ -70,6 +77,8 @@ interface PendingRequest {
   readonly expectedRevision?: number
   readonly resolve: (value: unknown) => void
   readonly reject: (error: Error) => void
+  /** Rebuilds this request for a fresh Worker generation after a crash. */
+  readonly reissue: (requestId: number, generation: WorkerGeneration) => MainToHistoryWorkerMessage
 }
 
 export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime {
@@ -80,66 +89,105 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private readonly completedAcks = new Map<HistoryMessageId, HistoryPersistenceOutcome>()
   private readonly completedAckOrder: Array<CompletedAck> = []
   private readonly outcomes = new Map<HistoryMessageId, HistoryPersistenceOutcome>()
+  /** Requests a crashed generation was holding; re-issued once the replacement is ready. */
+  private readonly requestsAwaitingReissue: Array<PendingRequest> = []
 
   private transport: HistoryWorkerTransport | undefined
   private generation = 0
   private nextMessageId = 1
   private nextRequestId = 1
   private status: HistoryWorkerStatus = emptyStatus(0)
+  private startConfig: HistoryWorkerStartConfig | undefined
+  private readonly restartPolicy: HistoryWorkerRestartPolicy
+  private cancelRestartTimer: (() => void) | undefined
+  private stopped = false
 
   constructor(options: RuntimeOptions = {}) {
     this.options = options
+    this.restartPolicy = new HistoryWorkerRestartPolicy(options.restart)
   }
 
   start(config: HistoryWorkerStartConfig): Promise<HistoryWorkerReady> {
     if (this.transport) return Promise.reject(new Error("History Worker runtime is already started"))
+    this.startConfig = config
+    this.status = { ...emptyStatus(this.generation + 1), latestDesiredRevision: config.configRevision }
+    return new Promise<HistoryWorkerReady>((resolve, reject) => {
+      this.launchWorker({ resolve: resolve as (value: unknown) => void, reject })
+    })
+  }
+
+  /**
+   * Create a Worker generation and hand it an `initialize`.
+   *
+   * Both the first start and every restart come through here, so a restarted Worker is
+   * initialized with the SAME frozen start config and the latest desired config revision —
+   * a restart must not quietly re-derive either from live state.
+   */
+  private launchWorker(startWaiter?: { resolve: (value: unknown) => void; reject: (error: Error) => void }): void {
+    const config = this.startConfig
+    if (!config) throw new Error("History Worker runtime cannot launch before start()")
     this.generation++
-    this.status = { ...emptyStatus(this.generation), latestDesiredRevision: config.configRevision }
-    const transport = this.createTransport(this.generation)
+    const generation = this.generation
+    const transport = this.createTransport(generation)
     this.transport = transport
     transport.on("message", (value) => this.handleMessage(value))
-    transport.on("error", (error) => this.failTerminal(error))
-    transport.on("exit", (code) => {
-      if (this.transport === transport) this.failTerminal(new Error(`History Worker exited unexpectedly with code ${code}`))
-    })
+    transport.on("error", (error) => this.handleTransportCrash(transport, error))
+    transport.on("exit", (code) => this.handleTransportCrash(transport, new Error(`History Worker exited unexpectedly with code ${code}`)))
 
+    const initializeConfig: HistoryWorkerStartConfig = { ...config, configRevision: this.status.latestDesiredRevision }
     const requestId = this.nextRequestId++
-    const promise = this.request<HistoryWorkerReady>(requestId, "start", config.configRevision)
+    this.pendingRequests.set(requestId, {
+      kind: "start",
+      expectedRevision: initializeConfig.configRevision,
+      resolve: (value) => startWaiter?.resolve(value),
+      reject: (error) => startWaiter?.reject(error),
+      reissue: (nextRequestId, nextGeneration) => ({
+        type: "initialize",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: nextGeneration,
+        requestId: nextRequestId,
+        config: initializeConfig,
+      }),
+    })
     this.send({
       type: "initialize",
       protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-      workerGeneration: this.generation,
+      workerGeneration: generation,
       requestId,
-      config,
+      config: initializeConfig,
     })
-    return promise
   }
 
   enqueue(envelope: HistoryOperationEnvelope, onOutcome: (outcome: HistoryPersistenceOutcome) => void): HistoryMessageId {
     const messageId = this.nextMessageId++
-    if (this.status.terminalFailed || !this.transport) {
+    if (this.status.terminalFailed || !this.startConfig || this.stopped) {
       this.outcomes.set(messageId, "failed")
       this.addTombstone(messageId, "failed")
       this.invokeOutcomeCallback({ envelope, onOutcome }, "failed")
       this.publishStatus()
       return messageId
     }
-    this.pendingEnvelopes.set(messageId, { envelope, onOutcome })
+    const pending: PendingEnvelope = { envelope, onOutcome }
+    this.pendingEnvelopes.set(messageId, pending)
     this.updatePendingStatus()
     this.publishStatus()
-    this.send({
-      type: "persist-operation",
-      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-      workerGeneration: this.generation,
-      messageId,
-      envelope,
-    })
+    // While a generation is down (crashed, or not ready yet) the envelope stays queued and
+    // is delivered by the ready-replay in message-ID order. `postMessage` is not durability
+    // and admission stays open until capacity is reached, so holding is the correct state.
+    if (this.transport && this.status.ready) this.sendEnvelope(messageId, pending)
     return messageId
   }
 
   updateConfig(revision: number, config: HistoryWorkerHotConfig): Promise<RawTargetDescriptor> {
     const requestId = this.nextRequestId++
-    const promise = this.request<RawTargetDescriptor>(requestId, "update-config", revision)
+    const promise = this.request<RawTargetDescriptor>(requestId, "update-config", revision, (nextRequestId, nextGeneration) => ({
+      type: "update-config",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: nextGeneration,
+      requestId: nextRequestId,
+      revision,
+      config,
+    }))
     this.status = { ...this.status, latestDesiredRevision: Math.max(this.status.latestDesiredRevision, revision) }
     this.publishStatus()
     this.send({
@@ -159,12 +207,20 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   drain(): Promise<HistoryDrainResult> {
     const requestId = this.nextRequestId++
-    const promise = this.request<HistoryDrainResult>(requestId, "drain")
+    const promise = this.request<HistoryDrainResult>(requestId, "drain", undefined, (nextRequestId, nextGeneration) => ({
+      type: "drain",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: nextGeneration,
+      requestId: nextRequestId,
+    }))
     this.send({ type: "drain", protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, workerGeneration: this.generation, requestId })
     return promise
   }
 
   async shutdown(): Promise<void> {
+    this.stopped = true
+    this.cancelRestartTimer?.()
+    this.cancelRestartTimer = undefined
     if (!this.transport) return
     if (!this.status.terminalFailed) await this.simpleRequest("shutdown")
     await this.terminateTransport()
@@ -182,29 +238,41 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   private simpleRequest(kind: "stop-maintenance" | "shutdown"): Promise<undefined> {
     const requestId = this.nextRequestId++
-    const promise = this.request<undefined>(requestId, kind)
+    const promise = this.request<undefined>(requestId, kind, undefined, (nextRequestId, nextGeneration) => ({
+      type: kind,
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: nextGeneration,
+      requestId: nextRequestId,
+    }))
     this.send({ type: kind, protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, workerGeneration: this.generation, requestId })
     return promise
   }
 
-  private request<T>(requestId: number, kind: PendingRequest["kind"], expectedRevision?: number): Promise<T> {
+  private request<T>(requestId: number, kind: PendingRequest["kind"], expectedRevision: number | undefined, reissue: PendingRequest["reissue"]): Promise<T> {
     if (this.status.terminalFailed) return Promise.reject(new Error(this.status.lastError ?? "History Worker runtime is terminal-failed"))
     return new Promise<T>((resolve, reject) => {
-      this.pendingRequests.set(requestId, { kind, expectedRevision, resolve: resolve as (value: unknown) => void, reject })
+      this.pendingRequests.set(requestId, { kind, expectedRevision, resolve: resolve as (value: unknown) => void, reject, reissue })
     })
   }
 
   private createTransport(generation: WorkerGeneration): HistoryWorkerTransport {
     if (this.options.workerFactory) return this.options.workerFactory(generation)
     const workerUrl = this.options.workerUrl ?? new URL("./history-worker.mjs", import.meta.url)
-    return new NodeHistoryWorkerTransport(new Worker(workerUrl))
+    return new NodeHistoryWorkerTransport(new Worker(workerUrl, { workerData: this.options.workerData }))
   }
 
   private send(message: MainToHistoryWorkerMessage): void {
     try {
       const parsed = parseMainToWorkerMessage(message)
       assertStructuredCloneSafe(parsed, `History Worker message ${parsed.type}`)
-      if (!this.transport) throw new Error("History Worker runtime is not started")
+      if (!this.transport) {
+        // Between a crash and its replacement generation there is no transport. A started,
+        // non-terminal runtime holds the message instead of failing: pending requests are
+        // re-issued to the new generation on ready, which is what lets a `drain()` survive a
+        // crash mid-drain (spec §8.2). Only a never-started or shut-down runtime is an error.
+        if (this.startConfig && !this.stopped && !this.status.terminalFailed) return
+        throw new Error("History Worker runtime is not started")
+      }
       this.transport.send(parsed)
     } catch (error) {
       this.failTerminal(error instanceof Error ? error : new Error(String(error)))
@@ -244,8 +312,13 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
           threadId: message.ready.threadId,
           selectedDriver: message.ready.selectedDriver,
           publishedRevision: message.ready.configRevision,
+          consecutiveFailures: 0,
+          nextRetryAt: undefined,
         }
+        this.restartPolicy.recordSuccess()
         request.resolve(message.ready)
+        this.replayPendingEnvelopes()
+        this.reissueOutstandingRequests()
         this.publishStatus()
         break
       }
@@ -333,6 +406,92 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.publishStatus()
   }
 
+  /** Hand one queued envelope to the current generation and remember which one got it. */
+  private sendEnvelope(messageId: HistoryMessageId, pending: PendingEnvelope): void {
+    pending.sentGeneration = this.generation
+    this.send({
+      type: "persist-operation",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: this.generation,
+      messageId,
+      envelope: pending.envelope,
+    })
+  }
+
+  /**
+   * Re-deliver every un-ACKed envelope to a freshly ready generation, in message-ID order.
+   *
+   * Ordering is part of the contract: replay must reproduce the original submission order,
+   * and semantic idempotency (`operation_id + revision + digest`) makes a re-delivered
+   * envelope a no-op rather than a duplicate row. Only envelopes that a PREVIOUS generation
+   * already saw count as replays — an envelope queued while the Worker was down is being
+   * sent for the first time, and reporting it as a replay would inflate the metric operators
+   * use to spot a crash-looping Worker.
+   */
+  private replayPendingEnvelopes(): void {
+    const ordered = [...this.pendingEnvelopes.entries()].sort(([left], [right]) => left - right)
+    let replays = 0
+    for (const [messageId, pending] of ordered) {
+      if (pending.sentGeneration !== undefined && pending.sentGeneration !== this.generation) replays++
+      if (pending.sentGeneration !== this.generation) this.sendEnvelope(messageId, pending)
+    }
+    if (replays > 0) this.status = { ...this.status, replaysTotal: this.status.replaysTotal + replays }
+  }
+
+  /**
+   * A Worker died without saying `fatal`: recoverable by construction.
+   *
+   * Un-ACKed envelopes and their reservations are deliberately retained — `postMessage`
+   * was never durability, so releasing them here would silently drop History records
+   * (spec §13.5). Outstanding requests are re-issued against the new generation, because
+   * their request IDs belonged to the dead one.
+   */
+  private handleTransportCrash(transport: HistoryWorkerTransport, error: Error): void {
+    if (this.transport !== transport || this.status.terminalFailed || this.stopped) return
+    this.transport = undefined
+    const decision = this.restartPolicy.recordFailure()
+    this.status = {
+      ...this.status,
+      ready: false,
+      restartsTotal: this.status.restartsTotal + 1,
+      consecutiveFailures: decision.consecutiveFailures,
+      nextRetryAt: decision.nextRetryAt,
+      lastError: error.message,
+    }
+    this.publishStatus()
+
+    const setTimer = this.options.restart?.setTimer ?? defaultRestartTimer
+    this.cancelRestartTimer = setTimer(() => {
+      this.cancelRestartTimer = undefined
+      if (this.stopped || this.status.terminalFailed) return
+      // The dead generation owned these request IDs. The start waiter (if any) rides the new
+      // `initialize`; every other outstanding request is re-issued only once the replacement
+      // is ready — see `reissueOutstandingRequests` for why it cannot be sent here.
+      const outstanding = [...this.pendingRequests.values()]
+      this.pendingRequests.clear()
+      const startWaiter = outstanding.find((request) => request.kind === "start")
+      this.requestsAwaitingReissue.push(...outstanding.filter((request) => request.kind !== "start"))
+      this.launchWorker(startWaiter ? { resolve: startWaiter.resolve, reject: startWaiter.reject } : undefined)
+    }, decision.delayMs)
+  }
+
+  /**
+   * Re-send the requests a dead generation was holding, AFTER the envelope replay.
+   *
+   * Order is the whole point: the Worker serializes what it receives, so a `drain` re-issued
+   * before the replayed envelopes would report "everything received so far is settled" while
+   * those envelopes were still in the main thread's queue — a drain barrier that lies is
+   * exactly what shutdown must never get (spec §8.2).
+   */
+  private reissueOutstandingRequests(): void {
+    const outstanding = this.requestsAwaitingReissue.splice(0)
+    for (const request of outstanding) {
+      const requestId = this.nextRequestId++
+      this.pendingRequests.set(requestId, request)
+      this.send(request.reissue(requestId, this.generation))
+    }
+  }
+
   private addTombstone(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
     this.completedAcks.set(messageId, outcome)
     this.completedAckOrder.push({ messageId, outcome })
@@ -372,14 +531,26 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   private failTerminal(error: Error): void {
     if (this.status.terminalFailed) return
-    this.status = { ...this.status, ready: false, terminalFailed: true, lastError: error.message }
+    // Terminal means terminal: no further Worker may be created, so a scheduled restart
+    // is cancelled before anything else observes the new state (spec §7.2 step 1).
+    this.cancelRestartTimer?.()
+    this.cancelRestartTimer = undefined
+    this.status = { ...this.status, ready: false, terminalFailed: true, nextRetryAt: undefined, lastError: error.message }
+    // Publish BEFORE settling anything (spec §7.2: close admission at step 2, terminate the
+    // un-ACKed set at step 3). Settling releases reservations, and a release wakes the FIFO
+    // waiter — so a subscriber that has not yet closed admission would hand a fresh
+    // reservation to a request whose History record can never be written.
+    this.publishStatus()
     const pendingEnvelopes = [...this.pendingEnvelopes.entries()]
     this.pendingEnvelopes.clear()
     for (const [messageId] of pendingEnvelopes) {
       this.outcomes.set(messageId, "failed")
       this.addTombstone(messageId, "failed")
     }
-    const pendingRequests = [...this.pendingRequests.values()]
+    // Requests parked for re-issue belong to a generation that will never be replaced now,
+    // so they are rejected with the same error rather than waiting for a Worker that is
+    // never coming.
+    const pendingRequests = [...this.pendingRequests.values(), ...this.requestsAwaitingReissue.splice(0)]
     this.pendingRequests.clear()
     this.updatePendingStatus()
     for (const [, pending] of pendingEnvelopes) this.invokeOutcomeCallback(pending, "failed")
@@ -428,10 +599,6 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   }
 }
 
-export function createInProcessHistoryPersistenceRuntime(): HistoryPersistenceRuntimeImpl {
-  return new HistoryPersistenceRuntimeImpl({ workerFactory: (generation) => new InProcessHistoryWorkerTransport(generation) })
-}
-
 class NodeHistoryWorkerTransport implements HistoryWorkerTransport {
   private readonly worker: Worker
 
@@ -458,114 +625,6 @@ class NodeHistoryWorkerTransport implements HistoryWorkerTransport {
   }
 }
 
-class InProcessHistoryWorkerTransport implements HistoryWorkerTransport {
-  private readonly generation: WorkerGeneration
-  private readonly listeners = {
-    message: new Set<(value: unknown) => void>(),
-    error: new Set<(error: Error) => void>(),
-    exit: new Set<(code: number) => void>(),
-  }
-  private outcomes: Record<number, HistoryPersistenceOutcome> = {}
-
-  constructor(generation: WorkerGeneration) {
-    this.generation = generation
-  }
-
-  send(value: unknown): void {
-    const message = structuredClone(parseMainToWorkerMessage(value))
-    queueMicrotask(() => {
-      switch (message.type) {
-        case "initialize": {
-          this.emit({
-            type: "ready",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            requestId: message.requestId,
-            ready: {
-              workerGeneration: this.generation,
-              threadId: 1,
-              selectedDriver: detectHistorySqliteDriver(),
-              configRevision: message.config.configRevision,
-              rawTarget: createRawTargetDescriptor(message.config.configRevision, message.config.rawConfig),
-            },
-          })
-          break
-        }
-        case "persist-operation": {
-          this.outcomes[message.messageId] = "failed"
-          this.emit({
-            type: "persist-result",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            messageId: message.messageId,
-            outcome: "failed",
-          })
-          break
-        }
-        case "update-config": {
-          this.emit({
-            type: "config-applied",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            requestId: message.requestId,
-            revision: message.revision,
-            rawTarget: createRawTargetDescriptor(message.revision, message.config.rawConfig),
-          })
-          break
-        }
-        case "stop-maintenance": {
-          this.emit({
-            type: "maintenance-stopped",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            requestId: message.requestId,
-          })
-          break
-        }
-        case "drain": {
-          this.emit({
-            type: "drained",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            requestId: message.requestId,
-            result: { outcomes: this.outcomes },
-          })
-          break
-        }
-        case "shutdown": {
-          this.emit({
-            type: "closed",
-            protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-            workerGeneration: this.generation,
-            requestId: message.requestId,
-          })
-          break
-        }
-        default: {
-          message satisfies never
-        }
-      }
-    })
-  }
-
-  on(event: "message", listener: (value: unknown) => void): this
-  on(event: "error", listener: (error: Error) => void): this
-  on(event: "exit", listener: (code: number) => void): this
-  on(event: "message" | "error" | "exit", listener: ((value: unknown) => void) | ((error: Error) => void) | ((code: number) => void)): this {
-    ;(this.listeners[event] as Set<typeof listener>).add(listener)
-    return this
-  }
-
-  terminate(): Promise<number> {
-    return Promise.resolve(0)
-  }
-
-  private emit(value: unknown): void {
-    const cloned = structuredClone(value)
-    for (const listener of this.listeners.message) listener(cloned)
-  }
-}
-
 function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
   return {
     workerGeneration,
@@ -577,9 +636,16 @@ function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
     publishedRevision: 0,
     restartsTotal: 0,
     replaysTotal: 0,
+    consecutiveFailures: 0,
     staleMessagesTotal: 0,
     duplicateAcksTotal: 0,
     outcomeCallbackErrorsTotal: 0,
     statusObserverErrorsTotal: 0,
   }
+}
+
+/** Real-timer restart seam. Not unref'd: a pending History restart is work the process owes. */
+function defaultRestartTimer(fn: () => void, ms: number): () => void {
+  const handle = setTimeout(fn, ms)
+  return () => clearTimeout(handle)
 }
