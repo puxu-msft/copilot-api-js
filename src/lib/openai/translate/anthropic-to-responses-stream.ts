@@ -73,6 +73,7 @@ import {
   refusalCategoryForDiagnostics,
   type RefusalTranslationDegradationReporter,
 } from "~/lib/anthropic/refusal-detail"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 
 import {
   //
@@ -225,7 +226,7 @@ export function createAnthropicToResponsesStreamTranslator(
 
       let event: StreamEvent
       try {
-        event = JSON.parse(ev.data) as StreamEvent
+        event = nameAnthropicEventFromWire(ev, JSON.parse(ev.data) as StreamEvent)
       } catch {
         consola.debug("[responses←anthropic] skipping unparseable upstream SSE frame:", ev.data.slice(0, 200))
         return out

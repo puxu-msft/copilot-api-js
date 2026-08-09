@@ -25,3 +25,15 @@ export function anthropicWireFrameType(frame: Pick<ClientFrame, "event" | "data"
 export function isAnthropicErrorFrame(frame: Pick<ClientFrame, "event" | "data">): boolean {
   return anthropicWireFrameType(frame) === "error"
 }
+
+/**
+ * Fill in a parsed Anthropic stream event's `type` from the SSE `event:` line when the payload omitted it.
+ *
+ * The accumulator switches on `type` and silently ignores anything it cannot name, so a raw upstream error frame — `event: error` with a body of just `{ error: { ... } }` — left `acc.streamError` unset and made the terminal look like a truncation.
+ * Every feed into the accumulator needs this, so it lives here rather than being repeated at each call site; callers keep their own parse error handling.
+ */
+export function nameAnthropicEventFromWire<T>(frame: Pick<ClientFrame, "event" | "data">, parsed: T): T {
+  if (typeof (parsed as { type?: unknown } | undefined)?.type === "string") return parsed
+  const wireType = anthropicWireFrameType(frame)
+  return wireType === undefined ? parsed : ({ ...parsed, type: wireType } as T)
+}

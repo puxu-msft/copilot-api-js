@@ -119,7 +119,7 @@ import {
   handleWarmupRequest,
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
-import { anthropicWireFrameType } from "~/lib/anthropic/wire-frame-type"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { applyConfigToState } from "~/lib/config/config"
@@ -298,8 +298,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
             parsed = JSON.parse(rawEvent.data) as StreamEvent
             // The accumulator switches on the payload's `type`, but upstream may only name the frame on the SSE `event:` line — a raw `event: error` body is just `{ error: { ... } }`.
             // Without this the accumulator fell through to `default`, `acc.streamError` stayed unset, and the terminal branch below read the missing `message_stop` as a truncation: it retried the upstream's own decision and then appended a synthesised truncation error on top of the real one.
-            const wireType = anthropicWireFrameType(rawEvent)
-            if (typeof (parsed as { type?: unknown }).type !== "string" && wireType !== undefined) parsed = { ...parsed, type: wireType } as StreamEvent
+            parsed = nameAnthropicEventFromWire(rawEvent, parsed)
             accumulateAnthropicStreamEvent(parsed, state.acc)
           } catch (error) {
             consola.error("Failed to parse Anthropic stream event:", error, rawEvent.data)
