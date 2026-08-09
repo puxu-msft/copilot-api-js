@@ -199,6 +199,7 @@ function readyMessage(generation: number, requestId = 1, configRevision = 1): un
       selectedDriver: "bun:sqlite",
       configRevision,
       rawTarget: { configRevision, requested: false, maxObjectBytes: 1024 },
+      recoveredJournalOperations: 0,
     },
   }
 }

@@ -73,6 +73,7 @@ export class ScriptedTransport implements HistoryWorkerTransport {
         selectedDriver: "bun:sqlite",
         configRevision,
         rawTarget: { configRevision, requested: false, maxObjectBytes: 1024 },
+        recoveredJournalOperations: 0,
         ...overrides,
       },
     })

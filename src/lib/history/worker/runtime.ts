@@ -98,6 +98,8 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private nextRequestId = 1
   private status: HistoryWorkerStatus = emptyStatus(0)
   private startConfig: HistoryWorkerStartConfig | undefined
+  /** Hot config belonging to `status.latestDesiredRevision`; a restart must initialize with THIS, not the start config. */
+  private latestDesiredConfig: HistoryWorkerHotConfig | undefined
   private readonly restartPolicy: HistoryWorkerRestartPolicy
   private cancelRestartTimer: (() => void) | undefined
   private stopped = false
@@ -119,9 +121,10 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   /**
    * Create a Worker generation and hand it an `initialize`.
    *
-   * Both the first start and every restart come through here, so a restarted Worker is
-   * initialized with the SAME frozen start config and the latest desired config revision —
-   * a restart must not quietly re-derive either from live state.
+   * Both the first start and every restart come through here, so a replacement is
+   * initialized from the frozen start config overlaid with the LATEST desired hot config
+   * and its revision — a restart must not quietly re-derive either from live state, and
+   * must not pair a new revision number with the config of an old one.
    */
   private launchWorker(startWaiter?: { resolve: (value: unknown) => void; reject: (error: Error) => void }): void {
     const config = this.startConfig
@@ -134,7 +137,15 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     transport.on("error", (error) => this.handleTransportCrash(transport, error))
     transport.on("exit", (code) => this.handleTransportCrash(transport, new Error(`History Worker exited unexpectedly with code ${code}`)))
 
-    const initializeConfig: HistoryWorkerStartConfig = { ...config, configRevision: this.status.latestDesiredRevision }
+    // The revision and the hot config it labels MUST come from the same snapshot. Bumping
+    // only `configRevision` would hand the replacement the ORIGINAL raw config under the
+    // latest revision number, and its `ready` descriptor — which §5.3 publishes atomically
+    // as the active target — would then describe an artifact nobody asked for.
+    const initializeConfig: HistoryWorkerStartConfig = {
+      ...config,
+      ...this.latestDesiredConfig,
+      configRevision: this.status.latestDesiredRevision,
+    }
     const requestId = this.nextRequestId++
     this.pendingRequests.set(requestId, {
       kind: "start",
@@ -188,6 +199,10 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       revision,
       config,
     }))
+    // Keep revision and config together: only a revision that actually advances the desired
+    // state may replace the snapshot a restart will initialize from. A late-arriving lower
+    // revision must not drag the target backwards (§5.3).
+    if (revision >= this.status.latestDesiredRevision) this.latestDesiredConfig = config
     this.status = { ...this.status, latestDesiredRevision: Math.max(this.status.latestDesiredRevision, revision) }
     this.publishStatus()
     this.send({
@@ -221,7 +236,16 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.stopped = true
     this.cancelRestartTimer?.()
     this.cancelRestartTimer = undefined
-    if (!this.transport) return
+    if (!this.transport) {
+      // Shutdown landed inside a restart backoff window: no Worker exists and, because
+      // `stopped` is now set, none will be created. Returning here would leave every
+      // un-ACKed envelope without a terminal outcome and its reservation never released,
+      // so `drain()` (§8.2 step 5) would wait on an ACK that can never arrive. Settle them
+      // as `failed` — which §8.2 step 6 turns into a failed shutdown, exit 1 — rather than
+      // reporting a success the data never got.
+      this.settleUnackedAsFailed(new Error("History Worker runtime shut down while no Worker generation was running"))
+      return
+    }
     if (!this.status.terminalFailed) await this.simpleRequest("shutdown")
     await this.terminateTransport()
   }
@@ -312,6 +336,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
           threadId: message.ready.threadId,
           selectedDriver: message.ready.selectedDriver,
           publishedRevision: message.ready.configRevision,
+          recoveredJournalOperations: message.ready.recoveredJournalOperations,
           consecutiveFailures: 0,
           nextRetryAt: undefined,
         }
@@ -541,6 +566,26 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     // waiter — so a subscriber that has not yet closed admission would hand a fresh
     // reservation to a request whose History record can never be written.
     this.publishStatus()
+    this.settleUnackedAsFailed(error)
+    // Terminal means no Worker may ever run again, so the dead generation must not outlive
+    // the decision. Leaving it alive keeps a Worker thread — and therefore the process —
+    // running with nobody reading its port, which would stall the graceful shutdown §7.2
+    // step 5 hands off to. `terminate()` re-fires `exit`, which `handleTransportCrash`
+    // already ignores once `terminalFailed` is set.
+    void this.terminateTransport().catch((terminateError: unknown) => {
+      this.status = { ...this.status, lastError: `${error.message}; terminate failed: ${String(terminateError)}` }
+      this.publishStatus()
+    })
+  }
+
+  /**
+   * Give every un-ACKed envelope a terminal `failed` outcome and reject every waiting request.
+   *
+   * Used by both irreversible fatal (§7.2 step 3) and shutdown-with-no-Worker (§8.2): in both
+   * cases the ACK that would settle these items can never arrive, and a reservation that is
+   * never released is indistinguishable from a hang.
+   */
+  private settleUnackedAsFailed(error: Error): void {
     const pendingEnvelopes = [...this.pendingEnvelopes.entries()]
     this.pendingEnvelopes.clear()
     for (const [messageId] of pendingEnvelopes) {
@@ -636,6 +681,7 @@ function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
     publishedRevision: 0,
     restartsTotal: 0,
     replaysTotal: 0,
+    recoveredJournalOperations: 0,
     consecutiveFailures: 0,
     staleMessagesTotal: 0,
     duplicateAcksTotal: 0,

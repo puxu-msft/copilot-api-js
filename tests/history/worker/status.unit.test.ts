@@ -36,6 +36,7 @@ function runtime(overrides: Partial<HistoryWorkerStatus> = {}): HistoryWorkerSta
     publishedRevision: 0,
     restartsTotal: 0,
     replaysTotal: 0,
+    recoveredJournalOperations: 0,
     consecutiveFailures: 0,
     staleMessagesTotal: 0,
     duplicateAcksTotal: 0,

@@ -123,6 +123,7 @@ describe("History Worker protocol", () => {
           selectedDriver: "bun:sqlite",
           configRevision: 2,
           rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+          recoveredJournalOperations: 0,
         },
       }),
     ).toThrow("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")
