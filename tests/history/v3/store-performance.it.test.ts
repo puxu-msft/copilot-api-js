@@ -242,15 +242,21 @@ describe("History V3 store performance", () => {
     const liveRatio = v2Bytes / liveBytes
 
     console.log("HISTORY_V3_PERF cas-bytes", JSON.stringify({ operations: records.length, v2Bytes, pageDelta, liveBytes, physicalRatio, liveRatio }))
-    expect(physicalRatio).toBeGreaterThanOrEqual(10)
-    expect(liveRatio).toBeGreaterThanOrEqual(10)
-    // Generous on purpose, and NOT a latency bound — the oracle is the byte ratio above
-    // (measured 109x physical / 218x live against a 10x threshold), so wall clock only ever
-    // produces false reds here. It needs to be generous because the body is synchronous:
-    // bun cannot interrupt it, so an over-budget run still does all the work and prints its
-    // stats before being marked TimeoutError, which reads exactly like a passing run.
-    // Measured: ~9s isolated, 16.29s inside a 16-way sharded `test:backend` — the previous
-    // 15s budget lost to scheduling noise by 1.3s and turned the whole gate red.
+    // Calibrated against both ends, not picked round. Healthy: 109.68 physical / 218.58 live,
+    // reproducible to 7 digits across trees. Totally broken (content-addressing disabled so
+    // every operation stores its own copy): 9.51 physical / 10.79 live — measured, not
+    // assumed. The former 10x threshold therefore discriminated on physical by 0.49 and on
+    // live NOT AT ALL: a complete dedup failure still cleared it, so any *partial*
+    // degradation was green by construction. These sit near the geometric mean of the two
+    // ends (~32 and ~49), leaving ~3x margin on each side.
+    expect(physicalRatio).toBeGreaterThanOrEqual(30)
+    expect(liveRatio).toBeGreaterThanOrEqual(50)
+    // Generous on purpose, and NOT a latency bound — the oracle is the byte ratio above, so
+    // wall clock only ever produces false reds here. It needs to be generous because the body
+    // is synchronous: bun cannot interrupt it, so an over-budget run still does all the work
+    // and prints its stats before being marked TimeoutError, which reads exactly like a
+    // passing run. Measured: ~9s isolated, 16.29s inside a 16-way sharded `test:backend` —
+    // the previous 15s budget lost to scheduling noise by 1.3s and turned the whole gate red.
   }, 120_000)
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {
