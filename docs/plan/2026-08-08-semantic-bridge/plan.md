@@ -86,28 +86,58 @@ TypeScript / Bun；SSE + WebSocket 流式；官方 `openai@^6.45.0`（`ResponseA
 | C-6 | `src/lib/pipeline/committed-blocks-ledger.ts:15` `CanonicalBlock`，:24 `createCommittedBlocksLedger`，:40 `hasCompleteInteractiveToolUse` | ⚠️ **与新 semantic ledger 是两件事，禁止合并**。它只负责 continuation 的「已交付前缀」（text/tool_use 两型，故意排除 thinking），由 driver 在 commit boundary 喂养。新 ledger 管完整语义 lifecycle。两者由同一 delivery boundary 驱动，但职责不重叠 |
 | C-7 | `src/lib/context/request.ts:1494` `selectGenerationWinner`，:901 `commitGenerationObservabilityTerminal` | candidate 选定与 terminal 记录。observation stage 晋级要接在这里 |
 
-### C-0 附：客户端字节起点全集
+### C-0 附：authority 的作用域，以及为什么不要枚举写出点
 
-`[hard]` **本小节按枚举组织，不按「流式／非流式」二分。** 二分是本计划连错三次的直接成因 —— 每次都以为自己找到了那条分界线，于是把新分界当成全称，而下一类写出恰好落在分界之外。**先问「谁能向客户端写字节」，再谈怎么分类。**
+`[hard]` **本小节记录一次连错四轮的教训，读完再动 C2.3。**
 
-基线 `82c0664e` 的全集是**三类**（实施者开工必须自己重跑一遍枚举命令，见 C2.3 Step 0）：
+#### 真正的错误：我一直在错误的轴上枚举
 
-| 类 | 起点 | 是否经 delivery session | authority 落点 |
-|---|---|---|---|
-| **① 经 delivery session 的流式** | `client-sink.ts:494` `makeDeliverySseSink`、`:697` `makeDeliveryWsSink`（`createDownstreamDeliverySession` 的**仅有两个**创建点）。消费方：`messages:1584`、`responses:358`／`:607`、`responses/ws.ts:377`、`chat-completions:530`／`:767`、`gemini:446`／`:651` | 是 —— `writeToSink`（`session.ts:687`）是其漏斗，四个调用方见 C-2 | C2.3 步骤 1（epoch 覆盖四条 `writeToSink` 路径） |
-| **② handler 直接 `c.json` 的非流式** | `messages:1377`（成功）／`:1344`（错误）、**`responses:269`／`:534`**、`chat-completions:400`／`:691`、`gemini:350`／`:580`；另 `messages:788` `c.body(null, 499)` 的中止路径 | **否** | C2.3 步骤 2。**本 RFC 两个方向对应 messages 与 responses，共四处必落**；cc／gemini 在 RFC §2 范围外，须**显式写明不落 authority 的理由与其 History 后果**，不得默认省略 |
-| **③ handler／lib 自持 `streamSSE`，绕过 delivery session** | `messages/error-shaping-glue.ts:129`（`:131` `writeSSE`）—— **上游错误整形后的整回合合成帧**；`lib/anthropic/warmup.ts:211`／`:241`（`:214`／`:230`／`:243` `writeSSE`）—— warmup 腿 | **否** | C2.3 步骤 2b（**本轮新增**） |
+RFC §6 的不变量原文是：
 
-⚠️ **第 ③ 类里的 `error-shaping-glue` 直接证伪了 C2.3 的不变量 5**：那条不变量要求「错误 wire 仍由该 active authority 发送……不允许无 authority 的 writer 代发」，而这条既有路径正是一个无 authority 的 writer 在发错误帧。**实施 C2.3 时必须先处理这个既有矛盾**（给它落 authority，或显式裁决它豁免并写明理由），不能假装不变量已经成立。
+> 「request 在任一时刻至多一个 **candidate** 持 `active` delivery authority」「未持 authority 的 **candidate** 不得写任何客户端 sink」
 
-**能抓住「下一次同类错」的守卫**：`writeToSink` 调用方集合守卫（C2.3 步骤 3）**结构性看不见** ② 和 ③ —— 它只冻结漏斗内部。因此另加一条守卫，**冻结 `streamSSE(` 与 `c.json(` 的调用点集合**；出现第四类客户端写出即 fail。这条才是本节的机械保障，前者不是。
+它约束的是**一个请求内的 candidate 之间**（谁是现任写者），**不是**「进程里每个写出字节的地方都要过一道 authority 检查」。我把 candidate 级不变量读成了写出点级全称，于是四轮都在补一份**永远补不完**的写出点清单：
 
-**三次写错的形态（留档，别再犯第四次）**：
-1. 「`writeCommittedBatch` 是唯一客户端 writer」——漏掉同文件内的 `write()` 主路径。
-2. 「`writeToSink` 是所有客户端字节的漏斗」——在流式内完全正确，漏掉非流式 `c.json`。**而且为它加的守卫会为这个假全称背书。**
-3. 「客户端字节有两条互不相交的路径」——漏掉自持 `streamSSE` 的第三类。
+1. 「`writeCommittedBatch` 是唯一客户端 writer」——漏同文件的 `write()`。
+2. 「`writeToSink` 是所有客户端字节的漏斗」——流式内正确，漏非流式 `c.json`。**且为它加的守卫会为这个假全称背书。**
+3. 「客户端字节有两条互不相交的路径」——漏自持 `streamSSE`。
+4. 「冻结 `streamSSE(`／`c.json(` 调用点即可抓住下一类」——漏 `ws.send(`。**连专门用来防复发的守卫也犯了同一个错。**
 
-共同根因：**修一个过宽断言时只把名字换窄，没有主动去构造跨作用域的反例。** 每次都以为「这次总该穷尽了」，而判据的形状（守卫冻结的是上一次那条路径的内部）恰好让新缺口隐身。
+若继续沿这条轴走，第五次是 `forwardError`（`lib/error/forward.ts:524`，约十处调用，含 `server.ts:90` 的 app 级 onError —— 它按 `c.req.path` 判别 wire 格式，**确实为模型路由兜底**），第六次会是别的。**枚举写出原语这件事本身没有终点。**
+
+#### 正确的形状：authority 建在请求作用域，不建在写出点
+
+- **authority 在 ingress 按请求建立一次**，归属由 candidate lineage 管（C2.2）。请求内的写出**由构造继承**它，无需逐点检查。
+- 于是「至多一个 active」变成 **candidate 之间**的性质 —— 由 C2.2 的 lineage 与 C2.3 的 transfer 临界区保证，**与写出点数量无关**。
+- 写出点枚举**只对一个窄得多的问题有用**：**哪个写出点负责记录 terminal wire 的 ACK 或 delivery failure**。这个集合小且有界，且它的遗漏是**可观测的**（terminal 记录缺失），不像「某处绕过 authority」那样静默。
+
+#### 因此本计划的作用域声明
+
+`[hard]` **在范围内**（必须归入某个请求的 authority）：承载**模型请求的响应或其终态错误**的写出。当前已知：
+
+| 类 | 起点 |
+|---|---|
+| ① delivery session 流式 | `client-sink.ts:494`／`:697`（`createDownstreamDeliverySession` 仅有两个创建点）；消费方 `messages:1584`、`responses:358`／`:607`、`responses/ws.ts:377`、`chat-completions:530`／`:767`、`gemini:446`／`:651`。漏斗 `writeToSink`（`session.ts:687`）四调用方见 C-2 |
+| ② handler `c.json`／`c.body` 非流式 | `messages:1377`／`:1344`／`:788`、**`responses:269`／`:534`**、`chat-completions:400`／`:691`、`gemini:350`／`:580` |
+| ③ 自持 `streamSSE` | `messages/error-shaping-glue.ts:129`、`lib/anthropic/warmup.ts:211`／`:241` |
+| ④ 直接 `ws.send` | `responses/ws.ts:167`（错误整形 canonical 帧）、`:614`、`:686` |
+| ⑤ 共享错误出口 | `lib/error/forward.ts:524` `forwardError`，含 `server.ts:90` 的 app 级兜底 |
+
+**明确在范围外**（不承载模型响应，不参与 authority；**这是声明，不是遗漏**）：History／event-logging／config／status 等管理端点的响应；`server.ts:86` 的 WS 升级失败 `c.text("", 500)`。
+
+`[hard]` **这份清单不自称穷尽。** 它是「已知在范围内的写出点」，作用是让实施者知道该去哪几处记录 terminal；**authority 的正确性不依赖它完整** —— 那由请求作用域的建立保证。
+
+#### 守卫怎么写才不会变成下一个假全称
+
+`[hard]` 守卫的断言消息**必须写明它冻结的是什么、以及它不证明什么**：
+
+- `delivery-writer-set` —— 冻结 `writeToSink` 的四个调用方。**只覆盖 ①**。
+- `client-byte-origins` —— 冻结**模型路由**下的客户端写出原语集合（`streamSSE(`／`writeSSE(`／`c.json(`／`c.body(`／`ws.send(`／`forwardError(`）**及其调用点**；出现**未登记的新原语**时也要 fail，不只是已知原语多一个调用点。
+- **两条守卫都必须在断言消息里写「本守卫不证明客户端写出集合已穷尽」** —— 前四轮的失效，每一次都是因为一条只覆盖某一类的判据被读成了全称背书。
+
+**发现方式也值得记**：第四类是用**与前三次不同的扫描思路**（改扫 `new Response(`／`c.text(`／`.send(` 等其它原语）才撞到的。沿用自己的思路复查，只会复现自己的盲点。
+
+---
 
 ---
 
@@ -429,36 +459,30 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Files**
 - Modify `src/lib/pipeline/delivery/session.ts`（**流式四条写出路径全覆盖**，见 C-1/C-2）
 - Modify `src/routes/messages/handler-v4.ts` 与 `src/routes/responses/handler-v4.ts`（**② 非流式 authority 落点，共四处**：messages `:1377`／`:1344`、responses `:269`／`:534`）
-- Modify `src/routes/messages/error-shaping-glue.ts`、`src/lib/anthropic/warmup.ts`（**③ 自持 `streamSSE` 的落点**）
+- Modify `src/routes/messages/error-shaping-glue.ts`、`src/lib/anthropic/warmup.ts`（**③ 自持 `streamSSE`**）
+- Modify `src/routes/responses/ws.ts`（**④ 直接 `ws.send`**：`:167`／`:614`／`:686`）
+- Modify `src/lib/error/forward.ts`（**⑤ 共享错误出口 `forwardError`**，模型路由分支）
 - Modify `src/lib/pipeline/types.ts`（C-3 `GenerationWireState` 新增 authority 字段）
 - Modify `src/lib/pipeline/semantic/lineage.ts`
 - Create `tests/pipeline/semantic/delivery-authority.it.test.ts`（**三类各一组**）
 - Create `tests/architecture/delivery-writer-set.unit.test.ts`（冻结 `writeToSink` 调用方，**仅覆盖 ①**）
 - Create `tests/architecture/client-byte-origins.unit.test.ts`（**冻结 `streamSSE(`／`c.json(` 调用点集合，覆盖 ②③ 并抓第四类**）
 
-**Step 0（前置，不得跳过）：枚举客户端字节起点全集**
+**Step 0（前置，不得跳过）：先读作用域，别急着枚举**
 
-`[hard]` **先读锚点表的「C-0 附：客户端字节起点全集」**，它按**枚举**而非二分组织 —— 本计划在这里连错三次，三次形态都记在那一节。你**不要继承任何一版旧表述**。
+`[hard]` **先读锚点表的「C-0 附：authority 的作用域，以及为什么不要枚举写出点」。** 本计划在这里连错四轮，四次都是把 candidate 级不变量当成写出点级全称，于是补一份永远补不完的清单。**你不要继承任何一版旧表述。**
 
-开工第一件事，自己跑这三条命令，把结果与 C-0 附表对账并写进进度文件：
+**核心**：authority **在 ingress 按请求建立一次**，请求内的写出**由构造继承**它。「至多一个 active」是 **candidate 之间**的性质，由 lineage 与 transfer 临界区保证，**与写出点数量无关**。
 
-```bash
-rg -rn 'createDownstreamDeliverySession' src/      # ① 的创建点
-rg -rn 'c\.json\(|c\.body\(' src/routes/            # ② 的返回点
-rg -rn 'return streamSSE\(|= streamSSE\(' src/      # ③ 含绕过 delivery session 的
-```
-
-**出现 C-0 附表之外的第四类客户端写出，停下回报** —— 那意味着本片的穷尽性前提需要重新裁决。
+写出点清单只用来回答一个窄问题：**哪几处负责记录 terminal wire 的 ACK／delivery failure**。C-0 附表列了已知的五类，**该表不自称穷尽**；开工时自己复扫一遍并把结果写进进度文件，**用与表格不同的思路扫**（别只复跑表里给的命令——那会复现同一个盲点）。
 
 **Steps**
-1. **① 经 delivery session 的流式**：authority epoch 覆盖全部四条 `writeToSink` 路径（见 C-2）。
-2. **② handler 直接 `c.json` 的非流式**：`c.json` 之前建 `active(epoch=0)`，响应构造确认后转 `terminal`；错误路径走 failed/preflight-reject 同一套。
-   ⚠️ **本 RFC 两个方向的四处必落**：messages `:1377`／`:1344`、responses `:269`／`:534`。cc／gemini 在 RFC §2 范围外，**须显式写明不落 authority 的理由与其 History 后果**，不得默认省略。
-3. **② b —— ③ handler／lib 自持 `streamSSE`**：`error-shaping-glue.ts:129`、`warmup.ts:211`／`:241` 同样定 authority 落点。
-   `[hard]` **`error-shaping-glue` 直接证伪本片的不变量 5**（它要求错误 wire 由 active authority 发送，而这条既有路径是无 authority 的 writer 在发错误帧）。**必须先处理这个既有矛盾**：给它落 authority，或显式裁决豁免并写明理由与 History 后果。**不得假装不变量已经成立。**
-4. **两条结构守卫**（缺一不可）：
-   - `tests/architecture/delivery-writer-set.unit.test.ts` —— 冻结 `writeToSink` 的调用方集合（四个）。`[hard]` **名称与断言消息必须写明它只覆盖第 ① 类**，否则会被读成「所有客户端写出都在此」而**为假全称背书**。
-   - `tests/architecture/client-byte-origins.unit.test.ts` —— **冻结 `streamSSE(` 与 `c.json(` 的调用点集合**。出现第四类客户端写出即 fail。**这条才是能抓住「下一次同类错」的守卫** —— 前一条结构性看不见 ② 和 ③。
+1. **authority 在请求作用域建立**：ingress 一次，归属由 C2.2 的 lineage 管。**不要在每个写出点各插一道检查** —— 那正是前四轮的错路。
+2. **terminal 记录点**：按 C-0 附表的五类，在承载模型响应／终态错误的写出处记录 terminal wire ACK 或 delivery failure。本 RFC 两方向优先级：① 的 `writeToSink` 四路径、② 的 messages／responses、③ 的 `error-shaping-glue`、④ 的 `ws.ts:167`、⑤ 的 `forwardError`（模型路由分支）。cc／gemini 与管理端点见 C-0 的作用域声明。
+3. `[hard]` **两条既有路径与不变量 5 的矛盾必须先处理**：③ 的 `error-shaping-glue` 与 ④ 的 `ws.ts:167` 都是**无 authority 的 writer 在发错误帧**。给它们接上请求 authority，或显式裁决豁免并写明理由与 History 后果。**不得假装不变量已经成立。**
+4. **两条守卫**，`[hard]` **断言消息必须写明各自冻结什么、以及「本守卫不证明客户端写出集合已穷尽」**：
+   - `delivery-writer-set.unit.test.ts` —— 冻结 `writeToSink` 四调用方，**只覆盖 ①**；
+   - `client-byte-origins.unit.test.ts` —— 冻结**模型路由**下的写出原语集合（`streamSSE(`／`writeSSE(`／`c.json(`／`c.body(`／`ws.send(`／`forwardError(`）**及其调用点**，且**出现未登记的新原语时也 fail**。
 5. 落下面「要落的不变量」十七条。
 3. 初始 commit：首次不可逆客户端 emission 建立 `active(epoch=0)`。
 4. 两类无内容帧终态也必须建立唯一 authority：**preflight fail-closed**（driver 接受 typed rejection 时建 `active(0)`、冻结 `failed/preflight-reject`、由该 authority 发错误 wire 并等 sink 结果后转 terminal）与 **contentless success**（同样先建 active、发完并确认 terminal wire 后转 terminal）。
@@ -480,21 +504,23 @@ rg -rn 'return streamSSE\(|= streamSSE\(' src/      # ③ 含绕过 delivery ses
 - **让主路径 `write()`（`:165`）不带 epoch** → 普通流式请求的 authority 用例变红。**这条是四条旧 mutation 全都漏掉的那个失效**，缺它则「epoch 只挂在 allocation 路径」这个错误实现可以全绿通过；
 - **让 `publish-recovery-batch`（`:492`，空 commit 回调）那条路径不带 epoch** → 以 `onBeforeRecoveryBatchCommit` hook 为中点探针的正控变红。
 
-**正控（不只防 false-green）** —— `active` 数为 0 时「至多一个」同样成立，所以唯一性断言**必须**配存在性正控，且**三类各一条**：
-- **①（delivery session 流式）**：普通流式请求首帧写出后存在**恰一个** `active`；恢复批次发布后同样。
-- **②（非流式 `c.json`）**：`c.json` 返回前存在**恰一个** `active`，返回后转 `terminal`。**且至少覆盖 messages 与 responses 两个路由** —— 只测一个路由，另一个方向的洞照样全绿。
-- **③（自持 `streamSSE`）**：错误整形腿写出前存在**恰一个** `active`（或已显式裁决豁免且该裁决被断言）。
+**正控（不只防 false-green）** —— `active` 数为 0 时「至多一个」同样成立，所以唯一性断言**必须**配存在性正控。按**请求形态**取样（不是按写出点逐个测）：
+- **流式请求**：首帧写出后存在**恰一个** `active`；恢复批次发布后同样。
+- **非流式请求**：响应返回前存在**恰一个** `active`，返回后转 `terminal`。**至少覆盖 messages 与 responses 两个路由** —— 只测一个，另一方向的洞照样全绿。
+- **WS 请求**：`responses/ws.ts` 腿同样。
+- **终态错误请求**：③④⑤ 三类各取一个代表，错误 wire 写出前存在**恰一个** `active`，或已显式裁决豁免且该裁决本身被断言。
 
 **Mutation**（九条，逐条核对失败来自目标机制）
 - 让 transfer 在 closing ACK 前发布 → 中点探针断言「恰一个 active」变红；
 - 让 preflight reject 不建 authority → 该终态的 lineage 用例变红；
 - 让 pre-commit 空 segment 也产生 transferred ancestor → 分支②用例变红；
 - 让 flush 失败仍 transfer → 分支①失败支用例变红；
-- **让 ① 的主路径 `write()`（`:165`）不带 epoch** → ① 存在性正控变红；
-- **让 `publish-recovery-batch`（`:492`，空 commit 回调）不带 epoch** → 以 `onBeforeRecoveryBatchCommit` 为探针的正控变红；
-- `[hard]` **让某个非 messages 路由（如 responses `:269`）的非流式不建 authority** → 该路由的 ② 正控变红。**必须打非 messages 路由** —— 只打 messages 只证明了一个路由，而反方向的洞正是靠这条抓；
-- `[hard]` **让 ③ 的 `error-shaping-glue` 不建 authority** → ③ 正控变红；
-- **新增第四类客户端写出**（临时加一处 `c.json` 或 `streamSSE`）→ `client-byte-origins` 守卫变红。**这条验证的是「下一次同类错能被抓住」本身。**
+- **让 ① 的主路径 `write()`（`:165`）不记 terminal ACK** → ① 的 terminal 记录用例变红；
+- **让 `publish-recovery-batch`（`:492`，空 commit 回调）那条路径不记** → 以 `onBeforeRecoveryBatchCommit` 为探针的正控变红；
+- `[hard]` **让某个非 messages 路由（如 `responses:269`）的非流式请求不建 authority** → 该路由的存在性正控变红。**必须打非 messages 路由**；
+- `[hard]` **让 ③ 或 ④ 的错误腿不建 authority** → 终态错误的存在性正控变红；
+- **临时引入一个未登记的写出原语**（如在模型路由里加一处 `c.text(`）→ `client-byte-origins` 守卫变红。
+  **这条验证的是「守卫对新原语而非仅新调用点报警」** —— 前四轮的失效正是守卫只盯已知项。
 
 ---
 
