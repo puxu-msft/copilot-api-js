@@ -146,7 +146,18 @@ function capturingClientFetch(captures: Array<ClientWireCapture>): (input: strin
     const response = await globalThis.fetch(input, init)
     const bytes = new Uint8Array(await response.clone().arrayBuffer())
     const excluded = new Set<string>(EXCLUDED_UNSTABLE_RESPONSE_HEADERS)
-    const headers = [...response.headers.entries()].filter(([name]) => !excluded.has(name)).sort(([a], [b]) => a.localeCompare(b))
+    // Codepoint order, never localeCompare: this ordering feeds canonicalClientWire and therefore
+    // decides the authority digest. localeCompare is ICU/locale sensitive — under `cs` the digraph
+    // `ch` sorts after `h`, under `da` a leading `aa` sorts as `å` and lands last — so the same bytes
+    // would digest differently on another machine, another Bun, or another LANG, surfacing as a
+    // false-red nobody can explain.
+    const headers = [...response.headers.entries()]
+      .filter(([name]) => !excluded.has(name))
+      .sort(([a], [b]) =>
+        a < b ? -1
+        : a > b ? 1
+        : 0,
+      )
     captures.push({ status: response.status, headers, bodyHex: Buffer.from(bytes).toString("hex") })
     return response
   }
