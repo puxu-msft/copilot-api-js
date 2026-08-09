@@ -191,14 +191,24 @@ A1、A2、A3 的已实现部分均已落 `master@fa2bfd2d902af444517b2fed1a44428
 
 以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象提出；准确 file:line、反例与建议见 `review-core-a3.md`（该报告是时点记录，不随修复改写）。**六条现已全部处置**，逐条落点如下——其中第 4 条仍在分支上、尚未合并，合并前不得把它算作 master 状态。
 
-1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（`src/lib/history/queries.ts:46`、`:380`）。
+1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（定义 `src/lib/history/v3/summary-store.ts:102`，唯一调用点 `src/lib/history/queries.ts:380`）。
 2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。**已闭合**：同上，await 两侧不再各自取快照。
 3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。**已闭合**：`lifecycleStatesForQuery` 成为唯一判定源，冲突谓词返回空集而非放宽（`src/lib/history/lifecycle-state.ts`）。
 4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。**已实现，待合并**（分支 `nghttp2-cancel-a3-next`）：改为按 term ordinal 在列式 fast field 上过滤 + 每段一次批量解析 id；精确 `total`、tuple 顺序、keyset 四项语义均未变（遍历全部命中仍是精确计数的前提，被消除的是评分堆与 stored-doc 物化）。实测与「它没有证明什么」见 `exp/history-search-list-perf/README.md`，条目收口在 `docs/todo/deferred-backlog.md`。
 5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。**已闭合**：`rejectsInvalidListQuery`（`src/routes/history/handler.ts`），按用户 2026-08-08 裁决**只作用于 `/api/entries`**，`/api/search` 保持既有宽松降级契约。
 6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。**已闭合**：cursor 记录 `indexOpstamp`，与 `HistoryIndex.generation()` 比对，不匹配即弃用重新 tail（`src/lib/history/search/daemon.ts`）。
 
-A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。**未闭合的验收项**：六条各自带目标回归与 mutation 对照，但**尚未做过一次覆盖全部六条最终合并态的独立复评**（`0 blocker／0 major` 那道门）；第 4 条另有一处**实测证明当前不可达、因而无测试覆盖**的 `alive_bitset` 分支，保留理由写在代码与用例注释里。证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
+A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。
+
+**合并态复评已闭合（2026-08-09，分支 `nghttp2-cancel-a3-next`）**：六条 finding 的合并态经两位异模型 reviewer 独立复评**六轮**，逐轮 major 数 8 → 3 → 3 → 3 → 2 → 1，全部复核成立并修复，两位均已给出收口意见。处置表与逐轮报告在 `docs/tmp/2026-08-08-a3-merged-state-review-*.md`（`dispositions.md` 是入口）。
+
+两处需要后人知道的状态订正：
+- 原记「第 4 条的 `alive_bitset` 分支实测不可达、因而无测试覆盖」——**该结论是错的**。同一探针复跑六次有五次产生 tombstone；当初只跑了一次、恰好撞上被取代文档独占单文档 segment 而整段被丢弃的少数情形。现已有回归 `tests/history/search/daemon.it.test.ts`（先断言 `meta.json` 真的出现 tombstone 再断言过滤），变异去掉该检查会报 `total=220`（应 200）。
+- 复评过程中在 overlay 与 Tantivy 索引的匹配一致性上另修了七条缺陷（含 `entries.length=1,total=0` 的两种新形态、多词语义 AND/OR 反了、非拉丁文字漏配、短 term 与超长 token 两端过宽）。该不变量**已从注释迁移为机器判据**：`tests/history/search/overlay-index-agreement.it.test.ts` 以真实索引为 oracle，双向、双 lane。
+
+**遗留项均已记入 `docs/todo/deferred-backlog.md`**，其中两条是**用户裁决**：搜索的多词语义现为 OR（词越多结果越宽，与多数搜索框的 AND 直觉相反）；以及若干 perf 判据挂在 wall-clock 绝对值上、应交 perf 专项重定基线。
+
+证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
 
 ## A.3 文档／流程整改与后续 gate
 

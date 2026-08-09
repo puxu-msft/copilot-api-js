@@ -1,14 +1,14 @@
 # 记忆库索引（话题 → 归属引用地图）
 
-纯引用层：实质在正式归属（skill / `docs/` / ADR / user-rule），下方每行 stub。合并/清理前 deep-read 正文，不只凭钩子。
+纯引用层：实质在正式归属（skill / `docs/` / ADR / user-rule）。合并/清理前 deep-read 正文，不只凭钩子。
 
-**钩子写法**：症状词（何时触发）+ 一个防漏动作内核。只写「已升为 skill」会退化成目录项——skill 万一没浮现，这行是唯一兜底。**索引有加载上限、超出部分静默失效，钩子务必压到一行**；细节归主题文件。
+**钩子写法**：症状词 + 防漏动作内核，**压到一行**（索引有加载上限、超出即静默失效）。只写「已升为 skill」会退化成目录项——skill 万一没浮现，这行是唯一兜底。
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub）
 
 - [收尾与跨会话交接](session-closeout-and-handover.md) → skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF/进度文件/容量终态接力）
 - [审自己测试类型错配派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → `choosing-test-type`
-- [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → `persistence-async-invariants`；另见 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）、[信号记在 committed settle 点](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
+- [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → `persistence-async-invariants`；[settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）、[信号记在 committed settle 点](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱](pattern-extensible-telemetry-registry.md) → `telemetry-architecture`；[model key 成功=规范名·失败=别名](reference-telemetry-model-key-split-success-vs-failure.md)
 - [迁移框架 Umzug hybrid](methodology-migration-framework-hybrid-forward-runner.md) → `history-sqlite-schema`（partial-DDL wedge）；[内容寻址归一化边界剥离](methodology-content-addressed-normalization-boundary-strip.md)
 - [backfill 协作停+keyset](methodology-recoverable-backfill-cooperative-stop-and-keyset.md) → `history-backfill`（别 SELECT \*）；[派生列靶向非阻塞](methodology-derived-column-backfill-targeted-and-nonblocking.md)
@@ -38,6 +38,7 @@
 - [顺序前置先分型再判](methodology-ordering-gate-needs-a-trigger-that-reads-it.md) — 状态门 vs capability 门；验收须隔离目标门、核对阻断 provenance；反复被反向打回就去分型
 - [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 触发点最易只写成陈述；判据=未来会话必经流程会不会真走到；汇总须降派生视图、指纹给命令别给裸值
 - [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能投证实票
+- **skill 按意图描述、召回宁滥勿缺**（用户 2026-08-09 裁决）→ skill `authoring-skills` — 拒绝漏召回、接受误触发；意图到位内容不到位＝扩充别新建；枚举触发词是黑名单；重写指令文本必丢覆盖面，须双向逐条对账
 - [领域知识归 skill 不归 always-on rules](feedback-domain-knowledge-belongs-in-skills-not-always-on-rules.md) — 分界=「无论做什么都成立的判据」留 rules，「做某类事才需要的做法」进 skill；搬迁属 B 级
 - **写 skill 的元方法** → user-level skill `authoring-skills`（在 `~/.claude/skills/`、无仓库内链接）— 文本为主·schema 严谨度用于表达而非装门禁·概念给 kebab slug 别给流水号·拆文件按「是否必须常驻」不按大小
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制
@@ -64,10 +65,11 @@
 - [配置哲学独立：留兼容层+警告继续](feedback-config-philosophy-separate-compat-and-warn-continue.md) — 配置不享「无向后兼容负担」
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — `tiered-review-by-risk`
 - [agent 后台连挂也绝不擅换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — 永远 resume 原 agent
-- [eslint 四坑](tooling-eslint-cache-false-pass.md) — ①`--cache` 假绿②[group 是 OR 写不出 allowlist](tooling-eslint-no-restricted-imports-group-is-or-not-allowlist.md)③[`.at()` autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md)④[`--fix` 宽扫入并发 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md)
+- [eslint 四坑](tooling-eslint-cache-false-pass.md) — `--cache` 假绿·[group 是 OR](tooling-eslint-no-restricted-imports-group-is-or-not-allowlist.md)·[`.at()` autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md)·[`--fix` 扫入并发 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md)
 - [config.schema.json 只由 .describe() 生成](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s
 - [bun test 慢的三层根因](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片
+- [test:backend 的测试总数不稳定、只有 0 fail 可引用](reference-parallel-test-total-count-unstable.md) — 同树同 commit 连跑总数就变，别追这个假差异；且它在 History 子系统间歇性红
 - [提前建 `.rejects` 断言挂死整个测试文件](reference-bun-test-eager-rejects-assertion-hangs-file.md) — 零输出、显式 per-test 超时也不触发；改 `.then(ok,err)`；守卫被变异后 promise 永不 settle 时改 `Promise.race` 短定时器，否则变异对照拿不到红
 - [新测试的红与绿都会过度声称](methodology-new-test-red-and-green-both-overclaim.md) — 红：新测试 flaky 先当真缺陷查（错误消息与预期不同＝线索，非争用）；绿：N-bounded 推不出全称，把 ∀ 性质挪到结构判据并用 AST 而非文本
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 不用的大 BLOB 白读 + ORDER BY 末项不在索引
@@ -75,7 +77,7 @@
 - [测 elapsed 注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；[node_modules 存在≠锁文件事实](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — bun add 只进该树·缺 gitignored 产物假红·向上解析主树 node_modules·可能跑错树·夹带无关祖先
-- [隔离 worktree 会话合不了主线](worktree-isolated-session-cannot-merge-shared-master.md) — 判据=`merge-base --is-ancestor master HEAD`，最后一条命令交用户
+- [隔离 worktree 会话怎么合主线](worktree-isolated-session-merging-into-shared-master.md) — 逃生门=`ExitWorktree(keep)` 退回主检出后自己 `merge --ff-only`；`dangerouslyDisableSandbox` 无效
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决
@@ -136,13 +138,8 @@
 - [现有代码无权威别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错证据
 - [剥离成可插拔前先核实抽取程度+缝位](methodology-verify-extraction-state-and-seam-before-pluginizing.md) — 先查是否已纯函数
 - [Agent 恢复与接力分界](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 可调用上下文永远 SendMessage
-- [Agent 两类容量终态](reference-subagent-transcript-5mib-gate-blocks-resume.md) — 5 MiB 读取闸门可修（报「No transcript found」但文件在）·模型 context-window 400 必须换新 agent 接力
+- [Agent 恢复失败三形态](reference-subagent-transcript-5mib-gate-blocks-resume.md) — 「No transcript found」两种可修因（5 MiB 读取闸门 · 跨会话作用域，把 transcript 复制进当前 session 的 subagents/）·模型 context-window 400 必须换新 agent 接力
 
 ## project 现状 stub → 独立文件
 
 **接手一个在飞特性、或要判断某功能是否已落地时，读 [MEMORY-projects.md](MEMORY-projects.md)**（各特性 landed/待续状态 + 接手该读哪份 handover）。分出去是因为本索引有加载上限，超出部分会被静默丢弃，而项目状态段位于尾部、首当其冲。
-
-## 已删除记忆的话题去向
-
-通用工作原则 → user-rule + CLAUDE.md + user-level skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
-**两个从未存在的 memory 文件已改指正式归属**（2026-08-02）：语言规则 → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

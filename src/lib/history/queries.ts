@@ -1,3 +1,5 @@
+import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+
 import type {
   //
   EntrySummary,
@@ -31,6 +33,7 @@ import { HistorySearchUdsError } from "./search/uds-client"
 import { getDatabase } from "./sqlite/connection"
 import {
   //
+  projectSearchableText,
   recordMatchesQuery,
   recordToEntrySummary,
   recordToHistoryEntry,
@@ -43,7 +46,7 @@ import {
 } from "./v3/store"
 import {
   //
-  freezeHistorySearchTarget,
+  freezeHistorySearchOwnership,
   getPersistedSummariesByIds,
   getPersistedSummary,
   hasPersistedSummaryMatching,
@@ -96,6 +99,20 @@ export class InvalidSummaryCursorError extends Error {
   constructor(cursor: string) {
     super(`Unknown or filtered summary cursor: ${cursor}`)
     this.name = "InvalidSummaryCursorError"
+  }
+}
+
+/**
+ * The caller's search string is not one the index can parse — a bad request, not a broken index.
+ *
+ * Kept apart from {@link HistorySearchUnavailableError} because they map to different statuses: the
+ * search box is free text, and a query like `error:` or `-foo` used to travel as "sidecar
+ * unavailable" and return 503 for the entire listing, in-flight rows included.
+ */
+export class InvalidSearchQueryError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "InvalidSearchQueryError"
   }
 }
 
@@ -161,16 +178,95 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
 }
 
 /**
- * In-flight full-text search: scan the active entry's inbound messages with the
- * SAME normalization projection the persisted index uses, so a streaming entry
- * matches identically to a finalized one. No needle → always matches.
+ * Does a searchable corpus match the needle? One definition, shared by every overlay path, so that
+ * "matches the search" cannot mean two different things inside a single merged page. No needle →
+ * always matches.
+ *
+ * What this must satisfy has been written here four times and falsified four times, so it is stated
+ * once and then checked by machine: the overlay and the index must agree, in BOTH directions, for
+ * multi-word needles. Under-matching hides a just-finished request until the sidecar catches up.
+ * Over-matching was assumed harmless for three rounds and is not — overlay rows are the newest, so a
+ * loose predicate puts unrelated rows at the top of the first page, inflates `total`, and hands out
+ * cursors for rows that do not belong to the result. `tests/history/search/overlay-index-agreement.it.test.ts`
+ * checks both directions against the real index, on both overlay lanes; a claim about two tokenizers
+ * belongs in a test, not in this comment.
+ *
+ * Hence: split on Unicode letters and numbers (Tantivy's `SimpleTokenizer` splits on
+ * `char::is_alphanumeric`; ASCII-only produced zero terms for `你好 世界`), and match a multi-word
+ * needle as ANY of its terms equal to a token — which is precisely what the index does, an OR over
+ * tokens. Requiring all terms hid a row whenever a query held one word the row lacked; accepting any
+ * term as a bare substring went as wrong in the other direction, because the corpus is JSON and a
+ * short term collides with keys, quotes and ids (`429` inside a request id `5f1429ab`, `it` inside
+ * `waiting`). Overlay rows are the newest, so that noise took the whole first page.
+ *
+ * A single-token needle keeps the substring test. That over-matches by design — it is what makes a
+ * search box usable as you type — and it is bounded: one term, not one term out of several.
+ */
+const INDEX_TOKEN_BYTE_LIMIT = 40
+
+/**
+ * Tokenize the way the index does, including the part that throws tokens away.
+ *
+ * Tantivy's default chain ends in `RemoveLongFilter`, so a token of 40 bytes or more never reaches
+ * the index and can never be matched there — measured: a 39-character token is searchable, a
+ * 40-character one is not. Keeping such tokens here would match rows the index cannot, which is the
+ * over-match that took the first page. The limit is in BYTES, so a Chinese token of fourteen
+ * characters is already over it.
+ */
+function indexableTokens(lowercased: string): Array<string> {
+  return lowercased.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0 && Buffer.byteLength(token) < INDEX_TOKEN_BYTE_LIMIT)
+}
+
+function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
+  if (!needle) return true
+  const haystack = text.toLowerCase()
+  const rawTerms = needle
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+  if (rawTerms.length <= 1) {
+    // A sole term the index cannot hold matches nothing, rather than matching as a substring. This
+    // is the shape the byte limit exists for: a digest is pasted on its own, not paired with a word,
+    // and letting it match here would show recent rows that vanish the moment they are indexed.
+    // It cannot hide anything — the index drops that token on both sides, so it never matches there.
+    // A needle of pure punctuation yields no terms at all and keeps the substring path.
+    if (rawTerms.length === 1 && Buffer.byteLength(rawTerms[0]) >= INDEX_TOKEN_BYTE_LIMIT) return false
+    return haystack.includes(needle.toLowerCase())
+  }
+  const tokens = new Set(indexableTokens(haystack))
+  return rawTerms.filter((term) => Buffer.byteLength(term) < INDEX_TOKEN_BYTE_LIMIT).some((term) => tokens.has(term))
+}
+
+/**
+ * In-flight full-text search: a live entry has only its inbound messages, because nothing has been
+ * committed yet, so that is its whole corpus.
+ *
+ * The needle is checked BEFORE the corpus is built. Without that, every listing — including the
+ * ordinary one with no search at all — paid for normalizing the inbound text of every live entry.
  */
 function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined): boolean {
   if (!needle) return true
   const messages = entry.clientRequest?.messages ?? []
-  if (messages.length === 0) return false
-  const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
-  return text.toLowerCase().includes(needle.toLowerCase())
+  const text = messages.length === 0 ? "" : extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
+  return corpusMatchesSearch(text, needle)
+}
+
+/**
+ * A recent terminal record is matched against `projectSearchableText` — the SAME corpus the sidecar
+ * is about to index — rather than against inbound text alone.
+ *
+ * Matching it more narrowly meant a word appearing only in the model's answer dropped the row for
+ * the entire window between "terminal" and "indexed", after which the same row reappeared once the
+ * sidecar caught up; a cursor pointing at such a row was also rejected with a 400 even though it is
+ * perfectly valid under the persisted semantics.
+ *
+ * The needle guard is load-bearing here, not tidiness: `projectSearchableText` serializes the whole
+ * record, and the recent bus holds up to 256 of them. Evaluating it unconditionally put that cost on
+ * every un-searched listing, on the synchronous path.
+ */
+function recentMatchesSearch(record: ModelOperationRecord, needle: string | undefined): boolean {
+  if (!needle) return true
+  return corpusMatchesSearch(projectSearchableText(record), needle)
 }
 
 export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary> {
@@ -181,8 +277,7 @@ export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary
   for (const record of listRecentModelOperationTerminals()) {
     const operationId = record.identity.operationId
     if (merged.has(operationId)) continue
-    const entry = recordToHistoryEntry(record)
-    if (inFlightMatchesSearch(entry, search)) merged.set(operationId, recentRecordToSummary(record))
+    if (recentMatchesSearch(record, search)) merged.set(operationId, recentRecordToSummary(record))
   }
   return [...merged.values()]
 }
@@ -238,8 +333,13 @@ function resolveSummaryCursor(
 
   const recent = getRecentModelOperationTerminal(cursor)
   if (recent) {
-    const entry = recordToHistoryEntry(recent)
-    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recentRecordToSummary(recent)
+    // A row the index already holds is the index's to judge whenever the persisted search is
+    // deferred to the sidecar. Applying the overlay's substring test to it rejects cursors the
+    // sidecar counts as matches — a 400 on a page request that is valid under the only semantics
+    // that will still apply once the overlay expires.
+    const indexOwned = deferPersistedSearch && Boolean(options.search) && hasPersistedSummaryMatching(getDatabase(), cursor, { ...options, operationKind })
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && (indexOwned || recentMatchesSearch(recent, options.search)))
+      return recentRecordToSummary(recent)
     throw new InvalidSummaryCursorError(cursor)
   }
 
@@ -370,14 +470,36 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
   const recentSummaries = listRecentModelOperationTerminals()
     .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-    .filter((record) => inFlightMatchesSearch(recordToHistoryEntry(record), options.search))
+    .filter((record) => recentMatchesSearch(record, options.search))
     .map((record) => recentRecordToSummary(record))
   const cursorSummary = resolveSummaryCursor(options, operationKind, true)
   const db = getDatabase()
   if (!isSummaryProjectionReady(db)) {
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
-  const target = freezeHistorySearchTarget(db)
+  /**
+   * The frozen target and the set of rows the index already owns, taken as ONE snapshot.
+   *
+   * Ownership is the criterion because the two sides cannot be made to agree perfectly: the index
+   * tokenizes, and the overlay — which must answer for rows the index has never seen — can only
+   * approximate that. A row judged by both could be shown by the overlay, excluded from the
+   * sidecar's total, and skipped by the transient count for being persisted: listed while nothing
+   * counted it. Giving those rows to the index outright removes the disagreement wherever the index
+   * has an opinion, and leaves the overlay exactly the rows it alone can answer for.
+   *
+   * A row's membership still shifts as it crosses the persistence boundary — a single-token needle
+   * over-matches in the overlay and not in the index — so `corpusMatchesSearch` narrows that to the
+   * direction that shows a row early rather than hiding one.
+   *
+   * Reading the target and the ownership set apart would reopen a narrower version of the same
+   * hole — see `freezeHistorySearchOwnership`, which is why they arrive together.
+   */
+  const { target, indexOwned } = freezeHistorySearchOwnership(
+    db,
+    [...inFlightSummaries, ...recentSummaries].map((summary) => summary.id),
+    { ...options, operationKind },
+  )
+  const overlaySummaries = [...inFlightSummaries, ...recentSummaries].filter((summary) => !indexOwned.has(summary.id))
   let persistedRows: Array<EntrySummary> = []
   let persistedTotal = 0
   let persistedHasOlder = false
@@ -407,16 +529,22 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
               startedAt: cursorSummary.startedAt,
               operationId: cursorSummary.id,
               direction,
-              requireMatch: !getInFlight(cursorSummary.id) && !getRecentModelOperationTerminal(cursorSummary.id),
+              // The sidecar must find the cursor unless the OVERLAY owns it. Asking the buses
+              // directly would exempt a recent row the index already holds, and that row is exactly
+              // the one whose match the sidecar has to decide.
+              requireMatch: !overlaySummaries.some((summary) => summary.id === cursorSummary.id),
             }
           : undefined,
-        limit: limit + inFlightSummaries.length + recentSummaries.length + 1,
+        limit: limit + overlaySummaries.length + 1,
         target,
       })
     } catch (error) {
       if (error instanceof InvalidSummaryCursorError) throw error
       if (error instanceof HistorySearchUdsError && error.code === "invalid-cursor") {
         throw new InvalidSummaryCursorError(options.cursor ?? "unknown")
+      }
+      if (error instanceof HistorySearchUdsError && error.code === "invalid-query") {
+        throw new InvalidSearchQueryError(error.message, { cause: error })
       }
       throw new HistorySearchUnavailableError("History search sidecar could not serve the frozen target", { cause: error })
     }
@@ -442,11 +570,16 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
   }
 
   const merged = new Map<string, EntrySummary>()
-  for (const summary of [...inFlightSummaries, ...recentSummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
+  for (const summary of [...overlaySummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
   const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
   const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
   const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
-  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
+  // Every visible row is now counted exactly once, by exactly one side. `persistedRows` came from
+  // the sidecar and are inside `persistedTotal`; everything else is an overlay row the index cannot
+  // see yet, so nothing else counts it. (The synchronous sibling below keeps its live read — it has
+  // no await, and no sidecar, so neither of the two failures above can arise there.)
+  const persistedRowIds = new Set(persistedRows.map((summary) => summary.id))
+  const transientCount = visible.filter((summary) => !persistedRowIds.has(summary.id)).length
   const total = persistedTotal + transientCount
   const newest = entries.at(0)
   const oldest = entries.at(-1)
