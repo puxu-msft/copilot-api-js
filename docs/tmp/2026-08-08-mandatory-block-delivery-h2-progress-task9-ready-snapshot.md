@@ -177,3 +177,31 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - 不直接在旧 worktree 写入或清理；它是接力证据源。
 - 不 blind merge/cherry-pick 旧分支；本次已通过祖先关系证明可安全 fast-forward。
 - 不把 marker check 和 query 仅靠调用顺序“尽量靠近”；必须由同一个 SQLite snapshot 提供原子边界。
+
+## Checkpoint：合并 master 与门禁修复（2026-08-09，HEAD `b9b5895b`）
+
+本节一次性补记四个提交（`ca5f4cf7` / `a0c82cc3` / `e24de3a1` / `b9b5895b`）——它们在一次连续的合并-验证循环里产生，其间没有可供落盘的中间稳定点；此后恢复每 commit 更新。
+
+### 已落地
+
+- **合并 master**（`ca5f4cf7`）。merge-base `6d431481`，本分支领先 108 个提交（含前序会话的 parsed SSE delivery seam、candidate delivery classification、HTTP2 termination evidence，以及本轮 Task 9），master 领先 404，149 个文件重叠、30 个冲突、53 个 hunk。原则是**两侧不矛盾就都保留**，不做整文件取舍。
+- **合并暴露的真回归**：parsed SSE wrapper 被直接写进 canonical arena，`upstreamResponse.frames` 引用的值因此没有顶层 `data`，`precontent-recovery-matrix` 变红。修在共享存储边界（`src/lib/context/request.ts` 的 `canonicalFrameFields`），让 `frameWireKey`、raw capture、canonical arena 共用同一个投影原语，而不是改断言。
+- **CAS 字节比判据的超时**（`a0c82cc3`）：15s → 120s。实测隔离约 9s、16 路分片下 **16.29s**，越界 1.3s 就让整个门禁变红。它的 oracle 是字节比（109x / 218x vs 阈值 10x），wall clock 在这里只会产生 false red；且测试体是同步的，bun 无法中断——超预算的运行**照样做完全部工作并打完统计**才被判 TimeoutError，输出与通过的运行一模一样。
+- **门禁自身的假绿**（`e24de3a1`）：`parallel-test` 的 tally 原本从各 shard 的 stdout 解析。shard 在打印 summary 时死掉，`N fail` 那行就永远不落，而失败的 testcase 行早已 flush 进 XML——于是门禁在一条真失败之上打印绿色的 `0 fail`。这不是假设：本次合并门禁打印 `3337 tests · 3337 pass · 0 fail`，而 shard-06 的 XML 里躺着上面那条 TimeoutError；同一次运行还把总数少报了一半以上（3337 vs 7529 executed）。改为 `parseJUnit` 统计 `<failure>`／`<error>`，pass 由 `executed - failed` 派生，失败逐条具名，`failSum` 进退出条件。
+
+### 证据
+
+- 修复后官方门禁：`bun run test:backend` → **7532 tests · 7532 pass · 0 fail · 7532 executed · 35 skipped**，无 shard crashed，退出码 0。
+- tally 修复的鉴别力：在触发本次问题的那批真实产物上，新解析器给出 `7529 executed / 1 failed / 7528 pass` 并点名超时的那条；把 failure 捕获分支置空后回到 `failed=0`（复现旧假绿），两条新正向判据变红，而「skipped 不算 failed」那条按设计保持绿——两个方向都有对照。
+- `typecheck`、`lint:all` 均零 error。
+
+### 待裁决（不由实现者自判）
+
+- CAS 那条超时放宽属于**既有 guard 放宽**，已连同其余交付断言交独立 reviewer 证伪（报告：`docs/tmp/2026-08-09-merge-state-review-claims.md`）。
+- 合并态接缝评审报告：`docs/tmp/2026-08-09-merge-state-review-seams.md`。
+- **两份评审闭合前，Task 9 不标完成，Task 10 不推进。**
+
+### 本轮新增的已作废路子
+
+- 不把 shard crash 当作「环境抖动」放过：本次的 crash 底下确实压着一条真失败，而 stdout tally 正好把它盖住。判据必须取自 junit，不取自被截断的 stdout。
+- 不靠减小 CAS 测试的负载来规避超时：那会同时削弱字节比的鉴别力，而问题根本不在负载。
