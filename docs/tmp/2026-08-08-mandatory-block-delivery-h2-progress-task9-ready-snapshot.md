@@ -1,6 +1,7 @@
 ---
 slug: task9-ready-snapshot
-status: in-progress
+status: 已完成 —— 活跃写入权已移交 `.superpowers/sdd/progress.md`（2026-08-09，闭合于 `7016435e`）
+closed-at: 7016435e
 base: 0dca450e951b1c1ba72acb041501f8b5a3f65453
 branch: worktree-placeholder
 worktree: /home/xp/src/copilot-api-js/.claude/worktrees/placeholder
@@ -32,11 +33,13 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 旧形状是 `queries.ts`、`sessions.ts`、`stats.ts` 各自先调用 `isSummaryProjectionReady(db)`，再执行一条或多条 summary 查询；search 在 await 前检查 marker，await 后直接读取 summary IDs。当前形状由共享 primitive 封闭 marker→query 组合；search 的 target snapshot 与 await 后 result snapshot 分离。
 
-## 剩余项
+## 剩余项 —— 全部已闭合（2026-08-09）
 
-1. 跑完整 Task 9 与 backend／architecture门禁；记录准确命令、commit基线与通过数。
-2. 对当前完整 Task 9候选做独立规格／生产图评审和独立acceptance／false-green／false-red评审，闭合blocker／major并复审；未评审前不把Task 9标为完成。
-3. 每个后续语义commit继续更新本文件；Task 9全部闭合后把持久结论折入正式计划并转移活跃写入权。
+> ⚠️ **本文件已停止更新。活跃状态的权威来源是 `.superpowers/sdd/progress.md` 的 Task 9 条目**，冲突时以它为准。下面三项是历史待办及其结果，**不是当前工作队列**——接手方不要照着重跑。
+
+1. ~~跑完整 Task 9 与 backend／architecture 门禁~~ —— 已跑。合并态最终门禁 `bun run test:backend` = **7536 tests · 7536 pass · 0 fail · 35 skipped**、退出码 0、tally 行无 `INCOMPLETE` 标记；`typecheck` 与 `lint:all` 零 error。
+2. ~~对完整 Task 9 候选做双视角独立评审并闭合~~ —— 已闭合。Task 9 自身的两个正交视角见 `docs/tmp/2026-08-08-task9-review-{spec,acceptance}.md`；本轮合并态另跑两个视角（`docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md`）与一轮收尾产物评审（`docs/tmp/2026-08-09-wrapup-artifacts-review.md`）。
+3. ~~转移活跃写入权~~ —— 即本次。持久结论已折入 `.superpowers/sdd/progress.md`；本文件转为历史档案。
 
 ## 在途意图
 
@@ -178,29 +181,32 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - 不 blind merge/cherry-pick 旧分支；本次已通过祖先关系证明可安全 fast-forward。
 - 不把 marker check 和 query 仅靠调用顺序“尽量靠近”；必须由同一个 SQLite snapshot 提供原子边界。
 
-## Checkpoint：合并 master 与门禁修复（2026-08-09，HEAD `b9b5895b`）
+## Checkpoint：合并 master 与门禁修复（2026-08-09）
+
+> **本节含两个时间点，别当成一个快照读。** 下面「已落地」与「证据」记的是 **`b9b5895b`** 那一刻的状态（四个提交 `ca5f4cf7` / `a0c82cc3` / `e24de3a1` / `b9b5895b` 的补记）；再往后的「裁决结果」节记的是评审闭合后的状态，**闭合基线 `7016435e`**，其中提到的 `0144edcb`、`27113ce4` 等修复都是 `b9b5895b` 的**后代**。若照 `b9b5895b` checkout 复验，只会看到前一半——那时 `INCOMPLETE` 标记与 30/50 阈值都还不存在。
 
 本节一次性补记四个提交（`ca5f4cf7` / `a0c82cc3` / `e24de3a1` / `b9b5895b`）——它们在一次连续的合并-验证循环里产生，其间没有可供落盘的中间稳定点；此后恢复每 commit 更新。
 
-### 已落地
+### 已落地（截至 `b9b5895b`）
 
 - **合并 master**（`ca5f4cf7`）。merge-base `6d431481`，本分支领先 108 个提交（含前序会话的 parsed SSE delivery seam、candidate delivery classification、HTTP2 termination evidence，以及本轮 Task 9），master 领先 404，149 个文件重叠、30 个冲突、53 个 hunk。原则是**两侧不矛盾就都保留**，不做整文件取舍。
 - **合并暴露的真回归**：parsed SSE wrapper 被直接写进 canonical arena，`upstreamResponse.frames` 引用的值因此没有顶层 `data`，`precontent-recovery-matrix` 变红。修在共享存储边界（`src/lib/context/request.ts` 的 `canonicalFrameFields`），让 `frameWireKey`、raw capture、canonical arena 共用同一个投影原语，而不是改断言。
 - **CAS 字节比判据的超时**（`a0c82cc3`）：15s → 120s。实测隔离约 9s、16 路分片下 **16.29s**，越界 1.3s 就让整个门禁变红。它的 oracle 是字节比（109x / 218x vs 阈值 10x），wall clock 在这里只会产生 false red；且测试体是同步的，bun 无法中断——超预算的运行**照样做完全部工作并打完统计**才被判 TimeoutError，输出与通过的运行一模一样。
 - **门禁自身的假绿**（`e24de3a1`）：`parallel-test` 的 tally 原本从各 shard 的 stdout 解析。shard 在打印 summary 时死掉，`N fail` 那行就永远不落，而失败的 testcase 行早已 flush 进 XML——于是门禁在一条真失败之上打印绿色的 `0 fail`。这不是假设：本次合并门禁打印 `3337 tests · 3337 pass · 0 fail`，而 shard-06 的 XML 里躺着上面那条 TimeoutError；同一次运行还把总数少报了一半以上（3337 vs 7529 executed）。改为 `parseJUnit` 统计 `<failure>`／`<error>`，pass 由 `executed - failed` 派生，失败逐条具名，`failSum` 进退出条件。
 
-### 证据
+### 证据（截至 `b9b5895b`）
 
 - 修复后官方门禁：`bun run test:backend` → **7532 tests · 7532 pass · 0 fail · 7532 executed · 35 skipped**，无 shard crashed，退出码 0。
 - tally 修复的鉴别力：在触发本次问题的那批真实产物上，新解析器给出 `7529 executed / 1 failed / 7528 pass` 并点名超时的那条；把 failure 捕获分支置空后回到 `failed=0`（复现旧假绿），两条新正向判据变红，而「skipped 不算 failed」那条按设计保持绿——两个方向都有对照。
 - `typecheck`、`lint:all` 均零 error。
 
-### 裁决结果（2026-08-09 收口，两份评审均已闭合）
+### 裁决结果 —— 状态更新，核验于 `7016435e`（不属于上面那个快照）
 
 上一版这里写的是「待裁决」，现已裁决完毕，逐条留痕：
 
 - **CAS 超时放宽 —— 裁定处置正确、未被证伪。** 评审实测把内容寻址去重关掉后 `physicalRatio` 掉到 9.51、判据确实变红，说明放宽超时没有让 guard 失去裁决力；字节比与本文件引述的 109x/218x 逐位吻合，无实现退化证据。报告：`docs/tmp/2026-08-09-merge-state-review-claims.md`。
-- **但同一裁决顺带证出一条真缺口（已修，`27113ce4`）**：`liveRatio` 在去重**完全**失效时仍是 10.79、照样过原来 10x 的门 ⇒ **该断言原本毫无鉴别力**，任何部分退化按构造全绿。阈值已按两端实测重标为 30 / 50（健康 109.68/218.58，故障 9.51/10.79，取几何均值附近、两侧各留约 3x）。
+- **但同一裁决顺带证出一条真缺口（已修，`27113ce4`）**：`liveRatio` 在去重**完全**失效时仍是 10.79、照样过原来 10x 的门 ⇒ **该断言对「完全失效」这个目标状态毫无鉴别力**。阈值已按两端实测重标为 30 / 50（健康 109.68/218.58，故障 9.51/10.79，取几何均值附近、两侧各留约 3x）。
+  - ⚠️ **本行上一版写的是「任何部分退化按构造全绿」，已被反例推翻并收窄**：收尾评审构造 47/48 operation 的部分退化，实测 `physicalRatio=9.516`，旧的 `≥10` 断言**仍然变红**。两个端点不足以确定它们之间的曲线形状；能主张的只有端点事实。
 - **合并态接缝评审 —— 本次合并范围内 BLOCKER 0 / MAJOR 0。** 它原报的 1 条 MAJOR（`initHistory()` 重入不协调 terminal persistence lifecycle）机制成立，但**根因归属被证伪**：`git show 57208559:src/lib/history/state.ts` 显示 master 侧本来就没有 pause/quiescence/drain，合并只**增加**了 backfill 协调。评审接受更正并改判。该缺陷已转入 `docs/todo/deferred-backlog.md` 独立条目（含证据链与回归测试建议）。报告：`docs/tmp/2026-08-09-merge-state-review-seams.md`。
 - **判据评审另抓到一条我漏掉的 MAJOR（已修，`0144edcb`）**：改用 junit 后仍有同形缺口——测试文件在**加载期抛错**时不产生任何 junit 行，而 bun 照样打印 `N fail`，于是 crash 分类器不触发、该文件的用例与失败静默蒸发。退出码本就 fail-closed（`compareFileIdentities` 兜底），漏的是 tally 行的可信度；已让「口径不完整」直接骑在 tally 行上，并把 `formatTallyLine` 抽成可测函数 + 变异对照。
 - **三处证据等级更正**（评审给出，已采纳）：① 本合并线是 **10 个提交**不是 11（此前把合并的第二父 `57208559` 误计）；② `3337` 这个旧口径数字**当时无法核实**（原始 stdout 日志在临时目录），随后已把决定性的两行固化进 `exp/junit-tally-false-green/README.md`；③ `109.85 / 218.71` 是单次读数、每次小幅浮动，**不得当可复现常量引用**。

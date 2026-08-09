@@ -245,10 +245,14 @@ describe("History V3 store performance", () => {
     // Calibrated against both ends, not picked round. Healthy: 109.68 physical / 218.58 live,
     // reproducible to 7 digits across trees. Totally broken (content-addressing disabled so
     // every operation stores its own copy): 9.51 physical / 10.79 live — measured, not
-    // assumed. The former 10x threshold therefore discriminated on physical by 0.49 and on
-    // live NOT AT ALL: a complete dedup failure still cleared it, so any *partial*
-    // degradation was green by construction. These sit near the geometric mean of the two
-    // ends (~32 and ~49), leaving ~3x margin on each side.
+    // assumed. So the former 10x threshold discriminated on physical by 0.49, and on live NOT
+    // AT ALL: a COMPLETE dedup failure still cleared it. These sit near the geometric mean of
+    // the two ends (~32 and ~49), leaving ~3x margin on each side.
+    //
+    // Scope of that claim, because the stronger version was refuted: this says nothing about
+    // where in between the axes start reddening. A 47-of-48 partial degradation was measured
+    // at 9.516 physical, i.e. the OLD threshold already caught it. Two endpoints do not
+    // establish the shape of the curve between them.
     expect(physicalRatio).toBeGreaterThanOrEqual(30)
     expect(liveRatio).toBeGreaterThanOrEqual(50)
     // Generous on purpose, and NOT a latency bound — the oracle is the byte ratio above, so

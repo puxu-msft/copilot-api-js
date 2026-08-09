@@ -45,7 +45,11 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 
 **并行执行（均衡分片 runner）。** `test:fast`/`test:backend` 走 `scripts/parallel-test.ts`：按 committed per-file 耗时缓存（`scripts/test-timings.json`，`bun run test:timings` 刷新、缺失文件回退中位数）LPT 均衡分 `nproc` 桶、每桶单进程 `bun test`（片内共享模块缓存、只导入一次）、并行跑、聚合失败并正确退出码。实测 fast 档 **~5.5s**（vs `bun test --parallel` 12s）。**为何不用 `bun test --parallel`**：它强制 `--isolate`（每文件独立模块上下文），把重 `~/lib/*` 图**重导入 ~440 次**、wall 被重导入主导；分片让每桶只导入一次。**权衡**：片内文件共享 module-global，泄漏测试可能污染桶友（fixture 的 `RESETTERS`+`resetTestRuntime` 仍逐测隔离，只失进程级 isolate）——**查污染用 `test:fast:isolated`/`test:backend:isolated`**（`bun test --parallel`、每文件独立进程、防污染但慢）。retry backoff 等待经 `abortableDelay` 的延迟缩放 seam（isolated-fixture `beforeEach` 设 scale=0）在测试下瞬时 resolve（声明 waitMs/queueWaitMs 账目不变）。**pty 与 e2e 不并行**：pty 抢终端资源、e2e 触发真 GHC 限流。CI 分片另有 `bun test --shard=1/N`。
 
-**tally 的真相源是 JUnit XML，不是 shard 的 stdout**（2026-08-09）。每个桶带 junit reporter 写一份 `shard-NN.xml`，pass/fail 由 `parseJUnit` 统计 `<failure>`／`<error>` 得出，pass 由 `executed - failed` 派生。**为什么不能读 stdout**：shard 在打印 summary 的过程中死掉时，`N fail` 那行永远不落，而失败的 testcase 行早已 flush 进 XML——按 stdout 统计就会在一条真失败之上打印绿色的 `0 fail`，同时把总数少报（实测一次：`3337 tests · 3337 pass · 0 fail`，而 junit 是 7529 executed、其中 1 条超时失败）。另有兜底：某个 shard 非零退出却没打出 `N fail` 摘要时，判定为 mid-bucket crash，把该桶的文件用 `--isolate` 重跑一遍定位，防止真断言失败藏在 crash 背后。
+**tally 的真相源是 JUnit XML + 文件身份完整性，两者缺一不可**（2026-08-09）。每个桶带 junit reporter 写一份 `shard-NN.xml`，pass/fail 由 `parseJUnit` 统计 `<failure>`／`<error>` 得出，pass 由 `executed - failed` 派生。**为什么不能读 stdout**：shard 在打印 summary 的过程中死掉时，`N fail` 那行永远不落，而失败的 testcase 行早已 flush 进 XML——按 stdout 统计就会在一条真失败之上打印绿色的 `0 fail`，同时把总数少报（实测一次：`3337 tests · 3337 pass · 0 fail`，而 junit 是 7529 executed、其中 1 条超时失败；原件在 `exp/junit-tally-false-green/`）。
+
+⚠️ **但 JUnit 计数只是「已观察到的量」，不等于「总量」。** 测试文件在**加载期抛错**时根本不产生任何 JUnit 行，而 bun 照样打印自己的 `N fail`（实测 bun 1.3.14：summary `1 pass / 1 fail / 1 error / 2 files`，XML 却是 `tests=1 failures=0` 且完全不含该文件）——于是连 crash 分类器也不触发。兜住这一层的是 **discovery↔runtime 的文件身份对账**（`compareFileIdentities`）：发现集合里少了谁就退出 1，并在 tally 行打出 `⚠ INCOMPLETE: N file(s) produced no JUnit rows`。
+
+**因此引用 tally 数字的前提是**：该行**不带** `INCOMPLETE` 标记。带标记时这些数只是**下界**，禁止用作规模、增减或「全绿」的证据。实现新的报告器时同理——**只解析 XML 而不做文件身份对账，就会把加载期失败算成不存在**。另有兜底：某个 shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶的文件用 `--isolate` 重跑定位。
 
 第三方 I/O adapter 和 durability 协议必须按真相域分层：
 
