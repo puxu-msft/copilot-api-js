@@ -57,7 +57,31 @@
 - [x] 全后端 `test:backend`（3609/3610，唯一失败为既有 flake，见上）
 - [x] round 2 复评：GPT 0 blocker/1 major、Claude 0 blocker/3 major（去重后 3 条），全部复核成立并修复
 - [x] round 3 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major（去重后 3 条），全部复核成立并修复
-- [ ] round 4 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major，全部复核成立并修复；round 5 待发
+- [x] round 4 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major，全部复核成立并修复
+- [x] round 5 复评：GPT **0/0**；Claude 0 blocker/2 major，全部复核成立并修复
+- [x] round 6 复评：GPT 0 blocker/1 major、Claude **0/0 + 收口意见**；两条 minor 一修一记
+- [x] **收口**：两位 reviewer 均已给出收口意见，Claude 明确「修完即可收口、不必再复评」
+
+## Round 5–6 复评（收口）
+
+报告：GPT `…-gpt-round5.md`、`…-gpt-round6.md`；Claude 侧转录进 `…-claude-round5-6.md`。
+
+**这两轮最重要的方法论结果**：round 5 里 **GPT 判 0/0 可收口，Claude 却找到两条实的**——分歧根源不是水平，而是**样本形状**。我和 GPT 都用裸散文串测「过宽是否有害」，Claude 用 `projectSearchableText` 的**真实产出**（JSON，含键名/引号/请求 id/hash）。在真实形状下短 term 几乎必然撞上：`429` 落在请求 id `5f1429ab` 里、`it` 落在 `waiting` 里。
+
+| # | 发现 | 我的复核 | 处置 |
+|---|---|---|---|
+| V1（Claude r5） | `some + includes` 过宽无上界；overlay 行是最新的，无关行**霸占第一页**、`total` 虚高、还能当游标 | **成立**。真实 JSON 语料实测 `a bug`/`fix it`/`429 error`/`e f` 四例 index=false 而 overlay=true | 采纳（C）·`7de38680`：改 `terms.some((t) => tokens.has(t))`，即索引自身语义（OR of tokens），不再是「更接近的近似」 |
+| V2（Claude r5） | agreement oracle 只断一个方向，且只覆盖 in-flight lane——真正会被索引的 recent-bus lane 零覆盖 | **成立** | 采纳（C）·`b832e230`：改双向 + 补 recent-bus lane（JSON 语料）+ 样本表补 id 密集形态 |
+| V3（GPT r6 = Claude r6 minor） | 未镜像 Tantivy 的 `RemoveLongFilter`：≥40 字节 token 被索引丢弃而 overlay 保留 | **成立**。实测边界 39 可搜 / 40 起不可搜 | 采纳（C）·`5a189ac8`：按 **UTF-8 字节**丢弃。**两位处置意见相左**（GPT 判 major 建议改代码、Claude 判 minor 建议只豁免），我选改代码，理由是一致性：只豁免则「搜摘要 → recent 行短暂可见、落盘后消失」，正是六轮在消灭的形态 |
+| V4（Claude r6 收尾） | **上一条修复没覆盖它自己的动机场景**：单 term 分支仍未受字节限制，而用户搜摘要最自然的动作就是单独粘进去 | **成立**。实测 single 64-hex → index=false、overlay=true | 采纳（C）·`d46e8e87`：单 term 也施加字节限制；agreement 的豁免谓词同步收窄为「单 term **且**短到索引装得下」，否则新样本会自己豁免自己 |
+
+**我自己造的一个新问题（已修）**：新增的 agreement 测试在 `--parallel` 负载下**自己**撞了 bun 5000ms 默认超时（每条 lane 真建 19 个索引）。我刚把这类问题记进 backlog，转头造了个新实例——已给两条 lane 加显式预算（120s）。
+
+**未采纳/暂缓**（均记 backlog，非静默）：希腊末位 sigma 的大小写折叠差异（不可达，按 Claude 建议不加代码）；in-flight lane 与生产语料的差异（已由 recent-bus lane 覆盖盲区）；全部 term 超长时被判 400（既有 false-red，先于本轮）；搜索多词语义为 OR（产品决策，交用户）；两份 tokenizer 实现应下沉 native（结构怪味）；perf 判据挂 wall-clock 绝对值。
+
+**最终验证**：`typecheck` 绿、eslint 干净；`tests/history/ tests/infra/ --parallel` 1186 pass/0 fail；**全后端 6638 pass / 0 fail**（executed 7338）。
+
+**六轮 major 数**：8 → 3 → 3 → 3 → 2 → 1，每一条都经我自己复核并做变异对照；承重不变量已从注释迁移为**以真实索引为 oracle 的双向机器判据**（`overlay-index-agreement.it.test.ts`，双 lane）。
 
 ## Round 4 复评
 
