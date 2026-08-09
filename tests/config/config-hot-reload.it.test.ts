@@ -1103,6 +1103,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
       "STARTUP-ONLY master switch: applied to state.historyEnabled only at boot (hasApplied=false); read once in start.ts to gate initHistory. A runtime change warns + requires a restart (mirrors proxy / ghc_api_base_url). Boot-apply + hot-reload-warn covered in tests/config/history-enabled-config.unit.test.ts",
   },
   {
+    configKey: "history.startup_deadline_ms",
+    reason:
+      "Startup-only give-up bound, read once by the process entry point before it listens; fed to a module-local via setHistoryStartupDeadlineMs (no state field — nothing can usefully react to it after startup). config→setter wiring covered by tests/config/history-startup-deadline-config.unit.test.ts; deadline→failure behavior by tests/history/worker/startup-deadline.it.test.ts",
+  },
+  {
     configKey: "history.limit",
     reason:
       "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
