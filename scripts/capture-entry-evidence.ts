@@ -282,6 +282,11 @@ try {
     cwd: options.tree,
     env: {
       ...process.env,
+      // Structural, not a reminder: `RUN_PERF_TESTS=1` un-skips the wall-clock perf case, which
+      // changes the skip multiset and makes the gate fail as an opaque "multiset mismatch" that
+      // points nowhere near the cause. Inheriting the caller's environment would carry it straight
+      // in, so clear it here rather than relying on anyone remembering to unset it.
+      RUN_PERF_TESTS: undefined,
       OUT: options.out,
       RUNS: String(options.runs),
       MIN_RUNS: String(options.runs),

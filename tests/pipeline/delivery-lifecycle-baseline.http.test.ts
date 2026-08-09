@@ -14,6 +14,7 @@ import {
   describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 
@@ -31,6 +32,16 @@ import { applyFetchMock } from "../helpers/mock-fetch"
 import { createFullTestApp } from "../helpers/test-app"
 
 const MODEL = "claude-delivery-lifecycle"
+
+// Time here is logical: FakeClock drives commit and heartbeat cadence, so no case ever waits on the
+// wall clock and no assertion reads it. The cost is pure CPU — assembling the real app, running the
+// full route → driver → sink path, and two 120-step microtask drains — which is exactly what CPU
+// starvation eats. Under the 16-shard runner (`scripts/parallel-test.ts`) that pushed the 418 case
+// past the 5s default; measured under deliberate contention it stays "slower but completes" (8.2s at
+// 48 spinners, 7.1s at 64) rather than wedging, while tightening to `--timeout 1000` in isolation
+// still passes. Budget the file for that instead of weakening the byte-exact wire oracles. 30s
+// clears both 10x the isolated worst case and 3x the worst observed under sharding.
+setDefaultTimeout(30_000)
 
 type FetchMode = "http-418" | "client-abort"
 

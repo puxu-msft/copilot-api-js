@@ -8,10 +8,10 @@ import {
 import {
   //
   existsSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
 } from "node:fs"
-import os from "node:os"
 import path from "node:path"
 
 const root = path.resolve(import.meta.dir, "../../..")
@@ -25,7 +25,13 @@ interface ProbeResult {
 }
 
 beforeAll(async () => {
-  buildDir = mkdtempSync(path.join(os.tmpdir(), "history-worker-build-"))
+  // Built INSIDE the repo, not in os.tmpdir(): the packaged Worker bundle imports the same
+  // externalised runtime dependencies as `main.mjs` (consola and friends), and ESM resolves
+  // those by walking up from the FILE, not from cwd. A temp dir outside the tree therefore
+  // fails on Node with ERR_MODULE_NOT_FOUND while passing on Bun — an artefact of where the
+  // test put the bundle, not of the bundle. `dist/` is already gitignored.
+  mkdirSync(path.join(root, "dist"), { recursive: true })
+  buildDir = mkdtempSync(path.join(root, "dist", "history-worker-build-"))
   mainBundle = path.join(buildDir, "main.mjs")
   workerBundle = path.join(buildDir, "history-worker.mjs")
   const child = Bun.spawn([process.execPath, "x", "tsdown", "--out-dir", buildDir], { cwd: root, stdout: "pipe", stderr: "pipe" })
