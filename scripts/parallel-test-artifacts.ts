@@ -74,10 +74,30 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   let executed = 0
   let skippedCount = 0
   let failedCount = 0
+  // The producer's own declared totals, used below as an INDEPENDENT oracle for our parse.
+  let declared: { tests: number; failures: number; skipped: number } | undefined
+  let sawRoot = false
   const parser = new SaxesParser({ xmlns: true })
 
   parser.on("opentag", (tag: SaxesTagNS) => {
     const { attributes, local: name } = tag
+    if (name === "testsuites" && !sawRoot) {
+      sawRoot = true
+      const numeric = (key: string): number | undefined => {
+        const raw = attributeValue(attributes, key)
+        if (raw === undefined) return undefined
+        const value = Number(raw)
+        return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+      }
+      const tests = numeric("tests")
+      const failures = numeric("failures")
+      const skippedTotal = numeric("skipped")
+      if (tests !== undefined && failures !== undefined && skippedTotal !== undefined) {
+        declared = { tests, failures, skipped: skippedTotal }
+      }
+      elements.push({ kind: "other" })
+      return
+    }
     if (name === "testsuite") {
       const rawFile = attributeValue(attributes, "file")
       const file = rawFile === undefined ? undefined : toRepoRelative(rawFile, repoRoot)
@@ -188,6 +208,28 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   })
   parser.write(xml).close()
   if (elements.length > 0) throw new Error("JUnit document ended with unclosed elements")
+  // Cross-check our parse against the producer's own declared totals. Rows this parser
+  // cannot identify (a `<testcase>` missing `file`/`classname`/`name`) are dropped on
+  // purpose so a legacy shape does not crash the run — but dropping them SILENTLY is the
+  // very failure this whole module exists to prevent: the counts come out low and nothing
+  // says so. The declared attributes are an independent count from the same artifact, so a
+  // disagreement means rows went missing regardless of which shape caused it.
+  //
+  // Enforced only when the producer declares all three. That is a real limit, not a
+  // formality: an emitter that omits them is not checked here, and the runner's
+  // discovery/runtime file-identity comparison remains a separate, also-partial guard.
+  // Measured on 16/16 real bun 1.3.14 shard artifacts: parsed rows === declared `tests`,
+  // parsed failures === declared `failures`, parsed skips === declared `skipped`.
+  if (declared !== undefined) {
+    const rows = executed + skippedCount
+    if (rows !== declared.tests || failedCount !== declared.failures || skippedCount !== declared.skipped) {
+      throw new Error(
+        `[parallel-test] JUnit self-inconsistency: parsed ${rows} rows / ${failedCount} failed / ${skippedCount} skipped, `
+          + `but the document declares ${declared.tests} tests / ${declared.failures} failures / ${declared.skipped} skipped. `
+          + `Rows were dropped or miscounted; the tally derived from this artifact would be wrong.`,
+      )
+    }
+  }
   return {
     files: [...files].sort(),
     executed,

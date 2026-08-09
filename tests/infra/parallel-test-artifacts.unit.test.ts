@@ -186,6 +186,42 @@ describe("parallel-test JUnit artifact parsing", () => {
   test("rejects malformed or truncated JUnit rather than returning a partial identity", () => {
     expect(() => parseJUnit(`<testsuites><testsuite file="tests/a.unit.test.ts"><testcase file="tests/a.unit.test.ts"`, "/repo")).toThrow()
   })
+
+  // Dropping an unidentifiable row is deliberate (a legacy shape must not crash the run),
+  // but dropping it SILENTLY is the exact failure this module exists to prevent: the file
+  // still appears on both sides of the identity comparison, every shard exits 0, and the
+  // counts are simply low. The producer's own declared totals are an independent count from
+  // the same artifact, so the disagreement surfaces without enumerating malformed shapes.
+  test("throws when the parse disagrees with the document's own declared totals", () => {
+    const xml = `<?xml version="1.0"?><testsuites tests="2" failures="0" skipped="0"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="counted" file="/repo/tests/a.unit.test.ts"/><testcase name="no classname" file="/repo/tests/a.unit.test.ts"/></testsuite></testsuites>`
+
+    expect(() => parseJUnit(xml, "/repo")).toThrow(/JUnit self-inconsistency: parsed 1 rows.*declares 2 tests/s)
+  })
+
+  test("accepts a document whose declared totals match the parse", () => {
+    const xml = `<?xml version="1.0"?><testsuites tests="2" failures="1" skipped="0"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="passes" file="/repo/tests/a.unit.test.ts"/><testcase classname="suite" name="fails" file="/repo/tests/a.unit.test.ts"><failure type="AssertionError"/></testcase></testsuite></testsuites>`
+
+    const identities = parseJUnit(xml, "/repo")
+    expect(identities.executed).toBe(2)
+    expect(identities.failed).toBe(1)
+  })
+
+  test("declared skips are reconciled too, so a dropped skip row cannot hide", () => {
+    const xml = `<?xml version="1.0"?><testsuites tests="2" failures="0" skipped="1"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="runs" file="/repo/tests/a.unit.test.ts"/><testcase classname="suite" name="skips" file="/repo/tests/a.unit.test.ts"><skipped/></testcase></testsuite></testsuites>`
+
+    const identities = parseJUnit(xml, "/repo")
+    expect(identities.executed).toBe(1)
+    expect(identities.skipped).toBe(1)
+  })
+
+  test("stays silent when the producer declares no totals — the check is conditional, not universal", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase file="tests/incomplete.unit.test.ts"/></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.executed).toBe(0)
+  })
 })
 
 // The tally line is what a delivery report quotes, so every way the counts can be wrong
