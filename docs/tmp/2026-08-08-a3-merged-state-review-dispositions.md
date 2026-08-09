@@ -28,8 +28,31 @@
 | K2 | `?endpoint=` 空串在 JS 侧是「无过滤」、在 native 侧是「精确匹配空值」→ persisted 恒空 | **成立，且根因在两处**。`handler.ts:38` 是 11 个 filter 维里**唯一**没有 `\|\| undefined` 的（对比 `:37,40,43,44,45`）；`lib.rs:336-351` 的 `resolve_equals` 把 `Some("")` 当成要精确匹配的值。同一 `?endpoint=` 走 SQL 路（`summary-store.ts:55` 的 `if (options.endpoint)`）正常、走 sidecar 路恒空——两条 persisted 路径对同一查询给不同答案 | 采纳（C）·本轮修：**两处都修**。只修 handler 是治标，下一个直接调 native 的消费者还会踩（`fix-at-the-shared-base-not-where-you-noticed`） |
 | K3 | in-flight/recent 与 persisted 两套「命中 search」定义：前者仅入站消息 + 小写子串（`queries.ts:168-174`），后者入站 + 响应载荷 + 响应帧 + tokenized（`projection.ts:107-117`） | **成立**。附带发现：`queries.ts:163-166` 的注释明写「使用与持久化索引**相同**的归一化投影」——这个断言不成立，是撒谎注释。失败场景 B（response-only 词的 cursor 被 `queries.ts:239-243` 判无效 → 400）尤其隐蔽 | 采纳（C）·本轮修：recent 一路改用 `projectSearchableText`，抽共用 primitive；tokenize vs 子串的残余差异写进 spec 而非留在两个函数里 |
 
+## 实施记录
+
+八条全部采纳、全部实施，无一条驳回。提交（分支 `nghttp2-cancel-a3-next`）：
+
+| commit | 覆盖 | 说明 |
+|---|---|---|
+| `3fa8be16` | G3 | `EndpointType` 补 `openai-embeddings`；类型系统逼出三处映射，各自作出诚实决定（dry-run 无对应管线 → 显式 400 而非退到邻近格式；request ctx 无 codec cell → `clientFormat` 保持 undefined） |
+| `367cf0b9` | G3·G4·K2(JS)·K1(400 映射) | 同一个 handler 上的四条，形态相同：校验方与消费方对同一个值理解不一致。G4 的根治是**共用同一个解析函数**而非两处各改一遍 |
+| `93dfba86` | G2 | stats 的 SQL CASE 严格派生自 `requestBucket` 契约 |
+| `8df7a6d2` | G1·K3 | overlay 归属冻结进 pre-await 快照；recent 记录改用 `projectSearchableText`。同步删掉那句「使用与索引相同的投影」的假注释 |
+| `0fef1143` | K1(native+wire)·K2(native) | parse 错误走 `Status::InvalidArg` → `invalid-query` 线码 → 400；空串在两个 resolver 里按无过滤处理（**修在共用基座**，只改 handler 会把坑留给下一个直调 native 的消费者） |
+| `d71276c7` | G5 | tombstone 回归 + 探针 + README 更正 |
+
+**验证**：`typecheck` 绿；`bun test tests/history/`（579 pass / 0 fail）、`tests/routes`（162 pass / 0 fail）、`tests/history/search/daemon.it.test.ts`（20 pass / 0 fail）；改动文件 eslint 干净。
+
+**全后端 `bun run test:backend`**：3610 tests · **3609 pass · 1 fail**。唯一失败是 `tests/history/v3/store-performance.it.test.ts` 的 “CAS live physical bytes…” 报 `TimeoutError`（18.2s）。判为**既有的负载敏感 flake、与本次改动无关**，依据两条：①该文件不在本分支改动的 20 个文件内（`git diff --name-only master...HEAD`）；②隔离复跑 3 pass / 0 fail、耗时 8.63s，而 16 分片并发下超时。合并前的验收轮里同一个文件也出现过同形失败。
+
+**实测证据**（非文档推断）：
+- napi 把 `Status` 暴露为 JS 错误的 `code`：`Status::InvalidArg` → `code:"InvalidArg"`（`parse-error-probe.ts`）。
+- 空串修复的正负对照：`endpoint=""` 返回原本被藏起来的行，而真实不存在的 endpoint 仍返回 0——没有把过滤放松过头。
+- G5 变异对照：注释掉 alive 检查后新测试报 `total=220`（应为 200），失败正来自被取代文档复活这一目标机制，不是旁路断言。还原用重新编辑、非 `git checkout`，事后 `git status` 确认 `lib.rs` 无残留。
+
 ## 待办
 
 - [x] 收齐两侧共 8 条并逐条复核（全部成立）
-- [ ] 实施 8 条
+- [x] 实施 8 条
+- [x] 全后端 `test:backend`（3609/3610，唯一失败为既有 flake，见上）
 - [ ] 复评到 0 blocker / 0 major
