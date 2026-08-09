@@ -941,7 +941,9 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 - **不需要新增第六个后缀。** 文件保持 `.it.test.ts`，因此仍在 discovery baseline 的 `files` 集合内。`tests/infra/test-discovery-matrix.unit.test.ts:12` 的 `VALID_SUFFIXES` 只认那五个，新增 `.perf` 会当场判红。
 - **不需要扩 schema 的 `reason` 枚举。** `entry-evidence-schema.ts:1` 的 `whole-suite-skip` 正是给「整个套件被跳过」用的，baseline 里现有 7 条都是 `[GATED — requires …]` 形态的 opt-in 套件，与 perf gate 同形。新增的 skip 用它，**语义不需要拉伸**。
 
-**实施形状**：`describe.skipIf(!PERF_TIER)` 包住计时用例（`RUN_PERF_TESTS=1` 开启），新增 `test:perf` 脚本；后端档里它变成一条**显式 allow-listed skip**，而不是凭空消失。baseline `allowed_skipped` 35 → 36，条目 identity **取自真实 JUnit 输出**（含 XML 转义，手写必错），插入后用 `parseDiscoveryBaseline` 复验。
+**实施形状**：`describe.skipIf(!PERF_TIER)` 包住计时用例（`RUN_PERF_TESTS=1` 开启），新增 `test:perf` 脚本并**接进 `test:ci`**（P3：只靠人记得手敲的档位等于慢性死亡；CLAUDE.md 档位 SSOT 已同步写明它的定位与何时跑）；后端档里它变成一条**显式 allow-listed skip**，而不是凭空消失。baseline `allowed_skipped` 35 → 36，条目 identity **取自真实 JUnit 输出**（含 XML 转义，手写必错），插入后用 `parseDiscoveryBaseline` 复验。
+
+**⚠️ T0.0f 开跑前检查**：确认环境里 **`RUN_PERF_TESTS` 为空**。它一旦被设上，那条计时用例会真跑而不是 skip，**skip 多重集随之改变**，门会以 `multiset mismatch` 失败——而该报错**指不到根因**，排查成本极高。
 
 **确定性 oracle 的做法**：包住 `db.prepare` 跑一次真实 commit，收集**生产实际发出的**语句，再对其中读 history 量级表的 SELECT 逐条跑 `EXPLAIN QUERY PLAN`，断言没有 `SCAN`。**不在测试里重写 SQL**——那只能证明那份副本。
 
@@ -954,7 +956,32 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 | 后端档 | **3 pass / 1 skip / 0 fail** |
 | 守卫 | schema + discovery-matrix + validate + 该文件共 **54 pass / 1 skip / 0 fail** |
 
-**边界（已写进测试注释，不止写在这里）**：「查询计划不退化」**窄于**「耗时不随历史增长」。它**看不见**：保持索引计划的 N+1 点查、JS 侧的 per-operation 工作、行**体积**增长、以及本次 commit 未走到的代码路径上的扫描。**这正是计时断言被 gate 而不是删除的理由。**
+**边界（已写进测试注释，不止写在这里）**：「查询计划不退化」**窄于**「耗时不随历史增长」。**覆盖**：本次 commit 对 history 量级表发出的 `SELECT` / `DELETE` / `UPDATE`（三者都会跑计划）。**不覆盖**：保持索引计划的 N+1 点查、JS 侧的 per-operation 工作、行**体积**增长、本次 commit 未走到的代码路径上的扫描、以及走了索引但选择性很差的计划。**这正是计时断言被 gate 而不是删除的理由。**
+
+**P2 补正：过滤器曾漏掉整类语句。** 初版过滤器是 `/^\s*SELECT/i`，把该 commit 发出的 29 条语句里 5 条命中 history 表的非-SELECT 全部排除，其中 `DELETE FROM v3_journal WHERE operation_id=? AND revision=?` **带 WHERE、计划可以退化成扫描**——既不在检查内，也不在当时声明的边界里。改成 `(SELECT|DELETE|UPDATE)` 后：
+
+| 形态 | planInspected | 结果 |
+|---|---|---|
+| 健康（新过滤器） | 22 → **23** | scans 0，**健康不变红，覆盖严格增大** |
+| SELECT-scan mutation（重跑正控） | 23 | **21 条 SCAN，红** |
+| **DELETE-scan mutation**（`WHERE +operation_id=?` 禁用索引） | 23 | **`SCAN v3_journal`，红** |
+| 同一 DELETE mutation × **旧** SELECT-only 过滤器 | 22 | **绿 —— 证明加宽确实买到了覆盖，不是自我安慰** |
+
+最后一行是关键：覆盖面变了就必须重做正控，而**旧过滤器对该 mutation 是假绿**。
+
+### 比值判据的灵敏度定律（评审给的可复用判据，收录）
+
+**比值判据对「加性」缺陷的灵敏度 ∝ 1/基线；对「乘性」缺陷则与尺度无关。**
+
+这解释了为什么「放大被测量」这一招在 M2 上有效、在 M1 上适得其反——比「方向相反」这个说法更有操作性：
+
+- **M2**（deadline 实际时长 = 请求值的 6 倍）是**乘性**缺陷：放大 fixture 后缺陷同比放大，比值不变，鉴别力守恒，而绝对余量变宽 → 有效。
+- **M1**（历史依赖成本 = 基线 + f(历史)）是**加性**缺陷：放大 fixture 抬高了基线，加性项被稀释，比值坍向 1 → 鉴别力消失（实测 ratio 从 3.86 掉到 0.81/0.94）。
+
+**动手前先判缺陷是加性还是乘性**，再决定能不能放大被测量。
+
+（评审同时撤回了它自己的 R1「放大 fixture」与 R4「加唯一性校验」两条建议，我的两次证否均成立。）
+
 
 ### 未处置 #7 的重估：**不撤下，改写敞口**
 
@@ -984,21 +1011,34 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 **为什么要分开数**：「断言变弱了吗」与「门上还有它吗」是两个问题，合成一个数字必然误导——一条**内容一字未改**的断言，移出门之后对 T0.0f 的作用等于零。本轮这个数已经被数错两次，正是因为想用单一数字回答多个问题。
 
-### 反直觉口径：**「多一条 skip」≠「少一条 executed」**（已实测，别改 `minimum_executed`）
+### ⚠️ 已撤回的错误结论：「多一条 skip ≠ 少一条 executed」**是错的**
 
-把一条用例 gate 掉之后，很自然会担心 baseline 的 `minimum_executed: 7297` 这条**下限**会因为少跑一条而判红——而且这种红**只在 entry evidence 的 producer/validator 里现形，本地 `bun test` 完全看不出来**，属于最容易漏的那一类。协调方据此推理需要下调下限。
+本文件此前写过一条警告，说 gate 掉一条用例**不会**让 `executed` 下降（理由是 JUnit 把 skipped 计入 executed）。**那条结论是错的，且方向有害，现予撤回。**
 
-**实测否掉了这个推理**（合并态全后端）：
+**源码实证**（`scripts/parallel-test-artifacts.ts:129`，本轮亲自打开确认）：
 
+```ts
+        skipped.set(skippedIdentityKey(identity), identity)
+      } else executed += 1
 ```
-16 shards · 6147 tests · 6147 pass · 0 fail · 7297 executed · 36 skipped · 85.13s
-```
 
-`executed` **仍是 7297**，与下限恰好相等；`diff-skips` 的 `unexpected` / `missing` 双空。**根因：JUnit 的 `executed` 把 skipped 用例一并计入**，所以 gate 掉一条只会让 `skipped` 35 → 36，不会让 `executed` 下降。
+`executed += 1` 在 skipped 分支的 **`else`** 里——**skipped 被严格排除**。所以**单独 gate 掉一条用例，`executed` 会掉 1**，可能撞上 `validate-entry-evidence.ts:757` 的下限而直接打掉 T0.0f。
 
-**因此 `minimum_executed` 不动。** 记在这里是因为下一个 gate 掉用例的人极可能重复同一条推理、去「顺手」下调下限——**那会在没有任何缺陷的情况下放松一条真实的下限**，而且改完照样全绿、没有任何信号提示它错了。
+**那次观测为什么看起来支持了错误结论——这才是真正值得留下的部分。**
 
-**顺带**：本次 `N tests` 报 **6147**，而 `executed` 恒 7297 —— 未处置 #6（`N tests` 字段不可信）再获一次印证。
+当时的实测是「gate 前 7297 → gate 后仍 7297」，看上去干净利落地证明了「不下降」。但那一轮**同时发生了两件事**：新增 1 条 oracle 用例（**+1**）、gate 掉 1 条计时用例（**−1**）。两个假说各自的预测是：
+
+| 假说 | 对该次观测的预测 |
+|---|---|
+| skipped **计入** executed | 7297 + 1（新增）= **7298** |
+| skipped **排除**在外（真相） | 7297 + 1 − 1 = **7297** |
+
+实测 **7297**——**数据本身就证否了那个假说**，只是当时没有把两个预测分别写出来，就直接把「数字没变」读成了「不下降」。**一次同时改变两个变量的观测，区分不了两个假说**；而巧合的 +1/−1 抵消让错误结论看起来有实测背书。
+
+**可复用的判据**：写下「实测证明了 X」之前，先问 **「与 X 竞争的那个假说，对这次观测的预测是什么？」**——如果两者预测相同，这次观测就没有鉴别力，不管数字多干净。这与本文档「分类被推翻」一节记的形态同源：那节是**范围**写宽一档，这节是**鉴别力**没检验。
+
+**当前状态**：`minimum_executed` 保持 **7297** 不动——不是因为「下限与 executed 无关」，而是因为本轮净变化恰为 0（+1 oracle，−1 gate），实测 executed 仍是 7297。**下一个单独 gate 用例的人必须同步核对 executed 与该下限。**
+
 
 
 ### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
