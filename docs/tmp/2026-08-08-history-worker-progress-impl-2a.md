@@ -30,13 +30,16 @@ status: active
 - [x] 门禁与 mutation 正控（见下）。
 - [ ] 独立 review 到 0 blocker／major，再 fast-forward 合 `master`，回填计划状态行。
 
-## 门禁证据（commit `af5130ce`，worktree `.worktrees/history-worker-batch-2a`）
+## 门禁证据（合并态 commit `7936d3f4`，worktree `.worktrees/history-worker-batch-2a`）
+
+**注意口径已换到合并态。** 收尾期 `master` 从会话起点 `d8296920` 前进了约 30 个提交（其中一位 peer 正在处理**同一批**负载敏感测试：把 History V3 计时断言移到 `RUN_PERF_TESTS` 门控的 `test:perf` 档、把 http2 pre-header 的 30ms sleep 改成条件等待）。已 `git merge master` 三方合并进本分支，唯一冲突是 discovery baseline 的 `minimum_executed`——**两侧的值都不对**（master 因计时测试移出后端档降到 7299，本分支因新增测试升到 7358），故按合并态**重测**而非二选一。
 
 - `bun run typecheck` → 绿（exit 0）。
-- `bunx eslint src/lib/history tests/history tests/architecture` → exit 0，0 problems。
-- `bun run test:backend` → **7352 pass／0 fail／7352 executed／35 skipped**（16 shards，57.33s）。
-- **flaky 复核：** poison-journal 用例最初在 `test:backend` 下 3 次红 2 次；定位为产品缺陷（可重试启动错误被判 fatal）并修复后，`test:backend` 连跑 5 次全绿。
-- **收尾期观测到的争用型 false-red（不是本批引入，别当既有失败挥手放过，也别当本批回归）**：最后几次全量里出现过 3 条**互不相同**的红——`tests/history/v3/store-performance.it`「CAS live physical bytes …10x smaller」（两次，17.5s／19.8s，明显是计时）、`tests/telemetry/backfill-wiring.unit`「接线 3」、以及一次 `activeStreamCount …row 1 — pre-header req.error`。**判据三条**：①每条**单跑均绿**（perf 3 pass、telemetry 8 pass）；②**每次红的是不同的测试**——真回归会稳定咬同一条；③`git log master..HEAD -- tests/telemetry src/lib/telemetry` **为空**，本分支从未碰过遥测。故归类为 16-shard 负载下的争用敏感判据，与 `docs/todo/deferred-backlog.md` 已登记的「`store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败」同族。**`executed` 恒为 7358**（=discovery floor），说明没有测试被静默跳过。
+- `bunx eslint src/lib/history tests/history tests/architecture` → exit 0。
+- `env -u RUN_PERF_TESTS bun run test:backend` → **7360 executed／0 fail／36 skipped**（16 shards，116s）。`RUN_PERF_TESTS` 必须为空，否则 skip 多重集变化会让 entry evidence 门以 `multiset mismatch` 失败且指不到根因（见 CLAUDE.md 测试分档条）。
+- **合并未吞掉任何东西**（peer 记录的教训，逐条核过）：`git log HEAD..master` 为空（本分支含 master 全部提交）、`git diff --diff-filter=D master..HEAD` 为空（未删除 master 的任何文件）、本批四个新建生产文件均在。
+- **flaky 复核：** poison-journal 用例最初在 `test:backend` 下 3 次红 2 次；定位为产品缺陷（可重试启动错误被判 fatal）并修复后连跑多次全绿。
+- **合并前观测到的争用型 false-red（合并后已消失，因为 master 正好修的就是它们）**：合并前最后几次全量出现过 3 条**互不相同**的红——`store-performance.it`「CAS live physical bytes」（两次，17.5s／19.8s）、`telemetry/backfill-wiring.unit`「接线 3」、`activeStreamCount …pre-header req.error`。**判据三条**：①每条单跑均绿；②每次红的是不同测试（真回归会稳定咬同一条）；③`git log master..HEAD -- tests/telemetry src/lib/telemetry` 为空，本分支从未碰过遥测。合并 master 后的全量为 0 fail。
 
 ### Mutation 正控（第二轮，commit `290cfb9e`；第三轮见下节）
 
