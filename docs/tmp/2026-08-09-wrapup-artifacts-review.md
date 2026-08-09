@@ -190,3 +190,47 @@
 - 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
 - 复评轮次 4：BLOCKER 0、MAJOR 1、MINOR 1。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 5（整改提交 `eba4f21a`）
+
+## 复评范围与方法
+
+- 读取 `eba4f21a` 完整 diff、两条新增负控、progress 与 claims 全文，并核对 30559e07→dd0bcd2d→eb2493ad→bb1f81f3→eba4f21a 的 first-parent 顺序和各提交改动路径。
+- 在 `/home/xp/.claude/jobs/a7c2cc1a/tmp/round5-independent/` 独立复制当前实现和完整测试，分别删除 tests／failures／skipped 单臂后运行；没有执行会写仓库的 `arm-mutation.py`。
+- 直接取得 failure-only 与 skipped-only 两条真实错误消息，让两条 `toThrow` regex 交叉匹配，检查是否可能由兄弟臂误咬。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 1、MINOR 1。**
+
+## 事实性发现
+
+### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:40` — 又把“退出码与标记”写成验收判据，与权威约定的“必要但不充分”冲突
+
+- **现象**：同一行先正确说数字不是判据，却接着写“判据是退出码与标记”。作为“验收判据”，这会被接手方理解为满足二者即可引用 tally；但 `docs/coding-conventions.md:52` 与 backlog 已明确退出 0 只是必要条件，不是充分条件，且产出方不声明 totals 时仍有已知缺口。
+- **证据／命令输出**：`rg '判据是退出码|必要条件|充分条件'` 同时命中 progress 的“判据是退出码与标记”和 coding conventions/backlog 的“必要条件，不是充分条件”。本轮没有新增能把 exit+markers 升级为充分条件的机制；`parseJUnit` 的 declared-total 门仍在三属性缺失时条件性停用。
+- **接手方错误动作**：接手方会按归档 progress 的“验收判据”引用某次 tally，而忽略权威约定明确保留的条件盲区；这正是前三轮反复证伪的充分性主张换了一种措辞回流。
+- **建议处置**：把该句改为“核验记录的是退出码与完整性标记；二者为必要信号，不构成 tally 完整性的充分证明，边界以 coding conventions 为准”。不要再使用单数“判据”给它封口。修复方建议 `gpt-souls:doc-writer`。
+
+### [MINOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:40,58` — `7538@bb1f81f3` 的 commit 锚错误，且漏记本提交的 7544
+
+- **现象**：时间线写 `7536@30559e07 → 7538@bb1f81f3 → 7542@eb2493ad`，但 first-parent 顺序是 dd0bcd2d（先新增 2 条）→ eb2493ad（再新增 4 条）→ bb1f81f3（后续纯文档）。因此 7538 对应 dd0bcd2d；到 bb1f81f3 时，eb2493ad 的 4 条早已存在，规模仍是 7542，不可能回到 7538。当前 eba4f21a 又新增 2 条并记录 7544，但“每轮整改都复跑”的表没有这一项。
+- **证据／命令输出**：`git log --first-parent 30559e07^..eba4f21a` 顺序为 `dd0bcd2d → eb2493ad → bb1f81f3 → eba4f21a`。`git show --name-only` 显示 dd0bcd2d 改测试并新增 2 条；eb2493ad 改同测试并新增 4 条；bb1f81f3 只改文档；eba4f21a 再新增 2 条。对应提交信息分别记录 7538、7542、7544。
+- **接手方错误动作**：接手方会认为 bb1f81f3 后测试数下降 4 又在其父提交更高，进而怀疑 discovery 回归或历史改写；表声称“每个数字都锚到 commit”，反而放大错误权威感。
+- **建议处置**：改为 `7536@30559e07 → 7538@dd0bcd2d → 7542@eb2493ad（bb1f81f3 纯文档，仍为 7542）→ 7544@eba4f21a`。如果不准备持续维护，删掉逐轮数字表，仅保留具名历史证据指针与必要但不充分的核验纪律。
+
+## 已确认无新增问题的范围
+
+- **逐臂鉴别力成立**：当前基线 `26 pass / 0 fail`。独立树外 mutation 分别删除 tests、failures、skipped 臂，三次均为 `25 pass / 1 fail`；红的分别是 rows mismatch、failure-count mismatch、skip-count mismatch 对应用例，没有兄弟断言代咬。
+- **错误 regex 可区分**：failure-only 消息只匹配 failure regex，不匹配 skipped regex；skipped-only 消息只匹配 skipped regex，不匹配 failure regex。两条 regex 都同时约束 parsed 与 declared 的目标字段，不是宽泛 `self-inconsistency`。
+- **progress/claims 全文**：除上述“验收判据”回流和数字锚错误外，历史章节边界、closed-at、claims 两段 supersede 均保持自洽，未发现新的当前时态残留会改变接手动作。
+
+## 最终计数
+
+- 轮次 1：BLOCKER 0、MAJOR 7、MINOR 1。
+- 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
+- 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
+- 复评轮次 4：BLOCKER 0、MAJOR 1、MINOR 1。
+- 复评轮次 5：BLOCKER 0、MAJOR 1、MINOR 1。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。

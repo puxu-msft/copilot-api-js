@@ -37,7 +37,8 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 > ⚠️ **本文件已停止更新。活跃状态的权威来源是 `.superpowers/sdd/progress.md` 的 Task 9 条目**，冲突时以它为准。下面三项是历史待办及其结果，**不是当前工作队列**——接手方不要照着重跑。
 
-1. ~~跑完整 Task 9 与 backend／architecture 门禁~~ —— 已跑，且随后每轮整改都复跑。**读数会随新增测试而变，所以每个数字都锚到 commit**：`7536`@`30559e07` → `7538`@`bb1f81f3` → `7542`@`eb2493ad`；三次均 `0 fail`、退出码 0、tally 行无完整性标记，`typecheck` 与 `lint:all` 零 error。**复跑**：`bun run test:backend`（判据是退出码与标记，不是某个具体数字——见 `docs/coding-conventions.md`「并行执行」节）。
+1. ~~跑完整 Task 9 与 backend／architecture 门禁~~ —— 已跑，且随后每轮整改都复跑。**读数会随新增测试而变，所以每个数字都锚到引入它的那个 commit**：`7536`@`30559e07` → `7538`@`dd0bcd2d` → `7542`@`eb2493ad` → `7544`@`eba4f21a`；四次均 `0 fail`、退出码 0、tally 行无完整性标记，`typecheck` 与 `lint:all` 零 error。（`bb1f81f3` 是纯文档提交、不改测试，仍为 `7542`；此处**曾把 7538 错锚给它**，由独立评审按 `git show --stat` 更正。）
+   **复跑**：`bun run test:backend`。**怎么判断这次运行的数字可不可信，不在本文件里定义**——权威在 `docs/coding-conventions.md`「并行执行」节（那里写明退出码 0 是必要条件而非充分条件，并列出当前已实现的门与已知缺口）。**本行不复述那条判据**：这个「充分性」主张已经被独立评审推翻四次、每次换一种措辞回流，所以这里只留指针。
 2. ~~对完整 Task 9 候选做双视角独立评审并闭合~~ —— 已闭合。Task 9 自身的两个正交视角见 `docs/tmp/2026-08-08-task9-review-{spec,acceptance}.md`；本轮合并态另跑两个视角（`docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md`）与一轮收尾产物评审（`docs/tmp/2026-08-09-wrapup-artifacts-review.md`）。
 3. ~~转移活跃写入权~~ —— 即本次。持久结论已折入 `.superpowers/sdd/progress.md`；本文件转为历史档案。
 
@@ -55,7 +56,7 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 ## 本轮红绿证据（历史快照，写于合并 master **之前**）
 
-> ⚠️ **本节整节都是当时的读数，其中关于「官方门禁」的结论已被后续推翻。** 当时的结论是「官方 16-shard 命令在本机未绿、只有低并发 4-shard 全绿」；合并 master 并修掉两个门禁缺陷后，官方 `bun run test:backend` 已实测全绿（`7538 tests · 7538 pass · 0 fail`@`bb1f81f3`、退出码 0、无任何完整性标记；该数随新增测试变动，权威读数与锚见上面「剩余项」第 1 条）——另见「裁决结果」节。
+> ⚠️ **本节整节都是当时的读数，其中关于「官方门禁」的结论已被后续推翻。** 当时的结论是「官方 16-shard 命令在本机未绿、只有低并发 4-shard 全绿」；合并 master 并修掉两个门禁缺陷后，官方 `bun run test:backend` 已实测全绿（`7538 tests · 7538 pass · 0 fail`@`dd0bcd2d`、退出码 0、无任何完整性标记；该数随新增测试变动，权威读数与锚见上面「剩余项」第 1 条）——另见「裁决结果」节。
 >
 > **有一条当时的判断特别值得后来人警惕**：本节把官方门的失败大量归因为「5 秒超时／资源争用的 false-red」。后来查明，那类运行里**至少有一次的 crash 底下压着一条真失败**（一条 `TimeoutError` 被汇总行的绿色 `0 fail` 盖住，原件见 `exp/junit-tally-false-green/`）。**不要照搬「超时都是 false-red」这个结论**——先去 junit 产物里查。
 
