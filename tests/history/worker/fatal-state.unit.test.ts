@@ -280,6 +280,86 @@ describe("History Worker terminal-failed state", () => {
     expect((drainError as Error).message).toMatch(/shut down while no Worker generation was running/)
   })
 
+  test("gives up and goes terminal once the restart budget is spent, instead of retrying forever", async () => {
+    const transports: Array<ScriptedTransport> = []
+    const runtime = new HistoryPersistenceRuntimeImpl({
+      workerFactory: (generation) => {
+        const transport = new ScriptedTransport(generation)
+        transports.push(transport)
+        return transport
+      },
+      restart: { maxConsecutiveFailures: 3, setTimer: (fn) => (fn(), () => {}) },
+    })
+
+    const settlements: Array<HistoryPersistenceOutcome> = []
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+    runtime.enqueue(buildEnvelope(buildTerminalRecord("op-budget-1")), (outcome) => settlements.push(outcome))
+
+    // Every replacement dies the moment it appears. Without a ceiling this is an infinite
+    // sequence with no terminal state: `start()` would never settle, and §8.1 would never
+    // let the proxy listen — a process that looks alive and serves nothing.
+    for (let attempt = 0; attempt < 3; attempt++) transports.at(-1)?.emitExit(1)
+
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toMatch(/failed to stay up after 3 consecutive attempts/)
+    expect(transports).toHaveLength(3)
+    // Going terminal is not a quiet abandonment: the un-ACKed envelope still settles.
+    expect(settlements).toEqual(["failed"])
+  })
+
+  test("a retired generation's fatal is still believed, because it reports a permanent condition", async () => {
+    const { runtime, transports, restartTimers } = await started()
+    transports[0]?.emitExit(9)
+    expect(restartTimers).toHaveLength(1)
+
+    // The dead generation may not settle envelopes, but `fatal` names a condition its
+    // replacement would only rediscover — dropping it would cost another doomed restart.
+    transports[0]?.emitFatal("owner marker vanished")
+
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(restartTimers).toHaveLength(0)
+    expect(transports).toHaveLength(1)
+  })
+
+  test("a persist ACK from the generation that just crashed is NOT believed before its replacement exists", async () => {
+    const { runtime, transports, restartTimers } = await started()
+    let settled: HistoryPersistenceOutcome | undefined
+    const messageId = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-window-1")), (outcome) => {
+      settled = outcome
+    })
+
+    // Crash, but do NOT fire the restart timer: `generation` still names the dead thread, so
+    // without an explicit retirement flag its ACK would pass the generation guard, settle the
+    // envelope, and drop it from the replay set on the word of a thread already written off.
+    transports[0]?.emitExit(9)
+    expect(restartTimers).toHaveLength(1)
+
+    transports[0]?.emitPersistResult(messageId, "persisted")
+
+    expect(settled).toBeUndefined()
+    expect(runtime.snapshot().pendingEnvelopes).toBe(1)
+    expect(runtime.snapshot().staleMessagesTotal).toBe(1)
+
+    // It survives to be replayed to the replacement, which is the whole point.
+    for (const timer of restartTimers.splice(0)) timer.fn()
+    transports[1]?.emitReady()
+    expect(transports[1]?.sent.filter((message) => message.type === "persist-operation")).toHaveLength(1)
+  })
+
+  test("refuses a second start() after terminal-failed instead of clearing the sticky flag", async () => {
+    const { runtime, transports } = await started()
+    transports[0]?.emitFatal("unrecoverable schema")
+    await Promise.resolve()
+
+    // `terminateTransport()` clears `this.transport`, so the "already started" guard no
+    // longer catches this — and `emptyStatus()` would silently reset `terminalFailed`.
+    await expect(runtime.start(buildStartConfig("/tmp/never-opened-history.db"))).rejects.toThrow(/terminally failed/)
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(transports).toHaveLength(1)
+  })
+
   test("each reservation is released exactly once when the runtime goes terminal-failed", async () => {
     const { runtime, transports } = await started()
     // Batch 2b installs this subscriber in production; here it stands in for that wiring so

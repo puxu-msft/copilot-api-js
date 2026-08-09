@@ -109,6 +109,10 @@ export class HistoryJournalRecoveryError extends Error {
  * There is no protocol message for "retryable startup failure" — and there should not be,
  * since `fatal` means terminal by definition — so the Worker expresses it the same way any
  * other recoverable death is expressed: the thread exits, and the runtime restarts it.
+ *
+ * The runtime restarts on ANY non-zero exit and does not branch on this value; it exists so
+ * an operator reading logs can tell this death apart from a genuine crash. Do not build a
+ * routing contract on it without also making the runtime actually read it.
  */
 export const HISTORY_WORKER_RETRYABLE_STARTUP_EXIT = 75
 
@@ -236,7 +240,25 @@ export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}):
  * `drain` means "everything received so far has a terminal outcome", which is only
  * well-defined against an ordered queue.
  */
-export function installHistoryWorkerMessageLoop(port: HistoryWorkerPort, backend: HistoryWorkerBackend): void {
+/**
+ * How the HOST expresses "this generation must die so the runtime restarts it".
+ *
+ * The message loop is shared by the real Worker entry and the in-process contract runtime
+ * (spec §12.1 requires them to be the same code), and those two hosts die differently: a
+ * Worker thread calls `process.exit`, which ends only that thread, while the in-process
+ * runtime is running on the HOST process — calling `process.exit` there would take the
+ * proxy (or the test runner) down with it. Injecting the mechanism keeps one loop without
+ * letting the Worker's way of dying leak into a host that cannot survive it.
+ */
+export interface HistoryWorkerLoopHost {
+  terminateForRestart(exitCode: number): void
+}
+
+const workerThreadHost: HistoryWorkerLoopHost = {
+  terminateForRestart: (exitCode) => process.exit(exitCode),
+}
+
+export function installHistoryWorkerMessageLoop(port: HistoryWorkerPort, backend: HistoryWorkerBackend, host: HistoryWorkerLoopHost = workerThreadHost): void {
   const outcomes: Record<HistoryMessageId, HistoryPersistenceOutcome> = {}
   let chain: Promise<unknown> = Promise.resolve()
 
@@ -257,7 +279,8 @@ export function installHistoryWorkerMessageLoop(port: HistoryWorkerPort, backend
         // (spec §7.1); `fatal` would strand History for the life of the process.
         if (parsed.type === "initialize" && isRetryableStartupError(error)) {
           consola.warn(`[history/worker] retryable startup failure, exiting for restart: ${error instanceof Error ? error.message : String(error)}`)
-          process.exit(HISTORY_WORKER_RETRYABLE_STARTUP_EXIT)
+          host.terminateForRestart(HISTORY_WORKER_RETRYABLE_STARTUP_EXIT)
+          return
         }
         sendFatal(port, parsed.workerGeneration, "requestId" in parsed ? parsed.requestId : undefined, error)
       })

@@ -101,6 +101,8 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   /** Hot config belonging to `status.latestDesiredRevision`; a restart must initialize with THIS, not the start config. */
   private latestDesiredConfig: HistoryWorkerHotConfig | undefined
   private readonly restartPolicy: HistoryWorkerRestartPolicy
+  /** The current generation has crashed and has not been replaced yet: nothing it says may be believed. */
+  private generationRetired = false
   private cancelRestartTimer: (() => void) | undefined
   private stopped = false
 
@@ -111,6 +113,12 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   start(config: HistoryWorkerStartConfig): Promise<HistoryWorkerReady> {
     if (this.transport) return Promise.reject(new Error("History Worker runtime is already started"))
+    // Terminal is IRREVERSIBLE (spec §7.2 step 1: refuse to create any further Worker).
+    // Guarding on `transport` alone is not enough now that fatal terminates the dead
+    // generation: with the transport gone, a second `start()` would sail past that check
+    // and `emptyStatus()` would quietly clear the sticky fatal flag.
+    if (this.status.terminalFailed) return Promise.reject(new Error(`History Worker runtime is terminally failed: ${this.status.lastError ?? "unknown"}`))
+    if (this.stopped) return Promise.reject(new Error("History Worker runtime has been shut down"))
     this.startConfig = config
     this.status = { ...emptyStatus(this.generation + 1), latestDesiredRevision: config.configRevision }
     return new Promise<HistoryWorkerReady>((resolve, reject) => {
@@ -130,6 +138,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     const config = this.startConfig
     if (!config) throw new Error("History Worker runtime cannot launch before start()")
     this.generation++
+    this.generationRetired = false
     const generation = this.generation
     const transport = this.createTransport(generation)
     this.transport = transport
@@ -311,7 +320,11 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       this.failTerminal(error instanceof Error ? error : new HistoryWorkerProtocolError("invalid History Worker response"))
       return
     }
-    if (message.workerGeneration !== this.generation) {
+    // A retired generation's word is not trusted for anything that would settle state — but
+    // `fatal` is the exception, and deliberately so: it reports a PERMANENT condition (unowned
+    // artifact, unrecoverable schema) that a replacement would only rediscover. Dropping it
+    // would trade an immediate terminal transition for another doomed restart cycle.
+    if (message.workerGeneration !== this.generation || (this.generationRetired && message.type !== "fatal")) {
       this.status = { ...this.status, staleMessagesTotal: this.status.staleMessagesTotal + 1 }
       this.publishStatus()
       return
@@ -407,27 +420,41 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     }
   }
 
-  private handlePersistResult(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
+  /**
+   * THE single transition out of `unacked` (spec §7.2: "只有首次从 `unacked` 离开的路径能释放 reservation").
+   *
+   * Both the ACK path and fatal's bulk termination race for the same message, so neither may
+   * delete-and-notify on its own: whichever arrives second must find the entry already gone
+   * and do nothing. Returning a boolean rather than relying on the callers being careful is
+   * what makes the exactly-once property structural instead of a coincidence of ordering.
+   */
+  private settleMessage(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): boolean {
     const pending = this.pendingEnvelopes.get(messageId)
-    if (!pending) {
-      const completed = this.completedAcks.get(messageId)
-      if (completed === outcome) {
-        this.status = { ...this.status, duplicateAcksTotal: this.status.duplicateAcksTotal + 1 }
-        this.publishStatus()
-        return
-      }
-      if (completed !== undefined) {
-        this.failTerminal(new HistoryWorkerProtocolError(`message ${messageId} changed outcome from ${completed} to ${outcome}`))
-        return
-      }
-      this.failTerminal(new HistoryWorkerProtocolError(`ACK for unknown History message ${messageId}`))
-      return
-    }
+    if (!pending) return false
     this.pendingEnvelopes.delete(messageId)
     this.outcomes.set(messageId, outcome)
     this.addTombstone(messageId, outcome)
-    this.updatePendingStatus()
     this.invokeOutcomeCallback(pending, outcome)
+    return true
+  }
+
+  private handlePersistResult(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
+    if (this.settleMessage(messageId, outcome)) {
+      this.updatePendingStatus()
+      this.publishStatus()
+      return
+    }
+    const completed = this.completedAcks.get(messageId)
+    if (completed === undefined) {
+      this.failTerminal(new HistoryWorkerProtocolError(`ACK for unknown History message ${messageId}`))
+      return
+    }
+    if (completed !== outcome) {
+      this.failTerminal(new HistoryWorkerProtocolError(`message ${messageId} changed outcome from ${completed} to ${outcome}`))
+      return
+    }
+    // Same outcome, already settled: an at-least-once transport may deliver an ACK twice.
+    this.status = { ...this.status, duplicateAcksTotal: this.status.duplicateAcksTotal + 1 }
     this.publishStatus()
   }
 
@@ -474,6 +501,11 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private handleTransportCrash(transport: HistoryWorkerTransport, error: Error): void {
     if (this.transport !== transport || this.status.terminalFailed || this.stopped) return
     this.transport = undefined
+    // Retire the generation AT THE CRASH, not when the replacement launches. Between those
+    // two moments `this.generation` still names the dead thread, so a message it emitted on
+    // its way out would pass the generation guard and be believed — settling an envelope
+    // (and dropping it from the replay set) on the word of a generation we have written off.
+    this.generationRetired = true
     const decision = this.restartPolicy.recordFailure()
     this.status = {
       ...this.status,
@@ -484,6 +516,15 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       lastError: error.message,
     }
     this.publishStatus()
+
+    if (decision.exhausted) {
+      // Restarting has stopped being a recovery strategy. Spec §7.2 has no state for
+      // "retrying forever", and hanging is worse than failing: `start()` would never settle
+      // and §8.1 would never let the proxy listen, so the process would look alive and serve
+      // nothing. Go terminal, which shutdown escalates into a visible exit 1.
+      this.failTerminal(new Error(`History Worker failed to stay up after ${decision.consecutiveFailures} consecutive attempts: ${error.message}`))
+      return
+    }
 
     const setTimer = this.options.restart?.setTimer ?? defaultRestartTimer
     this.cancelRestartTimer = setTimer(() => {
@@ -586,19 +627,18 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
    * never released is indistinguishable from a hang.
    */
   private settleUnackedAsFailed(error: Error): void {
-    const pendingEnvelopes = [...this.pendingEnvelopes.entries()]
-    this.pendingEnvelopes.clear()
-    for (const [messageId] of pendingEnvelopes) {
-      this.outcomes.set(messageId, "failed")
-      this.addTombstone(messageId, "failed")
-    }
+    // Goes through the SAME `settleMessage` primitive as the ACK path, so a message that has
+    // already left `unacked` cannot be released a second time here (spec §7.2).
+    // Snapshot the keys first: `settleMessage` deletes from this very map. Mutating a Map
+    // mid-iteration is legal but subtle, and the rule below cannot see the mutation.
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const messageId of [...this.pendingEnvelopes.keys()]) this.settleMessage(messageId, "failed")
     // Requests parked for re-issue belong to a generation that will never be replaced now,
     // so they are rejected with the same error rather than waiting for a Worker that is
     // never coming.
     const pendingRequests = [...this.pendingRequests.values(), ...this.requestsAwaitingReissue.splice(0)]
     this.pendingRequests.clear()
     this.updatePendingStatus()
-    for (const [, pending] of pendingEnvelopes) this.invokeOutcomeCallback(pending, "failed")
     for (const request of pendingRequests) request.reject(error)
     this.publishStatus()
   }

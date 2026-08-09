@@ -25,7 +25,12 @@ export function createInProcessHistoryPersistenceRuntime(deps: HistoryWorkerBack
   return new HistoryPersistenceRuntimeImpl({
     workerFactory: () => {
       const transport = new InProcessHistoryWorkerTransport()
-      installHistoryWorkerMessageLoop(transport.workerPort, createHistoryWorkerBackend(deps))
+      // A retryable startup failure must look like a dead generation, not like a dead
+      // process: the real Worker's `process.exit` would end the HOST here (the proxy, or
+      // the test runner), so this host reports the same thing through an `exit` event.
+      installHistoryWorkerMessageLoop(transport.workerPort, createHistoryWorkerBackend(deps), {
+        terminateForRestart: (exitCode) => transport.simulateExit(exitCode),
+      })
       return transport
     },
   })
@@ -38,6 +43,7 @@ export function createInProcessHistoryPersistenceRuntime(deps: HistoryWorkerBack
 class InProcessHistoryWorkerTransport implements HistoryWorkerTransport {
   private readonly mainListeners = new Set<(value: unknown) => void>()
   private readonly workerListeners = new Set<(value: unknown) => void>()
+  private readonly exitListeners = new Set<(code: number) => void>()
   private closed = false
 
   readonly workerPort = {
@@ -65,11 +71,21 @@ class InProcessHistoryWorkerTransport implements HistoryWorkerTransport {
     })
   }
 
+  /** This host's equivalent of a Worker thread exiting: the generation dies, the process does not. */
+  simulateExit(code: number): void {
+    if (this.closed) return
+    this.closed = true
+    queueMicrotask(() => {
+      for (const listener of this.exitListeners) listener(code)
+    })
+  }
+
   on(event: "message", listener: (value: unknown) => void): this
   on(event: "error", listener: (error: Error) => void): this
   on(event: "exit", listener: (code: number) => void): this
   on(event: "message" | "error" | "exit", listener: (value: never) => void): this {
     if (event === "message") this.mainListeners.add(listener as (value: unknown) => void)
+    if (event === "exit") this.exitListeners.add(listener as (code: number) => void)
     return this
   }
 

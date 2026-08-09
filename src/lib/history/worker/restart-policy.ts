@@ -15,6 +15,16 @@
 export interface HistoryWorkerRestartPolicyOptions {
   readonly initialDelayMs?: number
   readonly maxDelayMs?: number
+  /**
+   * Consecutive failures after which restarting is abandoned and the runtime goes terminal.
+   *
+   * Without a ceiling, a condition that never clears (a peer holding the write lock forever,
+   * a permanently unreadable artifact) turns into a silent hang: the delay caps out, so it is
+   * not a hot loop, but `start()` never resolves and never rejects — and because §8.1 refuses
+   * to listen until ready, the proxy would neither serve nor exit. A loud terminal failure is
+   * strictly better than an process that looks alive and does nothing.
+   */
+  readonly maxConsecutiveFailures?: number
   readonly now?: () => number
 }
 
@@ -22,14 +32,18 @@ export interface HistoryWorkerRestartDecision {
   readonly consecutiveFailures: number
   readonly delayMs: number
   readonly nextRetryAt: number
+  /** The budget is spent: the caller must go terminal instead of scheduling another restart. */
+  readonly exhausted: boolean
 }
 
 const DEFAULT_INITIAL_DELAY_MS = 200
 const DEFAULT_MAX_DELAY_MS = 30_000
+const DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
 
 export class HistoryWorkerRestartPolicy {
   private readonly initialDelayMs: number
   private readonly maxDelayMs: number
+  private readonly maxConsecutiveFailures: number
   private readonly now: () => number
   private failures = 0
   private pendingRetryAt: number | undefined
@@ -37,6 +51,7 @@ export class HistoryWorkerRestartPolicy {
   constructor(options: HistoryWorkerRestartPolicyOptions = {}) {
     this.initialDelayMs = Math.max(0, options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS)
     this.maxDelayMs = Math.max(0, options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS)
+    this.maxConsecutiveFailures = Math.max(1, options.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES)
     this.now = options.now ?? Date.now
   }
 
@@ -46,7 +61,7 @@ export class HistoryWorkerRestartPolicy {
     const delayMs = this.delayFor(this.failures)
     const nextRetryAt = this.now() + delayMs
     this.pendingRetryAt = nextRetryAt
-    return { consecutiveFailures: this.failures, delayMs, nextRetryAt }
+    return { consecutiveFailures: this.failures, delayMs, nextRetryAt, exhausted: this.failures >= this.maxConsecutiveFailures }
   }
 
   /** A Worker reached `ready`: the streak is broken and no retry is outstanding. */

@@ -286,6 +286,10 @@ describe("semantic Worker backend", () => {
     await expect(runtime.start(buildStartConfig(temp.dbPath))).rejects.toThrow(/refusing to open unowned/)
     expect(runtime.snapshot().terminalFailed).toBe(true)
     expect(runtime.snapshot().ready).toBe(false)
+    // Negative control for the retryable-startup path: a PERMANENT startup error must not
+    // buy a single restart. Without this, a classifier that said "retryable" to everything
+    // would still look correct from the positive test alone.
+    expect(runtime.snapshot().restartsTotal).toBe(0)
   })
 })
 
