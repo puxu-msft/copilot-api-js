@@ -321,7 +321,9 @@ describe("baseline-runs summary accounting", () => {
       const log = path.join(out, "run-01.log")
       // A wrapper that bailed before running (rc 2/3) leaves no log; surfacing its
       // stderr keeps that failure diagnosable instead of an ENOENT from the reader.
-      const seen = existsSync(log) ? (/^=== tests seen\s*:\s*(.+)$/m.exec(readFileSync(log, "utf8"))?.[1]?.trim() ?? "") : ""
+      // `(\S.*)` rather than `(.+)`: with `.+` the separator's `\s*` and the capture can both claim the same run of spaces, which is the ambiguity `regexp/no-super-linear-backtracking` flags.
+      // Anchoring the capture to a non-space first character removes the choice; the trailing `.trim()` still handles trailing space, and an empty/blank value still yields "" either way.
+      const seen = existsSync(log) ? (/^=== tests seen\s*:\s*(\S.*)$/m.exec(readFileSync(log, "utf8"))?.[1]?.trim() ?? "") : ""
 
       return { exitCode: result.exitCode, seen, stderr }
     } finally {
