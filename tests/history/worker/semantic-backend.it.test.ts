@@ -19,6 +19,7 @@ import {
   ensureV3Schema,
   prepareModelOperation,
 } from "~/lib/history/v3/store"
+import { HISTORY_WORKER_RETRYABLE_STARTUP_EXIT } from "~/lib/history/worker/protocol"
 import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
 
 import type { TempSemanticDb } from "./fixtures/semantic-envelope"
@@ -267,11 +268,20 @@ describe("semantic Worker backend", () => {
     })
     openRuntimes.push(runtime)
 
+    // Capture the crash message from the restart window: it is the only place the Worker's
+    // exit code becomes observable, and "the code is a diagnostic value with a reader" is
+    // otherwise an unfalsifiable claim about a constant nothing asserts.
+    const errorsDuringRestart: Array<string> = []
+    runtime.subscribe((status) => {
+      if (status.lastError) errorsDuringRestart.push(status.lastError)
+    })
+
     // Spec §7.1: a startup that failed on a condition which clears on its own is retryable.
     // Reporting `fatal` here would take History down for the life of the process because a
     // peer held the write lock for a moment.
     const ready = await runtime.start(buildStartConfig(temp.dbPath))
     expect(ready.configRevision).toBe(1)
+    expect(errorsDuringRestart.some((message) => message.includes(String(HISTORY_WORKER_RETRYABLE_STARTUP_EXIT)))).toBe(true)
     expect(await Bun.file(attemptsPath).text()).toBe("3")
     expect(runtime.snapshot()).toMatchObject({ ready: true, terminalFailed: false, restartsTotal: 2 })
   }, 20_000)

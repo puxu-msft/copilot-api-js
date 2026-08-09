@@ -377,6 +377,52 @@ describe("History Worker terminal-failed state", () => {
     expect(transports).toHaveLength(1)
   })
 
+  test("the outcome callback sees the POST-settlement counters, not the pre-settlement ones", async () => {
+    const { runtime, transports } = await started()
+    const seenDuringCallback: Array<number> = []
+    const first = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-counter-1")), () => {
+      seenDuringCallback.push(runtime.snapshot().pendingEnvelopes)
+    })
+    runtime.enqueue(buildEnvelope(buildTerminalRecord("op-counter-2")), () => {})
+    expect(runtime.snapshot().pendingEnvelopes).toBe(2)
+
+    transports[0]?.emitPersistResult(first, "persisted")
+
+    // Batch 2b's admission releases its reservation inside this callback and wakes the next
+    // FIFO waiter. If the counters still described the queue as it was BEFORE this message
+    // settled, that waiter would act on a depth that had already changed. Asserting after
+    // the callback returns cannot see this — the value is only wrong *during* it.
+    //
+    // Only `pendingEnvelopes` is asserted: `pendingBytes` sums `rawCommands` byte lengths,
+    // and this fixture carries none, so it is legitimately 0 either way and would not
+    // discriminate.
+    expect(seenDuringCallback).toEqual([1])
+  })
+
+  test("shutdown after fatal waits for the Worker to actually close", async () => {
+    const transports: Array<SlowTerminateTransport> = []
+    const runtime = new HistoryPersistenceRuntimeImpl({
+      workerFactory: (generation) => {
+        const transport = new SlowTerminateTransport(generation)
+        transports.push(transport)
+        return transport
+      },
+      restart: { setTimer: (fn) => (fn(), () => {}) },
+    })
+    const ready = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await ready
+
+    transports[0]?.emitFatal("unrecoverable schema")
+    expect(transports[0]?.terminateResolved).toBe(false)
+
+    await runtime.shutdown()
+
+    // §8.2 step 7 does not pass until the Worker is closed. `failTerminal` starts termination
+    // without blocking, so shutdown is the only place left that can wait for it.
+    expect(transports[0]?.terminateResolved).toBe(true)
+  })
+
   test("each reservation is released exactly once when the runtime goes terminal-failed", async () => {
     const { runtime, transports } = await started()
     // Batch 2b installs this subscriber in production; here it stands in for that wiring so
@@ -420,3 +466,22 @@ describe("History Worker terminal-failed state", () => {
     expect(admission.snapshot().unackedMessageIds).toEqual([])
   })
 })
+
+/**
+ * A transport whose `terminate()` resolves only after a macrotask.
+ *
+ * A promise that resolves immediately cannot tell "shutdown awaited termination" apart from
+ * "shutdown happened to run after it" — the flag would already be true either way.
+ */
+class SlowTerminateTransport extends ScriptedTransport {
+  terminateResolved = false
+
+  override terminate(): Promise<number> {
+    return new Promise<number>((resolve) => {
+      setTimeout(() => {
+        this.terminateResolved = true
+        resolve(0)
+      }, 5)
+    })
+  }
+}

@@ -38,6 +38,7 @@ import type {
 import {
   //
   HISTORY_WORKER_PROTOCOL_VERSION,
+  HISTORY_WORKER_RETRYABLE_STARTUP_EXIT,
   createRawTargetDescriptor,
   detectHistorySqliteDriver,
   parseMainToWorkerMessage,
@@ -100,21 +101,6 @@ export class HistoryJournalRecoveryError extends Error {
     return this.failures.every((failure) => failure.transient)
   }
 }
-
-/**
- * Exit code the Worker uses to say "this startup failed, but trying again may work".
- *
- * Spec §7.1 routes ordinary crashes AND retryable startup errors through the automatic
- * restart; only §7.2's permanent conditions may become irreversible `terminal-failed`.
- * There is no protocol message for "retryable startup failure" — and there should not be,
- * since `fatal` means terminal by definition — so the Worker expresses it the same way any
- * other recoverable death is expressed: the thread exits, and the runtime restarts it.
- *
- * The runtime restarts on ANY non-zero exit and does not branch on this value; it exists so
- * an operator reading logs can tell this death apart from a genuine crash. Do not build a
- * routing contract on it without also making the runtime actually read it.
- */
-export const HISTORY_WORKER_RETRYABLE_STARTUP_EXIT = 75
 
 /**
  * Would a later attempt plausibly succeed?

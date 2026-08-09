@@ -70,6 +70,8 @@ interface PendingEnvelope {
 interface CompletedAck {
   readonly messageId: HistoryMessageId
   readonly outcome: HistoryPersistenceOutcome
+  /** Generation that settled it: a later generation ACKing the same id never received it. */
+  readonly generation: WorkerGeneration
 }
 
 interface PendingRequest {
@@ -86,7 +88,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private readonly listeners = new Set<(status: HistoryWorkerStatus) => void>()
   private readonly pendingEnvelopes = new Map<HistoryMessageId, PendingEnvelope>()
   private readonly pendingRequests = new Map<number, PendingRequest>()
-  private readonly completedAcks = new Map<HistoryMessageId, HistoryPersistenceOutcome>()
+  private readonly completedAcks = new Map<HistoryMessageId, CompletedAck>()
   private readonly completedAckOrder: Array<CompletedAck> = []
   private readonly outcomes = new Map<HistoryMessageId, HistoryPersistenceOutcome>()
   /** Requests a crashed generation was holding; re-issued once the replacement is ready. */
@@ -103,6 +105,8 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private readonly restartPolicy: HistoryWorkerRestartPolicy
   /** The current generation has crashed and has not been replaced yet: nothing it says may be believed. */
   private generationRetired = false
+  /** Worker termination started by `failTerminal`; `shutdown()` awaits it for the §8.2 step 7 barrier. */
+  private terminationInFlight: Promise<void> | undefined
   private cancelRestartTimer: (() => void) | undefined
   private stopped = false
 
@@ -248,13 +252,18 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.cancelRestartTimer?.()
     this.cancelRestartTimer = undefined
     if (!this.transport) {
-      // Shutdown landed inside a restart backoff window: no Worker exists and, because
-      // `stopped` is now set, none will be created. Returning here would leave every
-      // un-ACKed envelope without a terminal outcome and its reservation never released,
-      // so `drain()` (§8.2 step 5) would wait on an ACK that can never arrive. Settle them
-      // as `failed` — which §8.2 step 6 turns into a failed shutdown, exit 1 — rather than
-      // reporting a success the data never got.
-      this.settleUnackedAsFailed(new Error("History Worker runtime shut down while no Worker generation was running"))
+      // Shutdown landed inside a restart backoff window, or after fatal already terminated
+      // the generation. In the backoff case no Worker exists and, because `stopped` is now
+      // set, none will be created — so the ACK that would settle these can never arrive and
+      // `drain()` (§8.2 step 5) would wait forever. After fatal they are already settled, and
+      // re-running this would only republish a status with a misleading error.
+      if (!this.status.terminalFailed) {
+        this.settleUnackedAsFailed(new Error("History Worker runtime shut down while no Worker generation was running"))
+      }
+      // §8.2 step 7 only passes once the Worker is actually closed. `failTerminal` starts the
+      // termination without blocking its own synchronous transition, so this is where the
+      // barrier waits for it.
+      await this.terminationInFlight
       return
     }
     if (!this.status.terminalFailed) await this.simpleRequest("shutdown")
@@ -436,13 +445,16 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.pendingEnvelopes.delete(messageId)
     this.outcomes.set(messageId, outcome)
     this.addTombstone(messageId, outcome)
+    // BEFORE the callback, not after. Batch 2b's admission releases its reservation inside
+    // `onOutcome` and wakes the next FIFO waiter; if the counters still described the
+    // pre-settlement state, that waiter would read a queue depth that has already changed.
+    this.updatePendingStatus()
     this.invokeOutcomeCallback(pending, outcome)
     return true
   }
 
   private handlePersistResult(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
     if (this.settleMessage(messageId, outcome)) {
-      this.updatePendingStatus()
       this.publishStatus()
       return
     }
@@ -451,8 +463,21 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       this.failTerminal(new HistoryWorkerProtocolError(`ACK for unknown History message ${messageId}`))
       return
     }
-    if (completed !== outcome) {
-      this.failTerminal(new HistoryWorkerProtocolError(`message ${messageId} changed outcome from ${completed} to ${outcome}`))
+    // A tombstone written by a DIFFERENT generation means the current one is ACKing a message
+    // it never received: a replayed envelope is only re-sent while it is still unacked, and a
+    // dead generation's late ACK is rejected upstream by the generation guard. Without the
+    // generation on the tombstone this reads as a benign duplicate, and a Worker inventing
+    // message IDs would run on undetected.
+    if (completed.generation !== this.generation) {
+      this.failTerminal(
+        new HistoryWorkerProtocolError(
+          `generation ${this.generation} ACKed message ${messageId}, which generation ${completed.generation} had already settled`,
+        ),
+      )
+      return
+    }
+    if (completed.outcome !== outcome) {
+      this.failTerminal(new HistoryWorkerProtocolError(`message ${messageId} changed outcome from ${completed.outcome} to ${outcome}`))
       return
     }
     // Same outcome, already settled: an at-least-once transport may deliver an ACK twice.
@@ -561,12 +586,13 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   }
 
   private addTombstone(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
-    this.completedAcks.set(messageId, outcome)
-    this.completedAckOrder.push({ messageId, outcome })
+    const tombstone: CompletedAck = { messageId, outcome, generation: this.generation }
+    this.completedAcks.set(messageId, tombstone)
+    this.completedAckOrder.push(tombstone)
     const capacity = this.options.tombstoneCapacity ?? DEFAULT_TOMBSTONE_CAPACITY
     while (this.completedAckOrder.length > capacity) {
       const oldest = this.completedAckOrder.shift()
-      if (oldest && this.completedAcks.get(oldest.messageId) === oldest.outcome) this.completedAcks.delete(oldest.messageId)
+      if (oldest && this.completedAcks.get(oldest.messageId) === oldest) this.completedAcks.delete(oldest.messageId)
     }
   }
 
@@ -615,7 +641,10 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     // running with nobody reading its port, which would stall the graceful shutdown §7.2
     // step 5 hands off to. `terminate()` re-fires `exit`, which `handleTransportCrash`
     // already ignores once `terminalFailed` is set.
-    void this.terminateTransport().catch((terminateError: unknown) => {
+    // Kept as a field so `shutdown()` can await it: §8.2 step 7 does not pass until the
+    // Worker is really closed, but `failTerminal` itself must stay synchronous so the
+    // terminal state is visible before anything else observes it.
+    this.terminationInFlight = this.terminateTransport().catch((terminateError: unknown) => {
       this.status = { ...this.status, lastError: `${error.message}; terminate failed: ${String(terminateError)}` }
       this.publishStatus()
     })
