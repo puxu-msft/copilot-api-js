@@ -47,49 +47,71 @@ let openedPath: string | null = null
 export function openDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:" && db && openedPath === dbPath) return db
   if (db) closeDatabase()
+  // Assign only after a successful open, so a rejected artifact leaves the
+  // singleton null rather than pointing at a handle we already closed.
+  const opened = openOwnedHistoryDatabase(dbPath)
+  db = opened
+  openedPath = dbPath
+  return opened
+}
 
+/**
+ * Open a fully-initialized V3 write handle that the CALLER owns — same sequence as
+ * {@link openDatabase} (owner check, WAL/pragmas, startup reclamation, planner seed)
+ * but WITHOUT touching the module singleton.
+ *
+ * This is what the History persistence Worker uses: the Worker thread owns its own
+ * handle and must not publish it through a process-global accessor, because the
+ * write-first migration stage deliberately keeps a *separate* main-thread readonly
+ * connection (`read-connection.ts`) alive at the same time. Routing both through one
+ * singleton would silently make "which handle am I holding" depend on module-load
+ * order across two threads.
+ */
+export function openOwnedHistoryDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   }
   const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
-  db = createDatabase(dbPath)
-  openedPath = dbPath
+  const database = createDatabase(dbPath)
+  // The WHOLE initialization sequence is guarded, not just the owner check. Before this
+  // opener existed, a half-initialized handle was already published to the module
+  // singleton and `closeDatabase()` could still reach it; an owned handle has no such
+  // second owner, so a throwing PRAGMA would strand the file descriptor and its SQLite
+  // locks with nobody left holding a reference.
   try {
-    assertV3Owner(db, existed, dbPath)
+    assertV3Owner(database, existed, dbPath)
+    // auto_vacuum MUST be set before ANY other write to the new file — switching
+    // to WAL first initializes the DB header and locks auto_vacuum at mode 0
+    // (verified empirically). Set on the still-empty file, it makes
+    // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
+    // maintenance tick's incremental_vacuum reclaims from the first tick. On an
+    // existing DB this is a no-op until a full VACUUM runs (handled by
+    // maybeVacuumOnStartup).
+    database.exec("PRAGMA auto_vacuum = INCREMENTAL;")
+    database.exec("PRAGMA journal_mode = WAL;")
+    database.exec("PRAGMA synchronous = NORMAL;")
+    database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    database.exec("PRAGMA foreign_keys = ON;")
+    // History V3 is the sole persistence implementation (History V2 removal
+    // Phase 4a) — there is now only ONE open path, unconditionally, for every
+    // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
+    // used to fall through to the V2 schema branch because it never matched the
+    // `history-v3.db` basename check).
+    //
+    // DB-health (Phase 4b): unlike the retired V2 open path, there is no
+    // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
+    // stores terminal (committed) rows, with no pending/executing/streaming
+    // concept, so there is no "another process may still be writing an in-flight
+    // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
+    // gate is deliberately NOT adopted from V2). Both run unconditionally.
+    maybeVacuumOnStartup(database, dbPath)
+    seedAnalyzeIfNeeded(database)
   } catch (err) {
-    db.close()
-    db = null
-    openedPath = null
+    database.close()
     throw err
   }
-  // auto_vacuum MUST be set before ANY other write to the new file — switching
-  // to WAL first initializes the DB header and locks auto_vacuum at mode 0
-  // (verified empirically). Set on the still-empty file, it makes
-  // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
-  // maintenance tick's incremental_vacuum reclaims from the first tick. On an
-  // existing DB this is a no-op until a full VACUUM runs (handled by
-  // maybeVacuumOnStartup).
-  db.exec("PRAGMA auto_vacuum = INCREMENTAL;")
-  db.exec("PRAGMA journal_mode = WAL;")
-  db.exec("PRAGMA synchronous = NORMAL;")
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
-  db.exec("PRAGMA foreign_keys = ON;")
-  // History V3 is the sole persistence implementation (History V2 removal
-  // Phase 4a) — there is now only ONE open path, unconditionally, for every
-  // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
-  // used to fall through to the V2 schema branch because it never matched the
-  // `history-v3.db` basename check).
-  //
-  // DB-health (Phase 4b): unlike the retired V2 open path, there is no
-  // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
-  // stores terminal (committed) rows, with no pending/executing/streaming
-  // concept, so there is no "another process may still be writing an in-flight
-  // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
-  // gate is deliberately NOT adopted from V2). Both run unconditionally.
-  maybeVacuumOnStartup(db, dbPath)
-  seedAnalyzeIfNeeded(db)
   if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
-  return db
+  return database
 }
 
 /**

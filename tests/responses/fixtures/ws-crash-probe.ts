@@ -13,8 +13,11 @@
 //     as uncaughtException → child exits EXIT_CRASH (42). Proves the harness can
 //     actually detect a crash (a positive control for the negative assertion).
 //   - "guarded": drives a real `createUpstreamWsConnection` lifecycle callback
-//     (`onClose`) that throws. `guardCallback` must absorb it → NO uncaughtException
-//     → child self-exits EXIT_SURVIVE (0).
+//     (`onClose`) that throws. TWO layers absorb it — `notifyClosed`'s own try/catch
+//     (upstream-ws-connection.ts:164-173) first, then `guardCallback` around
+//     `handleClose` — so NO uncaughtException fires and the child self-exits
+//     EXIT_SURVIVE (0). Which layer does what is pinned to a reproducible
+//     observation in the parent test's guarded case; do not restate it as one layer.
 
 const EXIT_CRASH = 42
 const EXIT_SURVIVE = 0
@@ -67,8 +70,9 @@ if (mode === "raw-control") {
     model: "gpt-5.5",
     createSocket: () => socket as never,
     // A real lifecycle callback that throws: handleClose invokes opts.onClose()
-    // inside guardCallback, so this throw must be absorbed (warn + mark unusable +
-    // fail request), NOT escalated to uncaughtException.
+    // through notifyClosed, whose own try/catch absorbs it first (warn + resolve the
+    // disposal barrier); guardCallback around handleClose is the second layer. The
+    // throw must NOT be escalated to uncaughtException by either.
     onClose: () => {
       throw new Error("onClose-boom")
     },

@@ -1247,7 +1247,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条。**具体断言（这是要改的清单，不是「某些测试」）**：
   - `tests/history/v3/summary-query-performance.it.test.ts:162-163` —— `expect(large.elapsedMs).toBeLessThan(Math.max(50, small.elapsedMs * 5))`。比值那半稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
   - `tests/history/v3/store-performance.it.test.ts` 的 “CAS live physical bytes are at least 10x smaller…” —— 观测到 17.3s / 18.3s，隔离复跑 9.31s；撞的是**测试自身耗时**而非断言，属默认超时型。
-  - `tests/history/v3/store-performance.it.test.ts` 的 “prepare and commit do not depend on prior session history length” —— 断言的是**耗时比值**，对 CPU 争用敏感（peer 会话观测，详见下节）。
+  - ~~`tests/history/v3/store-performance.it.test.ts` 的 “prepare and commit do not depend on prior session history length” —— 断言的是**耗时比值**，对 CPU 争用敏感（peer 会话观测，详见下节）。~~ **已由 peer 会话闭合**（合并进本分支时确认）：该 test 移入 `describe.skipIf(!PERF_TIER)`，只在 `RUN_PERF_TESTS=1`（`bun run test:perf`）下跑，`test:backend` 里显式 skip；同时在 backend 档补了**确定性 oracle**——断言热路径语句保持索引计划而非退化成扫描。这正是下节的修法②，**且是本清单里唯一被这样处理的一条**，其余四条仍原样成立。
   - `tests/history/search/uds-transport.it.test.ts` 的 “a large multi-segment response reassembles correctly” —— 5004ms，正好撞 bun **5000ms 默认单测超时**。
   - `tests/architecture/package-boundaries.unit.test.ts` 的 “stream-error outcomes are minted in exactly one place” —— 5028ms，同样撞默认超时。**这一条是纯静态源码守卫**（grep 源码形状），见下。
 - **两类问题，别混**：① **判据里含 wall-clock 绝对值**（上面第一条）——这是预算设计问题，改 oracle 就能永久消失；② **撞 5000ms 默认超时**（后三条）——其中「静态源码守卫」那条的结果**不可能**被运行时改动影响，它超时只说明进程当时太慢，与「负载敏感 perf」是两回事，值得单独给这类文件设 `--timeout` 或拆分。
@@ -1264,6 +1264,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **两条 legacy Vue 守卫**（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
 - **该会话给出的三条修法（比上文更具体，优先采纳②）**：①把该断言迁到不并行的档位（如另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。**②最长远——它测的本来就是「不依赖历史长度」这个性质。**
 - **该会话的触发条件**：再次看到本条变红时**直接做②，不要调阈值**——调阈值是打地鼠。
+- **落地结果（2026-08-09，本分支合并 master 时确认）**：peer 最终**同时做了①与②**——`test:perf` 档 + `RUN_PERF_TESTS=1` gate 把比值断言移出 `test:backend`，索引计划 oracle 留在 backend 档当真正的门。比值断言**没有删除也没有放宽**（源码注释记录了一次「改成 `Math.max(coldCommitMs * 5, 60)` 地板」的纯放宽并已回退），只是不再当门禁。**本条到此闭合，上文清单里其余四条不受影响。**
 
 ## History 搜索的多词语义是 OR，未与用户确认（2026-08-09，A3 合并态复评 round 4 派生的产品问题）
 
@@ -1291,4 +1292,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 有用户反馈「搜两个 hash 报错」；② 下次动 `invalid_query` 这条线码时顺手分开；③ 若将来放宽或移除 `RemoveLongFilter`，这条自然消失，改之前先确认。
 - **发现方**：A3 合并态复评 round 6（Claude 侧收尾意见第 2 条），主会话用 `round8-probe.ts` 实测复现 `invalidQuery=true`。
 
+## History Worker 的启动重试无截止时间，Batch 2b 接线时必须补（2026-08-09，Batch 2a 三轮评审的裁决产物）
 
+- **根因 / 现状**：`src/lib/history/worker/restart-policy.ts` 的重启预算**只限速、不限次**——延迟按指数增长并封顶 30s，但尝试次数无上限。配合 `runtime.ts` 的启动路径，这意味着一个**永不清除的可重试**启动错误会让 `start()` 的 promise **既不 resolve 也不 reject**：start waiter 被一路带进每一次 `launchWorker`，而没有任何一条路径会终结它。**「可重试」有精确定义、别按直觉扩大**：`isRetryableStartupError`（`backend.ts`）只认 persist-guard 的 transient 分类，即 `SQLITE_BUSY` / `SQLITE_LOCKED` / `SQLITE_IOERR`（含子码）或消息匹配 `database is locked|database table is locked|database is busy|disk i/o error`。权限或路径问题（`SQLITE_CANTOPEN`）、owner check 失败、payload 损坏都归**永久**，直接走 `fatal`、不会挂起。所以真实触发形态是「某个 peer 长期持有写锁」或「持续 I/O 错误」，**不是**「artifact 不可读」。
+- **为什么这不是实现疏忽**：spec §7.1 明写「普通 crash／可重试启动错误走自动重启」，§7.2 把不可逆 terminal 保留给**已知永久**的条件；「试了 N 次」不是这样的条件，把它当成 fatal 会让一个本可在第 N+1 次恢复的临时故障变成进程生命周期内不可恢复。Batch 2a 实现期曾加过 `maxConsecutiveFailures`（默认 10）上限，**经用户裁决撤回**（2026-08-09）：理由是它单方面改动了冻结 spec 的行为契约，而正确的归属层不在 runtime。
+- **暴露形态（这是本条真正的风险）**：spec §8.1 规定 startup hard gate 失败时**不监听代理端口**。两条叠加的后果是：进程**既不服务、也不退出**，运维看到的是「卡住」而不是「失败」——它取代了一次响亮的 exit 1。**这不是理论推演**：Batch 2a 期间 `SQLITE_BUSY` 在 `test:backend` 负载下真实出现过（3 次里 2 次），当时因为 Worker 把任何 initialize 抛错都当 fatal 才没有挂起；那个 fatal 误判修好之后，挂起路径才被打开。
+- **理想架构 / 若做需改什么**：**「何时放弃启动」属于拥有进程启动的一方，不属于 runtime**。Batch 2b 把 runtime 接进生产启动序列时，须在**调用方**加启动截止时间（deadline），超时后按 §7.2 让 shutdown 进入 `failed` 并 exit 1。runtime 侧已备好可观测出口：`HistoryWorkerStatus` 的 `consecutiveFailures` 与 `nextRetryAt`（`protocol.ts`），deadline 逻辑读它们即可，**不需要**改 restart-policy。若最终判断 runtime 自己也该有上限，那要先修 spec §7.2 的 fatal 成因清单再改代码，顺序不能反。
+- **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
+- **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
+- **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。
