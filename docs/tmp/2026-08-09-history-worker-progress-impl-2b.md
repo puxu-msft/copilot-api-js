@@ -41,8 +41,33 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 ## 在途意图（决定与理由）
 
-- （待填）
+- **维护与 summary backfill 提前搬进 Worker（用户 2026-08-09 裁决）。** plan 的 2b 同时写着「Worker 独占 semantic write connection」和「本批不迁 maintenance」，**两者不可兼得**：`incrementalVacuum`／`checkpointWal`／`runOptimize` 与 `startV3SummaryBackfill` 全是**写**，主线程句柄一旦变只读它们必然失败。给用户的三个选项是「接受空窗／提前搬／调整批次顺序」，用户选**提前搬**。spec §1.15 本就把这些划归 Worker，协议侧 `maintenanceIntervalMs` 与 `stop-maintenance` 早已存在，**未新增任何协议消息**。
+- **`stopMaintenance()` 由 `void` 改 `Promise<void>`。** §8.2 step 4 明确「不排空可恢复 backlog，只完成已领取 unit」——「已领取的那个做完」只有在调用方能等它时才可观测。
+- **`getV3PersistRetryConfigForTests` 去掉 `ForTests` 后缀。** cutover 让它有了真实生产消费者（Worker 的 `initialize` 必须拿到已配置的 retry 预算），继续叫 `ForTests` 是名实不符。
+- **`maintenance.ts` 的 tick 由 `getDatabase()` 改为**参数**。** 同一原因：主线程句柄将是只读的。同时导出 `V3_MAINTENANCE_INTERVAL_MS`，让 cutover 传的值与 tick 默认值**同源**，不再各写一个字面量。
+
+## 当前进度（commit `52bed7f7`，typecheck 绿、测试**尚未**绿）
+
+**已完成（第一半 cutover）：**
+- `initHistory` 不再 open/schema/migrate/recover semantic DB；改为 `runtime.start(...)` → `installHistoryReadDatabase(openDatabaseReadonly(dbPath))` → `admission.replaceTerminalSink(runtime)`。Worker 以 **raw disabled** 启动（3b 前主线程 raw manager 仍是唯一 raw authority）。
+- `shutdownHistory` 的 `drainV3Writer()` 换成 `runtime.drain()` + `runtime.shutdown()`；`closeDatabase()` 换成 `closeHistoryReadDatabase()`。
+- `stopHistoryBackgroundWork` 改为发 `stopMaintenance()` 给 Worker。
+- `startHistoryBackfills()` 变成空实现（backfill 由 Worker 的 `initialize` 启动）。
+- backend 真正拥有 maintenance tick 与 summary backfill；`close()` 里也兜底停掉（防止跳过 `stop-maintenance` 的路径把 timer 留给已关闭的句柄）。
+
+**下一步（按此顺序）：**
+1. **accessor 切换**：`queries.ts`／`sessions.ts`／`stats.ts`／`routes/status/route.ts` 还有 **8 处** `getDatabase()`（命令：`rg -n 'getDatabase\(\)' src/lib/history/queries.ts src/lib/history/sessions.ts src/lib/history/stats.ts src/routes/status/route.ts`）。只改**生产默认**，显式传 DB 的测试／primitive 不动。
+2. **测试 bootstrap**：`bun test tests/history/worker` 当前 **122 pass／8 fail**。已看到的失败形态是 `History Worker runtime is terminally failed: History Worker runtime is not started`——`initHistory` 现在会启动 registry 单例 runtime，凡是走 `initHistory` 的测试都会拿到**真 Worker**，bootstrap／resetter 需要相应处理（很可能要在 `test-bootstrap.ts` 注入 in-process 或 fake runtime，并在 reset 时 `resetHistoryPersistenceRuntimeForTests()`）。**这是本批剩余工作量的大头，先做它再往下走。**
+3. 2b.3 删 `legacy-terminal-sink.ts` 及生产安装 + architecture 守卫（禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`、禁生产 registry 引用 legacy adapter）。
+4. 2b.1 terminal subscriber 契约测试、2b.4 线程隔离正负对照、2b.5 交付不等 ACK。
+5. **启动 deadline**（2a 裁决留下的硬性前置，见上表最后一项）。
+6. 门禁：计划指定四个测试文件 + `env -u RUN_PERF_TESTS bun run test:backend` + `bun run build:backend`；再独立评审到 0 blocker／major。
+
+## 已改动的既有守卫（`red-tests-may-be-guarding-something`，逐条落盘待评审裁决）
+
+1. **`tests/history/v3/db-health.it.test.ts` 的两个调用点补 DB 实参**（`startV3Maintenance(connection.getDatabase(), 3600)`、`runV3MaintenanceTick(connection.getDatabase())`）。该用例守的不变量是「tick 会调用 checkpointWal + incrementalVacuum + runOptimize 各一次」——**未改动**；变的只是句柄来源，外部 oracle 是新签名，属占位数据的机械更新。
 
 ## 已作废的路线
 
-- （待填）
+- **不让主线程与 Worker 同时持写句柄**：那正是本设计要消灭的双写者形态，也与 spec §8.1「Worker 打开 semantic DB」冲突。
+- **不在 2b 给 raw capture 也切 Worker**：3b 的事；提前切会让两个进程同时打开同一 raw artifact。
