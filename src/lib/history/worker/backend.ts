@@ -5,7 +5,11 @@ import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type { Database } from "~/lib/history/sqlite/connection"
 import type { V3JournalRecoveryFailure } from "~/lib/history/v3/store"
 
-import { runHistoryWriteAsync } from "~/lib/history/persist-guard"
+import {
+  //
+  isTransientSqliteError,
+  runHistoryWriteAsync,
+} from "~/lib/history/persist-guard"
 import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import {
@@ -95,6 +99,30 @@ export class HistoryJournalRecoveryError extends Error {
   get allTransient(): boolean {
     return this.failures.every((failure) => failure.transient)
   }
+}
+
+/**
+ * Exit code the Worker uses to say "this startup failed, but trying again may work".
+ *
+ * Spec §7.1 routes ordinary crashes AND retryable startup errors through the automatic
+ * restart; only §7.2's permanent conditions may become irreversible `terminal-failed`.
+ * There is no protocol message for "retryable startup failure" — and there should not be,
+ * since `fatal` means terminal by definition — so the Worker expresses it the same way any
+ * other recoverable death is expressed: the thread exits, and the runtime restarts it.
+ */
+export const HISTORY_WORKER_RETRYABLE_STARTUP_EXIT = 75
+
+/**
+ * Would a later attempt plausibly succeed?
+ *
+ * A locked or busy database is the realistic case: the previous connection is still
+ * checkpointing, or a peer holds the write lock. Turning that into a permanent failure
+ * would take History down for the life of the process over a condition that clears on its
+ * own — which is exactly what an unbounded-restart policy with backoff exists to absorb.
+ */
+export function isRetryableStartupError(error: unknown): boolean {
+  if (error instanceof HistoryJournalRecoveryError) return error.allTransient
+  return isTransientSqliteError(error)
 }
 
 export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}): HistoryWorkerBackend {
@@ -224,6 +252,13 @@ export function installHistoryWorkerMessageLoop(port: HistoryWorkerPort, backend
     chain = chain
       .then(() => handleMessage(port, parsed, backend, outcomes))
       .catch((error: unknown) => {
+        // A startup that failed for a condition that can clear on its own must NOT become
+        // irreversible. Dying lets the runtime's restart policy back off and try again
+        // (spec §7.1); `fatal` would strand History for the life of the process.
+        if (parsed.type === "initialize" && isRetryableStartupError(error)) {
+          consola.warn(`[history/worker] retryable startup failure, exiting for restart: ${error instanceof Error ? error.message : String(error)}`)
+          process.exit(HISTORY_WORKER_RETRYABLE_STARTUP_EXIT)
+        }
         sendFatal(port, parsed.workerGeneration, "requestId" in parsed ? parsed.requestId : undefined, error)
       })
   })
