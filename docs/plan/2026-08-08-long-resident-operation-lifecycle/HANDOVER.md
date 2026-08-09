@@ -5,7 +5,9 @@
 - **核验基线**：`3e418cdb03b93162e57c540ee4361d35f602835e`（2026-08-08）。下方所有「当前状态」断言都在该 commit 上取证。
 - **分支 / worktree**：`fix-long-resident-operations` @ `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`。
 - **未提交改动**：无（`git status --short` 为空）。**未追踪文件**：无。
-- **已跑门禁（在 `e397720a`，其后仅文档/台账提交，代码未变）**：十文件 focused gate `197 pass / 0 fail / 687 expect`；`bun run typecheck` exit 0；`bun run test:backend` 连跑两次均 `0 fail`。Task 4 自身门禁在 `3e418cdb`：`26 pass / 0 fail / 62 expect`，typecheck 与 `git diff --check` 均 exit 0。
+- **已跑门禁**：十文件 focused gate `197 pass / 0 fail / 687 expect`（在 `e397720a`，其后代码未再变）；Task 4 焦点集 `bun test tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts` → **`30 pass / 0 fail / 74 expect`**（在 `a8eeaf4c` 之后；独立 reviewer 在自己的副本复现同一数字）。`bun run typecheck` exit 0，`git diff --check` exit 0。
+  ⚠️ **不要引用更早的 `26 pass / 62 expect`**——那是 `3e418cdb`（修 blocker 之前）的真实读数，blocker 整改新增了用例后已变为 30/74。它不是错数，是**陈旧数**；照它核对会误判成回归。
+  `bun run test:backend` 见下方专节（**在 History 子系统间歇性红**）。
 - **未推送**。分支自基线 `92858d08` 起共 32 个提交。
 
 ## `bun run test:backend` 在 History 子系统间歇性红（**别误判成自己弄坏的**）

@@ -11,7 +11,7 @@
 ## 启动前的两道 gate（按序，前一道不过不要进下一道）
 
 **Gate 1 —— 先合并 master，再动任何 Tasks 5–8 的代码。**
-本分支落后 master **287** 个提交，其中 11 个重写了 `src/lib/shutdown.ts`（403 行变动、净减 258），而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
+本分支落后 master **287** 个提交，其中 11 个重写了 `src/lib/shutdown.ts`，而 Tasks 5–8 的主战场正是该文件。照旧基线施工会白干。**行数请以 HANDOVER 的 `numstat` 原始输出为准，本文不复述衍生数字。** 策略、复现命令与合并后必跑的门禁见 HANDOVER「必须最先做的事」。
 （Tasks 1–4 与 B1 均已完成并通过独立评审，**不要重做**；Task 4 遗留两条已记录的后续项，见 HANDOVER「待办 1」，它们不阻断 Task 5。）
 
 **Gate 2 —— 读 master 新落地的 lossless shutdown 文档（`71c043cf` 引入），再动 Tasks 6/8。**
