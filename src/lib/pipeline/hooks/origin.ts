@@ -14,7 +14,10 @@ export const HOOK_ORIGIN = Symbol("hookOrigin")
 export type HookOrigin = "hook-mock" | "hook-replay"
 
 /** Tag an UpstreamStream with its hook origin (read by the driver at sampling to mark history synthetic). */
-export function tagStream(s: UpstreamStream, origin: HookOrigin): UpstreamStream {
+export function tagStream<Frame extends import("~/lib/pipeline/types").TransportUpstreamFrame>(
+  s: UpstreamStream<Frame>,
+  origin: HookOrigin,
+): UpstreamStream<Frame> {
   return Object.assign(s, { [HOOK_ORIGIN]: origin })
 }
 

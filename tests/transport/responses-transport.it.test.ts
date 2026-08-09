@@ -165,7 +165,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
 
     const upstream = await transport.send(makeWire(), env, compatDispatchOptionsForTests({ forceHttp: true }))
     const iterator = upstream.frames[Symbol.asyncIterator]()
-    expect((await iterator.next()).value?.event).toBe("response.created")
+    expect((await iterator.next()).value?.message.event).toBe("response.created")
     expect(wsSends).toBe(1)
     expect(transports).toEqual(["upstream-ws", "http"])
   })
@@ -214,7 +214,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
 
     const upstream = await transport.send(makeWire(), env, compatDispatchOptionsForTests({ forceHttp: true }))
     const iterator = upstream.frames[Symbol.asyncIterator]()
-    expect((await iterator.next()).value?.event).toBe("response.created")
+    expect((await iterator.next()).value?.message.event).toBe("response.created")
 
     // Reaper force-fails mid-stream (upstream blocked past the last frame). Abort WITH the cause tag
     // the real `ctx.reapInFlight()` carries — a bare abort simulates the producer without its contract.

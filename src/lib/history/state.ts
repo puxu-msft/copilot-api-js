@@ -100,6 +100,12 @@ export function isHistoryEnabled(): boolean {
 }
 
 export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
+  // Config reloads and test-runtime resets can re-enter initHistory while the
+  // previous database's summary worker is between batches. Drain that worker
+  // before closing or replacing its handle; the next enabled lifecycle starts a
+  // fresh worker below and resets the cooperative stop flag.
+  stopV3SummaryBackfill()
+  await drainV3SummaryBackfill()
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
   enabled = enable
@@ -119,14 +125,10 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
+  // This call has two explicitly disjoint modes: build the current floor on a
+  // truly empty database, or leave an existing pre-current database untouched.
+  // The following migrations exclusively own existing-database transitions.
   ensureV3Schema(getDatabase())
-  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
-  // (migrations/index.ts) is intentionally empty today — this call's value is
-  // wiring the pipe end-to-end (storage construction, ledger read/write,
-  // logger adapter) against the REAL V3 db, so the first real 001+ migration
-  // has a proven-working runner to land into, rather than adding one now.
-  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
-  // migration must refuse to start, not silently continue.
   await applyForwardMigrations(getDatabase())
   const journalRecovery = recoverV3Journal(getDatabase())
   // The legacy main-thread writer deliberately CONTINUES on an unrecoverable journal row:
@@ -141,6 +143,11 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
       journalRecovery.failures.map((failure) => `${failure.operationId}@${failure.revision}: ${failure.error}`).join("; "),
     )
   }
+  // Integrity readiness is part of opening the canonical V3 store, not an optional
+  // post-listen optimization. The worker remains asynchronous and cooperatively
+  // stoppable; starting it here guarantees every production lifecycle has a
+  // strict scrub/repair path even when no caller invokes startHistoryBackfills().
+  startV3SummaryBackfill(getDatabase())
   const admission = getHistoryAdmissionController()
   admission.replaceTerminalSink(new LegacyHistoryTerminalSink({ enqueueRecord: enqueueModelOperationWithOutcome }))
   unsubscribeV3Terminal?.()

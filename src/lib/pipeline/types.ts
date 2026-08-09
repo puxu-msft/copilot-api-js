@@ -31,10 +31,12 @@ import type {
   SseFrame,
   StreamErrorKind,
 } from "~/lib/stream"
+import type { ParsedSseFrame } from "~/lib/transport/parsed-sse-frame"
 
 // `import type` — erased at runtime, so this does NOT create a runtime cycle with
 // rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
 // used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type { BufferedFlushContext } from "./buffered-flush"
 import type {
   //
   CanonicalBlock,
@@ -49,16 +51,18 @@ import type {
 } from "./envelope"
 import type { FrameAction } from "./rewrite-registry"
 
+export type { BufferedFlushContext } from "./buffered-flush"
+export type { OwnerOperation } from "./owner-operation"
+
 // ============================================================================
 // SSE frames + upstream stream
 // ============================================================================
 
-/**
- * One SSE frame flowing from upstream, pre-rewrite. Today this is the raw wire
- * shape (`{ event?, data? }`); it gains a parsed-view discriminant when the
- * response rewrite/translate stages (S5/S6) land (P1/P2).
- */
+/** Semantic SSE fields exposed to upstream observers, rewrites, hooks, and codecs. */
 export type UpstreamFrame = SseFrame
+
+/** Transport-owned parsed frame entering the response processor before semantic projection. */
+export type TransportUpstreamFrame = ParsedSseFrame | UpstreamFrame
 
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
@@ -84,8 +88,8 @@ export interface UpstreamDispatchLifecycle {
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
  * carries the upstream HTTP response headers for capture (Retry-After, quota).
  */
-export interface UpstreamStream {
-  frames: AsyncIterable<UpstreamFrame>
+export interface UpstreamStream<Frame extends TransportUpstreamFrame = TransportUpstreamFrame> {
+  frames: AsyncIterable<Frame>
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
@@ -153,7 +157,11 @@ export interface Transport {
 }
 
 export type PhysicalTransportResponse =
-  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | {
+      kind: "stream"
+      upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }
+      lifecycle: UpstreamDispatchLifecycle
+    }
   | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
@@ -308,14 +316,6 @@ export interface RawHttpRequest {
 }
 
 export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
-export type OwnerOperation =
-  | "allocate-anchor"
-  | "allocate-real-block"
-  | "publish-recovery-batch"
-  | "begin-leg"
-  | "close-anchor-before-real"
-  | "close-anchor-terminal"
-  | "write-block-frame"
 export type OwnerResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
@@ -609,12 +609,6 @@ export type ProtectStreamingOutcome =
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
-/** The flush-triggering cause + (for boundary flushes) the frame that closed the block (spec §4). */
-export interface BufferedFlushContext {
-  cause: "boundary" | "terminal-drain" | "retreat"
-  boundaryFrame?: ClientFrame
-}
-
 export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Anthropic synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).

@@ -1,5 +1,7 @@
 # HTTP/2 header deadline 最终合并评审
 
+> ⚠️ **2026-08-09 追加的口径更正（不改本报告当时的结论，只界定其证据强度）**：本文若把「16 份 shard JUnit 叶节点复算」或「磁盘 glob × JUnit 对账」称作**交叉验证／独立重算／独立 oracle**，那个措辞**不准确**——前者与 runner tally 同出一批 artifact、同一个 producer，只是换了 parser（抓解析／聚合错误，抓不到 producer 漏项）；后者独立于 runner 的**实现**、不独立于 discovery 的**规则**，且只到文件级。因此据此冻结的 `minimum_executed` 是**已观察量的地板**，不是「测试没减少」的证明。当前口径与判独立性的方法见 `docs/coding-conventions.md`「并行执行」节。
+
 - **评审范围**：commit `3be7182a` 指定两处新增内容、merge commit `02ecde73` 的内容完整性、ff-only 前提，以及用户列出的 C1～C8。
 - **已读取／执行的证据**：本报告逐项记录；所有 tree-dependent Bash 均在 `/home/xp/src/copilot-api-js/.claude/worktrees/nghttp2-header-deadline`、冻结 HEAD `02ecde734a24a778fad614f63f02f393258ee3d4` 下执行。首次 provenance 输出为 `pwd=/home/xp/src/copilot-api-js/.claude/worktrees/nghttp2-header-deadline`、`git rev-parse --show-toplevel` 同值、HEAD 与冻结值完全相等。
 - **总体 verdict**：**存在 blocker，不可进入 ff-only 集成**。修复 C6 blocker，并处理 C3／C4／C8 major 后，重新评审新的合并态。

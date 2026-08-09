@@ -263,7 +263,7 @@ describe.skipIf(!PERF_TIER)("History V3 store performance (timing — perf tier 
 
 // Back in the backend tier: these two are byte/ratio criteria, not wall-clock ones.
 describe("History V3 store performance", () => {
-  test("CAS live physical bytes are at least 10x smaller than the real compressed V2 write shape", () => {
+  test("CAS live physical bytes stay far below the real compressed V2 write shape (>=30x physical, >=50x live)", () => {
     const maxTurns = 212
     const sharedMessages = Array.from({ length: maxTurns }, (_, index) => ({
       role: index % 2 === 0 ? "user" : "assistant",
@@ -292,8 +292,21 @@ describe("History V3 store performance", () => {
     const liveRatio = v2Bytes / liveBytes
 
     console.log("HISTORY_V3_PERF cas-bytes", JSON.stringify({ operations: records.length, v2Bytes, pageDelta, liveBytes, physicalRatio, liveRatio }))
-    expect(physicalRatio).toBeGreaterThanOrEqual(10)
-    expect(liveRatio).toBeGreaterThanOrEqual(10)
+    // Calibrated against both ends, not picked round. Healthy: 109.68 physical / 218.58 live,
+    // reproducible to 7 digits across trees. Totally broken (content-addressing disabled so every
+    // operation stores its own copy): 9.51 physical / 10.79 live -- measured, not assumed. So the
+    // former 10x threshold discriminated on physical by 0.49, and on live NOT AT ALL: a COMPLETE
+    // dedup failure still cleared it. These sit near the geometric mean of the two ends (~32 and
+    // ~49), leaving ~3x margin on each side.
+    //
+    // Scope of that claim, because the stronger version was refuted: this says nothing about where
+    // in between the axes start reddening. A 47-of-48 partial degradation measured 9.516 physical,
+    // i.e. the OLD threshold already caught that one. Two endpoints do not establish the curve
+    // between them.
+    //
+    // Wall clock is NOT a criterion here -- see the file-level setDefaultTimeout note at the top.
+    expect(physicalRatio).toBeGreaterThanOrEqual(30)
+    expect(liveRatio).toBeGreaterThanOrEqual(50)
   })
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {

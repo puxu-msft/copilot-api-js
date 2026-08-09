@@ -37,10 +37,9 @@ import {
   //
   DeliveryOwnerError,
   getDeliverySessionForAllocationPort,
-  recordDeliveryResponseOutcomeForTests,
   getDownstreamDeliverySession,
+  recordDeliveryResponseOutcomeForTests,
 } from "~/lib/pipeline/delivery/session"
-import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-policy"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
@@ -78,6 +77,7 @@ import type {
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
+  UpstreamFrame,
   OwnerOperation,
   ResponseFailureSource,
   ResponseOutcome,
@@ -708,7 +708,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       createProcessor: ({ candidate, dispatch, env: processorEnv }) => {
         const responseRewrites = migratedCell(processorEnv)?.responseRewrites(processorEnv) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
         const renderer = deps.codec.createCandidateRenderer?.(processorEnv) ?? {
-          renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+          renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
           flushResponse: () => [],
         }
         const createSession = deps.candidateResponseSessionFactory ?? createDefaultCandidateResponseSession
@@ -939,6 +939,20 @@ function settledDispatchLifecycle(): import("./types").UpstreamDispatchLifecycle
 // Response side (S5→S7)
 // ============================================================================
 
+declare const assembledCandidateResponseOptsBrand: unique symbol
+
+type AssembledCandidateResponseOpts<T extends RunResponseOpts> = T & {
+  readonly [assembledCandidateResponseOptsBrand]: true
+}
+
+type AssertFalse<T extends false> = T
+
+type IsAssignable<From, To> = From extends To ? true : false
+
+// Type control: an unassembled option bag cannot reach the private assembled-only entry point.
+const unassembledOptsCannotUseAssembledEntry: AssertFalse<IsAssignable<RunBufferedOpts, AssembledCandidateResponseOpts<RunBufferedOpts>>> = false
+void unassembledOptsCannotUseAssembledEntry
+
 /** S5→S7: construct and return the branch-local processor iterable without an extra async-generator delegation layer. */
 function runResponse(
   deps: DriverDeps,
@@ -946,19 +960,17 @@ function runResponse(
   env: RequestEnvelope,
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
-  applyPostRender = true,
 ): AsyncIterable<ClientFrame> {
   const coordinated = generation?.bindings.get(upstream)?.candidate.processor
   if (coordinated) {
     const effectiveOpts = mergeCandidateResponseOpts(coordinated.responseOpts, opts)
-    const frames = coordinated.processor.stream(upstream, effectiveOpts)
-    return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
+    return coordinated.processor.stream(upstream, effectiveOpts)
   }
   // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
   // This compatibility adapter still creates exactly one processor and owns no retry loop.
   const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
   const renderer = deps.codec.createCandidateRenderer?.(env) ?? {
-    renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+    renderResponse: (frame: UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
     flushResponse: () => [],
   }
   const session = createDefaultCandidateResponseSession({
@@ -969,33 +981,69 @@ function runResponse(
     renderer,
   })
   const effectiveOpts = mergeCandidateResponseOpts(session.responseOpts, opts)
-  const frames = session.processor.stream(upstream, effectiveOpts)
-  return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
+  return session.processor.stream(upstream, effectiveOpts)
 }
 
-async function* applyResponsePostRender(frames: AsyncIterable<ClientFrame>, opts: RunResponseOpts): AsyncIterable<ClientFrame> {
-  for await (const frame of frames) {
-    try {
-      const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
-      if (transformed) yield transformed
-    } catch (error) {
-      throw asResponseCodecRenderError(error)
+function mergeCandidateResponseOpts<T extends RunResponseOpts>(candidate: CandidateResponseSessionOptions | undefined, outer: T | undefined): T {
+  if (!candidate) return (outer ?? {}) as T
+  const merged = { ...outer, ...candidate } as T
+  // Candidate options own protocol classification; legacy outer callbacks remain additive so
+  // existing driver-only callers retain their observer and terminal predicates.
+  if (outer?.onUpstreamFrame) {
+    merged.onUpstreamFrame = (frame) => {
+      outer.onUpstreamFrame?.(frame)
+      candidate.onUpstreamFrame?.(frame)
     }
   }
+  if (outer?.onFinishResolved) {
+    merged.onFinishResolved = (result) => {
+      outer.onFinishResolved?.(result)
+      candidate.onFinishResolved?.(result)
+    }
+  }
+  if (outer?.onRenderedFrame) {
+    merged.onRenderedFrame = (frame) => {
+      const transformed = outer.onRenderedFrame?.(frame)
+      return transformed === undefined ? undefined : candidate.onRenderedFrame?.(transformed)
+    }
+  }
+  const bufferedOuter = outer as RunBufferedOpts | undefined
+  if (bufferedOuter?.sawMessageStop) {
+    ;(merged as RunBufferedOpts).sawMessageStop = () => bufferedOuter.sawMessageStop?.() || candidate.sawMessageStop?.() || false
+  }
+  if (bufferedOuter?.sawUpstreamError) {
+    ;(merged as RunBufferedOpts).sawUpstreamError = () => bufferedOuter.sawUpstreamError?.() || candidate.sawUpstreamError?.() || false
+  }
+  return merged
 }
 
-function mergeCandidateResponseOpts(candidate: CandidateResponseSessionOptions | undefined, outer: RunResponseOpts | undefined): RunResponseOpts {
-  if (!candidate) return outer ?? {}
-  return { ...outer, ...candidate }
-}
-
-function currentCandidateResponseOpts(
+function currentCandidateResponseOpts<T extends RunResponseOpts>(
   generation: DriverGenerationRuntime | undefined,
   upstream: UpstreamStream,
-  outer: RunResponseOpts | RunBufferedOpts | undefined,
-): RunResponseOpts | RunBufferedOpts {
+  outer: T | undefined,
+): AssembledCandidateResponseOpts<T> {
   const candidate = generation?.currentSession(upstream)?.responseOpts
-  return candidate ? { ...outer, ...candidate } : (outer ?? {})
+  return mergeCandidateResponseOpts(candidate, outer) as AssembledCandidateResponseOpts<T>
+}
+
+/** Runs a buffered attempt whose candidate and outer opts were already assembled exactly once. */
+function runAssembledCandidateResponse(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  opts: AssembledCandidateResponseOpts<RunBufferedOpts>,
+  generation: DriverGenerationRuntime | undefined,
+): AsyncIterable<ClientFrame> {
+  const coordinated = generation?.bindings.get(upstream)?.candidate.processor
+  if (coordinated) return coordinated.processor.stream(upstream, opts)
+  return runResponse(deps, upstream, env, opts, generation)
+}
+
+function withBufferedFinishObserver(
+  opts: AssembledCandidateResponseOpts<RunBufferedOpts>,
+  observe: (result: import("./types").ResponseFinishResult) => void,
+): AssembledCandidateResponseOpts<RunBufferedOpts> {
+  return { ...opts, onFinishResolved: observe } as AssembledCandidateResponseOpts<RunBufferedOpts>
 }
 
 async function maybeRunHedgedResponseSink(
@@ -1135,9 +1183,13 @@ function withCandidateResponseOpts(
       candidate: session.candidate,
       dispatch: session.dispatch,
       renderer: session.renderer,
+      adapter: session.adapter,
       processor: session.processor,
       responseOpts: mergeCandidateResponseOpts(session.responseOpts, outer),
       boundary: session.boundary,
+      get outcomes() {
+        return session.outcomes
+      },
       get finish() {
         return session.finish
       },
@@ -1273,19 +1325,28 @@ async function runResponseSink(
       }
     }
   }
-  const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
+  const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts)
+  const capturesFinish = unhedgedBinding !== undefined || effectiveOpts.finishResponse !== undefined || opts?.onFinishResolved !== undefined
   let finish: import("./types").ResponseFinishResult | undefined
-  const responseOpts: RunResponseOpts = {
-    ...effectiveOpts,
-    ...(effectiveOpts.finishResponse && {
-      onFinishResolved(result: import("./types").ResponseFinishResult) {
-        finish = result
-        effectiveOpts.onFinishResolved?.(result)
-      },
-    }),
-  }
+  const responseOpts: RunResponseOpts =
+    capturesFinish ?
+      {
+        ...effectiveOpts,
+        onFinishResolved(result: import("./types").ResponseFinishResult) {
+          finish = result
+          effectiveOpts.onFinishResolved?.(result)
+        },
+      }
+    : effectiveOpts
   try {
-    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation, false)) {
+    // `effectiveOpts` has already combined outer callbacks with this upstream's candidate once.
+    // Re-entering `runResponse()` with a generation binding would merge it again and invoke
+    // candidate onUpstreamFrame twice, corrupting upstream-only accumulators and History bodies.
+    const responseFrames =
+      unhedgedBinding ?
+        runAssembledCandidateResponse(deps, upstream, env, responseOpts as AssembledCandidateResponseOpts<RunBufferedOpts>, generation)
+      : runResponse(deps, upstream, env, responseOpts, generation)
+    for await (const frame of responseFrames) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
@@ -1293,30 +1354,16 @@ async function runResponseSink(
       // side effects); identity when the format doesn't supply one (Anthropic). Applied AFTER
       // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
       // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
-      let toWrite: ClientFrame | undefined
       try {
-        toWrite = effectiveOpts.onRenderedFrame ? effectiveOpts.onRenderedFrame(frame) : frame
-        if (toWrite)
-          env.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-            stage: "client-transform",
-            transformId: "client:on-rendered-frame",
-            forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-          })
+        await sink.write(frame)
       } catch (error) {
-        return streamErrorOutcome(error, env, "codec-render")
+        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        return streamErrorOutcome(error, env, "downstream-sink")
       }
-      if (toWrite) {
-        try {
-          await sink.write(toWrite)
-        } catch (error) {
-          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-          return streamErrorOutcome(error, env, "downstream-sink")
-        }
-        // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
-        // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
-        // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
-        if (effectiveOpts.stopAfterFrame?.(toWrite)) break
-      }
+      // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
+      // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
+      // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
+      if (effectiveOpts.stopAfterFrame?.(frame)) break
     }
     return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
   } catch (error) {
@@ -1556,39 +1603,25 @@ export async function runResponseBufferedSink(
 
   try {
     for (;;) {
-      const candidateOpts = currentCandidateResponseOpts(generation, current, opts) as RunBufferedOpts
-      const notifyBufferedResolve = candidateOpts.onBufferedResolve ?? opts.onBufferedResolve
+      // Each attempt resolves the session for its current upstream exactly once. Outer caller options
+      // retain their existing priority; the driver observer wraps the final merged callback instead of
+      // re-merging the candidate later and accidentally replacing it.
+      const attemptBaseOpts = currentCandidateResponseOpts(generation, current, opts)
+      const notifyBufferedResolve = attemptBaseOpts.onBufferedResolve ?? opts.onBufferedResolve
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
       let retreated = false
       let failure: { error: unknown; source: "upstream-transport" | "codec-render" } | undefined
       let drained = false
       let finish: import("./types").ResponseFinishResult | undefined
-      const responseOpts: RunBufferedOpts = {
-        ...candidateOpts,
-        ...(candidateOpts.finishResponse && {
-          onFinishResolved(result: import("./types").ResponseFinishResult) {
-            finish = result
-            candidateOpts.onFinishResolved?.(result)
-          },
-        }),
-      }
+      const responseOpts = withBufferedFinishObserver(attemptBaseOpts, (result) => {
+        finish = result
+        attemptBaseOpts.onFinishResolved?.(result)
+      })
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, false)) {
+        for await (const frame of runAssembledCandidateResponse(deps, current, currentEnv, responseOpts, generation)) {
           if (frame.data === "[DONE]") continue
-          let toWrite: ClientFrame | undefined
-          try {
-            toWrite = candidateOpts.onRenderedFrame ? candidateOpts.onRenderedFrame(frame) : frame
-            if (toWrite)
-              currentEnv.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-                stage: "client-transform",
-                transformId: "client:on-rendered-frame",
-                forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-              })
-          } catch (error) {
-            throw asResponseCodecRenderError(error)
-          }
-          if (!toWrite) continue
+          const toWrite = frame
           if (retreated) {
             // Keep format callbacks separate from the physical write: callback failures are codec-render,
             // while only the actual sink write is downstream-sink.
@@ -1638,7 +1671,7 @@ export async function runResponseBufferedSink(
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, candidateOpts.transformBufferedFlush)
+            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, attemptBaseOpts.transformBufferedFlush)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
@@ -1649,7 +1682,7 @@ export async function runResponseBufferedSink(
               notifyBufferedResolve?.("retreated", attempt, { vendor })
               return streamErrorOutcome(res.error, env, "downstream-sink")
             }
-          } else if (codecOperation(() => candidateOpts.commitBoundaries?.(toWrite) ?? false)) {
+          } else if (codecOperation(() => attemptBaseOpts.commitBoundaries?.(toWrite) ?? false)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
             // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
             // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
@@ -1693,7 +1726,7 @@ export async function runResponseBufferedSink(
               buffer,
               isErrorTerminusFlush,
               { cause: "boundary", boundaryFrame: toWrite },
-              candidateOpts.transformBufferedFlush,
+              attemptBaseOpts.transformBufferedFlush,
             )
             sink.resumeHeartbeat?.()
             buffer.length = 0
@@ -1767,7 +1800,7 @@ export async function runResponseBufferedSink(
       if (drained) {
         try {
           reachedTerminal = codecOperation(
-            () => candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.() || false,
+            () => attemptBaseOpts.sawMessageStop?.() || attemptBaseOpts.sawUpstreamError?.() || attemptBaseOpts.sawContentlessRefusal?.() || false,
           )
         } catch (error) {
           return streamErrorOutcome(error, env, responseFailureSource(error))
@@ -1789,7 +1822,7 @@ export async function runResponseBufferedSink(
         // Unlike retreat/boundary flushes there is no subsequent stream that needs resume. Closing here
         // also blocks an in-flight heartbeat operation's finally-handler from re-arming during a slow flush.
         sink.close?.()
-        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
+        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, attemptBaseOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
         if (res.kind === "write-error") {

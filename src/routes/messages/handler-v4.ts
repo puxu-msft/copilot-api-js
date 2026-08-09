@@ -154,6 +154,7 @@ import {
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -272,6 +273,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createAnthropicDeliveryProtocolAdapter(),
       createState: () => ({
         acc: createAnthropicStreamAccumulator(),
         repairOutcomeStart: input.env.ctx.repairOutcomes.length,
@@ -320,8 +322,6 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
         }
         return frame
       },
-      sawMessageStop: (state) => state.acc.sawMessageStop,
-      sawUpstreamError: (state) => state.acc.streamError !== undefined,
       // A contentless refusal is a terminal upstream decision even without `message_stop` — see the
       // driver's commit gate. Kept separate from `sawUpstreamError` because that predicate also
       // drives the error-terminus flush path, which a refusal must not enter.

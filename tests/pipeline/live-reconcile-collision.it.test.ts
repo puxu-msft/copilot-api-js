@@ -73,6 +73,7 @@ import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
 import { StreamClientAbortError } from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── fixtures (mirroring buffered-anchor-golden.test.ts) ──────────────────────
 
@@ -225,7 +226,7 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame =>
 function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+    write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
