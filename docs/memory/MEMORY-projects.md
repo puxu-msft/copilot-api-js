@@ -23,3 +23,7 @@
 - [v4 流水线重构（landed）](project-v4-pipeline-rearchitecture.md) — v4 P0-P3+response-pipeline Stage A/B；[GHC 三特性对齐](project-ghc-feature-alignment-landed.md) tool-search default-allow·extended-cache-ttl·memory tool；[thinking 400 三层修复](../spec/2026-07-07-thinking-signature-quarantine.md) 根因=相邻性
 - [反应式学习 TTL 生命周期 67afa1af](project-negotiation-learning-lifecycle-landed.md) — per-entry TTL+pin；[后台 agent 结果 surfacing 故障](methodology-background-agent-result-surfacing-failure.md) result 正文空且救不回
 
+## 已删除记忆的话题去向
+
+通用工作原则 → user-rule + CLAUDE.md + skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。完成叙事 → `docs/archive/memory/`。调试参考 → on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
+**两个从未存在的 memory 已改指正式归属**（2026-08-02）：语言规则 → user-rule `10-text-formatting`；`project-unknown-endpoint-logging` → [spec](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

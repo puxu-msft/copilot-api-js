@@ -102,3 +102,37 @@
 **未发现新 false-red。** 共享树的手工／交互式恢复虽可能在某次碰巧安全，但无法机械保证不吞同 hunk 的未提交实现或并发 WIP，禁止符合最低不变量；exact patch 无法表达时，skill `:44` 提供隔离 worktree／throwaway repo 路径。结构上无同伴的隔离环境仍由 rule `:22`、skill `:58` 明确允许整文件恢复，前提只是恢复基线确含真实实现。
 
 **Verdict**：D1、D2、D3 均通过，可定稿。**Blocker：0，major：0。**
+
+## E1
+
+**未发现旧版能召回而新版召回不到的场景。** 逐项对账：
+- `authoring-skills` 旧版的“新写 skill／改结构、加验收设施、拆 references/scripts、概念命名与编号、散文还是脚本、三个相邻域路由”均由新版 `/home/xp/.claude/skills/authoring-skills/SKILL.md:3` 的域声明、非穷举场景及相同邻居分工覆盖；新版还补了改 description、rule↔skill 归属与拆分、扩充现有 skill。
+- `positive-control-your-tests` 旧版的“关键绿灯承重、首次即绿、声称 verified、mutation 不咬、checkout/restore/copy 恢复、实现未提交、共享树／peer 编辑、patch/hunk 各种拼法”均由新版 `/home/xp/.claude/skills/positive-control-your-tests/SKILL.md:3` 的完整 mutate→observe→restore 意图、“undo a temporary source edit, in any spelling”及非穷举例子覆盖。
+
+## E2
+
+`authoring-skills` 新 description 覆盖全部 `##` 节：`skill-text-is-the-product`→“skill 该长什么样／内容放哪层”；`rules-hold-judgements-skills-hold-practices`→rule 或 skill 归属／拆分；`schema-rigor-without-gates`→验收设施；`slug-the-reusable-concept`→概念命名；`default-to-prose-not-script`→散文或脚本；`volatile-numbers-belong-in-commands`→“skill 该长什么样”的内容规范；“拆文件”→长到要拆；“description”→改 description／召回；“自验”→验收设施与 skill 形状。未覆盖节点：无。
+
+## E3
+
+**裁决编码忠实，未写弱。** `/home/xp/.claude/skills/authoring-skills/SKILL.md:198-202` 原样保留“接受误触发、拒绝漏召回”，并推出“不得为减少误触发收窄”“拿不准就触发”。“不适用”没有拆台：文本把它限定为已知邻居间的路由，而非抑制不确定召回；当前 description `:3` 的三个排除项也都有明确邻居，且不会排除“修改这些文档对应 skill”这一 authoring 意图。
+
+## E4
+
+**[major] “按意图写 → 失败可见”仍不成立。** 反例：`positive-control-your-tests` 因完整生命周期意图被正确召回，但任务是恢复测试运行时动态生成、随后手改的临时 fixture；正文恢复节只处理 source edit／Git patch。模型可以读完后直接自行恢复并退出，不报告“正文答不上”，调用方也看不到缺口。召回只使缺口**可检测**，不会自动使它可见。
+
+建议把 `/home/xp/.claude/skills/authoring-skills/SKILL.md:190` 改为：“按意图写 → 失败可检测。skill 被召回后，若正文不能回答域内问题，必须显式报告缺口，并优先扩充这一份而非另起一份；只有完成这一步，失败才对外可见。”同时把 `:200` 的“没人会知道”保留给漏召回情形。
+
+**Verdict**：E1–E3 通过；修复 E4 major 后可定稿。**Blocker：0，major：1。**
+
+## F
+
+**F1：通过。** `/home/xp/.claude/skills/authoring-skills/SKILL.md:202-203` 正确区分“未召回所以不可检测”与“召回后发现正文缺口所以可检测”，并把“当场说出没覆盖 X、优先扩充本 skill”写成必做动作；说出缺口会把执行者私有认知变成调用方可见事实。第三种情形是“skill 被召回且给出一个看似完整但实际错误的答案”，此时执行者没有检测到缺口；但这是正文正确性／事实核验问题，不是 description 的召回或域覆盖问题，不构成本判据的缺口。
+
+**F2：通过。** 通用判据只在 `rewriting-drops-coverage-silently` 的 `SKILL.md:16-27` 定义；归属节 `:59` 只规定本场景要执行逐条对账，并明确把方法、双向核账要求和实证指回上节，没有另写一套比较轴或独立例外，未形成双源。指针同时包含触发时机“拆完”与目标 slug，足以召回。
+
+**F3：通过，判据可执行。** 以本轮 `positive-control-your-tests` description 改写为样本：旧版可切成“关键绿灯承重、首次即绿、声称 verified、mutation 不咬、checkout／restore／copy 恢复、实现未提交、共享树／peer 编辑、patch／hunk 恢复”等召回场景；逐项对照新版 `/home/xp/.claude/skills/positive-control-your-tests/SKILL.md:3` 的完整 mutate→observe→restore 域、`undo a temporary source edit, in any spelling` 与非穷举例子，可机械列出每项仍有承载处，因而能判定本次零丢失。E1 已由本轮未卷入评审实际执行，证明它不是只可描述、不可操作。
+
+**主观建议**：`SKILL.md:18` 的“每一次……都会丢掉”与本轮 E1 的零丢失结果字面冲突；宜改成“都可能静默丢掉”，但不影响 `:20-22` 判据的可执行性，按本轮口径不阻断定稿。
+
+**Verdict**：F1–F3 全部通过，可定稿。**Blocker：0，major：0。**
