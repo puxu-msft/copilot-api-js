@@ -101,6 +101,8 @@ import path from "node:path"
 import type {
   //
   NativeHistoryIndex,
+  NativeHistoryListSearchRequest,
+  NativeHistoryListSearchResult,
   TantivySearchHit,
 } from "~/lib/history/search-native"
 import type {
@@ -147,6 +149,26 @@ export interface TailCursor {
 }
 
 const CURSOR_FILE_NAME = "tail-cursor.json"
+
+/**
+ * Run a list search, re-labelling a rejected query string as `invalid-query`.
+ *
+ * The native module reports a query Tantivy's parser refuses as `Status::InvalidArg`, which napi
+ * surfaces as `code: "InvalidArg"` (measured — see `exp/history-search-list-perf/parse-error-probe.ts`).
+ * Without this distinction the caller could only see "the sidecar threw", so a user typing `error:`
+ * or a leading `-` into a free-text search box took the whole listing down with a 503, in-flight
+ * rows and all. It is a bad request, and the code says so.
+ */
+async function listSearchOrInvalidQuery(index: NativeHistoryIndex, request: NativeHistoryListSearchRequest): Promise<NativeHistoryListSearchResult> {
+  try {
+    return await index.listSearch(request)
+  } catch (error) {
+    if (error instanceof Error && (error as { code?: unknown }).code === "InvalidArg") {
+      throw Object.assign(new Error(`Unsupported search query: ${error.message}`), { code: "invalid-query" as const })
+    }
+    throw error
+  }
+}
 
 function cursorPath(indexPath: string): string {
   return path.join(indexPath, CURSOR_FILE_NAME)
@@ -591,7 +613,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
         entry.committedAt < request.target.committedAt
         || (entry.committedAt === request.target.committedAt && request.target.operationIdsAtBoundary.includes(entry.operationId)),
     )
-    const result = await options.index.listSearch({
+    const result = await listSearchOrInvalidQuery(options.index, {
       query: request.query,
       operationKinds: request.filters.operationKinds,
       endpoint: request.filters.endpoint,
