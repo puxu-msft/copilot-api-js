@@ -182,26 +182,34 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
  * that "matches the search" cannot mean two different things inside a single merged page. No needle
  * → always matches.
  *
- * A multi-word needle is split and matched term by term, the way the index tokenizes, because a
- * plain substring test disagrees with the index in BOTH directions and the second one hurts:
+ * A multi-word needle is split and matched term by term, approximating how the index tokenizes,
+ * because a plain substring test disagrees with it in BOTH directions and the second one hurts:
  * against `please fix the hello-world bug`, the index matches `hello world` and a substring test
  * does not. Rows the index cannot see yet are the overlay's alone to show, so under-matching there
  * hid a just-finished request from the most ordinary query there is, until the sidecar caught up and
  * it reappeared.
  *
- * A single-token needle keeps the substring test, which still over-matches relative to the index —
- * `orld` finds `world` here and not there. That direction is deliberate: it surfaces a row early
- * rather than hiding one, and it is what makes a search box usable as you type.
+ * The split is on Unicode letters and numbers rather than ASCII, because Tantivy's `SimpleTokenizer`
+ * splits on `char::is_alphanumeric`. An ASCII-only split produced no terms at all for `你好 世界` or
+ * `значение умолчанию` and fell through to a substring test that the index disagrees with — the same
+ * hole, reopened for every non-Latin script. This is an approximation, not the same tokenizer:
+ * `\p{L}\p{N}` and Rust's `is_alphanumeric` differ at the margins, and the index applies its own
+ * pipeline. It is calibrated against the real index in `exp/history-search-list-perf/cjk-probe.ts`.
+ *
+ * A single-token needle keeps the substring test, which over-matches relative to the index — `orld`
+ * finds `world` here and not there, and so does any infix of an unbroken CJK run. That direction is
+ * deliberate: it surfaces a row early rather than hiding one, and it is what makes a search box
+ * usable as you type.
  */
 function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
   if (!needle) return true
   const haystack = text.toLowerCase()
   const terms = needle
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
   if (terms.length <= 1) return haystack.includes(needle.toLowerCase())
-  const tokens = new Set(haystack.split(/[^a-z0-9]+/).filter(Boolean))
+  const tokens = new Set(haystack.split(/[^\p{L}\p{N}]+/u).filter(Boolean))
   return terms.every((term) => tokens.has(term))
 }
 
