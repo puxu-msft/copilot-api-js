@@ -33,10 +33,10 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 - [x] **2b.1 terminal subscriber 契约测试** — `tests/history/worker/semantic-cutover.it.test.ts`，含变异对照。原文如下：（计划称 red test）。**顺序按 user-rule `implementation-before-tests`[hard] 调整为实现在前、测试紧随**：计划成文早于该规则，其**交付物集合不变**，仅取消「先写红」的时序要求。断言集照计划：唯一 subscriber 调 `acceptTerminal()` 一次、runtime 收一个 envelope、recent durability pending→ACK、reservation 释放、context 自身不 enqueue、旧 `runDrain` injector 不被调用；另测 canonical finalizer 在 publish 前 reject 时 `failBeforeTerminal` 释放 reservation 且 shutdown finalization barrier 失败。
 - [x] **2b.2 切换 `initHistory`**：安装 runtime（Worker 独占 semantic 写连接）；主线程 `openDatabaseReadonly()` → `installHistoryReadDatabase()`；`queries.ts`／`sessions.ts`／`stats.ts`／status count 的**生产默认 accessor** 从 `getDatabase()` 改 `getHistoryReadDatabase()`（显式传 DB 的测试／primitive 不变）；`replaceTerminalSink(workerRuntime)` 原子替换 `LegacyHistoryTerminalSink`；outcome callback 调 `settleRecentModelOperationDurability`。**Worker 以 raw disabled 启动**（Batch 3b 前主线程 raw manager 仍是唯一 raw authority，不得同时打开同一 raw DB）；History disabled 用 no-op runtime/admission。
 - [x] **2b.3 删除生产旧 writer ownership**：删 `legacy-terminal-sink.ts` 及其生产安装，保留脚本/测试明确依赖的纯 primitive；architecture test 禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`，禁生产 registry 再引用 legacy adapter。
-- [ ] **2b.4 线程隔离正负对照**：真 Worker 注入 500ms sync block，主线程 metronome 与 `/health/liveness` 的 max gap 不跟随；**同 harness 换 in-process backend 必须观察到约 500ms gap**（正控）。
-- [x] **2b.5 模型交付不等 ACK** — 同上文件，已用「同步 ACK」变异证明有裁决力。：mock Worker 延迟 ACK，HTTP response 已返回而 reservation/unacked 保留，ACK 后释放。
+- [x] **2b.4 线程隔离正负对照** — `tests/history/worker/event-loop-isolation.it.test.ts`（commit `de351c81`）。真 Worker 注入 500ms sync block，主线程 metronome 最大停顿 **30ms**；同一 block 经 in-process backend 则停顿 **1053ms**（正控）。`/health/liveness` 未单独发请求：该路由是同一事件循环上的同步 JSON handler（`src/server.ts`），被延迟的正是 metronome 直接测的那段时间，理由已写进测试头。
+- [x] **2b.5 模型交付不等 ACK** — bus 层在 `semantic-cutover.it.test.ts`（已用「同步 ACK」变异证明有裁决力）；**评审指出 bus 层证不出交付顺序**，已补真实 HTTP 层 `tests/history/worker/delivery-ack-ordering.http.test.ts`（commit `454b03f8`）：注入的 runtime **永不 ACK**，请求若等 ACK 就只能超时，因此「跑到断言」本身即证据。
 - [ ] **2b.6 门禁与提交**：计划指定的四个测试文件 + `bun run test:backend` + `bun run build:backend`。
-- [ ] **（本批新增的硬性前置，来自 2a 的裁决）启动截止时间**：Worker 启动重试无上限，`start()` 在永不清除的可重试错误下永不 settle，而 §8.1 又不监听 → 进程既不服务也不退出。**2b 是拥有进程启动的那一批，必须在调用方加 deadline**，超时按 §7.2 让 shutdown 进入 failed 并 exit 1。验收 oracle：注入永不清除的可重试启动错误，断言进程在 deadline 后非零码退出，而不是停在「未监听」。见 [deferred-backlog](../todo/deferred-backlog.md) 末节。
+- [x] **（本批新增的硬性前置，来自 2a 的裁决）启动截止时间** — `src/lib/history/startup-deadline.ts` + `packages/cli/src/start.ts` 接线（commit `4a4a1e09`）。默认 30s、`history.startup_deadline_ms` 可配、`0` 表示永远等；超时抛 `HistoryStartupDeadlineError`（带 `consecutiveFailures`／`nextRetryAt`），入口 `process.exit(1)`。**未改 `restart-policy.ts`**。⚠️ **仍欠 backlog 指定的进程级 oracle**：注入永不清除的可重试启动错误、spawn 真进程、断言 deadline 后非零退出而非停在「未监听」。当前覆盖到机制层与 config 接线层，spawn 层没有。
 - [ ] 独立 review 到 0 blocker／major，再 fast-forward 合 `master`，回填计划状态行。
 
 ## 在途意图（决定与理由）
@@ -87,3 +87,33 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 - **不让主线程与 Worker 同时持写句柄**：那正是本设计要消灭的双写者形态，也与 spec §8.1「Worker 打开 semantic DB」冲突。
 - **不在 2b 给 raw capture 也切 Worker**：3b 的事；提前切会让两个进程同时打开同一 raw artifact。
+
+## 第二轮：GPT 独立评审的处置（commit `25fe6880`…`454b03f8`）
+
+评审报告 `docs/tmp/2026-08-09-batch2b-review-gpt.md`（对 `baef58b3..e3f8e5f2` 合并态），判 **2 blocker + 3 major**。逐条处置如下——**两条 major 经逐行复核确认是真生产缺陷**，不是评审误判。
+
+### blocker
+
+1. **生产启动无 deadline** → 已实现，见上「剩余项及验收」对应条目（commit `4a4a1e09`）。**仍欠进程级 oracle**。
+2. **2b.4 线程隔离验收完全缺失** → 已补（commit `de351c81`）。
+
+### major
+
+3. **`initHistory` 未串行化**（真缺陷）。`alreadyInstalled` 是**跨 `await runtime.start()` 之前**取的快照，两个并发调用都判定需要 bring-up；`getHistoryPersistenceRuntime()` 给它们**同一个**单例，第二次 `start()` 被拒（`already started`），而 catch 无条件 `releaseHistoryPersistenceRuntime()` —— 把获胜调用正在用的 writer 释放掉。终态是「只读句柄活着、registry 里没有 writer」。**修法**：所有生命周期转换（`initHistory` 两个方向 + `shutdownHistory`）走同一条队列。串行化同时是三条件幂等判据成立的前提——它只在「转换进行中没人改动那三个条件」时才可信。
+4. **start 成功之后的失败仍会滞留 runtime**（真缺陷，与上一轮刚修的那个同源、失败缝后移一步）。`e3f8e5f2` 的 try/catch 只包住 `runtime.start()`，而 `openDatabaseReadonly` / `installHistoryReadDatabase` 在其外、`startedDbPath` 又在最后才赋值——任一后置步骤抛错，registry 里就留下一个**已 start 且没有任何 teardown 路径看得见**的 Worker（`startedRuntime()` 以 `startedDbPath` 为键）。**修法**：`start()` 到发布之间是一个带 rollback 的事务；只读句柄按**谁拥有**分别关闭（已发布关自己的、被拒则关裸对象），runtime 用 **compare-and-release**（仅当 registry 仍指向本次调用创建的实例）。
+5. **2b.5 未过 HTTP 交付路径** → 已补真实 wire 测试（commit `454b03f8`），bus 层测试保留、职责改写清楚。
+
+**3、4 的回归测试**：`tests/history/worker/bringup-lifecycle.it.test.ts`（commit `25fe6880`），两条都做了变异对照——撤掉事务则 `shutdownCalls` 为 0（滞留），撤掉队列则复现「第二个调用被拒」与「shutdown 越过 bring-up 漏掉 Worker」。
+
+### 本轮新增的既有守卫改动（接上文编号）
+
+7. **`tests/history/worker/fixtures/in-process-runtime.ts` 新增可选 `wrapBackend` 形参。** 纯**加性**、默认恒等，既有调用点零改动。目的是让隔离对照的两臂共用**同一个** block 注入（`withSynchronousBlock`），否则「两臂观测值不同」可能来自注入差异而不是隔离差异。
+8. **`tests/config/config-hot-reload.it.test.ts` 的 EXEMPT 表新增 `history.startup_deadline_ms`。** 该表是「每个 config 叶子键必须被测或显式豁免」的完备性守卫。新键属**启动期一次性**、无 state 字段，照 `history.persist_retry.*` 的先例豁免，并按同一先例补了专测 `tests/config/history-startup-deadline-config.unit.test.ts` 覆盖 config→setter 接线。**未放宽任何既有断言。**
+
+### 一条容易再踩的坑（新测试文件都要注意）
+
+分片里多个测试文件同进程时，**前驱会留下 `startedDbPath`**；此时注入 double 再调 `initHistory(true)`，bring-up 的第一步「释放上一轮 bring-up 留下的东西」会把**刚注入的 double** 当成自己的旧 runtime 释放掉，接着 `getHistoryPersistenceRuntime()` 用工厂**新造一个真 backend**——于是断言全落在一个测试从未安装的 runtime 上。表现为单跑绿、进全档红（`bringup-lifecycle` 首次进全档就是这样红的）。**解法**：注入前先 `await initHistory(false)` 把 History 彻底放下（`semantic-cutover` 与 `delivery-ack-ordering` 都已这么做）。
+
+### 已知与本批无关的既有红（基线对照确认）
+
+`bun test tests/history tests/infra --parallel` 有 **5 条稳定失败**（`history-api` 3 条行累积、`durability-overlay` 1 条、`history-store` 的 `clearHistory` 1 条）。在 `e3f8e5f2` 拉的**只读对照 worktree** 上跑同一条命令同样 5 fail，故与本批改动无关；`test:backend`（`scripts/parallel-test.ts` 分片）上这些文件是绿的，差异来自分片形态而非代码。**不要据这条命令的红去改本批代码。**
