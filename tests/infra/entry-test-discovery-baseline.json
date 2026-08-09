@@ -290,6 +290,7 @@
     "tests/history/v3/readonly-store.it.test.ts",
     "tests/history/v3/recovery-projection.unit.test.ts",
     "tests/history/v3/recovery-script.it.test.ts",
+    "tests/history/v3/search-target-ownership.it.test.ts",
     "tests/history/v3/store-performance.it.test.ts",
     "tests/history/v3/store.it.test.ts",
     "tests/history/v3/summary-projection-migration.it.test.ts",
