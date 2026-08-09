@@ -33,7 +33,6 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
-import { getDatabase } from "~/lib/history/sqlite/connection"
 import { setModels } from "~/lib/models/cache"
 import {
   //
@@ -44,7 +43,7 @@ import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
-import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
+import { commitV3HistoryEntry, historyTestWriteDatabase } from "../helpers/history-v3-fixtures"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
@@ -344,9 +343,9 @@ describe("management and history HTTP routes", () => {
       resetDate: "2026-04-01",
     })
     expect(body.activeRequests.count).toBe(0)
+    // `summaryProjectionReady` is deliberately NOT asserted here. Since the Batch 2b cutover the summary backfill is started by the Worker's `initialize` and runs fire-and-forget, so whether it has finished by the time this request lands is a scheduling race, not a property of the status route. Its readiness is owned by the projection tests; this one is about the status SHAPE and the quota/auth data. Pending and poisoned stay 0 either way on an empty store, so they remain meaningful.
     expect(body.memory).toMatchObject({
       historyBackend: "sqlite",
-      summaryProjectionReady: false,
       summaryProjectionPending: 0,
       summaryProjectionPoisoned: 0,
     })
@@ -397,8 +396,8 @@ describe("management and history HTTP routes", () => {
     )
     // Model a pre-trigger/corrupt historical artifact: the count path must only
     // count operation rows, while the old list facade would try to parse this.
-    getDatabase().exec("DROP TRIGGER v3_operation_summaries_after_summary_update")
-    getDatabase().prepare("UPDATE v3_operations SET summary_json='{broken' WHERE operation_id=?").run("status-count-corrupt-summary")
+    historyTestWriteDatabase().exec("DROP TRIGGER v3_operation_summaries_after_summary_update")
+    historyTestWriteDatabase().prepare("UPDATE v3_operations SET summary_json='{broken' WHERE operation_id=?").run("status-count-corrupt-summary")
 
     const res = await app.request("/api/status")
     const body = (await res.json()) as StatusResponseBody

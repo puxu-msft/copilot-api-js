@@ -1,4 +1,5 @@
-import type { Database } from "./connection"
+// Straight from the driver rather than re-importing `connection.ts`'s alias for it: `connection.ts` imports THIS module (openInMemoryDatabase publishes its handle here), and pointing back at it would close an import cycle for nothing more than a type alias.
+import type { SqliteDatabase as Database } from "~/lib/sqlite/driver"
 
 /**
  * Main-thread READONLY History handle for the write-first migration stage.

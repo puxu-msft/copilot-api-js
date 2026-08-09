@@ -47,6 +47,8 @@ import {
   state,
 } from "~/lib/state"
 
+import { peekHistoryReadDatabase } from "~/lib/history/sqlite/read-connection"
+
 import { historyTestDbPath } from "../helpers/test-bootstrap"
 
 let tmpDir: string
@@ -124,16 +126,24 @@ describe("no-history mode runtime gate", () => {
     setHistoryConfig({ historyDbPath: historyTestDbPath() })
   })
 
-  test("initHistory(false): isHistoryEnabled() false + DB never opened", async () => {
+  // The invariant is unchanged — `initHistory(true)` must actually bring History up, and
+  // `initHistory(false)` must leave no connection behind — but the oracle moved with the
+  // Batch 2b cutover. `isDatabaseOpen()` reports the main thread's WRITE singleton, which
+  // this thread no longer opens at all; the Worker owns that connection. What this thread
+  // publishes now is a readonly handle, so that is what "opened" means here. The write
+  // singleton is asserted closed as well: nothing on this thread may open one.
+  test("initHistory(false): isHistoryEnabled() false + no connection published", async () => {
     await initHistory(false)
     expect(isHistoryEnabled()).toBe(false)
+    expect(peekHistoryReadDatabase()).toBeUndefined()
     expect(isDatabaseOpen()).toBe(false)
   })
 
-  test("initHistory(true): isHistoryEnabled() true + DB opened", async () => {
+  test("initHistory(true): isHistoryEnabled() true + readonly handle published", async () => {
     await initHistory(true)
     expect(isHistoryEnabled()).toBe(true)
-    expect(isDatabaseOpen()).toBe(true)
+    expect(peekHistoryReadDatabase()).toBeDefined()
+    expect(isDatabaseOpen()).toBe(false)
   })
 
   test("CLI --no-history precedence: false wins even when state.historyEnabled is true", async () => {
