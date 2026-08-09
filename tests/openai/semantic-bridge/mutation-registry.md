@@ -74,4 +74,4 @@
 
 ## 外部来源验收
 
-`mutation-registry-coverage.unit.test.ts` 从 RFC §12 表格读取“性质”原文，并与所有 `RFC-*` 行的来源 join key 做一对多覆盖检查：每个 RFC 行必须有至少一个 mutation 臂，每个登记 join key 必须存在于 RFC；经评审拆分的逐臂 ID 集合另行冻结，删掉同一 join key 下的任一独立臂也会变红。它还用 Bun JUnit reporter 实际执行 `known-defects.unit.test.ts`，从运行时 testcase 集合提取 `KNOWN-LOSS：...` 名称，与 `LOSS-*` join key 做一一对应。`ACT-*` 没有外部机械门，仍须按 C0.1／C0.2 记录人工复核。
+`mutation-registry-coverage.it.test.ts` 从 RFC §12 表格读取“性质”原文，并与所有 `RFC-*` 行的来源 join key 做一对多覆盖检查：每个 RFC 行必须有至少一个 mutation 臂，每个登记 join key 必须存在于 RFC；经评审拆分的逐臂 ID 集合另行冻结，删掉同一 join key 下的任一独立臂也会变红。它还用 Bun JUnit reporter 实际执行 `known-defects.unit.test.ts`，从运行时 testcase 集合提取 `KNOWN-LOSS：...` 名称，与 `LOSS-*` join key 做一一对应。`ACT-*` 没有外部机械门，仍须按 C0.1／C0.2 记录人工复核。

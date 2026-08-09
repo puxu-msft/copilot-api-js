@@ -115,6 +115,8 @@ test("mutation registry RFC rows cover every RFC §12 acceptance row with the fr
   expect(rows.map(({ id }) => id).sort(), "RFC registry arm IDs differ from the reviewed split-arm set").toEqual([...EXPECTED_RFC_ARM_IDS].sort())
 })
 
+// This assertion starts a complete nested Bun test process. Its duration varies with host load, so Bun's
+// fixed five-second default creates a load-dependent false-red under the parallel backend test runners.
 test("mutation registry LOSS rows join one-to-one to the runtime KNOWN-LOSS testcase set", () => {
   expectExactJoin(tableRows(readFileSync(REGISTRY_PATH, "utf8"), "LOSS"), runtimeKnownLossNames(), "LOSS")
-})
+}, 120_000)
