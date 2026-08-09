@@ -1,6 +1,6 @@
 # HANDOVER：超长驻留 operation lifecycle（Tasks 1–4 已落地，5–8 待做）
 
-**状态：草稿·未评审** —— 本文尚未过独立评审，接手方请把其中的判断当作待验证而非已核验。评审通过后须改掉这一行。
+**状态：已评审定稿（2026-08-09）** —— 经独立 reviewer 逐条核验：0 blocker，两条 major（行数衍生数字错误、Task 4 门禁数字陈旧）已修，1 条 minor 已补入正文。评审报告存档于 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-handover-review.md`。
 
 - **核验基线**：`3e418cdb03b93162e57c540ee4361d35f602835e`（2026-08-08）。下方所有「当前状态」断言都在该 commit 上取证。
 - **分支 / worktree**：`fix-long-resident-operations` @ `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`。
@@ -33,6 +33,7 @@
 - **为什么阻塞**：Tasks 5–8 的主要战场就是 `shutdown.ts`（Task 6「暴露 tracked-operation 运维真相」、Task 8 文案与验收）。master 的 lossless-shutdown 重写已经删改了计划正文引用的结构，照旧基线施工等于对着不存在的代码写。
 - **前提仍成立（已核实，不必重查）**：master 版 `formatActiveRequestsSummary`（`master:src/lib/shutdown.ts:246-256`）**仍然打印 `request.state`**——正是产生 `(failed, 17620s)` 的那个字段。所以本项目要修的缺陷在当前 master 上依然存在，工作没有作废。措辞已由 `active request(s)` 改为 `accepted operation(s)`，**Task 8 里任何按旧文案写的断言都要重新校准**。
 - **合并策略**：按 memory `methodology-remerge-stale-feature-across-subsystem-rewrite`——**取 master 的结构，重放我们的 delta**，不要把 master 的重写往回改成旧形状。
+- **实测会撞 3 处冲突**（独立评审代跑确认，**撞上是预期的，不是你弄坏了**）：`src/lib/context/manager.ts`、`src/lib/shutdown.ts`、以及 `docs/memory/MEMORY.md`（本分支加过一条 memory 索引行，纯文档、按行取并集即可）。前两个是真正需要判断的地方。
 - **合并后必须重跑**：十文件 focused gate + `bun run typecheck` + `bun run test:backend`（只看 `0 fail`）。
 
 ## 已确证的硬事实（别再重新推导）
