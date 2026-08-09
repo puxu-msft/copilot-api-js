@@ -30,6 +30,37 @@ interface RegistryRow {
   joinKey: string
 }
 
+const EXPECTED_RFC_ARM_IDS = [
+  "RFC-RESP-LIFECYCLE",
+  "RFC-ANTHROPIC-LIFECYCLE",
+  "RFC-MULTI-REASONING",
+  "RFC-ENCRYPTED-ONLY",
+  "RFC-FUNCTION-ARGS-DONE",
+  "RFC-ORDERED-TURN",
+  "RFC-SERVER-TOOL",
+  "RFC-SCENARIO-A-FORWARD",
+  "RFC-SCENARIO-A-REVERSE",
+  "RFC-SCENARIO-B-FORWARD",
+  "RFC-SCENARIO-B-REVERSE",
+  "RFC-FORWARD-TRANSLATE-OUT",
+  "RFC-FORWARD-PREPARE-WIRE",
+  "RFC-FORWARD-RETRY-BASELINE",
+  "RFC-DELIVERY-AUTHORITY",
+  "RFC-PRECOMMIT-WIRE-EFFECT",
+  "RFC-PRECOMMIT-EMPTY-SEGMENT",
+  "RFC-PRECOMMIT-FLUSH-FAIL",
+  "RFC-OBSERVATION-SINGLE-STAGE",
+  "RFC-OBSERVATION-WIRE-ACK",
+  "RFC-OBSERVATION-EMPTY-RETAIN",
+  "RFC-OBSERVATION-SEMANTIC",
+  "RFC-SOURCE-DIAGNOSTICS",
+  "RFC-CAPABILITY-POLICY",
+  "RFC-CARRIER-PROVENANCE",
+  "RFC-SAME-MODEL-REPLAY",
+  "RFC-CUTOVER-FORWARD",
+  "RFC-CUTOVER-REVERSE",
+] as const
+
 function tableRows(markdown: string, prefix: "RFC" | "LOSS"): Array<RegistryRow> {
   return markdown.split("\n").flatMap((line) => {
     const columns = line.split("|").map((column) => column.trim())
@@ -78,8 +109,10 @@ function expectExactJoin(rows: Array<RegistryRow>, expectedKeys: Array<string>, 
   ).toEqual([])
 }
 
-test("mutation registry RFC rows cover every RFC §12 acceptance row with externally anchored join keys", () => {
-  expectExactJoin(tableRows(readFileSync(REGISTRY_PATH, "utf8"), "RFC"), rfcAcceptanceKeys(readFileSync(RFC_PATH, "utf8")), "RFC", true)
+test("mutation registry RFC rows cover every RFC §12 acceptance row with the frozen per-arm ID set", () => {
+  const rows = tableRows(readFileSync(REGISTRY_PATH, "utf8"), "RFC")
+  expectExactJoin(rows, rfcAcceptanceKeys(readFileSync(RFC_PATH, "utf8")), "RFC", true)
+  expect(rows.map(({ id }) => id).sort(), "RFC registry arm IDs differ from the reviewed split-arm set").toEqual([...EXPECTED_RFC_ARM_IDS].sort())
 })
 
 test("mutation registry LOSS rows join one-to-one to the runtime KNOWN-LOSS testcase set", () => {
