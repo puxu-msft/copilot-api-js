@@ -9,6 +9,7 @@ import {
 
 import type { HistoryEntry } from "~/lib/history/types"
 
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
   clearInFlight,
@@ -42,7 +43,13 @@ import {
   querySummaryPage,
   tryMarkSummaryProjectionReady,
 } from "~/lib/history/v3/summary-store"
+import {
+  //
+  publishModelOperationTerminal,
+  resetModelOperationTerminalBusForTests,
+} from "~/lib/history/v3/terminal-bus"
 
+import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
 function persist(input: {
@@ -113,6 +120,9 @@ beforeEach(async () => {
 afterEach(() => {
   setHistorySearchClientForTests(undefined)
   clearInFlight()
+  // The recent-terminal bus is process-global like the in-flight map, and a record left on it is
+  // an overlay row every later test in this file silently inherits.
+  resetModelOperationTerminalBusForTests()
   closeDatabase()
 })
 
@@ -205,6 +215,59 @@ describe("persisted list-search facade", () => {
     expect(compatible.entries.map((entry) => entry.id)).toEqual(["search-failed"])
     expect(calls).toBe(1)
     expect(capturedStates).toEqual(["failed"])
+  })
+
+  /**
+   * The overlay and the index do not agree on what "matches" means — the overlay tests a lowercase
+   * substring, the index tokenizes — so a row visible to both can match on one side only. Whichever
+   * way that disagreement is resolved, `total` must account for every row in `entries`; the failure
+   * this guards against is a page that shows a row nothing counted.
+   *
+   * The resolution is that a row the index already holds belongs to the index: it is dropped from
+   * the overlay rather than contributed with different semantics, so the answer stops changing as a
+   * row crosses the persistence boundary.
+   */
+  test("does not show a persisted row the sidecar did not match, whatever the overlay's substring test says", async () => {
+    persist({ id: "overlap-cartoon", startedAt: 100 })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+
+    // The SAME operation is also on the recent bus, carrying text the overlay's substring test hits.
+    const recorder = createModelOperationRecorder({ identity: { operationId: "overlap-cartoon", kind: "generation", createdAt: 100 } })
+    const payload = recorder.registerPayload({ messages: [{ role: "user", content: "a cartoon" }] }, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload } })
+    publishModelOperationTerminal(historyTerminalPublication(recorder.commitTerminal({ outcome: "completed" })))
+
+    // The sidecar tokenizes, so an infix like `art` does not match `cartoon`: it returns nothing.
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [],
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    const result = await getHistorySummariesAsync({ search: "art", limit: 10 })
+
+    expect(result.total).toBeGreaterThanOrEqual(result.entries.length)
+    expect(result).toMatchObject({ entries: [], total: 0 })
   })
 })
 

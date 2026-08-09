@@ -136,7 +136,7 @@ describe("history-search tail publication boundary", () => {
         return []
       },
       async listSearch() {
-        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false }
       },
       async generation() {
         return { docCount: committedDocs, opstamp }
@@ -215,7 +215,7 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
       direction: "older",
       limit: 10,
     })
-    expect(result).toEqual({ operationIds: ["op-b", "op-a"], total: 2, hasOlder: false, hasNewer: false, invalidCursor: false })
+    expect(result).toEqual({ operationIds: ["op-b", "op-a"], total: 2, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false })
 
     await index.close()
   })
@@ -329,6 +329,108 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
 
     await index.close()
   })
+
+  /**
+   * An empty filter value carries no filtering intent, so it must read as "no filter" — not as an
+   * exact match on the empty term, which no document stores and which therefore rejected every
+   * document and silently emptied the persisted half of a page. The negative controls are the point:
+   * without them "empty means no filter" is indistinguishable from "filtering stopped working".
+   */
+  test("treats an empty filter value as no filter without loosening a real one", async () => {
+    const indexPath = path.join(freshDir("native-list-empty-filter-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    await extended.upsertSummary({
+      operationId: "op-a",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 5,
+      content: "empty filter needle",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      sessionId: "s1",
+    })
+    await index.flush()
+
+    const query = {
+      query: "empty filter needle",
+      operationKinds: [] as Array<string>,
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [] as Array<string>,
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch(query)).toMatchObject({ total: 1 })
+    // Empty value on each shape of filter: equality, and a list.
+    expect(await extended.listSearch({ ...query, endpoint: "" })).toMatchObject({ total: 1 })
+    expect(await extended.listSearch({ ...query, sessionId: "" })).toMatchObject({ total: 1 })
+    expect(await extended.listSearch({ ...query, states: [""] })).toMatchObject({ total: 1 })
+    // Negative controls: a real value still filters, and an empty entry alongside a real one does
+    // not swallow the real one.
+    expect(await extended.listSearch({ ...query, endpoint: "gemini-generate-content" })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["failed"] })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["failed", ""] })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["completed", ""] })).toMatchObject({ total: 1 })
+
+    await index.close()
+  })
+
+  /**
+   * A query string the parser refuses is reported as a RETURN VALUE, not an error, so the caller can
+   * tell "this request cannot be served" from "this index cannot serve requests". Inferring it from
+   * the napi status instead does not work: a missing field arrives as the same `InvalidArg`, so a
+   * caller/index version skew would have been reported as the user's bad query.
+   */
+  test("reports an unparsable query as invalidQuery, keeping a malformed request an error", async () => {
+    const indexPath = path.join(freshDir("native-list-invalid-query-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ total: number; invalidQuery: boolean }>
+    }
+    await extended.upsertSummary({
+      operationId: "op-a",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 5,
+      content: "parse needle",
+      sessionId: "s1",
+    })
+    await index.flush()
+
+    const query = {
+      query: "parse needle",
+      operationKinds: [] as Array<string>,
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [] as Array<string>,
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch(query)).toMatchObject({ total: 1, invalidQuery: false })
+    for (const bad of ["foo:", "(x", "-lead", 'unclosed "quote']) {
+      expect(await extended.listSearch({ ...query, query: bad })).toMatchObject({ invalidQuery: true, total: 0 })
+    }
+    // A malformed REQUEST is a different failure and must stay one — not a reported bad query.
+    // Captured this way because the binding raises it synchronously rather than rejecting, and
+    // because the assertion worth keeping is the collision itself: it carries the SAME `InvalidArg`
+    // status as a query-syntax error, which is why the parse result travels as a field instead.
+    let malformedError: unknown
+    try {
+      await extended.listSearch({ ...query, limit: undefined })
+    } catch (error) {
+      malformedError = error
+    }
+    expect(malformedError).toBeInstanceOf(Error)
+    expect((malformedError as { code?: string }).code).toBe("InvalidArg")
+
+    await index.close()
+  })
+
   /**
    * Optional fields produce no columnar column at all in a segment where no document
    * carried them, which is distinct from "the column exists and every value differs".
@@ -628,7 +730,7 @@ describe("history-search cursor without a recorded index opstamp", () => {
         return []
       },
       async listSearch() {
-        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false }
       },
       // A healthy-looking index — documents present, opstamp far ahead — so the discard
       // below can only come from the cursor being uncheckable, not from the index.
