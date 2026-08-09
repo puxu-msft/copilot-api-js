@@ -1068,6 +1068,24 @@
     },
     {
       "kind": "testcase",
+      "file": "tests/pipeline/i9-followup-midblock-error.http.test.ts",
+      "classname": "[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
+      "name": "(unnamed)",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "whole-suite-skip"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/pipeline/i9-followup-midblock-error.http.test.ts",
+      "classname": "[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
+      "name": "commits the terminal error without retrying, and without leaking the block that never closed",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "whole-suite-skip"
+    },
+    {
+      "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
       "classname": "[GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
       "name": "(unnamed)",

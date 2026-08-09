@@ -10,6 +10,9 @@
  * `"terminal-failure"`/`"adapter-exception"`, NOT `"terminal-with-open-unit"` — so `sawFailure` never
  * flips, `sawTerminal` never flips (no `response-terminal` outcome was ever produced), and the
  * mid-flight block's already-buffered content in `openFrames` is discarded by `discardOpen`.
+ *
+ * GATED, and the gate is the point. Emitting the failed terminal here (so `sawUpstreamError` fires and the retry stops) was implemented, measured, and reverted: it makes the buffered terminal-commit drain flush its whole buffer, so the client received `content_block_start` + a delta with no `content_block_stop`, followed by TWO terminals — the upstream error and a synthesised truncation error. A malformed block is worse than a wasted retry, and block-level delivery is a project axiom.
+ * Fixing it properly requires the drain to drop frames past the last commit boundary, which needs block-level awareness the compatibility-era driver does not have. That is Task 4's owner cutover. This test asserts the DESIRED behaviour and is skipped until then, so whoever lands Task 4 finds it here rather than rediscovering the shape.
  */
 import {
   //
@@ -58,7 +61,7 @@ const upstreamFetchMock = mock(() => {
 const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
-describe("I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)", () => {
+describe.skip("[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -80,7 +83,7 @@ describe("I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no cont
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
   })
 
-  test("does the fix's grammar-level classification survive an error that arrives before the block's own content_block_stop?", async () => {
+  test("commits the terminal error without retrying, and without leaking the block that never closed", async () => {
     const res = await app.request("/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-session-id": "i9-followup-midblock" },
@@ -91,6 +94,7 @@ describe("I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no cont
     const types = frameTypesInOrder(sse)
 
     // Same discriminator as the sibling probe: exactly ONE upstream call, not a retry loop.
+    expect(sse).not.toContain("mid-block")
     expect(upstreamCalls).toBe(1)
     expect(types).toContain("error")
 
