@@ -1004,8 +1004,20 @@ export function registerHttp2BodyTerminationHandlers(
   signal?: AbortSignal,
 ): { cancel(reason: unknown): void } {
   let ended = false
+  let abortAttached = false
+  const detachAbort = (): void => {
+    if (!abortAttached) return
+    abortAttached = false
+    signal?.removeEventListener("abort", onAbort)
+  }
+  const onAbort = (): void => {
+    detachAbort()
+    termination.recordLocalCancel("post-response-signal-abort", signal?.reason, req.rstCode)
+    req.close(http2.constants.NGHTTP2_CANCEL)
+  }
   req.once("end", () => {
     ended = true
+    detachAbort()
     termination.recordEnd(req.rstCode)
     try {
       controller.close()
@@ -1014,6 +1026,7 @@ export function registerHttp2BodyTerminationHandlers(
     }
   })
   req.once("error", (error) => {
+    detachAbort()
     termination.recordError(error, req.rstCode)
     try {
       controller.error(error instanceof Error ? tagTransportError(error, "mid-body-close") : error)
@@ -1022,6 +1035,7 @@ export function registerHttp2BodyTerminationHandlers(
     }
   })
   req.once("close", () => {
+    detachAbort()
     if (ended) return
     const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
     termination.recordCloseBeforeEnd(error, req.rstCode)
@@ -1031,14 +1045,10 @@ export function registerHttp2BodyTerminationHandlers(
       /* already closed/errored */
     }
   })
-  signal?.addEventListener(
-    "abort",
-    () => {
-      termination.recordLocalCancel("post-response-signal-abort", signal.reason, req.rstCode)
-      req.close(http2.constants.NGHTTP2_CANCEL)
-    },
-    { once: true },
-  )
+  if (signal) {
+    abortAttached = true
+    signal.addEventListener("abort", onAbort, { once: true })
+  }
   return {
     cancel(reason) {
       termination.recordLocalCancel("body-cancel", reason, req.rstCode)
@@ -1149,7 +1159,6 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     const requestClosed = new Promise<void>((resolve) => {
       resolveRequestClosed = resolve
     })
-
     // activeStreamCount bookkeeping: the stream now owns the reservation acquired
     // above. Node guarantees `close` fires exactly once per h2 stream regardless of
     // outcome (normal end / RST / abort before or after headers) — this single
@@ -1216,7 +1225,6 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           await requestClosed
         },
       })
-
       resolve(new Response(body, { status, headers: responseHeaders }))
     })
 

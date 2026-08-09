@@ -263,21 +263,19 @@ describe("P0-T1 generation runtime live route frame baselines", () => {
         name: "absent",
         upstream: [`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`],
         expectedWire: [{ data: JSON.stringify(completion) }, { data: "[DONE]" }],
-        expectedUpstream: [{ kind: "parsed-sse", message: { data: JSON.stringify(completion), id: "" }, idField: { kind: "absent" }, type: "message" }],
+        expectedUpstream: [{ data: JSON.stringify(completion), type: "message" }],
       },
       {
         name: "reset",
         upstream: [`id:\ndata: ${JSON.stringify(completion)}\n\nid: alpha\ndata: [DONE]\n\n`],
         expectedWire: [{ data: JSON.stringify(completion), id: "" }, { data: "[DONE]" }],
-        expectedUpstream: [
-          { kind: "parsed-sse", message: { data: JSON.stringify(completion), id: "" }, idField: { kind: "present", value: "" }, type: "message" },
-        ],
+        expectedUpstream: [{ data: JSON.stringify(completion), id: "", type: "message" }],
       },
       {
         name: "inherit",
         upstream: [`id: alpha\n\ndata: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`],
         expectedWire: [{ data: JSON.stringify(completion) }, { data: "[DONE]" }],
-        expectedUpstream: [{ kind: "parsed-sse", message: { data: JSON.stringify(completion), id: "alpha" }, idField: { kind: "absent" }, type: "message" }],
+        expectedUpstream: [{ data: JSON.stringify(completion), type: "message" }],
       },
     ]
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "name": "saxes",
+      "version": "6.0.0",
+      "integrity": "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
+      "files": [
+        {
+          "path": "saxes.js",
+          "sha256": "d00e2ba27ed7d6ac961d03ff14d6b8c0eb5bf063ed2c996c22c6df06ac121423"
+        }
+      ]
+    },
+    {
+      "name": "xmlchars",
+      "version": "2.2.0",
+      "integrity": "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
+      "files": [
+        {
+          "path": "xml/1.0/ed5.js",
+          "sha256": "ea350479ab6f6553c0c3395c30ec440fb39821f6902081939831ddf1b5e8fd0f"
+        },
+        {
+          "path": "xml/1.1/ed2.js",
+          "sha256": "461d5c71cc6076dc16aebbfd2d3c506481df5a74f43631d82372a6ffdc239d69"
+        },
+        {
+          "path": "xmlns/1.0/ed3.js",
+          "sha256": "ff14ffa3a2cdfdd1b6077c4a8443dc949f53d5bb56de5ed89d4dbc5d9fdf08f7"
+        }
+      ]
+    }
+  ]
+}

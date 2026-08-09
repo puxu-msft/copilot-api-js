@@ -14,7 +14,11 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import { mapIncompleteFinishReason } from "./responses-to-cc"
+import {
+  //
+  mapIncompleteFinishReason,
+  mapResponsesUsageToCC,
+} from "./responses-to-cc"
 
 export interface StreamTranslatorState {
   sentFirstChunk: boolean
@@ -216,30 +220,12 @@ function buildReasoningChunk(state: StreamTranslatorState, fields: { reasoning?:
 
 function buildUsageChunk(state: StreamTranslatorState, response: ResponsesResponse): ChatCompletionChunk {
   const usage = response.usage
-  const cachedTokens = usage?.input_tokens_details?.cached_tokens
-  const cacheWriteTokens = usage?.input_tokens_details?.cache_write_tokens
   return {
     id: state.responseId,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model: state.model,
     choices: [],
-    ...(usage && {
-      usage: {
-        prompt_tokens: usage.input_tokens,
-        completion_tokens: usage.output_tokens,
-        total_tokens: usage.total_tokens,
-        ...((cachedTokens !== undefined || cacheWriteTokens !== undefined) && {
-          prompt_tokens_details: {
-            ...(cachedTokens !== undefined && { cached_tokens: cachedTokens }),
-            // GHC extension: forward cache_write so the client sees it (spec §7).
-            ...(cacheWriteTokens !== undefined && { cache_write_tokens: cacheWriteTokens }),
-          },
-        }),
-        ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {
-          completion_tokens_details: { reasoning_tokens: usage.output_tokens_details.reasoning_tokens },
-        }),
-      },
-    }),
+    ...(usage && { usage: mapResponsesUsageToCC(usage) }),
   }
 }

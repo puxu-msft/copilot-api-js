@@ -1,3 +1,4 @@
+import type { GhcInputTokensDetails } from "~/types/api/ghc-usage"
 import type {
   //
   ChatCompletionResponse,
@@ -13,6 +14,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { HTTPError } from "~/lib/error"
+import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
 export function translateResponsesResponseToCC(response: ResponsesResponse): ChatCompletionResponse {
   if (response.status === "failed") {
@@ -33,7 +35,7 @@ export function translateResponsesResponseToCC(response: ResponsesResponse): Cha
         logprobs: null,
       },
     ],
-    ...(response.usage && { usage: mapUsage(response.usage) }),
+    ...(response.usage && { usage: mapResponsesUsageToCC(response.usage) }),
     ...(response.service_tier !== undefined && { service_tier: response.service_tier }),
   }
 }
@@ -105,9 +107,10 @@ function mapIncompleteFinishReason(incompleteDetails?: { reason: string } | null
   return "length"
 }
 
-function mapUsage(usage: ResponsesUsage) {
-  const cachedTokens = usage.input_tokens_details?.cached_tokens
-  const cacheWriteTokens = usage.input_tokens_details?.cache_write_tokens
+export function mapResponsesUsageToCC(usage: ResponsesUsage) {
+  const inputDetails = usage.input_tokens_details as GhcInputTokensDetails | undefined
+  const cachedTokens = nonNegOrUndef(inputDetails?.cached_tokens)
+  const cacheWriteTokens = nonNegOrUndef(inputDetails?.cache_write_tokens)
   return {
     prompt_tokens: usage.input_tokens,
     completion_tokens: usage.output_tokens,

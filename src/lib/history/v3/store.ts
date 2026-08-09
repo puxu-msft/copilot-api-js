@@ -6,6 +6,7 @@ import type {
   ModelOperationRecord,
   OperationTrack,
 } from "~/lib/context/model-operation-record"
+import type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
 import type { EntrySummary } from "~/lib/history/types"
 
 import {
@@ -184,31 +185,36 @@ let pendingBytes = 0
 let draining = false
 /**
  * DI-5 transient-retry budget for the drain commit. Module-level (config apply
- * calls `setV3PersistRetryConfig`) to avoid a store→state import cycle; defaults
- * mirror the old zero-retry behavior's cadence (a few quick attempts).
+ * calls `setV3PersistRetryConfig`) to avoid a store→state import cycle. Defaults
+ * allow ten attempts with exponential backoff from 10ms to a 5s per-wait cap.
  *
- * `maxTotalMs` is a per-commit wall-clock soft cap (DI-5-followup-2): the linear
- * backoff sum grows quadratically (`backoffMs·n(n-1)/2`), so a large
- * `maxAttempts × backoffMs` product could wedge the drain — and therefore
- * shutdown, which has no abort signal here on purpose (see runDrain's note) — for
- * minutes. The cap bounds the total retry time for ONE entry regardless of the
- * attempt/backoff product. `0` disables the time cap (only `maxAttempts` bounds).
+ * `maxTotalMs` is a per-commit wall-clock soft cap (DI-5-followup-2). It counts
+ * capped exponential backoff and each attempt's own blocking time, so one entry
+ * cannot wedge the drain — and therefore shutdown — indefinitely. `0` disables
+ * the time cap; `maxAttempts` still bounds the loop.
  */
-const DEFAULT_V3_PERSIST_MAX_TOTAL_MS = 30_000
-let persistRetryConfig: { maxAttempts: number; backoffMs: number; maxTotalMs: number } = {
-  maxAttempts: 3,
+export type V3PersistRetryConfig = HistoryPersistRetryConfig
+
+export const DEFAULT_V3_PERSIST_RETRY_CONFIG: Readonly<V3PersistRetryConfig> = Object.freeze({
+  maxAttempts: 10,
   backoffMs: 10,
-  maxTotalMs: DEFAULT_V3_PERSIST_MAX_TOTAL_MS,
-}
-export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number; maxTotalMs?: number }): void {
+  maxBackoffMs: 5000,
+  maxTotalMs: 60_000,
+})
+
+let persistRetryConfig: V3PersistRetryConfig = { ...DEFAULT_V3_PERSIST_RETRY_CONFIG }
+export function setV3PersistRetryConfig(
+  cfg: Omit<V3PersistRetryConfig, "maxTotalMs" | "maxBackoffMs"> & Partial<Pick<V3PersistRetryConfig, "maxTotalMs" | "maxBackoffMs">>,
+): void {
   persistRetryConfig = {
     maxAttempts: Math.max(1, cfg.maxAttempts),
     backoffMs: Math.max(0, cfg.backoffMs),
-    maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_MAX_TOTAL_MS),
+    maxBackoffMs: Math.max(0, cfg.maxBackoffMs ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxBackoffMs),
+    maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs),
   }
 }
 /** Read the current transient-retry budget (config-wiring assertions). */
-export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number; maxTotalMs: number } {
+export function getV3PersistRetryConfigForTests(): V3PersistRetryConfig {
   return persistRetryConfig
 }
 
@@ -961,18 +967,17 @@ export interface TransientRetryAttemptResult {
 export interface TransientRetryOptions {
   maxAttempts: number
   backoffMs: number
+  /** Maximum delay before one retry; omitted means no per-wait cap. */
+  maxBackoffMs?: number
   /**
    * DI-5-followup-2: soft cap on the total wall-clock time (ms) one commit may
-   * spend across all its retries. The linear backoff sum grows quadratically
-   * (`backoffMs·n(n-1)/2`), and each `attempt()` can itself block (e.g. a SQLite
-   * `busy_timeout` wait — the bulk of a real WAL-contention wedge), so a large
-   * `maxAttempts × backoffMs` product (or slow attempts) could wedge the drain —
-   * and therefore shutdown, which has no abort signal here on purpose (see
-   * runDrain's note) — for minutes. Once the elapsed time (INCLUDING each
-   * attempt's own blocking) plus the next backoff would exceed this cap, stop
+   * spend across all its retries. Exponential backoff and each `attempt()`'s own
+   * blocking time (e.g. SQLite `busy_timeout`) both consume this budget, so an
+   * extreme config or persistent lock cannot wedge shutdown for minutes. Once
+   * elapsed time plus the next capped backoff would exceed this value, stop
    * retrying and report failure. Measured via the injectable `now` seam below
    * (defaults to `Date.now`; tests inject a deterministic counter). `0`/`undefined`
-   * = no time cap (only `maxAttempts` bounds).
+   * means no time cap; `maxAttempts` still bounds the loop.
    */
   maxTotalMs?: number
   /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
@@ -998,6 +1003,15 @@ export interface TransientRetryOutcome {
   capReason?: "max-attempts" | "max-total-ms"
 }
 
+/** Exponential retry delay after `failedAttempts`, capped per wait without overflowing. */
+export function retryBackoffMs(initialMs: number, maxMs: number | undefined, failedAttempts: number): number {
+  const initial = Math.max(0, initialMs)
+  if (initial === 0) return 0
+  const cap = maxMs === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, maxMs)
+  if (cap === 0) return 0
+  return Math.min(cap, initial * 2 ** Math.max(0, failedAttempts))
+}
+
 /**
  * DI-5: run a commit attempt with bounded retry ONLY for transient (retryable)
  * persistence failures. persist-guard already classifies BUSY/LOCKED/IOERR as
@@ -1007,9 +1021,9 @@ export interface TransientRetryOutcome {
  * persistence-async-invariants §4 "持续 drain 失败须软上界"). A `maxTotalMs` cap
  * (DI-5-followup-2) bounds the total wall-clock time so a large attempt/backoff
  * product — or a slow attempt (SQLite busy_timeout) — can't wedge shutdown for
- * minutes. The linear backoff is `abortableDelay`-based so a shutdown/abort
- * during a storm collapses the wait (keeps trying to land the data before close)
- * rather than wedging the drain.
+ * minutes. Exponential backoff is capped per wait by `maxBackoffMs` and uses
+ * `abortableDelay`, so a shutdown/abort during a storm collapses the wait (keeps
+ * trying to land the data before close) rather than wedging the drain.
  */
 export async function runWithTransientRetry(attempt: () => Promise<TransientRetryAttemptResult>, opts: TransientRetryOptions): Promise<TransientRetryOutcome> {
   const maxAttempts = Math.max(1, opts.maxAttempts)
@@ -1024,7 +1038,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
     if (result.conflict) return { ok: false, conflict: true, attempts }
     if (!result.transient) return { ok: false, conflict: false, attempts } // permanent — retry is pointless
     if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts, capReason: "max-attempts" } // attempt-count soft cap
-    const backoffMs = opts.backoffMs * attempts
+    const backoffMs = retryBackoffMs(opts.backoffMs, opts.maxBackoffMs, attempts - 1)
     // Wall-clock time-budget soft cap: give up once the elapsed time (INCLUDING
     // each attempt's own blocking — e.g. a SQLite busy_timeout wait, the bulk of a
     // real wedge) plus the next backoff would exceed maxTotalMs. Bounds the total
@@ -1099,7 +1113,12 @@ async function runDrain(): Promise<void> {
           // attempts), so not collapsing it at shutdown costs ~tens of ms of drain
           // time — negligible vs. the cycle risk. `runWithTransientRetry` still
           // accepts a signal for callers that can provide one without the cycle.
-          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
+          {
+            maxAttempts: persistRetryConfig.maxAttempts,
+            backoffMs: persistRetryConfig.backoffMs,
+            maxBackoffMs: persistRetryConfig.maxBackoffMs,
+            maxTotalMs: persistRetryConfig.maxTotalMs,
+          },
         )
         if (retryOutcome.conflict) {
           outcome = "conflict"
@@ -1162,6 +1181,17 @@ export async function drainV3Writer(): Promise<void> {
     await Promise.allSettled(pendingDrains)
     if (pending.length > 0) await runDrain()
   }
+}
+
+export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<string>): number {
+  const db = getDatabase()
+  ensureV3Schema(db)
+  if (operationIds.length === 0) return (db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n
+  return (
+    db.prepare("SELECT COUNT(*) AS n FROM v3_operations WHERE operation_id NOT IN (SELECT value FROM json_each(?))").get(JSON.stringify(operationIds)) as {
+      n: number
+    }
+  ).n
 }
 
 export function getV3StoreStatus(): V3StoreStatus {

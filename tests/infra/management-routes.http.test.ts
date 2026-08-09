@@ -189,6 +189,15 @@ interface StatusResponseBody {
   }
   transport: TransportStatusSnapshot
   history_search: { enabled: boolean; reachable?: boolean; latencyMs?: number; error?: string }
+  history_persistence: {
+    backend: "legacy" | "worker"
+    capacity: number
+    reserved: number
+    unacked: number
+    waiting: number
+    estimatedBytes: number
+    overCapacity: boolean
+  }
   memory: {
     historyBackend: string
     historyEntryCount: number
@@ -350,6 +359,15 @@ describe("management and history HTTP routes", () => {
     expect(body.history_search.reachable).toBe(false)
     expect(typeof body.history_search.latencyMs).toBe("number")
     expect(typeof body.history_search.error).toBe("string")
+    expect(body.history_persistence).toMatchObject({
+      backend: "legacy",
+      capacity: 256,
+      reserved: 0,
+      unacked: 0,
+      waiting: 0,
+      estimatedBytes: 0,
+      overCapacity: false,
+    })
     expect(body.models.totalCount).toBe(1)
     expect(body.models.availableCount).toBe(1)
     expect(body.requestTelemetry.acceptedSinceStart).toBe(1)

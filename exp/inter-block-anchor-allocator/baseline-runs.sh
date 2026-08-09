@@ -54,8 +54,11 @@
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
 #   MIN_TESTS    REQUIRED, no default: a run whose summary line reports fewer
-#                than this many tests is not counted green. Set it to the test
-#                count you expect at this commit.
+#                than this many executed test cases is not counted green. Set it
+#                to the executed population you expect at this commit. When the
+#                summary reports both, the executed count is used rather than the
+#                runner's own scheduling-unit count -- those are different
+#                quantities and mixing them fails healthy runs.
 #                There is deliberately no default. A default of 1 is a paper
 #                floor -- a degenerate selector reporting "1 tests · 1 pass"
 #                walks straight past it, which is exactly how the fake-`bun`
@@ -81,6 +84,11 @@ if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit 
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+REQUIRE_TEST_ARTIFACTS="${REQUIRE_TEST_ARTIFACTS:-0}"
+case "$REQUIRE_TEST_ARTIFACTS" in
+  0|1) ;;
+  *) printf 'baseline-runs: REQUIRE_TEST_ARTIFACTS must be 0 or 1, got %s\n' "$REQUIRE_TEST_ARTIFACTS" >&2; exit 2 ;;
+esac
 if [ -z "${MIN_TESTS:-}" ]; then
   printf 'baseline-runs: MIN_TESTS is required -- name the test count you expect at this commit.\n' >&2
   printf 'There is no default on purpose: MIN_TESTS=1 passes a degenerate run reporting "1 tests".\n' >&2
@@ -142,6 +150,14 @@ printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
 failed=0
 for i in $(seq 1 "$RUNS"); do
   log="$(printf '%s/run-%02d.log' "$OUT_DIR" "$i")"
+  artifact_dir=""
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    artifact_dir="$(printf '%s/run-%02d-artifacts' "$OUT_DIR" "$i")"
+    if [ -e "$artifact_dir" ]; then
+      printf 'baseline-runs: artifact directory already exists: %s\n' "$artifact_dir" >&2
+      exit 2
+    fi
+  fi
   {
     printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
     printf 'measured_sha=%s\n' "$head_sha"
@@ -153,6 +169,7 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== tree         : %s\n' "$([ -n "$(git -C "$REPO" status --porcelain)" ] && echo DIRTY || echo clean)"
     git -C "$REPO" status --porcelain | sed 's/^/=== dirt         : /'
     printf '=== command      : %s\n' "$CMD_DISPLAY"
+    if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then printf 'artifact_dir=%s\n' "$artifact_dir"; fi
     printf '=== resolves to  : %s\n' "$(command -v "${CMD[0]}" 2>/dev/null || echo '<not on PATH>')"
     printf '=== version      : %s\n' "$("${CMD[0]}" --version 2>&1 | head -1)"
     printf '=== PATH         : %s\n' "$PATH"
@@ -163,7 +180,11 @@ for i in $(seq 1 "$RUNS"); do
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   start=$(date +%s)
   # No pipe into tee: tee's status would mask the suite's. Append, then read back.
-  ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    ( cd "$REPO" && FORCE_COLOR=0 PARALLEL_TEST_ARTIFACT_DIR="$artifact_dir" "${CMD[@]}" ) >> "$log" 2>&1
+  else
+    ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  fi
   rc=$?
   end=$(date +%s)
   after_tree="$(git -C "$REPO" status --porcelain)"
@@ -194,12 +215,28 @@ for i in $(seq 1 "$RUNS"); do
     fi
   } >> "$log"
 
-  tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
+  # Pick the run's summary line, not merely the last line that mentions the
+  # runner. Since the artifact-transfer contract landed, the runner prints
+  # `[parallel-test] artifacts=<dir>` AFTER the summary, so `tail -1` selected a
+  # line carrying no counts at all and every run read as "no tests" -- a hard
+  # false red on a suite that had just reported thousands of passing tests.
+  tail_line="$(grep -a 'parallel-test' "$log" | grep -aE '[0-9]+ (executed|tests)' | tail -1)"
+  if [ -z "$tail_line" ]; then tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"; fi
 
-  # A run that executed no tests is not a green run. Reported test count is the
+  # A run that executed no tests is not a green run. Reported count is the
   # cheapest thing that distinguishes "the suite ran" from "something printed
-  # nothing and exited 0".
-  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"
+  # nothing and exited 0". Prefer the executed count: `N tests` counts the
+  # runner's own scheduling units, while `N executed` counts the test cases the
+  # shards actually ran -- the population MIN_TESTS is frozen from. Comparing an
+  # executed-derived floor against the units count is a different quantity and
+  # goes red on healthy runs (observed: 6719 units, 7255 executed).
+  #
+  # This floor is a weak, text-layer copy of a population check whose authority
+  # lives elsewhere: the versioned discovery baseline and the per-shard JUnit that
+  # capture-entry-evidence.ts reconciles. Keep it (it is the only check available
+  # when REQUIRE_TEST_ARTIFACTS=0), but change the authoritative side too.
+  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ executed' | head -1 | grep -aoE '[0-9]+')"
+  if [ -z "$ntests" ]; then ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"; fi
   printf '=== tests seen   : %s\n' "${ntests:-none}" >> "$log"
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
@@ -237,6 +274,16 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$STOP_ON_FAIL" = "1" ]; then
       printf 'baseline-runs: run %02d exited %d; stopping. Log: %s\n' "$i" "$rc" "$log" >&2
       exit 1
+    fi
+  fi
+
+  if [ "$rc" -eq 0 ] && [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    shard_count=0
+    if [ -d "$artifact_dir" ]; then shard_count="$(find "$artifact_dir" -maxdepth 1 -type f -name 'shard-*.xml' | wc -l)"; fi
+    if [ ! -d "$artifact_dir" ] || [ "$shard_count" -lt 1 ] || [ ! -f "$artifact_dir/runtime-identity.json" ] || [ ! -f "$artifact_dir/skipped-multiset.json" ]; then
+      failed=$((failed + 1))
+      printf 'baseline-runs: run %02d missing required test artifacts in %s\n' "$i" "$artifact_dir" >&2
+      if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
     fi
   fi
 done

@@ -8,14 +8,23 @@ import type {
 } from "./types"
 
 import { formatFromEndpoint } from "./endpoint-format"
-import { resolveResponseModel } from "./entry-view"
+import {
+  //
+  resolveResponseModel,
+  resolveResponseSuccess,
+} from "./entry-view"
 import {
   //
   getInFlight,
   listInFlight,
   toEntrySummary,
 } from "./in-flight"
-import { isActiveState } from "./lifecycle-state"
+import {
+  //
+  isActiveState,
+  lifecycleStatesForQuery,
+  matchesLifecycleQuery,
+} from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
@@ -59,8 +68,7 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
     const res = resolveResponseModel(entry)?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
-  if (opts.success === true && entry.state !== "completed") return false
-  if (opts.success === false && entry.state !== "failed") return false
+  if (!matchesLifecycleQuery({ state: entry.state, responseSuccess: resolveResponseSuccess(entry) }, opts)) return false
   return true
 }
 
@@ -104,10 +112,15 @@ function operationKindsForSearch(kind: NonNullable<QueryOptions["operationKind"]
 }
 
 function statesForSearch(options: QueryOptions): Array<string> {
-  if (options.state) return [options.state]
-  if (options.success === true) return ["completed"]
-  if (options.success === false) return ["failed"]
-  return []
+  return [...(lifecycleStatesForQuery(options) ?? [])]
+}
+
+function hasConflictingLifecycleFilters(options: QueryOptions): boolean {
+  return lifecycleStatesForQuery(options)?.length === 0
+}
+
+function emptySummaryResult(): SummaryResult {
+  return { entries: [], total: 0, nextCursor: null, prevCursor: null }
 }
 
 function isOnCursorSide(summary: EntrySummary, cursor: EntrySummary | undefined, direction: "older" | "newer"): boolean {
@@ -127,12 +140,7 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
     const res = summary.responseModel?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
-  if (opts.state && summary.state !== opts.state) return false
-  if (!opts.state && opts.success !== undefined) {
-    if (summary.state !== undefined) {
-      if (summary.state !== (opts.success ? "completed" : "failed")) return false
-    } else if (summary.responseSuccess !== opts.success) return false
-  }
+  if (!matchesLifecycleQuery(summary, opts)) return false
   if (opts.agentId && summary.agentId !== opts.agentId) return false
   if (!opts.agentId && opts.mainAgentOnly && summary.agentId !== undefined) return false
   if (opts.pid !== undefined && summary.pid !== opts.pid) return false
@@ -163,6 +171,30 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
   if (messages.length === 0) return false
   const text = extractInboundSearchText(messages, formatFromEndpoint(entry.endpoint))
   return text.toLowerCase().includes(needle.toLowerCase())
+}
+
+export function listHistoryOverlaySummaries(search?: string): Array<EntrySummary> {
+  const merged = new Map<string, EntrySummary>()
+  for (const entry of listInFlight()) {
+    if (inFlightMatchesSearch(entry, search)) merged.set(entry.id, toEntrySummary(entry))
+  }
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (merged.has(operationId)) continue
+    const entry = recordToHistoryEntry(record)
+    if (inFlightMatchesSearch(entry, search)) merged.set(operationId, recentRecordToSummary(record))
+  }
+  return [...merged.values()]
+}
+
+export function listHistoryOverlayEntries(): Array<HistoryEntry> {
+  const merged = new Map<string, HistoryEntry>()
+  for (const entry of listInFlight()) merged.set(entry.id, entry)
+  for (const record of listRecentModelOperationTerminals()) {
+    const operationId = record.identity.operationId
+    if (!merged.has(operationId)) merged.set(operationId, recordToHistoryEntry(record))
+  }
+  return [...merged.values()]
 }
 
 function persistedCandidates(
@@ -356,6 +388,9 @@ export function getSummary(id: string): EntrySummary | undefined {
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
+  if (hasConflictingLifecycleFilters(options)) {
+    return { entries: [], total: 0, page: 1, limit, totalPages: 0 }
+  }
 
   const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
   const operationKind = options.operationKind ?? "generation"
@@ -397,6 +432,7 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 }
 
 export async function getHistorySummariesAsync(options: QueryOptions = {}): Promise<SummaryResult> {
+  if (hasConflictingLifecycleFilters(options)) return emptySummaryResult()
   if (!options.search) return getHistorySummaries(options)
   const { limit = 50, terminalOnly } = options
   const operationKind = options.operationKind ?? "generation"
@@ -497,26 +533,23 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
 }
 
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
+  if (hasConflictingLifecycleFilters(options)) return emptySummaryResult()
   const { limit = 50, terminalOnly } = options
 
   const operationKind = options.operationKind ?? "generation"
-  const inFlightSummaries = listInFlight()
-    .filter((entry) => inFlightMatchesSearch(entry, options.search))
-    .map((entry) => toEntrySummary(entry))
-    .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
-  const recentSummaries = listRecentModelOperationTerminals()
-    .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-    .map((record) => recentRecordToSummary(record))
+  const overlaySummaries = listHistoryOverlaySummaries(options.search).filter(
+    (summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options),
+  )
   const cursorResolution = resolveTransientSummaryCursor(options, operationKind)
   const db = getDatabase()
   const readySnapshot = withValidatedSummarySnapshot(db, () => {
     const cursorSummary = resolveReadySummaryCursor(db, options, operationKind, cursorResolution)
-    const stored = queryReadySummaryCandidates(db, options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
-    return buildSummaryResult(db, options, operationKind, limit, terminalOnly, inFlightSummaries, recentSummaries, cursorSummary, stored, true)
+    const stored = queryReadySummaryCandidates(db, options, operationKind, limit + 256 + overlaySummaries.length + 1, cursorSummary)
+    return buildSummaryResult(db, options, operationKind, limit, terminalOnly, overlaySummaries, [], cursorSummary, stored, true)
   })
   if (readySnapshot.ready) return readySnapshot.value
 
   const cursorSummary = resolveCanonicalSummaryCursor(options, operationKind, cursorResolution)
-  const stored = queryCanonicalSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
-  return buildSummaryResult(db, options, operationKind, limit, terminalOnly, inFlightSummaries, recentSummaries, cursorSummary, stored, false)
+  const stored = queryCanonicalSummaryCandidates(options, operationKind, limit + 256 + overlaySummaries.length + 1, cursorSummary)
+  return buildSummaryResult(db, options, operationKind, limit, terminalOnly, overlaySummaries, [], cursorSummary, stored, false)
 }

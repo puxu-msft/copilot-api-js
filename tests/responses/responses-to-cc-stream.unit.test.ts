@@ -65,6 +65,46 @@ describe("createStreamTranslator", () => {
     })
   })
 
+  test("omits null cache-write details from the streaming CC usage projection", () => {
+    const translator = createStreamTranslator()
+    translator.translate({
+      type: "response.created",
+      sequence_number: 0,
+      response: {
+        id: "r-null-cache",
+        object: "response",
+        created_at: 1,
+        status: "in_progress",
+        model: "gpt-5",
+        output: [],
+        usage: null,
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      },
+    })
+    const completed = translator.translate({
+      type: "response.completed",
+      sequence_number: 1,
+      response: {
+        id: "r-null-cache",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3, input_tokens_details: { cache_write_tokens: null } },
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      } as never,
+    })
+
+    expect(completed[1]?.usage).toEqual({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 })
+  })
+
   test("translates text deltas and emits a usage chunk on completion", () => {
     const translator = createStreamTranslator()
 

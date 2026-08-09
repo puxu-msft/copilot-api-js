@@ -29,30 +29,42 @@ function fakeSession(ping: (cb: () => void) => void): Parameters<typeof schedule
 function manualInterval(): {
   schedule: NonNullable<Parameters<typeof scheduleH2KeepalivePing>[2]>
   tick: () => void
+  clear: () => void
   delayMs: () => number | undefined
+  unref: ReturnType<typeof mock>
 } {
   let callback: (() => void) | undefined
   let delay: number | undefined
+  const unref = mock(() => {})
   return {
     schedule(next, delayMs) {
       callback = next
       delay = delayMs
-      return { unref: () => undefined } as unknown as NodeJS.Timeout
+      return { unref } as unknown as NodeJS.Timeout
     },
     tick: () => callback?.(),
+    clear: () => {
+      callback = undefined
+    },
     delayMs: () => delay,
+    unref,
   }
 }
 
 describe("scheduleH2KeepalivePing", () => {
-  test("pings on the given cadence", () => {
+  test("passes the configured cadence, unreferences the timer, and pings repeatedly until cleared", () => {
     const ping = mock((cb: () => void) => cb())
     const interval = manualInterval()
     const timer = scheduleH2KeepalivePing(fakeSession(ping), 15, interval.schedule)
 
     expect(timer).toBeDefined()
     expect(interval.delayMs()).toBe(15)
+    expect(interval.unref).toHaveBeenCalledTimes(1)
     interval.tick()
+    interval.tick()
+    expect(ping).toHaveBeenCalledTimes(2)
+
+    interval.clear()
     interval.tick()
     expect(ping).toHaveBeenCalledTimes(2)
   })
@@ -65,12 +77,11 @@ describe("scheduleH2KeepalivePing", () => {
     expect(scheduleH2KeepalivePing(fakeSession(ping), -5, interval.schedule)).toBeUndefined()
     interval.tick()
     expect(ping).toHaveBeenCalledTimes(0)
+    expect(interval.unref).toHaveBeenCalledTimes(0)
   })
 
   test("a ping throwing (session half-closed) does not propagate or stop the timer", () => {
-    let calls = 0
     const ping = mock(() => {
-      calls++
       throw new Error("ERR_HTTP2_INVALID_SESSION")
     })
     const interval = manualInterval()
@@ -78,6 +89,6 @@ describe("scheduleH2KeepalivePing", () => {
 
     expect(() => interval.tick()).not.toThrow()
     expect(() => interval.tick()).not.toThrow()
-    expect(calls).toBe(2)
+    expect(ping).toHaveBeenCalledTimes(2)
   })
 })

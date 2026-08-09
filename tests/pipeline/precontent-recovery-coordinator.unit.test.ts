@@ -48,11 +48,15 @@ function envelope(label: string): RequestEnvelope {
 function recordingPort() {
   let candidateSequence = 0
   let dispatchSequence = 0
-  const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle }>()
+  const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }>()
   const port: DispatchRecordingPort = {
     beginCandidate(input) {
       const handle = `candidate-${++candidateSequence}` as CandidateHandle
-      candidates.set(handle, { role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+      candidates.set(handle, {
+        role: input.role,
+        ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
+        ...(input.metadata !== undefined && { metadata: input.metadata }),
+      })
       return handle
     },
     settleCandidate() {},
@@ -92,8 +96,13 @@ function streamResponse(marker: string): PhysicalTransportResponse {
 
 function candidateFactory(
   recording: DispatchRecordingPort,
-): (input: { role: CandidateRole; parentCandidate?: CandidateHandle; env: RequestEnvelope }) => CandidateRuntime<{ role: CandidateRole }> {
-  return ({ role, parentCandidate, env }) => {
+): (input: {
+  role: CandidateRole
+  parentCandidate?: CandidateHandle
+  metadata?: { recoveryReason?: string }
+  env: RequestEnvelope
+}) => CandidateRuntime<{ role: CandidateRole }> {
+  return ({ role, parentCandidate, metadata, env }) => {
     const scheduler = createDispatchScheduler({
       prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
       open: async (_wire: PreparedRequest) =>
@@ -109,6 +118,7 @@ function candidateFactory(
     return createCandidateRuntime({
       role,
       ...(parentCandidate && { parentCandidate }),
+      ...(metadata !== undefined && { metadata }),
       env,
       recording,
       scheduler,
@@ -128,7 +138,7 @@ describe("pre-content recovery coordinator", () => {
     const recovery = await coordinator.runRecoveryFromPreReadyFailure("upstream-rst", envelope("recovery"))
 
     expect(recovery.role).toBe("recovery")
-    expect(recording.candidates.get(recovery.candidate)).toMatchObject({ role: "recovery" })
+    expect(recording.candidates.get(recovery.candidate)).toMatchObject({ role: "recovery", metadata: { recoveryReason: "upstream-rst" } })
     expect(recording.candidates.get(recovery.candidate)).not.toHaveProperty("parentCandidate")
   })
 
@@ -152,5 +162,29 @@ describe("pre-content recovery coordinator", () => {
     await coordinator.runRecoveryFromPreReadyFailure("upstream-rst", envelope("recovery"))
 
     expect(budget.snapshot()).toMatchObject({ activeCandidates: 1, totalCandidates: 2 })
+  })
+
+  test("recovery admission exhaustion releases the failed primary reservation and does not poison the next generation", async () => {
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const first = createGenerationCoordinator({
+      env: envelope("first-primary"),
+      createCandidate: candidateFactory(recordingPort().port),
+      generationBudget: budget,
+    })
+
+    await expect(first.runPrimary()).rejects.toThrow("primary pre-ready failure")
+    expect(budget.snapshot()).toEqual({ activeCandidates: 0, totalCandidates: 1, activeDispatches: 0, totalDispatches: 0 })
+    await expect(first.runRecoveryFromPreReadyFailure("upstream-rst", envelope("first-recovery"))).rejects.toThrow("total candidate budget exhausted")
+    expect(budget.snapshot()).toEqual({ activeCandidates: 0, totalCandidates: 1, activeDispatches: 0, totalDispatches: 0 })
+
+    const nextBudget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const next = createGenerationCoordinator({
+      env: envelope("next-primary"),
+      createCandidate: candidateFactory(recordingPort().port),
+      generationBudget: nextBudget,
+    })
+    await expect(next.runPrimary()).rejects.toThrow("primary pre-ready failure")
+    await expect(next.runRecoveryFromPreReadyFailure("upstream-rst", envelope("next-recovery"))).resolves.toMatchObject({ role: "recovery" })
+    expect(nextBudget.snapshot()).toMatchObject({ activeCandidates: 1, totalCandidates: 2 })
   })
 })

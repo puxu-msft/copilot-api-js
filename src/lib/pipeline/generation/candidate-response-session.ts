@@ -30,6 +30,7 @@ import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import {
   //
+  asResponseCodecRenderError,
   createResponseProcessor,
   type ResponseProcessor,
 } from "~/lib/pipeline/stream/response-processor"
@@ -167,23 +168,27 @@ export function createCandidateResponseSession<State, Snapshot>(
   }
 
   const postRender = (frame: ClientFrame): ClientFrame | undefined => {
-    // The legacy mutating client.outbound hook belongs before classification and is therefore
-    // candidate-local. P7-T2d still has to replace its delivery-side contract with observe-only.
-    const hook = getUpstreamHook()?.client?.outbound
-    const hooked = hook ? hook(frame, input.env) : frame
-    if (hooked === undefined) return undefined
-    const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
-    if (transformed === undefined) return undefined
-    if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
-      const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
-      if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
-        input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
-      } else {
-        input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
+    try {
+      // The legacy mutating client.outbound hook belongs before classification and is therefore
+      // candidate-local. P7-T2d still has to replace its delivery-side contract with observe-only.
+      const hook = getUpstreamHook()?.client?.outbound
+      const hooked = hook ? hook(frame, input.env) : frame
+      if (hooked === undefined) return undefined
+      const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
+      if (transformed === undefined) return undefined
+      if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
+        const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
+        if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
+          input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
+        } else {
+          input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
+        }
       }
+      consumeFrame(transformed)
+      return transformed
+    } catch (error) {
+      throw asResponseCodecRenderError(error)
     }
-    consumeFrame(transformed)
-    return transformed
   }
 
   const responseOpts: CandidateResponseSessionOptions = {

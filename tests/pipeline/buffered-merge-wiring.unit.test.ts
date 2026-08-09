@@ -39,10 +39,10 @@ describe("transformBufferedFlush wiring (candidate-hosted seam, spec §4 重接�
     })
 
     expect(outcome.kind).toBe("complete")
-    expect(flushCalls.length).toBeGreaterThan(0)
     const lastFlush = flushCalls.at(-1)
     expect(lastFlush).toBeDefined()
-    expect(lastFlush?.ctx.cause).toBe("terminal-drain")
+    if (!lastFlush) throw new Error("expected at least one buffered flush")
+    expect(lastFlush.ctx.cause).toBe("terminal-drain")
     // the sink must have received the FILTERED set (transformFlush's return value), not the raw buffer
     expect(written.some((f) => f.event === "response.output_text.delta")).toBe(false)
     expect(written.map((f) => f.event)).toEqual(["response.created", "response.completed"])

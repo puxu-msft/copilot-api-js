@@ -917,6 +917,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
+    configKey: "history.persistence_queue_capacity",
+    stateKey: "historyPersistenceQueueCapacity",
+    sampleYamlValue: "17",
+    expectedStateValue: 17,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
+  },
+  {
     configKey: "history.raw_capture.enabled",
     stateKey: "historyRawCaptureEnabled",
     sampleYamlValue: "true",
@@ -937,22 +944,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 1048576,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  // ── shutdown.* ─────────────────────────────────────────────────────
-  {
-    configKey: "shutdown.graceful_wait",
-    stateKey: "shutdownGracefulWait",
-    sampleYamlValue: "33",
-    expectedStateValue: 33,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-  },
-  {
-    configKey: "shutdown.abort_wait",
-    stateKey: "shutdownAbortWait",
-    sampleYamlValue: "66",
-    expectedStateValue: 66,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  },
-
   // ── hooks.* (declarative only — see applyConfigToState) ─────────────
   {
     configKey: "hooks.upstream_module",
@@ -1124,6 +1115,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "history.persist_retry.backoff_ms",
     reason: "DI-5 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
+  },
+  {
+    configKey: "history.persist_retry.max_backoff_ms",
+    reason: "DI-5 exponential-backoff cap — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
   },
   {
     configKey: "history.persist_retry.max_total_ms",

@@ -34,7 +34,6 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { getShutdownSignal } from "~/lib/shutdown"
 import {
   //
   combineAbortSignals,
@@ -49,13 +48,6 @@ export interface UpstreamHttpTransportDeps {
   clientAbortSignal?: AbortSignal
   /** Stream idle-timeout (ms) for `guardSseIterable` (`state.streamIdleTimeout * 1000`). */
   idleTimeoutMs: number
-  /**
-   * When true, a shutdown-caused non-streaming fetch abort is rewritten to a
-   * retryable 529 inside `sendUpstreamHttp` (parity with the legacy Anthropic
-   * client). The Anthropic v4 transport opts in; CC / Responses / Gemini leave it
-   * off (their AbortError flows through unchanged).
-   */
-  rewriteShutdownAbort?: boolean
 }
 
 /** Build an HTTP {@link Transport} for one request. */
@@ -65,7 +57,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     env: RequestEnvelope,
     options?: TransportDispatchOptions,
   ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
-    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal, getShutdownSignal()))
+    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
     const headers = Object.fromEntries(wire.headers.entries())
     const body = wire.body as { model?: unknown; tools?: unknown }
     // Transport-local capture: sendUpstreamHttp fills `.response` (via
@@ -94,7 +86,6 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
         // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
         onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
-        ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
       })
     } catch (error) {
       lifecycle.complete()
@@ -118,7 +109,6 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
     const frames = guardSseIterable(result as AsyncIterable<import("./parsed-sse-frame").ParsedSseFrame>, {
       idleTimeoutMs: deps.idleTimeoutMs,
-      shutdownSignal: getShutdownSignal(),
       clientSignal: deps.clientAbortSignal,
       reaperSignal: env.ctx.lifecycleSignal,
       dispatchSignal: lifecycle.signal,

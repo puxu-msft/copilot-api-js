@@ -6,67 +6,46 @@
 
 优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 drain 流水线」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
 
-> **术语对齐**：本重启节沿用 `shutdown.ts` 代码内部的 **Phase 1-4** 命名指代关闭 drain 流水线（= 上文「优雅关闭」的 **Step 1-4**，同一流水线，代码与文档措辞的历史差异）；而 **start.ts 启动 boot 的 Phase 0-5**（overlap ⑤ 提到的「Phase 3 开库 / Phase 5 listen」）是**另一套无关的启动阶段编号**，别混。
-
 ## 优雅关闭
 
-`src/lib/shutdown.ts` 实现一次信号启动的 4 步优雅关闭流水线。**4 步是进程内部自动推进的阶段，不是要求用户按 4 次 Ctrl+C。**
+`src/lib/shutdown.ts` 实现首信号无损排空。shutdown 只拥有进程入口和资源生命周期，不拥有请求终止权。
 
-信号契约只有两层：
+信号契约分为终止信号与交接信号：
 
-1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、StructuredFileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
-2. 第二次 SIGINT/SIGTERM 是全局逃生舱：只要生命周期尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均直接 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。第二次信号不再用于把流水线逐步推进一格。
+1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，并等待已接纳 operation 自行终态。
+2. lifecycle 已经进行时收到 SIGINT／SIGTERM，立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
+3. lifecycle 已经进行时收到 SIGUSR2，幂等返回已有 shutdown task，不强退、不重复 handoff-only 副作用。
 
-### Step 1: Setup（立即）
-- 停止接受新请求
-- 标记服务器为 draining 状态
-- 停止后台服务（token 刷新 `stopRefresh`、停止新建上游 WebSocket `stopNew`）
-- **h2 会话池此处不动**（2026-07-28 修正）：`closeHttp2Sessions()` 会 `poolEpoch++`，让所有**正在建连**的在途请求当场抛 abort——等于用 Step 1 的手撕掉 Step 2「等在途请求自然完成」的承诺。已建流的请求不受影响（`session.close()` 是 graceful GOAWAY），受害者恰好是还在 TLS/h2 握手中的那些；而默认 `maxConcurrentStreamsPerSession=1` 意味着**只要有并发，每条新请求都在这个窗口里**，所以这是常态不是边缘（incident：History `req_1785234916721_3573` 539ms 被秒杀，随后被谎报成 900s 的 header 超时）。新请求已被 `server.close(false)` + `getIsShuttingDown()` 中间件挡在门外，drain 期不会有人往池里加东西。池改由 **Step 4 / finalize** 关闭，与上游 WS 的 `stopNew()`（Step 1）/ `closeAll()`（Step 4+finalize）拆分对称
-- 停止 history 后台工作（History V3 periodic maintenance tick——checkpoint/incremental-vacuum/optimize，见 skill `history-sqlite-schema`），但**保持 history DB 打开**——异步 finalize 落盘要贯穿 Step 2/3 drain（原 History V2 时代的 `insertCompletedEntry`/`finalizeEntry` 异步两相已随 History V2 removal 删除，现由 V3 终端总线订阅者 + `drainV3Writer` 承担同款 drain-before-close 语义），故 DB 的 drain-未决-再-close 推迟到 `finalizing`（`shutdownHistory`），旧的 Step-1 同步关 DB 会丢 drain 期间 settle 的请求
-- Seal Archive maintenance producer（HOT→tier-1 backlog、tier-1 compaction、tier-2 sealing）：已领取的 session/batch 完成到 crash-safe 提交点，随后检查 stop flag，不再领取下一单元；剩余 backlog 由下次启动按数据库现状继续
-- 排空 rate limiter 队列
-- 停止监听新连接（`server.close(false)`，已建连接保留）
-- **注意：浏览器观察者 WS 客户端（history/status dashboard）此时不关**——它们订阅 lifecycle 事件，Step 1 关掉会让用户看不到后续进度；故意留到 Step 4 或持久化完成后才拆
+信号必须投递到应用记录的 runtime PID。Bun CLI／Volta shim 可能在 JS runtime 外再包一层 launcher；给 launcher 发 SIGUSR2 会走内核默认动作，根本到不了 `process.on("SIGUSR2")`。裸接管 pidfile 写入 `process.pid`；PTY 回归也从子进程输出读取 runtime PID 后发信号。
 
-### Step 2: Graceful Wait
-- 等待活跃请求自然完成
-- 超时：`state.shutdownGracefulWait` 秒（默认 60）
+### Stop ingress（立即）
 
-### Step 3: Abort
-- 向所有仍在进行的请求发送 abort signal
-- 等待 handler 处理 abort 并清理
-- 超时：`state.shutdownAbortWait` 秒（默认 120）
+- `_isShuttingDown` 置位，middleware 拒绝此后进入的新请求。
+- `server.close(false)` 停止监听新连接，保留已建连接。
+- `RequestContextManager.stopReaper()` 停止周期泄漏扫描；每个 context 已武装的 `request_deadline` 继续生效。
+- 停止 History maintenance 和 Telemetry rollup 等后台 producer，但保持 History、Telemetry 与 Diagnostic 写入可用。
+- 浏览器观察者 WS 保持连接，用于观察 draining 和 finalized。
+- token runtime、rate limiter 队列、上游 WS／h2 池保持完整能力。已接纳 operation 可能仍需刷新 token、等待 permit、创建新 transport 或重试；首信号拆除其中任一资源都会破坏无损契约。
 
-> **2026-07-14 修复（RFC `2026-07-14-request-lifecycle-cancel-settle-quiesce`）**：此前 streaming 请求的 pre-response fetch **故意排除** shutdown signal（`send.ts` 旧 `stream ? undefined : getShutdownSignal()`），导致 delayed-commit 期卡在 pre-response `await p`（stream-body guard 尚不存在）的流式请求 **Step 3 abort 够不着** → 一直挂到 Step 4 强关（2026-07-12 实测卡 120s）。现已改为**对 stream/non-stream 一律折入稳定 shutdown signal**（RC1）。同时 driver 退避改 `abortableDelay` + attempt 边界 cancel gate（RC3），shutdown/reaper 能中断退避、settle 后不起新 attempt。
+### Lossless drain
 
-### Shutdown 信号（稳定信号）
+`RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成“已接纳”的机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开；count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 完成后注销。
 
-`getShutdownSignal()` 返回一个**进程启动即创建、稳定存在**的 `AbortSignal`，仅在 Step 3 `abort()` 一次：
-
-- **为什么稳定**：每个在途流式请求 / 上游 fetch 在发起时就把该信号注册进自己的 abort race。若信号延迟到 Step 1 才创建（返回 `undefined`），一个在 shutdown 开始**之前**就阻塞在停滞上游上的 `iterator.next()` 会捕获 `undefined`，从而**永远观察不到**后来的 Step 3 abort（只能等 idle timeout / Step 4 强杀）。稳定信号消除了这个时序缺陷。
-- **“是否在 shutdown”用 `getIsShuttingDown()` 判断**（Step 1 置位），**不要**用信号是否存在来判断。Step 3 的 abort 用 `getShutdownSignal().aborted` 判断。
-- **“这次中止是不是关机造成的”用 `isShutdownCausedAbort(error)` 判断**（2026-07-28 新增），**不要**用 `getIsShuttingDown()`——后者只说明进程处在关机窗口里，drain 期被 stale reaper 或 hard deadline 取消的请求也会命中它，从而被冒充成 529「Server is shutting down」。判据是**因果证据**：Step 3 的 `abort()` 现在带一个具名 reason 对象，`isShutdownCausedAbort` 比对该对象身份（沿 `cause` 链），外加 h2 池 teardown 打的 `pool-closed` transport tag。
-- **约束：shutdown 不可取消**。eager 单例从不重建（`_resetShutdownState` 仅供测试重置），状态机守卫保证 `gracefulShutdown` 不重入、Step 3 的 `abort()` 只调一次。若未来要支持“取消 shutdown”，需重新设计该单例生命周期。
-- 流式消费者（`guardSseIterable` / `processAnthropicStream`）把该信号 + per-request 客户端断开信号转发进一个 per-stream 本地 controller，并在所有退出路径**显式移除 listener**——共享信号上每个流恰好 1 个 listener、确定性回收，不依赖 GC。
-
-### Step 4: Force Close
-- 强制关闭所有连接（`server.close(true)`）
-- 关闭浏览器观察者 WS 客户端（`closeAllClients`）——强关路径在此拆；自然 drain 路径则保留到持久化完成，使 dashboard 能观察完整过程
-- 关闭所有上游 WebSocket 连接（`peekUpstreamWsManager().closeAll()`）与 **h2 会话池（`closeHttp2Sessions()`）**——先断上游、再拆下游 writer，避免在途数据被推给已死 writer 变成 EPIPE 噪声。自然 drain（Step 2/3 就排空）路径跳过 Step 4，故 `finalizing` 里对两者各再调一次幂等关闭，池不会泄漏
+shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
 
 ### Finalizing 与 Stopped
 
-请求生命周期的 4 步结束后，进程进入 `finalizing`：
+registry 清零后，进程进入 `finalizing`：
 
-1. `RequestContextManager.drainModelOperationFinalizations()` 排空 generation finalizer：每个 finalizer 先等 operation scope quiesce，再构造并发布唯一 immutable canonical terminal；任何拒绝都使 shutdown 失败，History 尚保持打开。
-2. `shutdownHistory()` 排空 terminal subscriber/V3 writer、重试暂存写入并关闭 History 数据库。
-3. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
-4. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
-5. `shutdownStructuredFileSink()` 先 seal/fsync 全会话 bootstrap WAL producer，再经独立 `DurableFileWriter` 排空镜像到长期 NDJSON 的普通诊断记录并 fsync，写唯一 sealing marker、再次排空并 fsync，最后 end/close；只有 sink barrier 成功后才删除并 directory-fsync WAL。任一 flush 无进展、drop、I/O 或 fsync 失败均显式失败，不能卡成永不返回的成功路径。
-6. generation finalizer、History、Telemetry、Diagnostic durability barrier 全部完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
-7. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；任一 barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
+1. `RequestContextManager.drainModelOperationFinalizations()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。
+2. 释放 token runtime，随后关闭上游 WebSocket 与 h2 池。此时不存在会被 teardown 中断的 operation。
+3. `shutdownHistory()` 排空 terminal subscriber／V3 writer并关闭数据库。
+4. `shutdownRequestTelemetry()` 封闭 config 订阅与 timer producer，排空 pending delta 并关闭数据库。
+5. `shutdownStructuredFileSink()` 写 sealing marker，排空并 fsync Diagnostic。
+6. durability barrier 全部成功后向观察者发布 `finalized`，再关闭观察者 WS。
+7. 所有资源成功关闭后进入 `stopped` 并 resolve `waitForShutdown()`；任一 barrier 失败则进入 `failed`，不 resolve 成功 latch。
 
-因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
+`finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
 
 ### 用户可见反馈不依赖持久化
 
@@ -101,7 +80,7 @@
 T0  新进程启动，走完 boot（auth/models/config/history 开库）
 T1  新进程 reusePort 绑 :4141 成功（旧进程仍在监听，内核此刻把新连接 LB 到两边）
 T2  notifyReady() → 新进程读 pidfile 找到旧进程 → 向旧进程发 SIGUSR2
-T3  旧进程收到 → 关闭自己的 listen socket（立即停止 accept）+ 进入 4-phase drain
+T3  旧进程收到 → 关闭自己的 listen socket（立即停止 accept）+ 进入无损 drain
     ↑ 此刻起旧 listen fd 已关，内核只把新连接投给新进程
 T4  新进程打印 Listening、TUI 就绪、接新会话
 T5  旧进程 drain 完在途请求 → 退出 → 旧终端回到 shell
@@ -128,8 +107,8 @@ CUR=$(systemctl is-active copilot-api@a >/dev/null && echo a || echo b)   # 现�
 NEXT=$([ "$CUR" = a ] && echo b || echo a)
 systemctl start copilot-api@$NEXT                 # 阻塞到 READY=1（新槽 reusePort 绑 :4141）
 systemctl kill -s SIGUSR2 copilot-api@$CUR        # 脚本发交接信号 → 旧槽停 accept + drain
-systemctl stop  copilot-api@$CUR                  # 旧槽 drain 完退出后，stop 仅收敛记账（幂等）
-systemctl disable copilot-api@$CUR                # 翻转开机默认槽
+# 轮询 is-active，等待旧槽自行 exit 0；禁止再发 stop/SIGTERM，否则会成为强退信号
+systemctl disable copilot-api@$CUR                # 仅在旧槽正常退出后翻转开机默认槽
 systemctl enable  copilot-api@$NEXT
 ```
 
@@ -138,14 +117,14 @@ systemctl enable  copilot-api@$NEXT
 - **默认槽 = 配置态**：`/etc/systemd/system/<target>.wants/copilot-api@<slot>.service` enablement 符号链接，由 `systemctl enable/disable` 翻转，落在 **systemd 配置目录**而非 app 目录。
 
 三个收益：
-- **信号由脚本发（B1）**：systemd 下 app **只需 SIGUSR2 handler**，新槽起来时完全不碰旧槽（不读 pidfile、不自发信号），编排权归脚本——systemd 路径**无需 pidfile**。
+- **信号由脚本发（B1）**：systemd 下 app **只需 SIGUSR2 handler**，新槽起来时完全不碰旧槽（不读 pidfile、不自发信号），编排权归脚本——systemd 路径**无需 pidfile**。脚本发 SIGUSR2 后只轮询旧槽自行退出，禁止再发 `systemctl stop`／SIGTERM。
 - **新槽起不来 = 零影响**：新代码有 bug 则 `systemctl start` 失败、脚本止步，旧槽从没收到 SIGUSR2、持续正常服务（相对「原地 restart」的硬优势——原地一旦新码崩就有停机窗口）。
 - **崩溃重启干净**：`Restart=on-failure` 拉起同色槽，此刻无另一活实例、reusePort 绑 :4141 无冲突；无 live 前任则跳过交接。per-instance MainPID / 日志 / Restart 策略全是 systemd 原生跟踪。
 
 ### 路径三：pm2
 
 pm2 fork 模式 `pm2 reload` = 重启（有 drain 间隙、非零停机）；cluster 模式 + Bun 兼容性不稳。故 pm2 也**复用 reusePort 接管**，不依赖 pm2 原生 reload：
-- 样例 `ecosystem.config.cjs`：`kill_timeout` 对齐 drain 宽限（≥ `shutdownGracefulWait + shutdownAbortWait`）、`wait_ready:true` + `listen_timeout`、SIGINT/SIGTERM 触发优雅 drain（已支持）。
+- 样例 `ecosystem.config.cjs`：`wait_ready:true` + `listen_timeout` 保证新槽就绪；SIGINT／SIGTERM 触发无损 drain。pm2 只能配置有限 `kill_timeout`，而 bundled request deadline 为 0，因此它不构成严格的无损保证；部署脚本应先确认旧槽 `activeRequests.count=0` 再删除。
 - **零停机换代（脚本/操作者显式发信号，非新实例自动接管）**：⚠️ pm2 托管的旧实例 `isSupervised()`=true → **不写 pidfile**（pidfile 机制仅裸手动路径），故新实例**读不到** pidfile、无法自动发现前任并自发 SIGUSR2——「起个 --restart 新实例自动接管」在 pm2 下**发不出信号、两实例永久并存**（一半流量打旧码）。正确形态同 systemd：**双 app 条目（blue/green）+ 操作者/脚本显式发信号**：`pm2 start ecosystem --only copilot-api-green`（reusePort 绑 :4141、`wait_ready` 等 `READY=1`）→ `pm2 sendSignal SIGUSR2 copilot-api-blue`（旧实例 drain）→ `pm2 delete copilot-api-blue`。overlap 期数据安全由 ①⑤ 的**进程存活性判据**自动保证（与 pidfile/信号无关）。
 - `process.send('ready')` 与 sd_notify `READY=1` 共用 `notifyReady()` 钩子。
 
@@ -167,7 +146,7 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 ### CLI / config / 交付物
 
 - **CLI**：`start` 新增 `--restart`（布尔，默认 false）激活接管模式。
-- **config**：无新增运行时旋钮（drain 宽限复用 `shutdown.graceful_wait` / `shutdown.abort_wait`）；可选 `pidfile` 键覆盖默认路径。
+- **config**：shutdown 无排空时限旋钮；请求终止由 `timeouts.*` 负责。可选 `pidfile` 键覆盖默认路径。
 - **交付物**：样例 `contrib/systemd/copilot-api@.service` + 部署脚本 + `contrib/pm2/ecosystem.config.cjs` + 本节。
 
 ### 实现前置 PoC 门槛
@@ -193,16 +172,15 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 
 ### Stale Request Reaper
 
-- `state.staleRequestMaxAge`：活跃请求最大存活秒数（默认 600，0 = 禁用）
-- 超时的请求由 reaper 强制清理，防止泄漏
-- 安全网机制：正常情况下请求应通过 stream 完成或超时自然终结
+- `state.staleRequestMaxAge`：活跃请求最大存活秒数（bundled 默认 0，即禁用）。
+- 运维显式设正值时，reaper 超龄会取消并清理请求；该选项会对合法长思考施加 wall-clock 上界，因此启动时显式告警。
 
 ### Hard Request Deadline（`request_deadline`，2026-07-14 新增，RC2 治根）
 
-- `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 900s，0 = 禁用）：单请求**硬总时长上限**，是用户可依赖的 SLA。
+- `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 0，即禁用）：运维显式设正值时，它是单请求硬总时长上限。默认禁用避免仅凭 wall-clock 误杀无上界合法思考。
 - **由 per-request 精确 `setTimeout` 强制**（`manager.create` 武装、`onSettled` 清除、`unref`），到点调用与 reaper 同款 `reapInFlight()`（取消在飞上游）+ `fail()`（记终态）。
 - **为何独立于 stale reaper**：reaper 是**周期扫描**（`staleRequestMaxAge/3` clamp 到 [250ms,60s]），实测会**迟到**（一次迟 198s，age 1398s vs max 1200s）——候选机制：config 热重载改阈值但 scan cadence 冻结、或**进程/WSL2 suspend** 让所有 timer 一起冻结（诊断见 `reaper-diagnostics.ts`，坐实判据 = 墙钟 gap vs 单调 gap）。per-request timer 按 T 精确触发、**绕过**这个迟到。
-- **两旋钮关系**：`request_deadline`（精确、主上限）应 < `stale_request_max_age`（周期、泄漏兜底），reaper 只兜底越过 deadline 仍未静止的异常。
+- 两个 wall-clock guard 默认都禁用；运维同时显式启用时，`request_deadline`（精确主上限）应小于 `stale_request_max_age`（周期泄漏兜底）。
 - **dry-run 豁免**：capturing manager（`withCapturingManager`）传 `armDeadlineTimers:false`，inspection ctx 不武装 deadline。
 
 相关代码：`src/lib/shutdown.ts`、`src/lib/context/`、`src/lib/observability/reaper-diagnostics.ts`

@@ -31,7 +31,6 @@ import {
   mapHttpErrorToEnvelope,
 } from "~/lib/error"
 import { getCancellationCause } from "~/lib/error/cancellation-reason"
-import { isShutdownCausedAbort } from "~/lib/shutdown"
 
 const ANTHROPIC: ErrorWireFormat = "anthropic"
 
@@ -102,7 +101,6 @@ export { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 /** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
 export type PostCommitAbortKind =
   | "client-abort"
-  | "shutdown"
   | "header-timeout"
   | "request-deadline"
   | "reaper-cancel"
@@ -112,7 +110,6 @@ export type PostCommitAbortKind =
 
 /** The terminal SSE error-frame message for each abort kind (`client-abort` writes nothing — the client is gone). */
 const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abort">, string> = {
-  shutdown: "Server is shutting down",
   "header-timeout": "Upstream timed out before sending response headers",
   "request-deadline": "Request exceeded its hard deadline",
   "reaper-cancel": "Request cancelled by the stale-request reaper",
@@ -179,7 +176,6 @@ export function classifyPostCommitAbort(clientAborted: boolean, lifecycleSignal:
     }
   }
   if (error !== undefined) {
-    if (isShutdownCausedAbort(error)) return "shutdown"
     if (error instanceof Error && error.name === "TimeoutError") return "header-timeout"
     const tagged = fromCause(error)
     if (tagged !== undefined) return tagged

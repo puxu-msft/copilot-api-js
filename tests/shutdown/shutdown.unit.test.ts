@@ -2,10 +2,10 @@
  * Component tests for graceful shutdown.
  *
  * Covers:
- * - State management (getIsShuttingDown, getShutdownSignal, waitForShutdown)
+ * - State management (getIsShuttingDown, waitForShutdown)
  * - formatActiveRequestsSummary
  * - drainActiveRequests
- * - 4-step orchestration (stop ingress → drain → abort → force close)
+ * - lossless orchestration (stop ingress → drain → finalize)
  * - two-signal contract (first starts graceful shutdown, second exits immediately)
  * - Middleware integration (503 rejection during shutdown)
  * - Error resilience (server.close failures)
@@ -24,6 +24,7 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { createBus } from "~/lib/observability"
 import {
   //
@@ -37,7 +38,6 @@ import {
   formatActiveRequestsSummary,
   getIsShuttingDown,
   getShutdownPhase,
-  getShutdownSignal,
   gracefulShutdown,
   handleShutdownSignal,
   setShutdownPublisher,
@@ -54,12 +54,11 @@ import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
 })
 
-/** Shared fast-timing overrides to avoid real 20s/120s waits */
+/** Shared fast polling overrides for deterministic tests. */
 const FAST_TIMING = {
-  gracefulWaitMs: 100,
-  abortWaitMs: 100,
   drainPollIntervalMs: 10,
   drainProgressIntervalMs: 50_000, // suppress progress logs during tests
 } as const
@@ -68,11 +67,12 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
   return {
     tracker: createMockTracker(),
     server: createMockServer(),
-    rateLimiter: null,
-    stopTokenRefreshFn: mock(() => {}),
+    closeTokenRuntimeFn: mock(async () => {}),
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
     drainModelOperationFinalizationsFn: mock(async () => {}),
+    stopHistoryAdmissionFn: mock(() => {}),
+    drainHistoryAdmissionFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     shutdownDiagnosticLoggingFn: mock(async () => {}),
@@ -98,25 +98,6 @@ describe("getIsShuttingDown", () => {
   test("stays true after shutdown completes (prevents race with late requests)", async () => {
     await gracefulShutdown("SIGINT", createNoopDeps())
     expect(getIsShuttingDown()).toBe(true)
-  })
-})
-
-describe("getShutdownSignal", () => {
-  test("returns a stable, non-aborted AbortSignal before shutdown", () => {
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-    expect(signal.aborted).toBe(false)
-  })
-
-  test("returns AbortSignal after shutdown begins", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-  })
-
-  test("signal is NOT aborted when no active requests (Phase 2/3 skipped)", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    expect(getShutdownSignal().aborted).toBe(false)
   })
 })
 
@@ -417,7 +398,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 1 active request(s)")
+    expect(result).toContain("Waiting for 1 accepted operation(s)")
     expect(result).toContain("POST /v1/messages claude-sonnet-4")
     expect(result).toContain("streaming")
   })
@@ -443,7 +424,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 2 active request(s)")
+    expect(result).toContain("Waiting for 2 accepted operation(s)")
     expect(result).toContain("claude-sonnet-4")
     expect(result).toContain("gpt-4o")
   })
@@ -471,50 +452,28 @@ describe("formatActiveRequestsSummary", () => {
 // ============================================================================
 
 describe("drainActiveRequests", () => {
-  test("returns 'drained' immediately when no active requests", async () => {
-    const tracker = createMockTracker()
-    const result = await drainActiveRequests(1000, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("drained")
+  test("resolves immediately when no accepted operations remain", async () => {
+    await expect(drainActiveRequests(createMockTracker(), { pollIntervalMs: 10, progressIntervalMs: 50_000 })).resolves.toBeUndefined()
   })
 
-  test("returns 'drained' when requests complete within timeout", async () => {
+  test("resolves when accepted operations complete", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     setTimeout(() => tracker._clearRequests(), 30)
 
-    const result = await drainActiveRequests(500, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("drained")
+    await expect(drainActiveRequests(tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })).resolves.toBeUndefined()
   })
 
-  test("returns 'timeout' when requests exceed timeout", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist beyond timeout
-
-    const result = await drainActiveRequests(50, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("timeout")
-  })
-
-  test("polls at configured interval", async () => {
+  test("keeps polling until the accepted operation disappears", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
-    setTimeout(() => tracker._clearRequests(), 30)
+    const originalGetActive = tracker.getActive
+    tracker.getActive = mock(() => {
+      if (tracker.getActive.mock.calls.length >= 5) tracker._clearRequests()
+      return originalGetActive()
+    }) as typeof tracker.getActive
 
-    await drainActiveRequests(200, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
+    await drainActiveRequests(tracker, { pollIntervalMs: 1, progressIntervalMs: 50_000 })
 
-    // Should have polled multiple times (not just once)
-    expect(tracker.getActive.mock.calls.length).toBeGreaterThan(1)
-  })
-
-  test("returns 'aborted' when phase is externally escalated", async () => {
-    const tracker = createMockTracker([{ status: "executing" }])
-    const abortController = new AbortController()
-    setTimeout(() => abortController.abort(), 20)
-
-    const result = await drainActiveRequests(500, tracker, {
-      pollIntervalMs: 10,
-      progressIntervalMs: 50_000,
-      abortSignal: abortController.signal,
-    })
-
-    expect(result).toBe("aborted")
+    expect(tracker.getActive.mock.calls.length).toBeGreaterThanOrEqual(5)
   })
 })
 
@@ -526,12 +485,6 @@ describe("Phase 1: immediate actions", () => {
   test("sets isShuttingDown immediately", async () => {
     await gracefulShutdown("SIGINT", createNoopDeps())
     expect(getIsShuttingDown()).toBe(true)
-  })
-
-  test("calls stopTokenRefresh", async () => {
-    const stopFn = mock(() => {})
-    await gracefulShutdown("SIGINT", createNoopDeps({ stopTokenRefreshFn: stopFn }))
-    expect(stopFn).toHaveBeenCalledTimes(1)
   })
 
   test("calls closeAllClients when WebSocket clients exist", async () => {
@@ -546,11 +499,31 @@ describe("Phase 1: immediate actions", () => {
     expect(closeFn).not.toHaveBeenCalled()
   })
 
-  test("calls rejectQueued on rate limiter", async () => {
-    const mockLimiter = { rejectQueued: mock(() => 2) }
+  test("preserves request dependencies until accepted operations drain", async () => {
+    const tracker = createMockTracker([{ status: "streaming" }])
+    const closeTokenRuntime = mock(async () => {})
+    const shutdown = gracefulShutdown(
+      "SIGINT",
+      createNoopDeps({
+        tracker,
+        closeTokenRuntimeFn: closeTokenRuntime,
+      }),
+    )
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ rateLimiter: mockLimiter }) as any)
-    expect(mockLimiter.rejectQueued).toHaveBeenCalledTimes(1)
+    await Bun.sleep(20)
+    const observedDuringDrain = {
+      phase: getShutdownPhase(),
+      closeTokenRuntimeCalls: closeTokenRuntime.mock.calls.length,
+    }
+
+    tracker._clearRequests()
+    await shutdown
+
+    expect(observedDuringDrain).toEqual({
+      phase: "draining",
+      closeTokenRuntimeCalls: 0,
+    })
+    expect(closeTokenRuntime).toHaveBeenCalledTimes(1)
   })
 
   test("calls contextManager.stopReaper in Phase 1", async () => {
@@ -573,122 +546,35 @@ describe("Phase 1: immediate actions", () => {
 })
 
 // ============================================================================
-// Phase 2: Natural drain
+// Lossless drain
 // ============================================================================
 
-describe("Phase 2: natural drain", () => {
-  test("skipped entirely when no active requests", async () => {
-    const tracker = createMockTracker()
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-
-    // No abort signal fired (Phases 2/3 skipped)
-    expect(getShutdownSignal().aborted).toBe(false)
+describe("lossless drain", () => {
+  test("completes immediately when no accepted operations remain", async () => {
+    await gracefulShutdown("SIGINT", createNoopDeps({ tracker: createMockTracker() }))
+    expect(getShutdownPhase()).toBe("stopped")
   })
 
-  test("completes when requests drain within gracefulWaitMs", async () => {
+  test("waits until accepted operations complete", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     setTimeout(() => tracker._clearRequests(), 30)
 
     await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
 
-    // Should NOT have aborted (drained naturally in Phase 2)
-    expect(getShutdownSignal().aborted).toBe(false)
-  })
-})
-
-// ============================================================================
-// Phase 3: Abort signal + extended wait
-// ============================================================================
-
-describe("Phase 3: abort signal", () => {
-  test("abort signal fires when Phase 2 times out", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-
-    // Request persists through Phase 2, then clears in Phase 3
-    let phase2Done = false
-    const origGetActive = tracker.getActive
-    tracker.getActive = mock(() => {
-      const result = origGetActive()
-      if (result.length > 0 && phase2Done) {
-        // Once abort signal has fired, clear requests
-        tracker._clearRequests()
-        return []
-      }
-      return result
-    }) as any
-
-    // Monitor the abort signal to detect Phase 3 transition
-    const shutdownPromise = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-
-    // Poll until abort signal fires (Phase 2 → Phase 3 transition)
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownSignal()?.aborted) {
-          phase2Done = true
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    await shutdownPromise
-
-    // Abort signal was fired (Phase 3 was entered)
-    expect(getShutdownSignal().aborted).toBe(true)
+    expect(getShutdownPhase()).toBe("stopped")
   })
 
-  test("completes when requests drain after abort signal", async () => {
+  test("never force-closes the listener", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
-
-    // Requests persist through Phase 2, then clear shortly after Phase 3 begins
-    let abortFired = false
-    const origGetActive = tracker.getActive
-    tracker.getActive = mock(() => {
-      const result = origGetActive()
-      if (result.length > 0 && abortFired) {
-        tracker._clearRequests()
-        return []
-      }
-      return result
-    }) as any
-
-    const shutdownPromise = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-
-    // Wait for abort signal to fire
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownSignal()?.aborted) {
-          abortFired = true
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    await shutdownPromise
-
-    expect(getShutdownSignal().aborted).toBe(true)
-  })
-})
-
-// ============================================================================
-// Phase 4: Force close
-// ============================================================================
-
-describe("Phase 4: force close", () => {
-  test("calls server.close(true) when requests persist through Phase 2 and 3", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist through all phases
     const server = createMockServer()
+    const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
+    await Bun.sleep(20)
+    expect(server.close.mock.calls).toEqual([[false]])
 
-    // server.close(false) in Phase 1, server.close(true) in Phase 4
-    expect(server.close).toHaveBeenCalledTimes(2)
-    expect(server.close.mock.calls[0]).toEqual([false])
-    expect(server.close.mock.calls[1]).toEqual([true])
-    // Abort signal was fired in Phase 3
-    expect(getShutdownSignal().aborted).toBe(true)
+    tracker._clearRequests()
+    await shutdown
+    expect(server.close.mock.calls).toEqual([[false]])
   })
 })
 
@@ -706,20 +592,6 @@ describe("error resilience", () => {
 
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(getIsShuttingDown()).toBe(true)
-  })
-
-  test("completes even if server.close(true) throws in Phase 4", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear
-    let callCount = 0
-    const server = {
-      close: mock(async (_force?: boolean) => {
-        callCount++
-        if (callCount === 2) throw new Error("force close failed")
-      }),
-    }
-
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
   })
 })
 
@@ -822,48 +694,6 @@ describe("two-signal contract", () => {
     await shutdownPromise
   })
 
-  test("second signal during force close exits immediately", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist through all phases to reach Phase 4
-    const exitFn = mock((_code: number) => {})
-
-    // Make server.close(true) slow so Phase 4 lasts long enough to test
-    let resolveForceClose: () => void
-    const forceCloseBarrier = new Promise<void>((r) => {
-      resolveForceClose = r
-    })
-    const server = {
-      close: mock(async (force?: boolean) => {
-        if (force) await forceCloseBarrier
-      }),
-    }
-
-    const shutdownPromise = handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, server })),
-      exitFn,
-    })
-
-    // Wait for Phase 4 to be reached
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownPhase() === "forcing") {
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    // Send the second signal while the automatic force-close step is blocked.
-    void handleShutdownSignal("SIGINT", { exitFn })
-
-    expect(exitFn).toHaveBeenCalledWith(130)
-
-    // Clean up — release force close barrier and let shutdown complete
-    resolveForceClose!()
-    tracker._clearRequests()
-    await shutdownPromise
-  })
-
   test("second signal during history finalization exits immediately", async () => {
     const exitFn = mock((_code: number) => {})
     let releaseHistory!: () => void
@@ -909,17 +739,19 @@ describe("two-signal contract", () => {
     expect(exitFn).not.toHaveBeenCalled()
   })
 
-  test("the four internal steps advance automatically after one signal", async () => {
+  test("one signal advances from ingress stop through lossless drain automatically", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     const server = createMockServer()
-
-    await handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) =>
-        gracefulShutdown(signal, createNoopDeps({ tracker, server, gracefulWaitMs: 10, abortWaitMs: 10, drainPollIntervalMs: 2 })),
+    const shutdown = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, server })),
     })
 
-    expect(getShutdownSignal().aborted).toBe(true)
-    expect(server.close.mock.calls).toEqual([[false], [true]])
+    await Bun.sleep(20)
+    expect(getShutdownPhase()).toBe("draining")
+    expect(server.close.mock.calls).toEqual([[false]])
+
+    tracker._clearRequests()
+    await shutdown
     expect(getShutdownPhase()).toBe("stopped")
   })
 })
@@ -929,68 +761,26 @@ describe("two-signal contract", () => {
 // ============================================================================
 
 describe("upstream WebSocket cleanup", () => {
-  test("graceful path (drain succeeds) still closes upstream WS connections", async () => {
-    // Materialize a manager; spy on closeAll/stopNew. The shutdown path must
-    // release these connections even on the drain-success early-return —
-    // otherwise GHC-side connection quota leaks until process GC.
+  test("closes upstream WS only after accepted operations drain", async () => {
     const manager = getUpstreamWsManager()
     const closeAllSpy = spyOn(manager, "closeAll")
     const stopNewSpy = spyOn(manager, "stopNew")
+    const tracker = createMockTracker([{ status: "streaming" }])
 
     try {
-      await gracefulShutdown("SIGINT", createNoopDeps())
+      const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
+      await Bun.sleep(20)
 
-      expect(stopNewSpy).toHaveBeenCalledTimes(1)
-      // Was previously called 0 times on this path — finalize() now guarantees it.
+      expect(stopNewSpy).not.toHaveBeenCalled()
+      expect(closeAllSpy).not.toHaveBeenCalled()
+
+      tracker._clearRequests()
+      await shutdown
+      expect(stopNewSpy).not.toHaveBeenCalled()
       expect(closeAllSpy).toHaveBeenCalledTimes(1)
     } finally {
       closeAllSpy.mockRestore()
       stopNewSpy.mockRestore()
-      resetUpstreamWsManagerForTests()
-    }
-  })
-
-  test("force-close path closes upstream WS BEFORE downstream server (avoid EPIPE noise)", async () => {
-    const manager = getUpstreamWsManager()
-    const closeAllSpy = spyOn(manager, "closeAll")
-
-    const callOrder: Array<string> = []
-    closeAllSpy.mockImplementation(() => {
-      callOrder.push("upstream.closeAll")
-    })
-
-    const server = createMockServer()
-    const originalClose = server.close
-    server.close = mock(async (force?: boolean) => {
-      callOrder.push(`server.close(force=${force ?? false})`)
-      return originalClose.call(server, force)
-    })
-
-    // Tracker reports a stuck request so we reach Phase 4 force-close.
-    const tracker = createMockTracker([{ id: "stuck", state: "executing", resolvedModel: "x" }])
-
-    try {
-      await gracefulShutdown(
-        "SIGINT",
-        createNoopDeps({
-          tracker,
-          server,
-          // Tight timing to fall through Phase 2 → Phase 3 → Phase 4.
-          gracefulWaitMs: 20,
-          abortWaitMs: 20,
-          drainPollIntervalMs: 5,
-        }),
-      )
-
-      // Upstream WS must be closed BEFORE the downstream force-close, otherwise
-      // in-flight forwarders push data into a dead socket → EPIPE noise + delay.
-      const upstreamIdx = callOrder.indexOf("upstream.closeAll")
-      const forceCloseIdx = callOrder.indexOf("server.close(force=true)")
-      expect(upstreamIdx).toBeGreaterThanOrEqual(0)
-      expect(forceCloseIdx).toBeGreaterThanOrEqual(0)
-      expect(upstreamIdx).toBeLessThan(forceCloseIdx)
-    } finally {
-      closeAllSpy.mockRestore()
       resetUpstreamWsManagerForTests()
     }
   })

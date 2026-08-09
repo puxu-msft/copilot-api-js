@@ -44,6 +44,9 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
+import { LegacyHistoryTerminalSink } from "./worker/legacy-terminal-sink"
+import { HISTORY_WORKER_PROTOCOL_VERSION } from "./worker/protocol"
+import { getHistoryAdmissionController } from "./worker/registry"
 
 let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
@@ -131,10 +134,12 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // stoppable; starting it here guarantees every production lifecycle has a
   // strict scrub/repair path even when no caller invokes startHistoryBackfills().
   startV3SummaryBackfill(getDatabase())
+  const admission = getHistoryAdmissionController()
+  admission.replaceTerminalSink(new LegacyHistoryTerminalSink({ enqueueRecord: enqueueModelOperationWithOutcome }))
   unsubscribeV3Terminal?.()
-  unsubscribeV3Terminal = subscribeModelOperationTerminals(async (record) => {
-    const outcome = await enqueueModelOperationWithOutcome(record)
-    settleRecentModelOperationDurability(record, outcome)
+  unsubscribeV3Terminal = subscribeModelOperationTerminals(async (publication) => {
+    const outcome = await admission.acceptTerminal({ protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, publication })
+    settleRecentModelOperationDurability(publication, outcome)
   })
   // History-search sidecar (Phase 3′): construct ONLY the UDS client — never
   // spawn/supervise a process. The client is a lightweight, stateless-per-

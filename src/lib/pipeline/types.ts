@@ -19,6 +19,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
@@ -290,6 +291,7 @@ export interface RawHttpRequest {
    */
   readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Non-HTTP operation identity supplied by transport entry points such as Responses WS. */
+  readonly historyReservation?: HistoryReservation
   readonly operationIdentity?: {
     readonly kind: OperationKind
     readonly connectionId?: string
@@ -317,6 +319,12 @@ export interface WireEnvelopeFactory {
   keepalive(frame: ClientFrame): WireWriteSpec
 }
 
+export interface RecoveryBatchBuild {
+  readonly specs: ReadonlyArray<WireWriteSpec>
+  /** Owner-only callback: invoked inside the serializer if an anchor is actually open. */
+  readonly closeOpenAnchorBefore?: (index: number, envelope: Pick<WireEnvelopeFactory, "anchor">) => WireWriteSpec
+}
+
 export interface WireBlockAllocationPort {
   readonly wireState?: GenerationWireState
   allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
@@ -325,6 +333,8 @@ export interface WireBlockAllocationPort {
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
   ): Promise<OwnerResult<WireBlockMapping>>
   beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
+  /** Stages a completed recovery's client-shaped frames, then publishes the whole batch at one C9 point. */
+  publishRecoveryBatch(source: LegSource, build: (envelope: WireEnvelopeFactory) => RecoveryBatchBuild): Promise<OwnerResult<"published">>
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
@@ -334,6 +344,8 @@ export interface WireBlockAllocationPort {
 
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
+  /** `publish` is the normal client-delivery path; `evaluate` is an isolated candidate-only drain. */
+  responseMode?: "publish" | "evaluate"
   /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
   wireAllocationPort?: WireBlockAllocationPort
   /**
@@ -849,9 +861,18 @@ export interface ClientSink {
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
+export type ResponseFailureSource = "upstream-transport" | "codec-render" | "downstream-sink" | "delivery-owner"
+
+/** Retains the failure that a later codec/flush failure superseded as the client terminal. */
+export interface ResponseFailureDiagnostics {
+  readonly supersededError: unknown
+  readonly supersededSource: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
+  readonly flushError: unknown
+}
+
 export type ResponseOutcome =
   | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
-  | { kind: "stream-error"; error: unknown; truncated?: boolean }
+  | { kind: "stream-error"; error: unknown; source: ResponseFailureSource; diagnostics?: ResponseFailureDiagnostics; truncated?: boolean }
   | { kind: "settled-abort" }
   | { kind: "delivery-finished" }
 

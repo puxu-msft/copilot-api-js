@@ -91,6 +91,8 @@ test("each torn-wire outcome gets a fresh diagnostic Error instance", async () =
   const first = await runWithTornDelivery()
   const second = await runWithTornDelivery()
   if (first.kind !== "stream-error" || second.kind !== "stream-error") throw new Error("expected stream-error outcomes")
+  expect(first.source).toBe("delivery-owner")
+  expect(second.source).toBe("delivery-owner")
   expect(first.error).toBeInstanceOf(Error)
   expect(second.error).toBeInstanceOf(Error)
   expect(first.error).not.toBe(second.error)

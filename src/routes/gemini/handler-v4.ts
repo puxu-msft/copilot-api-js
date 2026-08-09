@@ -28,6 +28,7 @@ import type { GeminiCodec } from "~/lib/codec/gemini/codec"
 import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -77,6 +78,7 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -160,6 +162,20 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
+  return await withHistoryAdmission(
+    c.req.raw,
+    "generation",
+    async (historyReservation) => await runGeminiRequestAdmitted(c, geminiBody, modelId, stream, historyReservation),
+  )
+}
+
+async function runGeminiRequestAdmitted(
+  c: Context,
+  geminiBody: GenerateContentRequest,
+  modelId: string,
+  stream: boolean,
+  historyReservation: HistoryReservation,
+): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
   const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
@@ -180,6 +196,7 @@ async function runGeminiRequest(
       path: c.req.path,
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

@@ -580,7 +580,7 @@ export function createSpecifierResolver(repoRoot: string): (fromFile: string, sp
   const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
   if (converted.errors.length > 0)
     throw new Error(
-      `tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, "; ")).join("; ")}`,
+      `tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, "\n")).join("; ")}`,
     )
   return (fromFile, specifier) => ts.resolveModuleName(specifier, fromFile, converted.options, ts.sys).resolvedModule?.resolvedFileName
 }

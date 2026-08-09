@@ -38,12 +38,9 @@ afterEach(async () => {
 const FAST_NOOP_DEPS = {
   tracker: { getActive: () => [] },
   server: undefined,
-  rateLimiter: null,
-  stopTokenRefreshFn: () => {},
+  closeTokenRuntimeFn: async () => {},
   closeAllClientsFn: () => {},
   getClientCountFn: () => 0,
-  gracefulWaitMs: 10,
-  abortWaitMs: 10,
   drainPollIntervalMs: 5,
   drainProgressIntervalMs: 50_000,
 }

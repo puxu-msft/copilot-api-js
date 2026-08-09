@@ -10,13 +10,13 @@ metadata:
 **Why:** 2026-08-03 同一条判据被外部评审连打回三轮，每轮我都以为已经修好了（评审全过程在 `docs/tmp/2026-08-03-selfverify-mechanism-review.md`，五轮 244 行）：
 
 1. **判据留在 always-on 规则正文**（`~/.claude/rules/00-user/20-tool-use-preference.md` 的 `root-each-bash-call`）—— 评审判定「没有执行者、没有触发点、没有记录位置」，是 `downgrade-self-adjudicated-gates` 要防的形态本身。
-2. **第一轮打回：搬进 skill 的 verification-log 只修好三分之二** —— 补上了判官和记录位置，我以为闭合。评审实证：项目 `.claude/skills/session-closeout/` 里 `rg` 唯一命中的是**那个 skill 自己的**自验 log，我的断言一个入口都没有。
+2. **第一轮打回：搬进 skill 的 verification-log（当时的 `session-closeout`，现已并入 `closing-a-development-session`） 只修好三分之二** —— 补上了判官和记录位置，我以为闭合。评审实证：项目 `.claude/skills/session-closeout/` 里 `rg` 唯一命中的是**那个 skill 自己的**自验 log，我的断言一个入口都没有。
 3. **第二轮打回：在规则正文加了触发指针，仍不可达** —— 同一轮两处：指针字面只要求「审有没有依赖 sticky cwd」，**照字面执行只裁得了三条断言里的一条**；且我没写 leaf executor 的转交分支（全局硬规则禁止 leaf 派 agent，`~/.claude/rules/00-user/00-kernel.md`）。
 4. **第三轮打回：触发点寄生在会消失的宿主上** —— 它挂在规则的 `Provisional` 条目上，而该条目**会在另一条断言毕业时被删除**——那条断言毕业之日，就是这条断言失去唯一入口之时；同轮还指出审计人口仍偏（只覆盖离开初始 cwd 的会话）。修法是改成**按日期触发的独立 cohort 审计**（协议落在 `~/.claude/skills/proving-where-a-command-ran/verification-log.md`），不寄生在任何会消失的宿主上。
 
 **配套的两条（都来自同一批产物，属于「自验机制自身怎么不烂掉」）：**
 
-- **摘要 + 明细两个可独立写的点，没有对账门就必然漂。** 同一份 verification-log 里「票数」与「逐条记录」都要人手写，结果三张票记进了记录、票数小节纹丝不动地停在 `0 证实`。修法不是提醒自己细心：**指定明细为唯一事实源、摘要降为派生视图**，规定投票必须在同一次编辑里追加记录并重算摘要、提交前从明细重数对账、不一致以明细为准。这仍不是机械强制（拦不住陈旧视图），但消灭了「两个事实源谁对」的歧义，且任何外部 reviewer 都能重算复核。**任何「手工维护的汇总 + 明细」都适用**。
+- **摘要 + 明细两个可独立写的点，没有对账门就必然漂。** 同一份 verification-log 里「票数」与「逐条记录」都要人手写，结果三张票记进了记录、票数小节纹丝不动地停在 `0 证实`。修法不是提醒自己细心：**指定明细为权威写入源、摘要降为派生视图**，规定投票必须在同一次编辑里追加记录并重算摘要、提交前从明细重数对账、不一致以明细为准。这是真正的单写入源机制，不是“其他文档不得完整解释结果”的复述禁令；摘要与说明仍可完整呈现，但必须可追溯到明细。任何「手工维护的汇总 + 明细」都适用。文档复述政策见 [[feedback-one-authority-allows-contextual-restatement]]。
 - **写进文档的指纹必须带 canonical bytes 的取法。** 我记了 description 的 sha256 前缀却没说是否含行尾 LF，评审按「第 3 行」字面 hash 得出不匹配、报了 major，继续枚举后发现我那个值正是含 LF 版，当场自撤。**歧义是真的**——直接写成可复跑的命令（`sed -n '3p' F | sha256sum | cut -c1-16`）而不是一个裸值。**这与 [[methodology-dont-specify-across-a-seam-you-havent-read]] 的「数据格式缝」是同一教训的两个实例**（那边是没定义时间窗用哪个字段，这边是没定义 hash 含不含 LF）——改一处记得看另一处。
 
 **How to apply:**

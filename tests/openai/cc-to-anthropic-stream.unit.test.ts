@@ -82,6 +82,11 @@ function toWire(frames: Array<ServerSentEventMessage>): string {
  * decoder (the accumulation logic is trivial; the byte-critical part is the SDK's decode). If any content
  * frame were event-less it would vanish here — the self golden could never catch that.
  */
+function stringField(value: unknown, name: string): string {
+  if (typeof value !== "string") throw new Error(`SDK oracle: ${name} must be a string`)
+  return value
+}
+
 async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<import("@anthropic-ai/sdk/resources/messages").Message> {
   const { Stream } = await import("@anthropic-ai/sdk/core/streaming")
   const response = new Response(toWire(frames), { status: 200, headers: { "content-type": "text/event-stream" } })
@@ -105,11 +110,10 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
       case "content_block_delta": {
         const d = ev.delta as { type: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
         const b = blocks[ev.index]
-        const asText = (value: unknown): string => (typeof value === "string" ? value : "")
-        if (d.type === "text_delta") b.text = asText(b.text) + (d.text ?? "")
-        if (d.type === "input_json_delta") b._json = asText(b._json) + (d.partial_json ?? "")
-        if (d.type === "thinking_delta") b.thinking = asText(b.thinking) + (d.thinking ?? "")
-        if (d.type === "signature_delta") b.signature = asText(b.signature) + (d.signature ?? "")
+        if (d.type === "text_delta") b.text = stringField(b.text ?? "", "text block text") + (d.text ?? "")
+        if (d.type === "input_json_delta") b._json = stringField(b._json ?? "", "tool input JSON") + (d.partial_json ?? "")
+        if (d.type === "thinking_delta") b.thinking = stringField(b.thinking ?? "", "thinking text") + (d.thinking ?? "")
+        if (d.type === "signature_delta") b.signature = stringField(b.signature ?? "", "thinking signature") + (d.signature ?? "")
         break
       }
       case "message_delta": {
@@ -132,7 +136,7 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
         type: "tool_use",
         id: b.id,
         name: b.name,
-        input: typeof b._json === "string" && b._json.length > 0 ? JSON.parse(b._json) : {},
+        input: b._json ? JSON.parse(stringField(b._json, "tool input JSON")) : {},
       } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
     if (b.type === "thinking")
       return {

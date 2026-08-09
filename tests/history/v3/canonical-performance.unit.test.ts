@@ -177,7 +177,8 @@ function canonicalRecursiveSccs(source: string): Array<{ readonly members: Reado
 const RECORDER_SOURCE = readFileSync(join(import.meta.dir, "../../../src/lib/context/model-operation-record.ts"), "utf8")
 
 describe("History V3 canonical capture performance", () => {
-  test("quantifies CPU and heap for the top-three deterministic workloads", () => {
+  test("completes representative workloads within the merge safety budget and reports CPU and heap", () => {
+    const startedAt = performance.now()
     const workloads = [
       ["long-conversation", () => longConversationFixture()],
       ["high-branch", () => highBranchFixture()],
@@ -194,13 +195,15 @@ describe("History V3 canonical capture performance", () => {
         nodes: value.arena.payloads.length + value.arena.frames.length,
       }
     })
+    const totalMs = performance.now() - startedAt
 
-    console.log("HISTORY_V3_PERF canonical", JSON.stringify(rows))
+    console.log("HISTORY_V3_PERF canonical", JSON.stringify({ totalMs, rows }))
+    expect(totalMs).toBeLessThan(10_000)
     for (const row of rows) {
       expect(row.logicalBytes).toBeGreaterThan(1_000)
       expect(row.nodes).toBeGreaterThan(1)
     }
-  })
+  }, 15_000)
 
   test("recursive captured-value freeze and sealed arena copies scale with new messages and frames", () => {
     expect(RECORDER_SOURCE).toContain("function copyCapturedArena")
@@ -251,6 +254,11 @@ describe("History V3 canonical capture performance", () => {
       expect(recursiveSccs).toHaveLength(1)
       expect(recursiveSccs[0].observesWork).toBe(true)
     }
+  })
+
+  test("capture work has one recursive freeze implementation", () => {
+    expect(RECORDER_SOURCE.match(/^function freezeCapturedValue(?:Observed)?</gm)).toHaveLength(1)
+    expect(RECORDER_SOURCE.match(/freezeCapturedValue\(nested, seen\)/g)).toHaveLength(1)
   })
 
   test("unchanged upstream, rewrite, and client frames share exactly one arena node", () => {

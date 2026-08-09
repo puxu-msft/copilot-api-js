@@ -192,6 +192,211 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.wireRequest).toBe(wireReq)
   })
 
+  test("pins terminal history and V3 egress to primary while an evaluation recovery remains active", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary, metadata: { recoveryReason: "precontent" } })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+    const primaryError = new Error("primary transport died")
+
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.setGenerationDispatchError(primaryDispatch, { type: "network_error", status: 0, raw: primaryError, message: primaryError.message })
+    ctx.settleGenerationDispatch(recoveryDispatch, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.settleGenerationCandidate(recovery, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.fail("test", primaryError)
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = ctx.toHistoryEntry()
+    const terminal = await ctx.whenModelOperationFinalized()
+    const primaryAttempt = entry.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)
+    const recoveryAttempt = entry.attempts?.find((attempt) => attempt.dispatchId === recoveryDispatch)
+    expect(primaryAttempt?.error).toBe(primaryError.message)
+    expect(recoveryAttempt?.strategy).toBe("precontent-recovery")
+    expect(entry._index?.derived?.currentStrategy).toBe("primary")
+    expect(terminal.terminal?.committedDispatch).toBeUndefined()
+    expect(terminal.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)?.verdict).toBe("failed")
+    expect(terminal.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.verdict).toBe("failed")
+  })
+
+  test("routes active recovery attempt fields away from a pinned primary terminal", () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    ctx.setAttemptEffectiveRequest({ model: "primary", resolvedModel: undefined, messages: [], payload: { leg: "primary" }, format: "anthropic-messages" })
+    ctx.setAttemptWireRequest({ model: "primary", messages: [], payload: { leg: "primary" }, headers: { "x-leg": "primary" }, format: "anthropic-messages" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.setAttemptEffectiveRequest({ model: "recovery", resolvedModel: undefined, messages: [], payload: { leg: "recovery" }, format: "anthropic-messages" })
+    ctx.setAttemptWireRequest({ model: "recovery", messages: [], payload: { leg: "recovery" }, headers: { "x-leg": "recovery" }, format: "anthropic-messages" })
+    ctx.setAttemptTransport("http")
+    ctx.setAttemptResponseHeaders({ "x-response-leg": "recovery" })
+    ctx.setAttemptCacheControlStripped(["tools[0].cache_control"])
+    ctx.setAttemptError({ type: "network_error", status: 0, raw: new Error("recovery error"), message: "recovery error" })
+    ctx.finalizeCurrentAttemptDuration()
+    ctx.recordAttemptFailure({ willRetry: false, nextStrategy: "none" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)?.upstreamRequest?.body).toEqual({ leg: "primary" })
+    expect(entry.attempts?.find((attempt) => attempt.dispatchId === recoveryDispatch)).toMatchObject({
+      upstreamRequest: { body: { leg: "recovery" }, headers: { "x-leg": "recovery" } },
+      transport: "http",
+      error: "recovery error",
+      responseHeaders: { "x-response-leg": "recovery" },
+      effectiveSource: { pipeline: { cacheControlStripped: ["tools[0].cache_control"] } },
+    })
+    expect(entry?.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)?.effectiveSource?.pipeline?.cacheControlStripped).toBeUndefined()
+    expect(ctx.modelOperationSnapshot.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)?.upstreamRequest).toMatchObject({
+      metadata: { model: "primary" },
+    })
+    expect(ctx.modelOperationSnapshot.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.upstreamRequest).toMatchObject({
+      metadata: { model: "recovery" },
+    })
+  })
+
+  test("publishes active recovery attempt snapshots but terminal fail snapshots from pinned primary", () => {
+    const { ctx, events } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.transition("streaming")
+    ctx.recordAttemptFailure({ willRetry: false, nextStrategy: "none" })
+
+    const activityEvent = events.findLast((event) => event.kind === "request.state_changed")
+    const attemptEvent = events.findLast((event) => event.kind === "request.attempt_failed")
+    expect(activityEvent?.ctx.summary).toMatchObject({
+      currentAttemptStartedAt: ctx.currentAttempt?.startTime,
+      currentStrategy: "precontent-recovery",
+    })
+    expect(attemptEvent).toMatchObject({
+      ctx: { currentAttemptStartedAt: ctx.currentAttempt?.startTime },
+      attempt: { strategy: "precontent-recovery" },
+    })
+
+    ctx.settleGenerationCandidate(recovery, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.fail("test", new Error("primary terminal"))
+    const terminalEvent = events.findLast((event) => event.kind === "request.failed")
+    expect(terminalEvent?.ctx.summary).toMatchObject({ currentStrategy: "primary" })
+    expect(terminalEvent?.entry._index?.derived?.currentStrategy).toBe("primary")
+  })
+
+  test("pins abort terminal history and V3 egress to primary while a discarded evaluation recovery remains active", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary, metadata: { recoveryReason: "precontent" } })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.settleGenerationDispatch(recoveryDispatch, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.settleGenerationCandidate(recovery, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.abort("test")
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = ctx.toHistoryEntry()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(entry.state).toBe("aborted")
+    expect(entry._index?.derived?.currentStrategy).toBe("primary")
+    expect(terminal.terminal?.committedDispatch).toBeUndefined()
+    expect(terminal.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)?.verdict).toBe("failed")
+    expect(terminal.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.verdict).toBe("failed")
+    expect(terminal.candidates.find((candidate) => candidate.handle === recovery)?.verdict).toBe("failed")
+  })
+
+  test("selecting a recovery winner promotes its dispatch to canonical V2 and V3 terminal attribution", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+
+    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "failed", error: new Error("primary failed") })
+    ctx.settleGenerationCandidate(primary, { verdict: "failed", reason: "primary failed" })
+    ctx.selectGenerationWinner(recovery, recoveryDispatch)
+    ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = ctx.toHistoryEntry()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(entry._index?.derived?.currentStrategy).toBe("precontent-recovery")
+    expect(terminal.terminal?.winnerCandidate).toBe(recovery)
+    expect(terminal.terminal?.committedDispatch).toBe(recoveryDispatch)
+  })
+
+  test("normal live selected primary remains the terminal attempt", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+
+    ctx.selectGenerationWinner(primary, dispatch)
+    ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = ctx.toHistoryEntry()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(entry._index?.derived?.currentStrategy).toBe("primary")
+    expect(terminal.terminal).toMatchObject({ winnerCandidate: primary, committedDispatch: dispatch })
+  })
+
+  test("legacy no-generation terminal falls back to its last V2 attempt", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({ strategy: "legacy-first" })
+    ctx.beginAttempt({ strategy: "legacy-last" })
+    ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(ctx.currentAttempt?.strategy).toBe("legacy-last")
+    expect(entry._index?.derived?.currentStrategy).toBe("legacy-last")
+  })
+
+  test("records response failure supersession on the current dispatch and terminal snapshot", async () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate })
+    const supersededError = new Error("upstream failure")
+    const flushError = new Error("flush failure")
+
+    ctx.recordResponseFailureSupersession({ supersededError, supersededSource: "upstream-transport", flushError })
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: "response.failure-supersession",
+        data: {
+          supersededError: expect.objectContaining({ message: "upstream failure" }),
+          supersededSource: "upstream-transport",
+          flushError: expect.objectContaining({ message: "flush failure" }),
+        },
+      }),
+    )
+
+    ctx.settleGenerationDispatch(dispatch, { verdict: "failed", error: flushError })
+    ctx.settleGenerationCandidate(candidate, { verdict: "failed" })
+    ctx.fail("test", flushError)
+    ctx.finalizeModelOperationDelivery()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(terminal.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: "response.failure-supersession",
+        data: {
+          supersededError: expect.objectContaining({ message: "upstream failure" }),
+          supersededSource: "upstream-transport",
+          flushError: expect.objectContaining({ message: "flush failure" }),
+        },
+      }),
+    )
+  })
+
+  test("generation candidate metadata persists recoveryReason in the canonical snapshot", () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "recovery", metadata: { recoveryReason: "stream-error-before-content" } })
+
+    expect(ctx.modelOperationSnapshot.candidates).toContainEqual(
+      expect.objectContaining({ handle: candidate, role: "recovery", metadata: { recoveryReason: "stream-error-before-content" } }),
+    )
+  })
+
   test("markGenerationDispatchSynthetic aligns the transient and canonical upstream-request producers", () => {
     const { ctx } = makeContext()
     const candidate = ctx.beginGenerationCandidate({ role: "continuation" })
@@ -734,7 +939,7 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.attempts![0].effectiveSource?.messageCount).toBe(2)
   })
 
-  test("projects rich parsed upstream frames into History without flattening the arena value", async () => {
+  test("projects parsed upstream frames into History while storing canonical wire fields in the arena", async () => {
     const { ctx } = makeContext()
     ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
     ctx.beginAttempt({})
@@ -753,7 +958,7 @@ describe("createRequestContext - toHistoryEntry", () => {
     ])
     const handle = ctx.modelOperationTerminalRecord?.dispatches[0]?.upstreamResponse?.frames[0]
     const arenaValue = handle ? ctx.modelOperationTerminalRecord?.arena.frames.find((frame) => frame.handle === handle)?.value : undefined
-    expect(arenaValue).toMatchObject(parsed)
+    expect(arenaValue).toEqual({ event: "response.output_text.delta", data: "PARTIAL_ATTEMPT_1", id: "alpha", type: "response.output_text.delta" })
   })
 
   test("includes sseEvents and per-attempt request/response headers in entry", () => {

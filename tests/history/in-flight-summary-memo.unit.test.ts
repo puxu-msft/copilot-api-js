@@ -23,6 +23,7 @@ import {
   clearInFlight,
   extractPreviewText,
   putInFlight,
+  setSummaryPreviewVisitObserverForTests,
   toEntrySummary,
   updateInFlight,
 } from "~/lib/history/in-flight"
@@ -91,17 +92,15 @@ describe("toEntrySummary memoization (M4)", () => {
     expect(toEntrySummary(pinned).pinned).toBe(true)
   })
 
-  test("performance: 1000 summary calls on a heavy entry don't re-iterate messages", () => {
-    // 200-message entry, 10 blocks each. Re-iterating on every call would be
-    // 200 × 10 × 1000 = 2,000,000 block visits. With memoization, it's a
-    // single iteration up front. We can't directly observe iterations from
-    // outside, but the absolute time budget proves it: a non-memoized version
-    // historically took 100ms+ on this size on a modest machine.
-    const messages = Array.from({ length: 200 }, (_, i) => ({
+  test("1000 summaries traverse every preview message and block once per entry instance", () => {
+    const finalPreview = "final preview text"
+    const messages = Array.from({ length: 200 }, (_, messageIndex) => ({
       role: "user" as const,
-      content: Array.from({ length: 10 }, (_, j) => ({
+      content: Array.from({ length: 10 }, (_, blockIndex) => ({
         type: "text" as const,
-        text: `block ${i}-${j} ${"x".repeat(80)}`,
+        // extractPreviewText scans messages from 199 down to 0, while summarizeMessage scans blocks from 0 up.
+        // Only the final block of message 0 is summarizable, forcing one complete 200 × 10 traversal.
+        text: messageIndex === 0 && blockIndex === 9 ? finalPreview : "",
       })),
     }))
     const heavy: HistoryEntry = {
@@ -117,12 +116,22 @@ describe("toEntrySummary memoization (M4)", () => {
     }
     putInFlight(heavy)
 
-    const start = Date.now()
-    for (let i = 0; i < 1000; i++) toEntrySummary(heavy)
-    const elapsed = Date.now() - start
+    const visits = { messages: 0, blocks: 0 }
+    setSummaryPreviewVisitObserverForTests((kind) => visits[kind]++)
+    try {
+      expect(toEntrySummary(heavy).previewText).toBe(finalPreview)
+      expect(visits).toEqual({ messages: 200, blocks: 2000 })
 
-    // Memoized: ~few ms total. Non-memoized would be 100ms+ even on fast CPU.
-    // Allow a wide margin for CI jitter while still catching regression.
-    expect(elapsed).toBeLessThan(50)
+      for (let i = 0; i < 999; i++) toEntrySummary(heavy)
+      expect(visits).toEqual({ messages: 200, blocks: 2000 })
+
+      const fresh = updateInFlight("heavy", { _index: { derived: { attemptCount: 2 } } })
+      expect(fresh).toBeDefined()
+      if (!fresh) return
+      expect(toEntrySummary(fresh).previewText).toBe(finalPreview)
+      expect(visits).toEqual({ messages: 400, blocks: 4000 })
+    } finally {
+      setSummaryPreviewVisitObserverForTests(undefined)
+    }
   })
 })

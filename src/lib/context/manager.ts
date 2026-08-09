@@ -21,6 +21,7 @@ import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   ObservabilityEvent,
@@ -28,6 +29,8 @@ import type {
 } from "~/lib/observability"
 
 import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
+import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
+import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
 import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { state } from "~/lib/state"
 
@@ -65,6 +68,7 @@ export interface RequestContextManager {
     query?: InboundQuery
     /** Inbound Content-Length header value, if present. */
     requestBodySize?: number
+    historyReservation?: HistoryReservation
     operationIdentity?: {
       kind: OperationKind
       connectionId?: string
@@ -367,6 +371,8 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         path: opts.path,
         query: opts.query,
         requestBodySize: opts.requestBodySize,
+        historyReservation: opts.historyReservation,
+        deferHistoryReservationBinding: true,
         operationIdentity: opts.operationIdentity,
         // Pure resource-management hook — remove the context from the active
         // map when it settles. Lifecycle events reach the bus via the context's
@@ -393,6 +399,13 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
                 pendingModelOperationFinalizations.delete(finalization)
                 operationScopes.delete(id)
                 modelOperationFinalizationFailures.push(error)
+                if (isHistoryPersistenceReservation(opts.historyReservation)) {
+                  try {
+                    getHistoryAdmissionController().failBeforeTerminal(id, error)
+                  } catch (releaseError) {
+                    consola.error(`[context] Failed to release History reservation ${id}:`, releaseError)
+                  }
+                }
                 consola.error(`[context] Generation finalization failed for ${id}:`, error)
               },
             )
@@ -403,6 +416,13 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       peekTelemetryRuntime()?.recordAccepted(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       operationScopes.set(ctx.id, ctx)
+      try {
+        opts.historyReservation?.bindOperationId(ctx.id)
+      } catch (error) {
+        activeContexts.delete(ctx.id)
+        operationScopes.delete(ctx.id)
+        throw error
+      }
       // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first
       // (`cancelReason=request_deadline`, operationSignal abort), then records the timeout terminal.
       // This fires ON TIME via a per-request timer (bypasses RC2's late scan); `unref` prevents it

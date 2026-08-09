@@ -7,6 +7,11 @@ import type {
   SessionSummary,
 } from "./types"
 
+import {
+  //
+  listHistoryOverlayEntries,
+  listHistoryOverlaySummaries,
+} from "./queries"
 import { getDatabase } from "./sqlite/connection"
 import { recordToHistoryEntry } from "./v3/projection"
 import {
@@ -25,12 +30,19 @@ import {
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
   const db = getDatabase()
-  const snapshot = withValidatedSummarySnapshot(db, () => querySessionSummaries(db, limit))
+  const overlay = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId !== undefined)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionSummaries(db, limit, overlay))
   if (snapshot.ready) return snapshot.value
 
   const grouped = new Map<string, Array<EntrySummary>>()
+  const seen = new Set(overlay.map((summary) => summary.id))
+  for (const summary of overlay) {
+    const group = grouped.get(summary.sessionId as string) ?? []
+    group.push(summary)
+    grouped.set(summary.sessionId as string, group)
+  }
   visitV3Summaries((summary) => {
-    if (!summary.sessionId) return
+    if (!summary.sessionId || seen.has(summary.id)) return
     const group = grouped.get(summary.sessionId) ?? []
     group.push(summary)
     grouped.set(summary.sessionId, group)
@@ -146,11 +158,16 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
   const db = getDatabase()
-  const snapshot = withValidatedSummarySnapshot(db, () => querySessionEntryPage(db, sessionId, cursor, limit))
+  const overlayEntries = listHistoryOverlayEntries().filter((entry) => entry.operationKind === "generation" && entry.sessionId === sessionId)
+  const overlaySummaries = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId === sessionId)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionEntryPage(db, sessionId, cursor, limit, overlaySummaries))
   if (snapshot.ready) {
     const page = snapshot.value
     const stored = getV3StoredOperations(page.operationIds, db)
+    const byOverlayId = new Map(overlayEntries.map((entry) => [entry.id, entry]))
     const entries = page.operationIds.map((operationId) => {
+      const overlayEntry = byOverlayId.get(operationId)
+      if (overlayEntry) return overlayEntry
       const operation = stored.get(operationId)
       if (!operation) throw new Error(`Summary projection references missing canonical operation: ${operationId}`)
       return recordToHistoryEntry(operation.record, operation)
@@ -158,9 +175,10 @@ export function getSessionEntries(sessionId: string, options: { cursor?: string;
     return { entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
   }
 
-  const all: Array<HistoryEntry> = []
+  const all: Array<HistoryEntry> = [...overlayEntries]
+  const seen = new Set(overlayEntries.map((entry) => entry.id))
   visitV3StoredOperations((stored) => {
-    if (stored.record.identity.sessionId === sessionId) all.push(recordToHistoryEntry(stored.record, stored))
+    if (stored.record.identity.sessionId === sessionId && !seen.has(stored.record.identity.operationId)) all.push(recordToHistoryEntry(stored.record, stored))
   }, "generation")
   all.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
 

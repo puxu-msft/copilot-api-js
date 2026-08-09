@@ -2,6 +2,7 @@ export {
   type CapturedTransportEvidence,
   //
   commitPreparedOperation,
+  DEFAULT_V3_PERSIST_RETRY_CONFIG,
   drainV3Writer,
   enqueueModelOperation,
   ensureV3Schema,

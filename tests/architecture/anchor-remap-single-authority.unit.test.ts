@@ -170,16 +170,17 @@ test("the handler is the only production allocator creation point", async () => 
 })
 
 test("legacy candidate provenance is confined to asDeliveryFrame", async () => {
+  const candidateProvenance = /\b(?:candidateId|dispatchId)\s*:\s*["']legacy["']/g
   const occurrences: Array<string> = []
   for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
     const source = await readFile(file, "utf8")
-    const count = source.match(/"legacy"/g)?.length ?? 0
+    const count = source.match(candidateProvenance)?.length ?? 0
     for (let i = 0; i < count; i++) occurrences.push(path.relative(repoRoot, file))
   }
   expect(occurrences).toEqual(["src/lib/pipeline/delivery/session.ts", "src/lib/pipeline/delivery/session.ts"])
   const session = await readFile(path.join(repoRoot, "src/lib/pipeline/delivery/session.ts"), "utf8")
   const helper = session.slice(session.indexOf("function asDeliveryFrame"), session.indexOf("async function writeToSink"))
-  expect(helper.match(/"legacy"/g)).toHaveLength(2)
+  expect(helper.match(candidateProvenance)).toHaveLength(2)
 })
 
 test("detector bites on owner-private mapping and open-anchor access", () => {

@@ -13,6 +13,8 @@ description: 当 copilot-api-js 后端测试「单跑通过、全套件失败」
 - 失败随文件集合/顺序变化（加一个无关文件就翻绿/翻红）。
 - 断言值是「别的测试的配置」（如期望默认 `false` 实得 `true`），而非逻辑错。
 
+**一个长得很像、但根因完全不同的形态——先排除它再往下走**：`setStateForTests(...)` 设了某个键却**像没生效**，而且**单跑也一样**（不随文件集合/顺序变化），或者拿「翻状态」当 mutation control **永远不变红**。那多半不是跨文件污染，而是 **config 热加载覆盖**——路由过程中 `applyConfigToState()` 把 `config.yaml` 里显式写着的键重新写回 state。指纹是「同一个 policy 对象里一半字段听测试、一半听配置文件」。判据与修法在 skill `test-isolation` 的「config 隔离与 state 隔离是两根正交的轴」节，本 skill 不复述。
+
 ## 诊断流程
 
 **① 抓泄漏的确切变量与值，别停在「测试挂了」。** 全套件跑、抓失败断言的 received vs expected：

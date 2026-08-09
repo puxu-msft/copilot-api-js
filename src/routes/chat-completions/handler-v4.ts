@@ -33,6 +33,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -74,6 +75,7 @@ import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/revers
 import { applyConfigToState } from "~/lib/config/config"
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -150,6 +152,10 @@ function restoreStreamToolNames(data: string | undefined, mapper: ToolNameMapper
 }
 
 export async function handleChatCompletionV4(c: Context): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleChatCompletionV4Admitted(c, historyReservation))
+}
+
+async function handleChatCompletionV4Admitted(c: Context, historyReservation: HistoryReservation): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
@@ -204,6 +210,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

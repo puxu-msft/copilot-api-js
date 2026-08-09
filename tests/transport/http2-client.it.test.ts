@@ -30,6 +30,7 @@ import {
   setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 import { waitUntil } from "../helpers/wait-until"
 
@@ -39,6 +40,61 @@ const serverSessions = new Set<http2.ServerHttp2Session>()
 
 type Handler = (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void
 let handler: Handler
+
+type AbortListener = Parameters<AbortSignal["addEventListener"]>[1]
+type AbortAddOptions = Parameters<AbortSignal["addEventListener"]>[2]
+type AbortRemoveOptions = Parameters<AbortSignal["removeEventListener"]>[2]
+
+interface ListenerTrackingSignal extends AbortSignal {
+  markHeadersResolved(): void
+  readonly postResponseAdds: number
+  readonly postResponseRemoves: number
+}
+
+function trackPostResponseAbortListeners(controller: AbortController): ListenerTrackingSignal {
+  const activeAbortListeners = new Set<AbortListener>()
+  const postResponseListeners = new Set<AbortListener>()
+  let postResponseRemoves = 0
+
+  const facade = {
+    get aborted() {
+      return controller.signal.aborted
+    },
+    get reason() {
+      return controller.signal.reason
+    },
+    throwIfAborted() {
+      controller.signal.throwIfAborted()
+    },
+    addEventListener(type: string, listener: AbortListener, options?: AbortAddOptions) {
+      if (!listener) return
+      if (type === "abort") activeAbortListeners.add(listener)
+      controller.signal.addEventListener(type, listener, options)
+    },
+    removeEventListener(type: string, listener: AbortListener, options?: AbortRemoveOptions) {
+      if (!listener) return
+      if (type === "abort") {
+        activeAbortListeners.delete(listener)
+        if (postResponseListeners.delete(listener)) postResponseRemoves += 1
+      }
+      controller.signal.removeEventListener(type, listener, options)
+    },
+    dispatchEvent(event: Event) {
+      return controller.signal.dispatchEvent(event)
+    },
+    markHeadersResolved() {
+      for (const listener of activeAbortListeners) postResponseListeners.add(listener)
+    },
+    get postResponseAdds() {
+      return postResponseListeners.size + postResponseRemoves
+    },
+    get postResponseRemoves() {
+      return postResponseRemoves
+    },
+  }
+
+  return facade as ListenerTrackingSignal
+}
 
 beforeEach(async () => {
   server = http2.createServer()
@@ -91,6 +147,80 @@ describe("http2-client", () => {
     expect(res.status).toBe(404)
     expect(res.ok).toBe(false)
     expect(await res.text()).toBe("not found")
+  })
+
+  test("upstreamFetch disarms the header deadline before a delayed HTTP2 body", async () => {
+    let releaseBody!: () => void
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      void bodyGate.then(() => stream.end("late"))
+    }
+    let streamClosed = 0
+
+    const response = await upstreamFetch("https://fixture.invalid/late", {
+      responseHeaderTimeoutMs: 1000,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    releaseBody()
+    expect(await response.text()).toBe("late")
+    await waitUntil(() => streamClosed === 1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("natural HTTP2 end detaches the post-response abort listener", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/natural-end`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    expect(await response.text()).toBe("ok")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("post-header abort detaches its listener after the HTTP2 stream closes", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("held")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/post-header-abort`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    controller.abort(new DOMException("client disconnected", "AbortError"))
+    await response.body?.cancel("release reader")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
   })
 
   test("streams the body incrementally via response.body (ReadableStream)", async () => {

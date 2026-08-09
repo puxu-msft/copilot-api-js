@@ -75,6 +75,7 @@ export interface RequestContextSnapshot {
   state: RequestState
   startTime: number
   queueWaitMs: number
+  historyAdmissionWaitMs?: number
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number
@@ -116,7 +117,7 @@ export interface AttemptSnapshot {
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 
-export type ShutdownPhase = "draining" | "aborting" | "finalized"
+export type ShutdownPhase = "draining" | "finalized"
 
 export type RateLimitMode = "normal" | "rate-limited" | "recovering"
 

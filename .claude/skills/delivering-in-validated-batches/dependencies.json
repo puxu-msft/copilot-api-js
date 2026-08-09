@@ -1,0 +1,40 @@
+{
+  "skills": [
+    {
+      "name": "superpowers:writing-plans",
+      "frontmatter_name": "writing-plans",
+      "scope": "superpowers-plugin",
+      "relative_path": "skills/writing-plans/SKILL.md"
+    },
+    {
+      "name": "superpowers:test-driven-development",
+      "frontmatter_name": "test-driven-development",
+      "scope": "superpowers-plugin",
+      "relative_path": "skills/test-driven-development/SKILL.md"
+    },
+    {
+      "name": "positive-control-your-tests",
+      "frontmatter_name": "positive-control-your-tests",
+      "scope": "user",
+      "relative_path": "positive-control-your-tests/SKILL.md"
+    },
+    {
+      "name": "organizing-project-docs",
+      "frontmatter_name": "organizing-project-docs",
+      "scope": "user",
+      "relative_path": "organizing-project-docs/SKILL.md"
+    },
+    {
+      "name": "adopting-agent-findings",
+      "frontmatter_name": "adopting-agent-findings",
+      "scope": "user",
+      "relative_path": "adopting-agent-findings/SKILL.md"
+    },
+    {
+      "name": "closing-a-development-session",
+      "frontmatter_name": "closing-a-development-session",
+      "scope": "user",
+      "relative_path": "closing-a-development-session/SKILL.md"
+    }
+  ]
+}
