@@ -44,6 +44,18 @@
 | 类型 | 通过 | `bun run typecheck` | 新跑 |
 | 全仓 lint | 通过（仅剩与代码无关的 `baseline-browser-mapping` 数据过期提示） | `bun run lint:all` | 新跑 |
 | 架构与 discovery guards | 17 文件、178 pass、0 fail、退出码 0 | `bun test tests/architecture/ tests/infra/test-discovery-matrix.unit.test.ts` | 新跑 |
+
+### 合并态验证（在 master 上，非特性分支）
+
+**这一项此前是缺的**——本会话所有验证都跑在特性分支上，而收尾规程要求在合并后的位置验证。2026-08-09 补做，方法是在 `master@58f4c45d` 上新建一次性 detached worktree 跑全后端：
+
+| 位置 | 结果 |
+|---|---|
+| `master@58f4c45d`（合并后）第一次 | `executed=7297`、`skipped=35`、**1 fail** —— `store-performance.it` 的耗时比值断言 |
+| `master@58f4c45d` 第二次 | `executed=7297`、`skipped=35`、**0 fail** |
+| `58f4c45d^1`（合并前 master）A/B 对照 | **3 fail** —— 含上面同一条、同文件的 CAS 条、两条 legacy Vue 守卫 |
+
+**结论**：那条失败在合并前后都出现过、第二次干净，是**间歇性**的；本任务对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交、无直接改动。已记入 `docs/todo/deferred-backlog.md`（连同「不主张两条 legacy Vue 守卫是被本次合并修好的」这一未确证项）。两棵验证 worktree 已在不加 `--force` 的前提下移除（git 未拒绝，即确无未提交改动）。
 | PTY | 19 pass，0 fail | `bun run test:pty` | 复用（合入 `master@d47492a6` 前执行，此后无 pty 路径改动） |
 | 旧 Vue | Bun 249、Vitest 78、vue-tsc、Vite build 均通过 | `bun run test:ui` 等 | 复用（同上，此后无前端路径改动） |
 
@@ -124,6 +136,10 @@
 - **首信号后新建 upstream WS 仍无 shutdown 交叉测试直接覆盖。** 这一点在 skill 里显式标为证据边界，未扩大声称；已建 context 的 token refresh、新建 h2 与 pre-content recovery 三条均有直接证据。
 - **一处曾写出的不可复现数字已更正，记在这里以免被当成从未发生：** 本报告初版写「架构与 discovery guards 34/34」，该数字无可复现 selector，由终审抓出；实测为 17 文件 178 pass。同类风险已在验证表里用「命令」列固定住——每一行都要能被单独复跑。
 - **收尾三轮评审的处置已复评闭合。** 指令类文本三条由未卷入的第三方复评 FIXED；终审三条由原终审 reviewer 复评 FIXED（C 级，按分级可由其收口）。文档评审的三条由我自评后，其结论被终审独立重查并进一步收紧（正是终审抓出「四路 0/0」的夸大与「34/34」不可复现）。
+- **job 临时目录一个文件都没删。** 理由是 harness 拥有该目录并会随 job 删除自动清理，且所有长期价值内容已持久化进仓库。**但这是一个未执行的收尾阶段，不是「不适用」**——若将来要求真正清理，前置条件（清单已独立评审）已满足。
+- **未写跨会话交接文档（HANDOVER/KICKOFF）。** 判据是没有待续工作：本任务的 spec、plan、整改、评审、收尾全部闭合并已合入 master，`docs/todo/deferred-backlog.md` 承载了两条结构性待办（shutdown drain source 手工枚举、`store-performance.it` 的比值断言）。**若后续要接着做那两条，需要另起交接。**
+- **未回收本分支与 worktree。** 它们的提交已全部在 master，技术上可以回收；留给用户决定。
+- **两条 legacy Vue 守卫在合并前后的红绿变化未确证成因**（见合并态验证节），已记入 backlog 而非猜一个解释。
 
 ## 9. 合并落地之后的更新
 

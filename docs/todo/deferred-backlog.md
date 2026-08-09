@@ -1223,3 +1223,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：它是**性能/架构**改动而非 correctness 缺陷（本轮已闭合的三条 A3 都是 correctness），要主张改善必须先有**可复现基线**（合成语料下的分档计时），否则等于用推理冒充测量；且顺序、`total`、`hasOlder`/`hasNewer`、`invalidCursor` 四项语义必须逐条保持不变，值得配自己的 mutation 对照，塞进本轮会让本轮的验证链变糊。
 - **触发条件（值得做）**：① History 语料规模上一个数量级、或 `search=` 列表请求出现可观测延迟；② 因别的原因已经要动 `schema()` / bump `FORMAT_MARKER` 时（顺手把 fast 列一起加上，省一次全量重建）；③ 有人打算放宽「精确 total」契约时——那会改变本条的最优解形状，需要先重裁契约。
 - **发现方**：NGHTTP2_CANCEL 系列 A3 独立评审 finding 4（`docs/plan/2026-08-06-nghttp2-cancel-series/review-core-a3.md`），2026-08-08 对照 current master 源码逐行复核仍成立；同轮已闭合 finding 3（`state ∧ success`）、5（list query 校验）、6（cursor↔index generation 绑定）。
+
+## `store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败（2026-08-08 合并态验证时发现）
+
+- **根因 / 现状**：`tests/history/v3/store-performance.it.test.ts` 的「prepare and commit do not depend on prior session history length」断言的是**耗时比值**，对 CPU 争用敏感。在 `bun run test:backend` 的 16-shard 负载下会间歇性变红；单文件独跑 3/3 稳定通过。同文件的「CAS live physical bytes …10x smaller」也观测到过一次同类失败。
+- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含本条 + 上述 CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail（仅本条）、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
+- **不是什么**：不是 `worktree-fix-shutdown-review-findings` 引入的——该分支对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交，无直接改动（`git log --first-parent 44457047~1..765bb2be -- tests/history/v3/ src/lib/history/v3/` 为空）。
+- **两条 legacy Vue 守卫（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿**——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
+- **理想架构 / 若做需改什么**：耗时比值不适合在共享 CPU 的分片 runner 里当通过条件。可选路径：①把该断言迁到不并行的档位（如 `test:pty` 之外另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。②最长远——它测的本来就是「不依赖历史长度」这个性质。
+- **为何暂缓**：属既有测试的判据形态问题，不是产品缺陷；且本轮任务未触及 History V3 store，就地改它会把两件事混进同一次验证链。**但它会持续制造 false-red**，按 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 的判据，这正是「wall-clock 预算/比值当通过条件」那一类。
+- **触发条件**：再次在 CI 或全量运行中看到本条变红时，直接做②，不要调阈值——调阈值是打地鼠。
