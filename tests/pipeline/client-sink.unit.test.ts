@@ -57,6 +57,27 @@ describe("FakeClock selective interception", () => {
       clock.restore()
     }
   })
+
+  // A second install() without an intervening restore() used to drop the set of real timers on the
+  // floor. Those are armed on the host, so they kept firing into whatever ran next, past a restore()
+  // that no longer knew about them. FakeClock is shared by ~40 test files; the next caller will not
+  // know that re-installing is only safe after restoring.
+  test("re-installing cancels real timers armed by the previous install", async () => {
+    const clock = new FakeClock()
+    let realFired = false
+    try {
+      clock.install({ intercept: (ms) => ms === 1 })
+      setTimeout(() => {
+        realFired = true
+      }, 30)
+      clock.install({ intercept: (ms) => ms === 1 })
+      clock.restore()
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      expect(realFired).toBe(false)
+    } finally {
+      clock.restore()
+    }
+  })
 })
 
 describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {

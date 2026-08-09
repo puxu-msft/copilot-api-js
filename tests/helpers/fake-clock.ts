@@ -12,6 +12,19 @@ export class FakeClock {
   private origSet = globalThis.setTimeout
   private origClear = globalThis.clearTimeout
   private origNow = Date.now
+  /**
+   * Delays the caller chose NOT to fake, armed on the real host timer. Two properties this set
+   * relies on: an entry is removed when it fires ({@link install}) or when the caller clears it,
+   * and {@link restore} clears whatever is left, so a non-intercepted timer can never outlive the
+   * clock that armed it.
+   *
+   * The membership test in the patched `clearTimeout` is what keeps the two id spaces apart, and it
+   * works because Bun's `setTimeout` returns a `Timeout` OBJECT while faked ids are plain numbers:
+   * `Set.delete` uses SameValueZero and never coerces, so a fake id of `1` cannot cancel a real
+   * `Timeout` whose `valueOf()` is also `1` (verified by forcing exactly that alias). On a host
+   * where `setTimeout` returns a number instead — browser semantics — that separation disappears
+   * and this routing would need real tagging.
+   */
   private realTimers = new Set<ReturnType<typeof setTimeout>>()
 
   readonly realSetTimeout = this.origSet.bind(globalThis)
@@ -20,6 +33,10 @@ export class FakeClock {
     this.now = 1_000_000
     this.nextId = 1
     this.timers.clear()
+    // Dropping references to real timers would orphan them: unlike the lazily-fired fake entries
+    // above, these are armed on the host and would go on firing into whatever test runs next,
+    // past a restore() that no longer knows about them.
+    for (const timer of this.realTimers) this.origClear(timer)
     this.realTimers.clear()
     Date.now = () => this.now
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
