@@ -182,19 +182,25 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
  * "matches the search" cannot mean two different things inside a single merged page. No needle →
  * always matches.
  *
- * The invariant this exists to hold is one-directional and worth stating as such, because three
- * attempts to describe it as symmetric were each falsified by a probe: **the overlay must never hide
- * a row the index would return.** Rows the index has not indexed yet are the overlay's alone to
- * show, so a miss here removes a just-finished request from the results until the sidecar catches up
- * and then puts it back. Matching more than the index is harmless by comparison — it surfaces a row
- * early. The property is checked against the real index in `exp/history-search-list-perf/`, which is
- * where it belongs: a claim about two tokenizers is not something to assert in a comment.
+ * What this must satisfy has been written here four times and falsified four times, so it is stated
+ * once and then checked by machine: the overlay and the index must agree, in BOTH directions, for
+ * multi-word needles. Under-matching hides a just-finished request until the sidecar catches up.
+ * Over-matching was assumed harmless for three rounds and is not — overlay rows are the newest, so a
+ * loose predicate puts unrelated rows at the top of the first page, inflates `total`, and hands out
+ * cursors for rows that do not belong to the result. `tests/history/search/overlay-index-agreement.it.test.ts`
+ * checks both directions against the real index, on both overlay lanes; a claim about two tokenizers
+ * belongs in a test, not in this comment.
  *
  * Hence: split on Unicode letters and numbers (Tantivy's `SimpleTokenizer` splits on
- * `char::is_alphanumeric`; ASCII-only produced zero terms for `你好 世界`), and require ANY term
- * rather than all of them, because `QueryParser` is OR by default — measured: `bug zzzabsent` matches
- * a document containing only `bug`. Requiring all terms hid a row whenever a query contained one word
- * the row lacked, which is most multi-word queries.
+ * `char::is_alphanumeric`; ASCII-only produced zero terms for `你好 世界`), and match a multi-word
+ * needle as ANY of its terms equal to a token — which is precisely what the index does, an OR over
+ * tokens. Requiring all terms hid a row whenever a query held one word the row lacked; accepting any
+ * term as a bare substring went as wrong in the other direction, because the corpus is JSON and a
+ * short term collides with keys, quotes and ids (`429` inside a request id `5f1429ab`, `it` inside
+ * `waiting`). Overlay rows are the newest, so that noise took the whole first page.
+ *
+ * A single-token needle keeps the substring test. That over-matches by design — it is what makes a
+ * search box usable as you type — and it is bounded: one term, not one term out of several.
  */
 function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
   if (!needle) return true
@@ -204,7 +210,8 @@ function corpusMatchesSearch(text: string, needle: string | undefined): boolean 
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
   if (terms.length <= 1) return haystack.includes(needle.toLowerCase())
-  return terms.some((term) => haystack.includes(term))
+  const tokens = new Set(haystack.split(/[^\p{L}\p{N}]+/u).filter(Boolean))
+  return terms.some((term) => tokens.has(term))
 }
 
 /**
