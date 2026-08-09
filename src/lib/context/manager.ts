@@ -117,6 +117,15 @@ export interface RequestContextManager {
 
   /** Run a single reaper scan (exposed for testing) */
   _runReaperOnce(): void
+
+  /**
+   * TEST-ONLY: current size of the internal `lifecycleFailureBarrier` map. Exists so a test can
+   * mechanically prove the barrier's storage is bounded by tracked-operation lifetime (evicted at
+   * `releaseTrackedOperationIfTerminal`), not left to grow monotonically until someone happens to
+   * call `drainLifecycleFailures()` — the review MAJOR finding on commit 3e418cdb. Production code
+   * must never read this (it is not part of any product-facing contract).
+   */
+  _lifecycleFailureBarrierSize(): number
 }
 
 // ─── Implementation ───
@@ -388,11 +397,39 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
    * (`onLifecycleFailure` returned false/threw/absent) keeps `blocker === "canonical-finalization"`
    * — deleting it anyway would make the shutdown drain and `/api/status` silently stop reporting a
    * genuinely-unresolved failure (exactly the "false-green skip" the frozen spec forbids).
+   *
+   * THIS is also the ONLY place that evicts `lifecycleFailureBarrier` entries (review finding
+   * blocker+major, commit 3e418cdb): by the time `blocker === "none"`, `failGenerationDelivery`
+   * (delivery phase) and/or the canonical finalizer's catch (canonical phase) have ALREADY called
+   * `registerLifecycleFailure` synchronously — a delivery failure locks `isDeliveryOutcomeLocked`
+   * before the finalizer can even start, and a canonical failure is registered inside the finalizer's
+   * own catch before it rejects — so any barrier entry for this id is guaranteed present here if it
+   * exists. Evicting it into `modelOperationFinalizationFailures` (the ONLY queue
+   * `drainLifecycleFailures()` reads) fixes BOTH defects with one mechanism:
+   *   - blocker: a registered delivery failure alone (canonical succeeds) never rejects the
+   *     finalizer promise, so the old reject-only push into `modelOperationFinalizationFailures`
+   *     never saw it — `lifecycleFailureBarrier` was write-only. Eviction here means EVERY
+   *     registered failure (delivery, canonical, or both) reaches the drain queue exactly once.
+   *   - major: the barrier's storage lifetime is now bounded by each tracked operation's OWN
+   *     lifetime (evicted the moment it leaves `operationScopes`), not by how often/whether anyone
+   *     ever calls `drainLifecycleFailures()` (in production that's only at shutdown — this manager
+   *     is a process-level singleton, so without release-time eviction the map would grow
+   *     monotonically with every failed request for the life of the process).
+   * The reject callback below no longer pushes the canonical error itself — doing so AND evicting
+   * it here would double-count the SAME error in `modelOperationFinalizationFailures`.
    */
   function releaseTrackedOperationIfTerminal(id: string): void {
     const ctx = operationScopes.get(id)
     if (!ctx || ctx.operationLifecycle.blocker !== "none") return
     operationScopes.delete(id)
+    for (const phase of ["delivery", "canonical"] as const) {
+      const key = `${id}:${phase}`
+      const entry = lifecycleFailureBarrier.get(key)
+      if (entry !== undefined) {
+        lifecycleFailureBarrier.delete(key)
+        modelOperationFinalizationFailures.push(entry.error)
+      }
+    }
   }
 
   return {
@@ -427,11 +464,22 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
             // primitive below, never inline in these two callbacks (Task 4 Step 3: "禁止在两条
             // promise callback 内直接 operationScopes.delete"). By the time either branch runs,
             // RequestContext has already published its terminal lifecycle state (delivery
-            // finalized/failed + canonical completed/failed), so `blocker` reads "none" and the
-            // release is safe. A rejected finalizer's error is queued for `drainLifecycleFailures()`
-            // — that is the process barrier's OWN durability drain, separate from (and in addition
-            // to) `onLifecycleFailure`, which is the synchronous registration gate `failGenerationDelivery`/
-            // the canonical catch consult before publishing a terminal `"failed"` lifecycle state.
+            // finalized/failed + canonical completed/failed). A REGISTERED delivery and/or
+            // canonical failure reaches `drainLifecycleFailures()` exclusively through
+            // `releaseTrackedOperationIfTerminal`'s barrier eviction below (review fix for the
+            // blocker+major on commit 3e418cdb) — NOT pushed again here — because:
+            //   - a delivery-only failure (canonical still succeeds) never rejects this promise at
+            //     all, so pushing only in the reject branch was write-only for that case (the
+            //     blocker); the release-time eviction covers BOTH branches uniformly.
+            //   - pushing `error` here in addition to the release-time eviction would double-count
+            //     the SAME canonical failure when the barrier registered it (the common case).
+            // An UNREGISTERED canonical rejection (onLifecycleFailure returned false/threw/absent —
+            // production-unreachable through this manager's wiring, since a fresh id+phase always
+            // registers on first call; see review finding C2) leaves `blocker` at
+            // "canonical-finalization" forever, so release() is a no-op and the ctx stays visible
+            // via `getTrackedOperationsSnapshot()`/shutdown drain instead of silently vanishing —
+            // that is the intended "surface it, don't drop it" behavior for that gap, not a bug to
+            // paper over here.
             void finalization.then(
               () => {
                 pendingModelOperationFinalizations.delete(finalization)
@@ -439,7 +487,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
               },
               (error: unknown) => {
                 pendingModelOperationFinalizations.delete(finalization)
-                modelOperationFinalizationFailures.push(error)
                 consola.error(`[context] Generation finalization failed for ${id}:`, error)
                 releaseTrackedOperationIfTerminal(id)
               },
@@ -555,5 +602,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
     startReaper,
     stopReaper,
     _runReaperOnce: runReaperOnce,
+    _lifecycleFailureBarrierSize: () => lifecycleFailureBarrier.size,
   }
 }

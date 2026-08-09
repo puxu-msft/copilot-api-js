@@ -6,7 +6,7 @@ worktree: /home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations
 plan: docs/plan/2026-08-08-long-resident-operation-lifecycle.md
 agent_id: a-impl-1
 session_id: pending
-status: in-progress — Task 1～4 complete; B2 已闭合，待开 Task 5
+status: in-progress — Task 1～4 complete（含独立评审 1 blocker／1 major 修复）; B2 已闭合，待开 Task 5
 ---
 
 # B1 lifecycle 实施进度
@@ -17,9 +17,22 @@ status: in-progress — Task 1～4 complete; B2 已闭合，待开 Task 5
 - 理由：Task 2 消费 Task 1 的精确类型，Task 3 又同时触及 dispatch／scheduler／candidate／coordinator cleanup ownership；拆实例会重复重建偏序和 error ownership，且容易把 plan 的同名接口实现成不同语义。
 - 相位收口时由独立 reviewer 复核该连续性裁定。
 
+## 独立评审（commit 3e418cdb）发现并已修复：blocker + major
+
+评审报告存档于 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-4-review.md`（协调者已提交）。
+
+- **[已修 blocker]** 已登记的 delivery failure（canonical 仍成功）永不进入 `drainLifecycleFailures()`：错误只写进 `lifecycleFailureBarrier`（write-only，全文件仅两处写、零处读），ctx 已从 registry 删除后该失败在进程层彻底消失。**修法**：`releaseTrackedOperationIfTerminal(id)`（唯一 release primitive）在成功删除该 id 后，遍历 `${id}:delivery`／`${id}:canonical` 两个 key，把 barrier 中命中的 error 逐一 evict 进 `modelOperationFinalizationFailures`（`drainLifecycleFailures()` 唯一读取的队列），同一改动同时覆盖 resolve 与 reject 两条 finalizer 分支，故 delivery-only failure（从不 reject finalizer）与 canonical failure（reject finalizer）都能被 drain 看到；reject 回调**不再**自行 push（避免同一 canonical error 被 evict 与 reject 回调各 push 一次导致双计）。
+- **[已修 major]** `lifecycleFailureBarrier` 无任何驱逐、按 requestId 单调增长：与上一条同一改动解决——barrier 条目的存活期现在绑定 tracked operation 自身的存活期（release 时驱逐），不再依赖是否/何时调用 `drainLifecycleFailures()`（生产环境只在 shutdown 才调用一次，manager 是进程级单例）。新增 test-only `_lifecycleFailureBarrierSize()` 内省方法（仿照既有 `_runReaperOnce()` 惯例）使该「有界」断言可被机械验证，而非仅靠推理。
+- **两处 nit**：① commit message 里的 `shutdown.ts:433` 实际调用行在 439（433 是注释首行）——本轮新 commit message 已用正确行号。② plan Task 4 Files 清单未含 `src/lib/shutdown.ts`；已在上面「plan-vs-code 差异」节记录，留给 Task 6 同步 plan 文档（不在本轮改 plan）。
+
+### 评审记录但本轮不改的两条观察（留给独立裁决/Task 6）
+
+- **C2（生产不可达分支）**：`releaseTrackedOperationIfTerminal` 里「未登记 failure 时 blocker 不为 none」这条保护分支目前**生产不可达**——`request.ts` 的 `isDeliveryOutcomeLocked` 在登记前就 return，canonical catch 每 ctx 只跑一次，所以这条分支只有推理、无可执行的正/负样本证明它在生产路径上真的被触发过。**不删除该分支**（它是防御性不变量，删除会在未来任何一次 wiring 变化后变成静默漏洞）；标记为待独立裁决——是否需要构造一个能触达它的场景（例如未来允许 `onLifecycleFailure` 在同一 id 上被多次以不同结果调用），或补一条文档说明它是纯防御性代码。
+- **C3（microtask 链 vs 未来 await）**：现实现下从 canonical 置终态（`canonicalState = "completed"/"failed"`）到 `releaseTrackedOperationIfTerminal` 全程是同步 microtask 链（`request.ts` 的 finalizer body → `manager.ts` 的 `finalization.then(...)`），中间插不进任何 I/O 回调，所以 `getTrackedOperationsSnapshot()` 里那个 `blocker === "none"` 的 invariant throw 目前**撞不上**（`/api/status` 不会因此变 500）。这只对**当前实现**成立——Task 6 接线 `/api/status` 时，若在 canonical 完成与 release 之间的路径上引入任何 `await`（例如为渲染响应体做一次异步转换），就会打开一个新的时序窗口，届时该 invariant 可能被撞上并让 `/api/status` 500。留给 Task 6 在接线时意识到这一点。
+
 ## 剩余项
 
-- B2（Task 4）已闭合：`RequestContextManager` 新增单一 release primitive `releaseTrackedOperationIfTerminal()`，两条 finalizer promise 分支（resolve／reject）均只调用它，不再各自 inline `operationScopes.delete`；`getTrackedOperationsSnapshot(now?)` 每次遍历重新聚合（不维护平行计数），四个非-`none` blocker 求和恒等于 `count`，若遇 `blocker === "none"` 立即抛 invariant error（证明 release 接缝漏执行，而不是把它计入公开聚合）；`drainModelOperationFinalizations()` → `drainLifecycleFailures()` 完成改名。
+- B2（Task 4）已闭合（含独立评审 blocker+major 修复）：`RequestContextManager` 新增单一 release primitive `releaseTrackedOperationIfTerminal()`，两条 finalizer promise 分支（resolve／reject）均只调用它，不再各自 inline `operationScopes.delete`；该 primitive 在成功释放 registry 后同时驱逐 `lifecycleFailureBarrier` 中该 id 的 delivery／canonical 条目并 evict 进 `drainLifecycleFailures()` 读取的队列（修复「已登记 failure 永不进 drain」+「barrier 无驱逐单调增长」两项发现，一次改动同时解决）；`getTrackedOperationsSnapshot(now?)` 每次遍历重新聚合（不维护平行计数），四个非-`none` blocker 求和恒等于 `count`，若遇 `blocker === "none"` 立即抛 invariant error（证明 release 接缝漏执行，而不是把它计入公开聚合）；`drainModelOperationFinalizations()` → `drainLifecycleFailures()` 完成改名。
 - Task 5～8 未开工。
 
 ## 由本轮（Task 4）发现并处置的 plan-vs-code 差异
@@ -37,7 +50,7 @@ status: in-progress — Task 1～4 complete; B2 已闭合，待开 Task 5
 - `failureRegistered` 的权威含义是 process shutdown lifecycle failure barrier 已同步持有错误；不得改成 context-local ledger。
 - Candidate reservation 的真实 owner 是 `coordinator.ts`；scheduler 只拥有 dispatch active slot，candidate 只拥有 verdict。
 - Task 4：manager 侧新增的 `onLifecycleFailure` 实现按 `(requestId, phase)` 去重——同一 key 重复调用且携带同一 error identity 时幂等返回 `true`（不重复计入，避免同一失败被 canonical catch 与延迟 delivery-failure 重试各注册一次）；同一 key 携带**不同** error 时返回 `false`（该 barrier 是「每 phase 一个错误」的存在性登记闸门，不是多错误收集器——真正的多错误累积发生在 `drainLifecycleFailures()` 的 `modelOperationFinalizationFailures` 数组，那是跨请求的持久化 drain，两者职责不同不可合并）。
-- Task 4 关闭前重跑过一次 mutation 双控（写在 `getTrackedOperationsSnapshot` 的 `oldestAgeMs` 计算上，把 `<` 误改成 `>`）：目标测试红（`oldestAgeMs`／`count` 断言不符），reverse 后精确恢复绿；未在正式 mutation 清单外新增独立文档，因为 Task 8 才是 exact-patch mutation 存档节点，本轮只是开发期自证。
+- Task 4 关闭前累计跑过五次 mutation 双控（均冻结 patch 注入 → 目标测试转红并记录失败断言原文 → `git apply --reverse --check` → 精确恢复 → `git diff HEAD --stat` 归零）：① `getTrackedOperationsSnapshot` 的 `oldestAgeMs` 比较符 `<`→`>`：`oldestAgeMs`／`count` 断言不符；② 移除 `releaseTrackedOperationIfTerminal` 里整段 barrier 驱逐逻辑：`drainLifecycleFailures()` 的 AggregateError 断言从「抛出且含原始 error」变为「未抛出」（复现独立评审的 blocker 原文）；③ 只移除 `lifecycleFailureBarrier.delete(key)`（保留 push）：`_lifecycleFailureBarrierSize()` 断言从 `0` 变 `25`（复现独立评审的 major 原文——25 个失败请求全部释放后 barrier 仍残留 25 条）；④⑤ 在 reject 回调里补回 `modelOperationFinalizationFailures.push(error)`（制造双计）：`drainLifecycleFailures()` 抛出的 `AggregateError.errors` 长度断言从 `1` 变 `2`。未在正式 mutation 清单外新增独立文档，因为 Task 8 才是 exact-patch mutation 存档节点，本轮只是开发期自证；已按协调者要求把失败断言原文记入本节。
 
 ## 已作废路线
 
@@ -47,6 +60,7 @@ status: in-progress — Task 1～4 complete; B2 已闭合，待开 Task 5
 - 作废：`failureRegistered` 只表示 context 本地记录。原因：独立 plan reviewer 证伪，违反冻结 spec。
 - 作废（Task 4）：在两条 finalizer promise 回调（resolve／reject）内各自直接 `operationScopes.delete(id)`。原因：plan Step 3 明文禁止（"禁止在两条 promise callback 内直接 operationScopes.delete"）——那样会绕开对 `blocker` 的读取，让一个 canonical 失败但**未被 barrier 登记**（`onLifecycleFailure` 返回 false／抛错／缺失）的 ctx 被静默移出 registry，导致 shutdown drain 与 `/api/status` 假绿地报告"已收敛"。改为两条分支都只调用同一个 `releaseTrackedOperationIfTerminal()`。
 - 作废（Task 4）：把 Task 6 的 `ShutdownDeps`/`FinalizeDeps` 字段改名与 `formatActiveRequestsSummary`/`getActive` 重命名一并在本轮做掉。原因：超出 Task 4「Files」清单声明的范围，且用户 kick-off 明确要求「不要碰 Task 5–8」；只做了让 Task 4 自身可独立 typecheck 通过所必需的单行调用目标切换（见上「plan-vs-code 差异」节）。
+- 作废（Task 4 review-fix）：既在 `releaseTrackedOperationIfTerminal` 里 evict barrier 又在 reject 回调里保留原有 `modelOperationFinalizationFailures.push(error)`。原因：同一 canonical error 会被两处各 push 一次，`drainLifecycleFailures()` 的 `AggregateError.errors` 长度翻倍（mutation ④⑤ 实测复现：1→2）——已改为只在 evict 处 push，reject 回调只负责日志 + 释放。
 
 ## 每 commit 更新纪律
 
