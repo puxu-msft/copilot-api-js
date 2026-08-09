@@ -94,13 +94,14 @@ describe("P2-T1 branch-local response processor", () => {
 
   test("projects direct rich SSE to wire before exactly-once post-render classification", async () => {
     let classifications = 0
+    const captures = { upstream: [] as Array<unknown>, actions: [] as Array<unknown>, transforms: [] as Array<unknown> }
     const richUpstream = {
       kind: "parsed-sse",
       message: { event: "response.delta", data: "payload", id: "alpha" },
       idField: { kind: "present", value: "alpha" },
     } as unknown as UpstreamFrame
     const processor = createResponseProcessor({
-      env: envelope(),
+      env: envelope(captures),
       responseRewrites: [],
       renderResponse: (frame) => frame,
       onRenderedFrame: (frame) => {
@@ -112,6 +113,10 @@ describe("P2-T1 branch-local response processor", () => {
 
     expect(await collect(processor, [richUpstream])).toEqual([{ event: "response.delta", data: "payload", id: "alpha" }])
     expect(classifications).toBe(1)
+    // The other side of the same boundary. The wire assertion above only pins that the CLIENT gets a flat frame; it says nothing about what History was handed, and nothing in the suite did.
+    // Projecting the upstream capture too would have been invisible: every existing assertion here would still pass while History silently lost the parser's provenance.
+    expect(captures.upstream).toHaveLength(1)
+    expect("kind" in (captures.upstream[0] as object)).toBeTrue()
   })
 
   test("does not infer parser ID provenance from same-valued fresh rewrite output", async () => {
