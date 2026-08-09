@@ -1,5 +1,3 @@
-import consola from "consola"
-
 import type { ScopedPublisher } from "~/lib/observability"
 
 import { PATHS } from "~/lib/config/paths"
@@ -17,28 +15,14 @@ import {
 } from "./raw/manager"
 import { setHistorySearchClient } from "./search/client-registry"
 import { createHistorySearchUdsClient } from "./search/uds-client"
+import { openDatabaseReadonly } from "./sqlite/connection"
 import {
   //
-  closeDatabase,
-  getDatabase,
-  openDatabase,
-} from "./sqlite/connection"
-import { applyForwardMigrations } from "./sqlite/migrations/run"
-import {
-  //
-  startV3Maintenance,
-  stopV3Maintenance,
-} from "./v3/maintenance"
-import {
-  //
-  drainV3Writer,
-  drainV3SummaryBackfill,
-  enqueueModelOperationWithOutcome,
-  ensureV3Schema,
-  recoverV3Journal,
-  startV3SummaryBackfill,
-  stopV3SummaryBackfill,
-} from "./v3/store"
+  closeHistoryReadDatabase,
+  installHistoryReadDatabase,
+} from "./sqlite/read-connection"
+import { V3_MAINTENANCE_INTERVAL_MS } from "./v3/maintenance"
+import { getV3PersistRetryConfig } from "./v3/store"
 import {
   //
   clearRecentModelOperationTerminalsForTests,
@@ -46,9 +30,13 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
-import { LegacyHistoryTerminalSink } from "./worker/legacy-terminal-sink"
 import { HISTORY_WORKER_PROTOCOL_VERSION } from "./worker/protocol"
-import { getHistoryAdmissionController } from "./worker/registry"
+import {
+  //
+  getHistoryAdmissionController,
+  getHistoryPersistenceRuntime,
+  peekHistoryPersistenceRuntime,
+} from "./worker/registry"
 
 let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
@@ -109,40 +97,38 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     setHistorySearchClient(undefined)
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
-    stopV3Maintenance()
+    // No main-thread write handle to close any more; the Worker owns it and is torn down
+    // by `shutdownHistory`. Only this thread's readonly handle is ours to release.
     shutdownRawCapture()
-    closeDatabase()
+    closeHistoryReadDatabase()
     return
   }
   // `historyDbPath` is retained only as an injected test seam during the V3
   // cutover. Production config cannot set it; the default is a physically
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
-  openDatabase(dbPath)
-  ensureV3Schema(getDatabase())
-  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
-  // (migrations/index.ts) is intentionally empty today — this call's value is
-  // wiring the pipe end-to-end (storage construction, ledger read/write,
-  // logger adapter) against the REAL V3 db, so the first real 001+ migration
-  // has a proven-working runner to land into, rather than adding one now.
-  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
-  // migration must refuse to start, not silently continue.
-  await applyForwardMigrations(getDatabase())
-  const journalRecovery = recoverV3Journal(getDatabase())
-  // The legacy main-thread writer deliberately CONTINUES on an unrecoverable journal row:
-  // this path is still the production authority until Batch 2b, and turning a corrupt row
-  // into a startup failure here would change existing production behavior. The Worker's
-  // startup gate (`worker/backend.ts`) is where spec §8.1 refuses to become ready. Logging
-  // it is not optional though — the previous code stamped the DB column and said nothing,
-  // so an operation that could never be replayed was lost with no operator-visible signal.
-  if (journalRecovery.failures.length > 0) {
-    consola.error(
-      `[history] ${journalRecovery.failures.length} journal row(s) could not be recovered and remain uncommitted:`,
-      journalRecovery.failures.map((failure) => `${failure.operationId}@${failure.revision}: ${failure.error}`).join("; "),
-    )
-  }
+  // CUTOVER (Batch 2b): the Worker now owns the semantic WRITE connection exclusively.
+  // Everything the main thread used to do here — open, schema reconcile, forward
+  // migrations, journal recovery — happens inside `initialize` on the Worker thread, which
+  // is the whole point: those are the synchronous blocks that used to freeze the proxy's
+  // event loop. Spec §8.1 fixes this order, and the readonly handle below may only be
+  // opened after `ready`, because the artifact and its owner marker are the Worker's to
+  // create.
+  const runtime = getHistoryPersistenceRuntime()
+  await runtime.start({
+    semanticDbPath: dbPath,
+    configRevision: 1,
+    // Raw capture stays on the main thread until Batch 3b. The Worker must NOT open the
+    // same raw artifact concurrently, so it starts with raw disabled.
+    rawConfig: { enabled: false, dbPath: "", maxObjectBytes: state.historyRawCaptureMaxObjectBytes },
+    persistRetry: getV3PersistRetryConfig(),
+    maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
+  })
+  // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
+  // path below reads through it; nothing on this thread may write the semantic DB again.
+  installHistoryReadDatabase(openDatabaseReadonly(dbPath))
   const admission = getHistoryAdmissionController()
-  admission.replaceTerminalSink(new LegacyHistoryTerminalSink({ enqueueRecord: enqueueModelOperationWithOutcome }))
+  admission.replaceTerminalSink(runtime)
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(async (publication) => {
     const outcome = await admission.acceptTerminal({ protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION, publication })
@@ -172,7 +158,6 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // v3/maintenance.ts doc comment for what was and wasn't carried over).
   // Idempotent restart — reopening History (e.g. a config reload) restarts the
   // timer at a fresh interval rather than stacking a second one.
-  startV3Maintenance()
 }
 
 /**
@@ -191,10 +176,10 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
 export function stopHistoryBackgroundWork(): void {
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = undefined
-  stopV3Maintenance()
-  stopV3SummaryBackfill()
-  // Signal the background backfills to stop BEFORE the DB closes (each saves its
-  // cursor per batch and resumes on next start — a post-close prepare would throw).
+  // Maintenance and summary backfill live on the Worker now, so "stop background work"
+  // is a message rather than a local timer clear. §8.2 step 4: stop claiming new units,
+  // finish the one already claimed — the Worker awaits that before answering.
+  void peekHistoryPersistenceRuntime()?.stopMaintenance()
 }
 
 /**
@@ -224,18 +209,26 @@ export async function shutdownHistory(): Promise<void> {
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
-  await drainV3Writer()
+  // §8.2 step 5: wait for every un-ACKed persistence item to reach a terminal outcome,
+  // then close the Worker (step 7). `drain()` replaces the old in-process `drainV3Writer()`
+  // — the writer is not on this thread any more, so awaiting a local queue would prove
+  // nothing about what actually reached disk.
+  const runtime = peekHistoryPersistenceRuntime()
+  if (runtime) {
+    await runtime.drain()
+    await runtime.shutdown()
+  }
   setHistorySearchClient(undefined)
-  await drainV3SummaryBackfill()
   shutdownRawCapture()
-  closeDatabase()
+  closeHistoryReadDatabase()
   enabled = false
 }
 
 /** History V3 does not run V2 backfills or migrate a legacy history database. */
 export function startHistoryBackfills(): void {
   if (!enabled) return
-  // Additive V3 projection maintenance only. This never opens or reads legacy
-  // history.db/archive artifacts and never rewrites canonical V3 records.
-  startV3SummaryBackfill(getDatabase())
+  // Additive V3 projection maintenance only. The Worker starts the summary backfill from
+  // its own `initialize` (it is a WRITE, and the write handle lives there now), so this
+  // main-thread entry point has nothing left to start.
+
 }

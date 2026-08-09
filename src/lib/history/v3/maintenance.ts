@@ -19,16 +19,25 @@
  * operator attention.
  */
 
+import type { Database } from "../sqlite/connection"
+
 import {
   //
   checkpointWal,
-  getDatabase,
   incrementalVacuum,
   runOptimize,
 } from "../sqlite/connection"
 
 /** Default tick interval. Not config-exposed — see module doc. */
 const DEFAULT_INTERVAL_SECONDS = 300
+
+/**
+ * The same default, in milliseconds, for the Worker start config.
+ *
+ * Exported so the cutover hands the Worker THIS value rather than re-deriving one: the
+ * interval has a single owner, and a second literal elsewhere would drift from it silently.
+ */
+export const V3_MAINTENANCE_INTERVAL_MS = DEFAULT_INTERVAL_SECONDS * 1000
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -38,9 +47,12 @@ let timer: ReturnType<typeof setInterval> | null = null
  * never-throw (see connection.ts) — this function itself never throws either,
  * so a timer-driven call can never crash the process via an unhandled
  * exception in a bare `setInterval` callback.
+ *
+ * The handle is a parameter rather than `getDatabase()` because these are WRITES:
+ * once the Worker owns the semantic write connection exclusively (Batch 2b), the
+ * main-thread singleton is readonly and every one of these PRAGMAs would fail on it.
  */
-export function runV3MaintenanceTick(): void {
-  const db = getDatabase()
+export function runV3MaintenanceTick(db: Database): void {
   incrementalVacuum(db)
   checkpointWal(db)
   runOptimize(db)
@@ -51,9 +63,9 @@ export function runV3MaintenanceTick(): void {
  * already running restarts the timer at the (possibly new) interval rather
  * than stacking a second one.
  */
-export function startV3Maintenance(intervalSeconds: number = DEFAULT_INTERVAL_SECONDS): void {
+export function startV3Maintenance(db: Database, intervalSeconds: number = DEFAULT_INTERVAL_SECONDS): void {
   stopV3Maintenance()
-  timer = setInterval(runV3MaintenanceTick, intervalSeconds * 1000)
+  timer = setInterval(() => runV3MaintenanceTick(db), intervalSeconds * 1000)
   // Never let this background tick keep the process alive on its own — mirrors
   // every other best-effort interval in the codebase (e.g. the retired reaper).
   timer.unref()

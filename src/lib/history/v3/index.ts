@@ -6,7 +6,7 @@ export {
   enqueueModelOperation,
   ensureV3Schema,
   getV3Operation,
-  getV3PersistRetryConfigForTests,
+  getV3PersistRetryConfig,
   getV3StoredOperation,
   getV3StoreStatus,
   listV3Operations,

@@ -182,8 +182,8 @@ export function setV3PersistRetryConfig(
     maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs),
   }
 }
-/** Read the current transient-retry budget (config-wiring assertions). */
-export function getV3PersistRetryConfigForTests(): V3PersistRetryConfig {
+/** Read the current transient-retry budget. Handed to the Worker at `initialize`, and read by config-wiring assertions. */
+export function getV3PersistRetryConfig(): V3PersistRetryConfig {
   return persistRetryConfig
 }
 

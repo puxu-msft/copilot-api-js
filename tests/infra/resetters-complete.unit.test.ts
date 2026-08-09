@@ -112,7 +112,7 @@ const EXEMPT: Record<string, string> = {
   // V3 store transient-retry seams (DI-5): a read-only config getter (no state)
   // and a fault injector setter whose module-global is cleared centrally by the
   // ALREADY-registered resetV3WriterForTests.
-  getV3PersistRetryConfigForTests: "read-only assertion hook — no state to reset",
+  getV3PersistRetryConfig: "read-only accessor — no state to reset",
   setV3CommitFailureInjectorForTests: "commit-failure injector setter — cleared by resetV3WriterForTests (registered)",
   // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
   // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
