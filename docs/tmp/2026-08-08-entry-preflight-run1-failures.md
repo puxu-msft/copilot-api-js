@@ -27,7 +27,7 @@ The ready-live scenarios no longer use an uncontrolled real `setTimeout(20)`. Th
 
 A dedicated 50ms SDK negative control uses an abort-aware never-responding upstream fake. It proves the selective business clock still lets the real SDK deadline fire as `APIConnectionTimeoutError`, while the fake mirrors the real abort protocol so teardown can settle. The exact mutation setting `preContentRecovery.enabled=false` makes all three ready-live SDK scenarios fail with the real SDK surfacing the stream `APIError`. Restoring the exact patch returns the suite to green.
 
-## Verification
+## Verification across the two merges
 
 ### Before merging master, at `fc570601`
 
@@ -50,18 +50,35 @@ The merged run then turned one more test red twice: `uds-transport.it` "a large 
 
 `docs/todo/deferred-backlog.md` did already list this test under its "撞 5000ms 默认超时" category — but only on master, and only from a commit later than the one this branch had merged when that claim was first written here, so it was not true of this tree at the time. The second merge brought it in, and that entry now records the closure plus the separate axis these three instances share: the deadline's SOURCE, not the criterion's nature. That distinction earns its own line because the failure signature differs — a harness timeout says so, an inherited one surfaces as a content assertion and cannot be found by grepping the log for `timeout`.
 
-Measured at `9403dc90`:
+## Two defects that would have failed T0.0f outright
 
-- `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 16 pass, 0 fail;
-- `bun test tests/pipeline/client-sink.unit.test.ts`: 29 pass, 0 fail;
+Both were found by invoking the backend the way the producer invokes it — `REQUIRE_TEST_ARTIFACTS=1` with an exported artifact dir — rather than the way a developer does. Neither is load-sensitive; both fail every time.
+
+The discovery baseline had drifted. Seven native-gated cases added since it was last frozen (three in `overlay-index-agreement`, three in `daemon`, one in `search-rest-cutover`) skip in a tree without `native/history-search/*.node`, and the frozen `allowed_skipped` did not list them, so `assertSkippedMultiset` would have raised and the producer would have exited 5 with no manifest. It is re-frozen from a real run: 36 entries to 43, `files` and `minimum_executed` untouched. The floor deliberately stays at 7360 against an observed 7377 — `cutover-plan.md` §0.4f forbids deriving it from the run it gates, and it passes as it stands.
+
+Building the native artifact instead would have made this worse. 27 of the 36 frozen entries carry `reason: "native-unavailable"` (the rest are 8 `whole-suite-skip` and 1 `todo`), so the baseline was frozen in a native-absent tree; a native-present run turns those 27 into `missing`, which the comparator rejects just as firmly.
+
+The summary fixture also inherited `PARALLEL_TEST_ARTIFACT_DIR` and `REQUIRE_TEST_ARTIFACTS` from the environment, so under the producer it took the artifact-transfer branch and failed two of its own cases. The sibling harness in the same file already sanitises those and explains why.
+
+Neither would have announced itself early: the producer runs all fifteen invocations before reconciling any of them, so a deterministic drift costs the whole batch first. `scripts/parallel-test.ts` now compares the run's skip multiset against the frozen baseline and prints what differs — warning only, backend tier only, reusing the production parser and identity key. That key had three copies (two private ones in the producer, one in the schema module); it now has one exported definition.
+
+## Verification at the branch tip
+
+Measured at `01b3bbf2`, the branch tip:
+
+- `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 18 pass, 0 fail;
+- `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail;
+- `bun test tests/infra/entry-evidence-schema.unit.test.ts`: 5 pass, 0 fail;
+- `bun test tests/infra/parallel-test-artifacts.unit.test.ts`: 11 pass, 0 fail;
+- `bun test tests/infra/test-discovery-matrix.unit.test.ts`: 5 pass, 0 fail;
+- `bun test tests/pipeline/client-sink.unit.test.ts`: 30 pass, 0 fail;
 - `bun test tests/e2e-client/precontent-recovery.it.test.ts`: 7 pass, 0 fail;
-- `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail (measured at `ebe4a292`; `9403dc90` does not touch it, and the backend run below covers it);
 - `bun test tests/history/search/uds-transport.it.test.ts`: 24 pass, 0 fail;
 - `bun run typecheck`: exit 0;
 - `bunx eslint` over every file this branch changed: exit 0;
-- `bun run test:backend`: 16 shards, 5151 tests, 5151 pass, 0 fail, 7367 executed, 36 skipped, exit 0.
+- `bun run test:backend` under the producer's own environment: 16 shards, 7374 pass, 0 fail, 7377 executed, 43 skipped, exit 0, and no baseline-staleness warning.
 
-The reporter's `tests` count is not the population authority and this round shows why: four backend runs reported 6211, 5502, 5693 and 5151 `tests` while `executed` held at 7266 before the merge and 7367 after it, across three runs of one tree. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
+The reporter's `tests` count is not the population authority, and this round is a good demonstration: successive backend runs reported 6211, 5502, 5693, 5151, 6836 and 7374 `tests`. `executed` is stable within one tree — 7266 before the first merge, 7377 after the second — but it moves across merges too, so neither number is a constant to quote. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
 
 ## Failed evidence disposition and mandatory next step
 
