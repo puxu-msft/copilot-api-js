@@ -156,10 +156,23 @@ exit ${runnerExitCode}
     git(tree, ["config", "user.name", "Test"])
     git(tree, ["add", "."])
     git(tree, ["commit", "-m", "fixture"])
+    // This suite itself runs under the evidence producer, which exports
+    // REQUIRE_TEST_ARTIFACTS=1 and PARALLEL_TEST_ARTIFACT_DIR. Inheriting those sends the wrapper
+    // down the artifact-transfer branch and fails a run that has nothing to do with summary
+    // accounting -- observed as two reds in a backend run invoked the way T0.0f invokes it.
+    const environment = { ...process.env }
+    delete environment.PARALLEL_TEST_ARTIFACT_DIR
     try {
       const result = Bun.spawnSync(["bash", path.join(scriptDir, "baseline-runs.sh"), "bash", fakeRunner], {
         cwd: tree,
-        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: options.minTests ?? "10" },
+        env: {
+          ...environment,
+          OUT: out,
+          RUNS: "1",
+          MIN_RUNS: "1",
+          MIN_TESTS: options.minTests ?? "10",
+          REQUIRE_TEST_ARTIFACTS: "0",
+        },
         stdout: "pipe",
         stderr: "pipe",
       })
