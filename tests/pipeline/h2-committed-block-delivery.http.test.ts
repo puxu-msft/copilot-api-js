@@ -89,7 +89,10 @@ describe.each([true, false])("H2 terminal error after a committed block, on the 
 
     expect(sse).toContain("committed-prefix")
     expect(types).toContain("content_block_stop")
-    expect(types).toContain("error")
+    // Exactly ONE terminal, and it carries the upstream's own cause rather than a truncation relabel.
+    expect(sse.split("event: error").length - 1).toBe(1)
+    expect(sse).toContain("overloaded_error")
+    expect(sse).not.toContain("truncated before completion")
     expect(upstreamCalls).toBe(1)
   })
 })

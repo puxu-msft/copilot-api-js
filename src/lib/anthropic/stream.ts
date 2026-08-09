@@ -13,6 +13,7 @@ import consola from "consola"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { isAnthropicErrorFrame } from "~/lib/anthropic/wire-frame-type"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
@@ -104,8 +105,9 @@ export async function* processAnthropicStream(
 
       yield { raw: rawEvent, parsed }
 
-      // Error event is terminal — Anthropic sends no more events after this
-      if (parsed?.type === "error") break
+      // Error event is terminal — Anthropic sends no more events after this.
+      // Asked of the frame, not the payload: a raw upstream error names itself only on the `event:` line.
+      if (isAnthropicErrorFrame(rawEvent)) break
     }
   } finally {
     clientAbortSignal?.removeEventListener("abort", onAbort)

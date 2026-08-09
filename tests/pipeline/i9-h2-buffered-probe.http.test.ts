@@ -30,11 +30,7 @@ import {
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import {
-  //
-  createSseResponse,
-  frameTypesInOrder,
-} from "../helpers/sse"
+import { createSseResponse } from "../helpers/sse"
 
 const MODEL = "claude-sonnet-4.6"
 
@@ -90,10 +86,13 @@ describe.each([true, false])("I9 probe — H2 (raw upstream event:error) on the 
     })
     expect(res.status).toBe(200)
     const sse = await res.text()
-    const types = frameTypesInOrder(sse)
 
-    // The KEY discriminator for I9/D2: if the outer commitBoundaries is silently shadowed by the candidate's own (which never recognizes a protocol-error frame as a unit-close), the driver will NOT commit in-loop on the error frame and will instead retry (consuming the same mocked upstream again) or misclassify the outcome. If commitBoundaries correctly fires, exactly ONE upstream call happens and the client receives the error frame (not a silent drop/retry loop).
-    expect(types).toContain("error")
+    // Exactly ONE terminal. Counting matters: before the accumulator learned to read the SSE event line, the upstream's own error was delivered AND a synthesised truncation error was appended after it, and a `toContain("error")` assertion passed happily on that pair.
+    // Counted on the `event:` line rather than on parsed payload types, because with shaping off the upstream frame is passed through byte-identical and carries no top-level `type`.
+    expect(sse.split("event: error").length - 1).toBe(1)
+    // The real cause survives. A truncation relabel would still produce one terminal, so the count alone does not discriminate this.
+    expect(sse).toContain("overloaded_error")
+    expect(sse).not.toContain("truncated before completion")
     expect(upstreamCalls).toBe(1)
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `i9-probe-h2-${String(errorShapingEnabled)}`, limit: 5 }).entries[0]

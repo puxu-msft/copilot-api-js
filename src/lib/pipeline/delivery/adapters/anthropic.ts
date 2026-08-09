@@ -1,4 +1,5 @@
 import { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
+import { anthropicWireFrameType } from "~/lib/anthropic/wire-frame-type"
 
 import type {
   //
@@ -37,10 +38,7 @@ export function createAnthropicDeliveryProtocolAdapter(): AnthropicDeliveryAdapt
       const parsed = parseFramePayload(frame, "Anthropic")
       if (!parsed.ok) return parsed.classified
       const payload = parsed.payload as { type?: unknown; index?: unknown }
-      // The canonical payload `type` stays authoritative, but it is not the only place the wire carries it.
-      // The `error` shape reaches us as `event: error` with a body of just `{ error: { ... } }` whenever the canonical error rewrite is off — a byte-identical passthrough the config explicitly supports — so keying solely off `payload.type` made this classifier's correctness depend on a switch the user can turn off.
-      // Falling back to the SSE `event` line is additive: every frame that already declares a payload `type` classifies exactly as before. `adapters/responses.ts` reads its event line first for the same reason.
-      const frameType = typeof payload.type === "string" ? payload.type : frame.event
+      const frameType = anthropicWireFrameType(frame)
       if (frameType === "ping" && isControlCapability(controlCapability, "protocol-ping")) {
         return { kind: "control", frame, capability: controlCapability }
       }
