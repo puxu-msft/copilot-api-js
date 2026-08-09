@@ -143,3 +143,50 @@
 - 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
 - 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 4（整改提交 `eb2493ad`、`bb1f81f3`）
+
+## 复评范围与方法
+
+- 读取两个整改 commit 的完整 diff，通读 `parseJUnit`、全部新增测试、README 配方、coding conventions、backlog、progress 与 claims 全文。
+- 用 Bun 1.3.14 实际生成并解析四类产物：单文件 todo+skip+pass、全文件 skip、`--isolate` 两文件、既有 16 份真实 shard；另检查 nested suites 与 root 三属性缺失／部分缺失时的条件边界。
+- 从 README 逐字复制配方，分别运行完整 16 份、缺末尾 shard、单 shard；结果为 complete、missing 63、missing 671，与整改说明一致。
+- 在 `/home/xp/.claude/jobs/a7c2cc1a/tmp/` 建树外副本，分别移除 declared-total 整体门、failure 分支和 skipped 分支，检验新增测试的判别力。
+- 复核 `scripts/parallel-test.ts` 工作树 blob、HEAD blob 与 baseline `runner_git_blob`，三者均为 `a27bf46dc41649c90090d6670b391b5b8bf57517`；本轮确实未改 runner。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 1、MINOR 1。**
+
+## 事实性发现
+
+### [MAJOR] `tests/infra/parallel-test-artifacts.unit.test.ts:195-224` — 新门只对 rows mismatch 有负控，`failures` 与 `skipped` 两个承重分支可删除而测试照绿
+
+- **现象**：新增四条里，只有“parsed rows 与 declared tests 不同”会在门被删除时红；“matching failures”与“matching skips”都是正样本，不能证明各自的不一致分支存在。实现中的三臂条件 `rows !== tests || failedCount !== failures || skippedCount !== skipped` 有两臂缺目标 mutation。
+- **证据／命令输出**：当前定向 suite 为 `24 pass / 0 fail`。树外副本删除整个 declared-total 对账门，三个自建 mismatch 负控（rows/failures/skipped）均按目标红，证明 harness 触达正确实现。随后只删除 `failedCount !== declared.failures`，运行仓库新增的 `-t 'declared|document'` 测试仍为 `3 pass / 0 fail`；只删除 `skippedCount !== declared.skipped`，同样 `3 pass / 0 fail`。因此现有新增测试无法阻止这两臂回归。
+- **接手方错误动作**：后续重构若漏掉 failure 或 skipped 对账，维护者会看到全部测试绿，误以为“三项对账”仍完整；正是这轮试图修复的 tally 假绿会从另一个字段重新出现。
+- **建议处置**：增加两个独立负控：① root `failures=1`、实际无 failure 必须抛；② root `skipped=1`、实际无 skipped 必须抛。分别做单臂 mutation，确保每条只因目标分支缺失而红。保留 matching 正样本防 false-red。代码／测试修复建议 `gpt-souls:implementer`。
+
+### [MINOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:58` — 新增历史边界中的门禁数字无 commit 锚且已落后一轮
+
+- **现象**：整改新增警告称后续官方门已全绿 `7538 tests`，但未注明该次运行的 commit；同一批整改的前一提交 `eb2493ad` 又新增 4 条测试并在提交信息记录 `7542`。该文件虽已归档，新增警告却用无锚点的完成态数字，读者无法判断 7538 是哪个阶段。
+- **证据／命令输出**：`eb2493ad` commit message 明记 `7542 tests · 7542 pass`；`bb1f81f3` 新增的 progress 警告写 `7538`。`git diff eb2493ad^..eb2493ad` 显示新增 4 条 `test(...)`，解释了数值前进但也证明 7538 不是 `bb1f81f3` 所处 HEAD 的规模。
+- **接手方错误动作**：接手方会把 7538 当关闭态／当前完整规模，与 7542 门禁记录冲突后重新调查是否丢测试。
+- **建议处置**：给 7538 明确锚定为 `dd0bcd2d` 的历史运行，或改引用关闭／最新门禁的具名 SHA；不要在归档警告里放无基线的易变数字。
+
+## 已确认无新增问题的范围
+
+- **新 oracle 的 false-red 扫描**：Bun 1.3.14 的 todo 作为 skipped 计入 root totals；全文件 skipped、普通单文件、`--isolate` 多文件、嵌套 `testsuite` 均被当前 parser 接受且对账一致。16/16 份真实历史 shard 全部通过三项对账。未发现适用 Bun 形态的 false-red。
+- **条件边界**：root 三属性全缺、部分缺失或根为单个 `testsuite` 时，对账门不生效；代码注释和约定明确要求“三项全部声明”，未把该条件门写成普遍保证。既有“缺 legacy identity 字段时忽略”契约未被删除，只在生产者同时声明完整 totals 时从“静默忽略”升级为“整体自洽失败”；该分层恰当。
+- **README 配方**：逐字执行完整、末尾缺失、单 shard 三个方向，分别得到 `file identity: complete`、63 missing、671 missing。backend baseline 的 `unit+it+http` 口径说明准确；对 `test:fast` 使用该基线会产生口径型 missing，文档已警告。
+- **progress 全文**：status 与 `closed-at` 已统一为 `30559e07`；“在途意图”和整段“本轮红绿证据”均有历史边界与 superseded 指针，旧现在时已被上层语境明确降为历史。除 7538 数字缺锚外，未发现第五处可导致接手动作错误的当前指令。
+- **claims 全文**：第二段更正显式 supersede 第 180-181 行，当前有效结论只保留两个端点事实；未发现仍会被误读为当前结论的第五载体。
+
+## 最终计数
+
+- 轮次 1：BLOCKER 0、MAJOR 7、MINOR 1。
+- 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
+- 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
+- 复评轮次 4：BLOCKER 0、MAJOR 1、MINOR 1。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。

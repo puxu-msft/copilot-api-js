@@ -214,6 +214,21 @@ describe("parallel-test JUnit artifact parsing", () => {
     expect(identities.skipped).toBe(1)
   })
 
+  // One case per arm, because the three arms fail independently. Without these, deleting
+  // either the `failures` or the `skipped` comparison left the suite green -- the row count
+  // matched, so only the `tests` arm was ever exercised and the other two were decoration.
+  test("a row-count match does not excuse a failure-count mismatch", () => {
+    const xml = `<?xml version="1.0"?><testsuites tests="1" failures="1" skipped="0"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="passes" file="/repo/tests/a.unit.test.ts"/></testsuite></testsuites>`
+
+    expect(() => parseJUnit(xml, "/repo")).toThrow(/parsed 1 rows \/ 0 failed.*declares 1 tests \/ 1 failures/s)
+  })
+
+  test("a row-count match does not excuse a skip-count mismatch", () => {
+    const xml = `<?xml version="1.0"?><testsuites tests="1" failures="0" skipped="1"><testsuite name="suite" file="/repo/tests/a.unit.test.ts"><testcase classname="suite" name="runs" file="/repo/tests/a.unit.test.ts"/></testsuite></testsuites>`
+
+    expect(() => parseJUnit(xml, "/repo")).toThrow(/0 skipped.*declares 1 tests \/ 0 failures \/ 1 skipped/s)
+  })
+
   test("stays silent when the producer declares no totals — the check is conditional, not universal", () => {
     const identities = parseJUnit(
       `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase file="tests/incomplete.unit.test.ts"/></testsuite></testsuites>`,
