@@ -304,6 +304,26 @@ type CompatibilityErrorRendererFor<TF extends BridgeTargetFormat> = TF extends "
   ? AnthropicCompatibilityErrorRenderer
   : ResponsesCompatibilityErrorRenderer
 
+/**
+ * ⚠️ 条件类型只在 `TF` 为**字面量**时有判别力。一旦把 profile 存进以**宽联合**
+ * `BridgeTargetFormat` 实例化的容器（`satisfies Record<X, RequestBridgeProfile<..., BridgeTargetFormat>>`），
+ * 错配**编译通过、零报错**——实测 tsc 5.9.3 `--strict` 确认（PoC 见 §11 验收）。
+ *
+ * 这不是理论风险：`hub-translate.ts` 现有的
+ * `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 正是这个形状，
+ * 实施者照房内惯例写就会掉进去。
+ *
+ * **不变量**：registry／表的值类型必须是「**具体实例化的联合**」（每个 `targetFormat`
+ * 字面量各一臂），不得是「**单个宽实例化**」。已实测的最小对照：
+ * 联合容器下错配报 `TS2322`（`errorRenderer.targetFormat` 两臂都匹配不上）、正确装配无红；
+ * 宽实例化容器下同一份错配 exit 0。
+ *
+ * **未验证**：本规格不冻结该联合别名的**确切写法**——`RequestBridgeProfile` 另有 8 个类型参数，
+ * 它们在联合臂里该取何值（各臂独立推断／existential／helper 泛型）尚未实测。
+ * 实施者自选写法，但必须由 P1 Step 5b 的两格负样本证明「联合容器错配报错、宽容器不报错」，
+ * 以此锁住不变量而非锁住写法。
+ */
+
 interface RequestBridgeProfile<
   Payload,
   TargetPayload,

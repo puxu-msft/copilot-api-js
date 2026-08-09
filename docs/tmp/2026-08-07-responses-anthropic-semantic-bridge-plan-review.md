@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：第三轮复评——管线接线视角判「不可定稿」（2 MAJOR，均已核实并整改，提交见下）；协议契约视角本轮结论待回。整改后需第四轮。
+> **状态**：第四轮复评——两侧各 1 MAJOR，均已实测复核并整改（提交见下）。整改后需第五轮。
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
@@ -9,6 +9,8 @@
 > **第二轮基线**：`90cccdb6`（代码基线 master `837fe522`）
 >
 > **第三轮基线**：`7c5ba2ed`（代码基线 master `837fe522`）
+>
+> **第四轮基线**：`62075b12`（管线侧）／`7c5ba2ed`（协议侧）
 
 ## 评审视角
 
@@ -160,3 +162,44 @@ Produces 要求「candidate fork 原样共享 records 值」，mutation 要求�
 ### 本轮的方法论收获
 
 **两条 MAJOR 与两条 minor 中有三条是同一形态：我写的断言在正确与错误实现下都不会红。** 判据自身的判别力，比判据覆盖了什么更容易出错，且**自审抓不到**——因为写断言时我脑子里只有「正确实现应该满足它」，从不检验「错误实现会不会也满足它」。可执行的防法：每写一条断言，当场问「把目标机制改坏，这条会红吗」，答不上来就现场构造那个坏实现。
+
+## 第四轮（复评，基线 `62075b12` / 协议侧基线 `7c5ba2ed`）
+
+两侧各 1 MAJOR，**均已实测复核并整改**。协议侧本轮用**真跑 tsc 的 PoC** 给结论，管线侧用「把断言真的写一遍」的第一人称走查，两者都不是读码推断——这是本轮结论比前几轮硬的原因。
+
+### MAJOR C（协议）：条件类型在**宽实例化**容器下 false-green
+
+`CompatibilityErrorRendererFor<TF>` 对**具体**实例化有判别力（错配 `TS2322`、正确装配不误红），但一旦 `TF` 被加宽为 `BridgeTargetFormat`——即 `satisfies Record<X, Profile<BridgeTargetFormat>>`——**同一份错配 exit 0、零报错**。
+
+**我方复核**：不满足于采纳，自己写了最小 PoC 实跑 `tsc 5.9.3 --strict`，三格全部复现（宽容器 false-green、联合容器 `TS2322`、正确装配无红）。并确认 `hub-translate.ts:199,266` 现有 `satisfies Record<...>` 正是宽容器形状，**实施者照房内惯例写就会掉进去**。
+
+**整改**：没有采纳 reviewer 建议的「禁止宽化容器」这条纪律式修法——它与仓内既有惯例对着干、且靠人记住。改为**结构性修法**：registry 值类型必须是「具体实例化的联合」（每个 `targetFormat` 字面量各一臂），该写法经实测既保住判别力又保住房内 `satisfies Record<...>` 惯例。Step 5b 相应从一格扩为**两格**（具体实例化 + 容器实例化）。
+
+**明确标为未验证**：不冻结联合别名的确切写法——`RequestBridgeProfile` 另有 8 个类型参数，它们在联合臂里取何值尚未实测。规格锁**不变量**（两格负样本必须成立），不锁写法。PoC 与「它没有证明什么」一并留在 `exp/bridge-profile-renderer-binding/`。
+
+### MAJOR D（接线）：第三轮换上的新断言**写不出来**，退而求其次的变体**又恒绿**
+
+同一位置**连续第三轮**出恒绿判据，每次形态不同：
+
+| 轮次 | 恒绿写法 | 为什么恒绿 |
+|---|---|---|
+| 三 | 「inspect 后 ctx 无 publish、dispatch 计数不变」 | publish 只在 `runRequest` 的 finally 里；`stopAfter="translate"` 使物理 dispatch 根本到不了 |
+| 四 | 「spy `CellAssembly` 断第二参数 `undefined`」 | `DriverDeps` 无 cell 覆写槽，spy 无处注入 |
+| 四 | 同上，退而用 mock codec | mock codec 无 `requestState` → `migratedCell` 返回 `null` → 落 legacy 分支，该分支永远只传一个实参 |
+
+外加一条独立成立的：不提供 `bridgeProfileOverride` 就断 resolver 返回 `undefined`——production 集合为空时两条路径都返回 `undefined`，无差别。
+
+**我方复核**：读 `driver.ts` 确认 `DriverDeps` 无 cell/assembly 覆写槽、`resolveCellAssembly` 是模块级静态、`migratedCell` 在 `!env.requestState` 时返回 `null`，三条机械原因全部属实。
+
+**整改**：采纳 reviewer 的选项 ①（driver 层 DI，绕开 mock-codec 与 module mock）。Files 补两个 fixture-only 测试缝 `DriverDeps.resolveRequestTranslationRuntime?` 与 `DriverDeps.bridgeProfileOverride?`（仿既有 `decideRoute` 的 DI 形状）；断言改为**调用计数**：`runRequest`=1、`inspectRequest`=0，错误实现下 inspect 变 1 而红。并把**三条已知恒绿写法连同各自的机械原因**写进计划，防止后来者绕回去；另加一句硬要求：落地时先构造坏实现、亲眼看它红再提交。
+
+### 采纳的 minor
+
+- 深冻改为点名复用**已导出**的 `deepFreezeDiagnostic`（`diagnostics/snapshot.ts`）——`candidate-state.ts` 里那个 `deepFreeze` 未导出，照抄会造第三个轮子。已复核导出属实。
+- 记下 `toThrow` 成立的依据（ESM／严格模式下冻结数组 `push` 抛 `TypeError`，非严格模式静默 no-op）——这是那条断言不恒绿的前提，值得写明。
+
+### 本轮方法论收获（比上一轮更具体）
+
+上一轮我总结的是「每写一条断言就问『把目标机制改坏会红吗』」。**这一轮证明那句话不够**——第三轮我正是这么问的、也自认为答了，结果还是恒绿，因为我**在脑子里回答**了这个问题。真正管用的判据只有一条：**把断言实际写出来，包括找到注入点**。三条恒绿里有两条不是"想不到会恒绿"，而是"根本没有注入缝"——这种缺陷只有在动手写测试时才会撞到，纯思考撞不到。
+
+对应到计划文本的可执行要求：凡是写「注入 X 并断言 Y」的判据，**必须同时点名 X 的注入缝在哪个类型/参数上**；点不出来就说明这条判据当前写不出来，应当先补缝或明确降级为人工检查（并说明它不是自动门），不许留一条看起来是门、实际零判别力的断言。
