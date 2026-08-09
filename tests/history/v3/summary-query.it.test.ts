@@ -269,6 +269,65 @@ describe("persisted list-search facade", () => {
     expect(result.total).toBeGreaterThanOrEqual(result.entries.length)
     expect(result).toMatchObject({ entries: [], total: 0 })
   })
+
+  /**
+   * The positive control for the test above, and it is not optional: after ownership moved every
+   * index-visible row to the sidecar, contributing rows the index CANNOT see yet is the overlay's
+   * only remaining job. Without this, replacing the overlay with an empty list passes the whole
+   * file — measured, before this test existed.
+   *
+   * The multi-word case is here for a second reason. The overlay cannot ask the index about a row
+   * the index has never seen, so it approximates the tokenizer; a plain substring test failed
+   * `hello world` against `hello-world`, which hid a just-finished request from an ordinary query
+   * for as long as it took the sidecar to catch up.
+   */
+  test("shows and counts a recent row the index cannot see yet, including for a multi-word query", async () => {
+    persist({ id: "anchor-row", startedAt: 100 })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+
+    // Terminal, on the recent bus, NOT persisted — visible to nobody but the overlay.
+    const recorder = createModelOperationRecorder({ identity: { operationId: "unindexed-row", kind: "generation", createdAt: 200 } })
+    const payload = recorder.registerPayload(
+      { messages: [{ role: "user", content: "please fix the hello-world bug" }] },
+      { origin: { stage: "ingress", track: "client" } },
+    )
+    recorder.recordIngress({ request: { payload } })
+    publishModelOperationTerminal(historyTerminalPublication(recorder.commitTerminal({ outcome: "completed" })))
+
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [],
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    for (const search of ["hello-world", "hello world", "fix hello"]) {
+      const result = await getHistorySummariesAsync({ search, limit: 10 })
+      expect(result.entries.map((entry) => entry.id)).toEqual(["unindexed-row"])
+      expect(result.total).toBe(1)
+    }
+    // Negative control: a term that is absent must not be dragged in by the term-wise match.
+    expect(await getHistorySummariesAsync({ search: "hello absent", limit: 10 })).toMatchObject({ entries: [], total: 0 })
+  })
 })
 
 describe("persisted summary SQL query", () => {
