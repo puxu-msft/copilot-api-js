@@ -87,9 +87,15 @@ function runtimeKnownLossNames(): Array<string> {
     if (TEST_CONFIG_EXISTS) arguments_.push(`--config=${TEST_CONFIG_PATH}`)
     const run = spawnSync(process.execPath, arguments_, { cwd: REPO_ROOT, encoding: "utf8" })
     if (run.status !== 0) throw new Error(`KNOWN-LOSS runtime enumeration failed (${run.status}): ${run.stderr || run.stdout}`)
-    return [...readFileSync(reportPath, "utf8").matchAll(/<testcase name="(KNOWN-LOSS：[^"]+)"/g)].map((match) =>
-      match[1].replaceAll("&quot;", '"').replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">"),
-    )
+    // Match the whole element, not just the opening tag, and drop anything carrying <skipped/>. A
+    // skipped case is still emitted as a <testcase> with the same name and the run still exits 0, so
+    // reading only the name would enumerate what is *declared* rather than what actually *ran* — and
+    // `test.skip` is precisely the evasion this registry documents under its own ACT-COVERAGE-SKIP-*
+    // rows. Dropping them here rather than asserting separately makes the skipped name fall out of
+    // the runtime set, so the join reports it as missing and names it.
+    return [...readFileSync(reportPath, "utf8").matchAll(/<testcase name="(KNOWN-LOSS：[^"]+)"[^>]*(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+      .filter((match) => !(match[2] ?? "").includes("<skipped"))
+      .map((match) => match[1].replaceAll("&quot;", '"').replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">"))
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
