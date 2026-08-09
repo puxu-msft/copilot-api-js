@@ -17,6 +17,7 @@ import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContext } from "~/lib/context/request"
 import { HTTPError } from "~/lib/error"
+import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import { createBus } from "~/lib/observability"
 
 /**
@@ -1104,6 +1105,28 @@ describe("createRequestContext - toHistoryEntry", () => {
     const entry = ctx.toHistoryEntry()
     expect(entry.attempts![0].effectiveSource?.pipeline?.sanitization?.[0]?.totalBlocksRemoved).toBe(2)
     expect(entry.attempts![0].effectiveSource?.messageCount).toBe(2)
+  })
+
+  test("projects parsed upstream frames into History while storing canonical wire fields in the arena", async () => {
+    const { ctx } = makeContext()
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
+    ctx.beginAttempt({})
+    const parsed = {
+      kind: "parsed-sse" as const,
+      message: { event: "response.output_text.delta", data: "PARTIAL_ATTEMPT_1", id: "alpha" },
+      idField: { kind: "present" as const, value: "alpha" },
+    }
+    ctx.captureUpstreamGenerationFrame?.(parsed, { offsetMs: 0, type: "response.output_text.delta", raw: "PARTIAL_ATTEMPT_1" })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 10, output_tokens: 5 }, content: null })
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = recordToHistoryEntry(await ctx.whenModelOperationFinalized())
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.sseEvents).toEqual([
+      { offsetMs: 0, offsetSource: "observed", type: "response.output_text.delta", raw: "PARTIAL_ATTEMPT_1" },
+    ])
+    const handle = ctx.modelOperationTerminalRecord?.dispatches[0]?.upstreamResponse?.frames[0]
+    const arenaValue = handle ? ctx.modelOperationTerminalRecord?.arena.frames.find((frame) => frame.handle === handle)?.value : undefined
+    expect(arenaValue).toEqual({ event: "response.output_text.delta", data: "PARTIAL_ATTEMPT_1", id: "alpha", type: "response.output_text.delta" })
   })
 
   test("includes sseEvents and per-attempt request/response headers in entry", () => {

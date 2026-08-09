@@ -1,29 +1,57 @@
-# retry-strategy registry — subagent-driven 进度 ledger
+# Mandatory Block Delivery + HTTP/2 Observability — SDD progress ledger
 
-Worktree: /home/xp/src/copilot-api-js/.worktrees/retry-registry  (branch feat/retry-strategy-registry)
-Plan: docs/plan/2026-07-21-retry-strategy-registry.md
-RFC:  docs/rfc/2026-07-21-retry-strategy-registry.md
-BASE (分支起点): 6b7756deda0dede3a1ff74df42c1ef2995421836
-执行:隔离 worktree + 独立分支;每 task 派 gpt-souls:implementer + 逐 task 审;golden 逐 commit gate;pathspec 提交。
+Worktree: /home/xp/src/copilot-api-js/.worktree/mandatory-block-delivery-h2-implementation
+Branch: mandatory-block-delivery-h2-implementation
+Merged-plan baseline: 6d4314817c0492019477e04a8f25b4864e39f6fb
+Plan: docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/README.md
+Spec: docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md
+Execution mode: full subagent-driven; implementation by isolated implementers, independent task review after integration, no inline product-code edits by controller.
 
-## 任务状态
-- [x] Task 1 (Commit 1): golden 预捕全 6 cell — complete (commit 12c0b532, self-verified: 真过/非空/真工厂名/有效 oracle/clean). NOTE: plan 骨架 effort-learning name 笔误(真名 "effort-learning" 非 "-retry"),Task6 doc-sync 修
-- [x] Task 2 (Commit 2): retry-registry.ts — complete (commit 33d987f0, reviewer: spec ✅ + 质量 approved, 0 Critical/Important). Minor→Task6: ① throwMissing 第3处再抽共享 util ② Task2单测 import Task1 golden 的 ANTHROPIC_16_NAMES 防漂移 ③ plan Task1 示例代码块 effort-learning-retry 笔误改 effort-learning ④ 确认 label 接到日志点
-- [x] Task 3 (Commit 3): 三 leg 委托 assembler — complete (commit 1ad16ede, reviewer: spec ✅ + 质量 approved, 0 blocker). golden 6/6 逐字节过=字节等价;attemptRef 共享经 reviewer 探针+结构双验保留. → Task4 补 attemptRef 共享回归测试(建议2);→ Task6: label 死字段删评估 + 13处 payload cast 分组类型评估(RFC §3.1 备选)
-- [x] Task 4 (Commit 4): config retry.strategies 开关 + allow+warn + attemptRef 共享回归测试 — complete (schema.ts RETRY_STRATEGY_CONFIG_KEYS 内联16键+partialRecord;state.ts retryStrategies 9处 grep -c 对账;三 build 函数接回 state.retryStrategies;config.ts warnDisabledSharedRetryStrategies;retry-strategies.it.test.ts 11 pass + config-hot-reload EXEMPT 1条 + retry-registry.unit.test.ts 新增 attemptRef 回归2条;golden 6/6 仍过;四格式 2145 pass;test:fast 4358 pass(基线4356+2);typecheck 绿;eslint --fix 后重验)
-- [x] Task 5 (Commit 5): telemetry fire 计数 + 注册集诊断 — complete (efbc0926, reviewer: spec ✅ + 质量 approved, 偏离(独立模块非并入 registry)经核实背书, 0 blocker). gpt-souls provider 抖动连挂4次全 resume 无换模型. → Task6 doc/backlog: /metrics HELP 补范围收窄说明; counter 无维度记 backlog; docs/API.md 补 retryStrategyRegistry + retry_strategy_fires_total
-- [x] Task 6 (Commit 6): 去重收口 + doc-sync — complete. import 去重 Task3 已提前完成(核实无残留);`RetrySemanticsSpec.label`/`OpenAiCcStrategiesDeps.label`/`RetryStrategyDeps.label` 死字段确认删除(8文件机械单行删);ANTHROPIC_16_NAMES/SHARED_3_NAMES 三处重复抽 tests/helpers/retry-strategy-names.ts;plan Task1 笔误修+/metrics HELP 补范围+DESIGN/API.md doc-sync+RFC状态注landed;SHARED_RETRY_STRATEGY_CONFIG_KEYS parity测试当场补做(低成本无取舍);剩2项(13处cast分组/attemptRef日志脆性/retry-fire维度)记 deferred-backlog;golden 6/6仍过;3905 pass 0 fail;test:backend 6058 pass 4 fail(History V3 pre-existing,stash验证同基线同失败);typecheck绿;eslint --fix后重验绿
+## Baseline
 
-# long-resident operation lifecycle — subagent-driven 进度
+- `git merge-base --is-ancestor 82cd9123 master`: pass; master at `6d431481` when implementation worktree was created.
+- `bun run typecheck`: pass at `6d431481`.
+- Initial `test:fast` exposed a load-sensitive wall-clock ratio false-red in `canonical-performance.unit.test.ts`. The deterministic replacement is complete and integrated as `30134734` + `352767f2` + `b58dc819` + `d6961943`. Third review: Spec PASS, Quality APPROVED, 0 Critical/Important/Minor. Integrated-tree verification: canonical + resetter 8 pass/0 fail, deterministic ratios 3.8515/3.9854, typecheck pass. Wall-clock is report-only; recursive freeze and actual arena-copy work are deterministic gates with scoped AST SCC controls.
+- Task 9 progress scaffold commit: `e43d08ec`.
 
-Worktree: /home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations
-Plan: docs/plan/2026-08-08-long-resident-operation-lifecycle.md
-Durable progress: docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md
-BASE: 92858d08606ad0ff02eb6ec7779f765e3e6109fe
+## Task DAG
 
-## 任务状态
-- [x] Task 1: lifecycle 纯模型 + OperationScope snapshot — complete (commits 62f572c1..8c9c85d5, review spec ✅ / quality approved, 0 Critical/Important; focused 18 pass, typecheck green)
-- [x] Task 2: RequestContext 四事实状态机 — complete (commits 0af6850b..f05db881, review spec ✅ / quality approved, 0 Critical/Important; focused 104 pass, typecheck green; raw-capture release exact mutation red)
-- [x] Task 3: dispatch cleanup failure ownership — complete (commits 4de3cd6e..cf8f4380, review spec ✅ / quality approved, 0 Critical/Important/Minor after six rounds; focused 49 pass + context 91 pass, typecheck green)
-- [x] B1 merged-state review — complete (reviewer approved 0 Critical/0 Important/1 Minor；verifier 0 findings、判 B1 可独立验证。该 Minor 为「两条 race 路径同型 owner 逻辑」，reviewer 裁为本轮应消除，已在 4b961615 抽出 settleRaceOutcome() 并验证同一 mutation 使两侧同时变红。证据存档 docs/tmp/*-task-3-report.md / *-b1-verification.md / *-b1-merged-review.md)
-- [ ] Task 4: manager registry — 未开工
+- Task 1/1b: implementation complete on successor candidate `51286a05`; the original implementer transcript was physically unavailable, so the successor continued from the nine committed checkpoints. Final code review is Spec PASS / Quality APPROVED with 0 blocker/major/minor, and final acceptance PASSes with 0 Critical/Important/Minor. Explicit `preserve`/`fresh` rewrite provenance, fresh same-value IDs, public flat `createResponses`, internal rich `ParsedSseFrame`, History projection, reset/NUL/retry semantics, and production rewrite coverage are all closed. Task 37 integrated this candidate with Task 3's shared response-processor seam as `bd6afab5`; typecheck、target lint、139项定向、47项修复门和全backend `5664 pass / 0 fail` 已通过，等待独立合并态复审后关闭。
+- Task 2: complete and integrated as `294aa803` + `a5b6eb43` + `1e7b527a`. Final review: Spec PASS, Quality APPROVED, 0 Critical/Important/Minor. Integrated-tree verification: grammar + boundary classifier 27 pass/0 fail, typecheck pass.
+- Task 3: complete and integrated through local `98f15061` (the reviewed 18-commit adapter chain plus two handoff fixes). Final code review is Spec PASS / Quality APPROVED and acceptance PASS with 0 Critical/Important; integrated-tree verification is 125 pass / 0 fail across 14 files, typecheck pass, and target lint pass. The final shape uses one branded attempt-opts assembly path, preserves no-candidate live outcome shape, and keeps Chat/Responses/Anthropic buffered semantics green. Task 37 semantic merge with Task 1b is committed as `bd6afab5` and awaits independent merged-seam review；Task 4 remains blocked only on that review gate.
+- Task 4: blocked by Task 3; readiness map complete. Preserve distinction between delivery-owner serializer and raw transport serializer; eliminate manual candidate-session field loss.
+- Task 5: blocked by Task 4; frozen graph baseline complete: 6 roots/11 pumps, all 11 currently pendingLegacy. Guard must freeze root→pump pairs, cut at owner entry, and discover private sink owners without wrapper false positives.
+- Task 6: blocked by Task 5; config-contract readiness complete with 0 blocker/0 major.
+- Task 7: complete and integrated as `6b545360` + `b1873020` + `87e1eda1` + `1d24d9bf`. Final review: Spec PASS, Quality APPROVED, 0 Critical/Important, 2 non-blocking Minor. Integrated-tree verification: 57 pass/0 fail, typecheck pass, DATA callback unchanged at `src/lib/transport/http2-client.ts:1205`. Minor disposition: add `req` receiver AST mutation to downstream architecture/runtime verification; stale pre-hardening counts in the worktree-local report are not a product artifact.
+- Task 8: complete and integrated as `38d0d1c5`..`025c0ba8` (10 commits). Final code review: Spec PASS, Quality APPROVED, 0 Critical/Important, 1 stale-progress Minor. Independent verification: Acceptance PASS, 0 Critical/Important/Minor, 12 probes/56 assertions. Integrated-tree verification: ledger 14 pass/0 fail, typecheck pass. Primitive remains inert; no production wiring. Progress Minor is superseded by this ledger and final git lineage.
+- Task 9: 用户已于 2026-08-08 裁决范围 A；ready-summary 完整性架构与20格 canonical DML final-state matrix 已在 `993a64a9` 定稿并独立复审通过（Architecture PASS、Necessity CONFIRMED、0 blocker/Critical/Important/Minor）。**实现候选已完成并经两个正交视角独立评审收口：最终 verdict 可合并，BLOCKER 0 / MAJOR 0**（spec合规／生产图视角与验收判据双向鉴别力视角各跑多轮，报告见 `docs/tmp/2026-08-08-task9-review-spec.md`、`docs/tmp/2026-08-08-task9-review-acceptance.md`，整改与证据见 `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md`）。内容含同snapshot ready reads、search await后新snapshot、canonical-owner strict repair、002迁移撤权、production startup backfill、GC envelope↔normalized refs对账、clear完整性与backfill lifecycle drain；评审过程中另闭合三个缺陷：marker缺席时read path发布未验证缓存summary、journal owner identity未绑定、以及**存量 schema-5 库升级失败**（迁移顺序，归属 `72b51429`，早于本轮）。门禁：`lint:all` 与 `typecheck` 零 error、`tests/history/` 560 pass / 0 fail；官方 `test:backend` 的非零退出仅由 backlog 已记录的并发档位 flake 引起（隔离下全绿）。**范围仍排除 native UDF、签名、防篡改、范围B双轨与 Task 10 production activation；Task 10 未推进。**
+- Task 10: blocked by Tasks 7, 8, 9; activation graph complete. Scheduler port, H2 lease install/freeze, dispatch slots, envelope, unique persistence sink, and transaction-A consumer must land in one activation commit.
+- Task 11: blocked by Tasks 7 and 10; runtime-harness readiness complete with 0 blocker/0 major.
+- Task 12: blocked by Tasks 1-11; docs/acceptance readiness complete. Live docs remain not-implemented; Bun clean-RST backlog stays open.
+- Baseline deterministic performance fix: complete and integrated; see Baseline entry above. No open review findings.
+
+## Review gates
+
+Each integrated task requires a review package from the recorded pre-task base through integrated HEAD, then independent task review with both verdicts: spec compliance and code quality. Critical/Important findings return to a subagent fixer and the same reviewer re-reviews. Task 12 additionally requires two orthogonal merged-state reviewers with `0 blocker / 0 major`.
+
+Integration identity gate: parallel `Agent` results are not assumed to preserve dispatch order. Before integrating any agent commit, read its report and verify the actual brief path, base SHA, commit SHA, and `git show --name-only`; reject any file outside that task's frozen boundary unless the brief explicitly permits it. This gate was added after one Task 1 agent correctly stopped when it received a Task 2 oracle message intended for a different parallel result.
+
+Cross-task integration seam:
+- Task 1b and Task 3 may both touch `response-processor` / direct render. Task 1b owns parsed-SSE provenance → wire-only projection; Task 3 owns wire frame → typed delivery classification. Whichever integrates second must replay both task suites and verify adapter/candidate wrappers preserve the explicit projection boundary without copying parsed provenance into client frames or dropping classified outcomes. A clean three-way merge is not evidence of semantic compatibility.
+
+Independent-oracle findings now binding on implementation/review:
+- Task 1: leading BOM, lone CR, and remove-only-first-BOM controls.
+- Task 2: six false-green sequences and three false-red controls in `task-2-independent-oracle.md`.
+- Task 7: CAS/freeze/builder/observer ordering, deep late-mutation, cancel provenance, DATA AST; stream/session shared-error dynamic proof deferred to Tasks 8+10.
+- Task 9: eight migration/recovery/digest/GC/future-format controls in `task-9-independent-oracle.md`.
+- Task 5 guard: frozen root→pump pairs, owner-entry graph cut, private sink-owner discovery with wrapper exclusion.
+
+## Global constraints
+
+- Trust-first threat modeling: absent concrete anomaly evidence, assume participants are non-malicious and cover data corruption, program bugs, and operator mistakes only; do not add anti-malicious authority, signing, tamper resistance, or parallel tracks. Task 9 range A is the current application of this user decision.
+- Mandatory block/item delivery; boundaryless protocols are response-terminal.
+- No production live/cap-retreat bypass; no oversize-block spool fallback.
+- HTTP/2 DATA callback unchanged; no extra work in that callback.
+- Performance reports only, no fixed gate or zero-regression claim.
+- Never start or terminate port 4141; no push.
+- Do not update live DESIGN/API state before full implementation and merged-state verification.

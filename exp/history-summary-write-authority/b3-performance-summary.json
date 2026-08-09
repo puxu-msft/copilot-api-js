@@ -1,0 +1,627 @@
+{
+  "scope": "B3 EXPLAIN and local in-memory timing observations; no threshold and no zero-regression claim",
+  "environment": {
+    "runtime": "Bun 1.3.14",
+    "platform": "linux",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "arch": "x64",
+    "hostname": "CPC-puxu-WC402E",
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "cpuCount": 16,
+    "commit": "bc5f6065c106c8e8740a2f78caa5deccbcf4725c"
+  },
+  "matrix": {
+    "rows": 512,
+    "refs": [
+      0,
+      4,
+      32
+    ],
+    "payloadBytes": {
+      "small": 64,
+      "large": 262144
+    },
+    "queries": [
+      "get",
+      "list",
+      "session",
+      "stats"
+    ]
+  },
+  "explain": {
+    "0": {
+      "get": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)",
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "list": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "session": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "stats": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      }
+    },
+    "4": {
+      "get": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)",
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "list": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "session": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "stats": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      }
+    },
+    "32": {
+      "get": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)",
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "list": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "session": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "stats": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      }
+    }
+  },
+  "timingSummaryUsPerExecution": {
+    "0": {
+      "small": {
+        "get": {
+          "baselineMedian": 3.1635720000000003,
+          "integrityMedian": 5.279154,
+          "pairedDeltaMedian": 1.3861860000000004
+        },
+        "list": {
+          "baselineMedian": 75.53533,
+          "integrityMedian": 158.81459,
+          "pairedDeltaMedian": 88.65422
+        },
+        "session": {
+          "baselineMedian": 11.85989,
+          "integrityMedian": 64.7694,
+          "pairedDeltaMedian": 55.81098
+        },
+        "stats": {
+          "baselineMedian": 134.04872,
+          "integrityMedian": 833.3760100000001,
+          "pairedDeltaMedian": 692.7033600000001
+        }
+      },
+      "large": {
+        "get": {
+          "baselineMedian": 3.699284,
+          "integrityMedian": 6.332196,
+          "pairedDeltaMedian": 2.5716940000000004
+        },
+        "list": {
+          "baselineMedian": 61.51734,
+          "integrityMedian": 120.31874,
+          "pairedDeltaMedian": 66.18157
+        },
+        "session": {
+          "baselineMedian": 9.79054,
+          "integrityMedian": 55.291185,
+          "pairedDeltaMedian": 46.046815
+        },
+        "stats": {
+          "baselineMedian": 115.52927000000001,
+          "integrityMedian": 685.3554300000001,
+          "pairedDeltaMedian": 569.8261600000001
+        }
+      }
+    },
+    "4": {
+      "small": {
+        "get": {
+          "baselineMedian": 2.189778,
+          "integrityMedian": 5.588146,
+          "pairedDeltaMedian": 3.398368
+        },
+        "list": {
+          "baselineMedian": 70.57428,
+          "integrityMedian": 328.36167,
+          "pairedDeltaMedian": 261.29834
+        },
+        "session": {
+          "baselineMedian": 13.238865,
+          "integrityMedian": 166.674275,
+          "pairedDeltaMedian": 152.538925
+        },
+        "stats": {
+          "baselineMedian": 149.82707000000002,
+          "integrityMedian": 2561.15893,
+          "pairedDeltaMedian": 2381.48851
+        }
+      },
+      "large": {
+        "get": {
+          "baselineMedian": 5.53895,
+          "integrityMedian": 17.618022,
+          "pairedDeltaMedian": 9.369406
+        },
+        "list": {
+          "baselineMedian": 64.89952,
+          "integrityMedian": 310.34229,
+          "pairedDeltaMedian": 235.43416000000002
+        },
+        "session": {
+          "baselineMedian": 8.028235,
+          "integrityMedian": 143.59126999999998,
+          "pairedDeltaMedian": 133.70456
+        },
+        "stats": {
+          "baselineMedian": 146.65281,
+          "integrityMedian": 2666.7691800000002,
+          "pairedDeltaMedian": 2483.38954
+        }
+      }
+    },
+    "32": {
+      "small": {
+        "get": {
+          "baselineMedian": 4.178054,
+          "integrityMedian": 29.772592,
+          "pairedDeltaMedian": 26.534951999999997
+        },
+        "list": {
+          "baselineMedian": 70.59457,
+          "integrityMedian": 1375.3087,
+          "pairedDeltaMedian": 1300.77593
+        },
+        "session": {
+          "baselineMedian": 12.54052,
+          "integrityMedian": 881.73163,
+          "pairedDeltaMedian": 874.460695
+        },
+        "stats": {
+          "baselineMedian": 126.3966,
+          "integrityMedian": 13531.54783,
+          "pairedDeltaMedian": 13440.044609999999
+        }
+      },
+      "large": {
+        "get": {
+          "baselineMedian": 3.3397020000000004,
+          "integrityMedian": 26.608806,
+          "pairedDeltaMedian": 22.827466
+        },
+        "list": {
+          "baselineMedian": 68.19275,
+          "integrityMedian": 1381.2635,
+          "pairedDeltaMedian": 1318.5032
+        },
+        "session": {
+          "baselineMedian": 11.06311,
+          "integrityMedian": 788.391915,
+          "pairedDeltaMedian": 778.09235
+        },
+        "stats": {
+          "baselineMedian": 124.68982000000001,
+          "integrityMedian": 11486.179689999999,
+          "pairedDeltaMedian": 11344.04581
+        }
+      }
+    }
+  },
+  "payloadSizeComparison": {
+    "0": {
+      "get": {
+        "baselineMedianDeltaLargeMinusSmallUs": 0.5357119999999997,
+        "integrityMedianDeltaLargeMinusSmallUs": 1.0530419999999996,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "list": {
+        "baselineMedianDeltaLargeMinusSmallUs": -14.017990000000005,
+        "integrityMedianDeltaLargeMinusSmallUs": -38.495850000000004,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "session": {
+        "baselineMedianDeltaLargeMinusSmallUs": -2.06935,
+        "integrityMedianDeltaLargeMinusSmallUs": -9.478215000000006,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "stats": {
+        "baselineMedianDeltaLargeMinusSmallUs": -18.519449999999992,
+        "integrityMedianDeltaLargeMinusSmallUs": -148.02058,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      }
+    },
+    "4": {
+      "get": {
+        "baselineMedianDeltaLargeMinusSmallUs": 3.349172,
+        "integrityMedianDeltaLargeMinusSmallUs": 12.029876,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "list": {
+        "baselineMedianDeltaLargeMinusSmallUs": -5.674760000000006,
+        "integrityMedianDeltaLargeMinusSmallUs": -18.019380000000012,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "session": {
+        "baselineMedianDeltaLargeMinusSmallUs": -5.21063,
+        "integrityMedianDeltaLargeMinusSmallUs": -23.083005000000014,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "stats": {
+        "baselineMedianDeltaLargeMinusSmallUs": -3.1742600000000323,
+        "integrityMedianDeltaLargeMinusSmallUs": 105.61025000000018,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      }
+    },
+    "32": {
+      "get": {
+        "baselineMedianDeltaLargeMinusSmallUs": -0.838352,
+        "integrityMedianDeltaLargeMinusSmallUs": -3.163785999999998,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "list": {
+        "baselineMedianDeltaLargeMinusSmallUs": -2.4018200000000007,
+        "integrityMedianDeltaLargeMinusSmallUs": 5.9547999999999774,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "session": {
+        "baselineMedianDeltaLargeMinusSmallUs": -1.4774100000000008,
+        "integrityMedianDeltaLargeMinusSmallUs": -93.33971499999996,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      },
+      "stats": {
+        "baselineMedianDeltaLargeMinusSmallUs": -1.7067799999999949,
+        "integrityMedianDeltaLargeMinusSmallUs": -2045.3681400000005,
+        "note": "Observed delta only; no threshold or equivalence claim."
+      }
+    }
+  },
+  "rawFiles": [
+    "b3-perf-refs0-small.json",
+    "b3-perf-refs0-large.json",
+    "b3-perf-refs4-small.json",
+    "b3-perf-refs4-large.json",
+    "b3-perf-refs32-small.json",
+    "b3-perf-refs32-large.json"
+  ],
+  "planFacts": {
+    "anyManifestPayloadNamed": false,
+    "allIntegrityOperationsCoveringIndex": true,
+    "allIntegrityCorrelatedRefsScan": true,
+    "allIntegrityRefsIndexSearch": true
+  },
+  "limitations": [
+    "In-memory Bun 1.3.14 PoC; not a production benchmark.",
+    "The correlated anti-join is per candidate summary row and scales with normalized refs.",
+    "Covering-index EXPLAIN and omitted projection show no manifest payload access in this query shape; they do not prove every future query avoids blobs.",
+    "B3 does not stop ordinary SQL from rewriting both canonical and derived validation state; it cannot replace an authority boundary."
+  ]
+}

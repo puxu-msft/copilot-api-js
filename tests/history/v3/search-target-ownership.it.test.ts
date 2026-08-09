@@ -31,12 +31,12 @@ import {
   openDatabase,
 } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
-import { ensureV3Schema } from "~/lib/history/v3/store"
 import {
   //
-  freezeHistorySearchOwnership,
-  tryMarkSummaryProjectionReady,
-} from "~/lib/history/v3/summary-store"
+  ensureV3Schema,
+  validateAndMarkSummaryProjectionReady,
+} from "~/lib/history/v3/store"
+import { freezeHistorySearchOwnership } from "~/lib/history/v3/summary-store"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
@@ -106,7 +106,7 @@ describe("history search target ownership", () => {
       attempts: [],
       model: {},
     })
-    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
 
     // Start from "the index cannot serve this row yet", so that becoming servable is a write with a
     // definite moment — the moment this test places inside the freeze.

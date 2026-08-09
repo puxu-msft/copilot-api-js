@@ -33,6 +33,7 @@ import {
 } from "~/lib/pipeline/frame-origin"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {
   // Root fix: writeSynthetic previously sampled the forwarded track with a hardcoded `undefined`
@@ -41,7 +42,7 @@ describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded 
   // from a real upstream frame on the forwarded history track. writeSynthetic now reads the tag.
   test("SSE: a tagged frame surfaces synthetic on the forwarded record", async () => {
     const records: Array<{ synthetic?: string }> = []
-    const sink = makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => records.push({ synthetic: r.synthetic }) })
+    const sink = makeSseSink({ write: () => Promise.resolve() } as never, { onForwarded: (r) => records.push({ synthetic: r.synthetic }) })
     await sink.writeSynthetic?.(tagFrameSynthetic({ event: "error", data: '{"type":"error"}' }, "error-shaping-canonical"))
     expect(records).toEqual([{ synthetic: "error-shaping-canonical" }])
   })
@@ -56,7 +57,7 @@ describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded 
   test("not-regression: an UNTAGGED synthetic frame still records synthetic:undefined (byte-equivalent to before)", async () => {
     const sse: Array<{ synthetic?: string }> = []
     const ws: Array<{ synthetic?: string }> = []
-    await makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => sse.push({ synthetic: r.synthetic }) }).writeSynthetic?.({
+    await makeSseSink({ write: () => Promise.resolve() } as never, { onForwarded: (r) => sse.push({ synthetic: r.synthetic }) }).writeSynthetic?.({
       event: "error",
       data: "{}",
     })
@@ -94,11 +95,17 @@ describe("makeArraySink", () => {
 })
 
 describe("makeSseSink", () => {
-  function mockStream(): { stream: Parameters<typeof makeSseSink>[0]; writes: Array<unknown> } {
-    const writes: Array<unknown> = []
-    // Only `writeSSE` is exercised by the sink.
-    const stream = { writeSSE: (msg: unknown) => (writes.push(msg), Promise.resolve()) } as unknown as Parameters<typeof makeSseSink>[0]
-    return { stream, writes }
+  function mockStream(): { stream: Parameters<typeof makeSseSink>[0]; writes: Array<ClientFrame>; bytes: Array<string> } {
+    const writes: Array<ClientFrame> = []
+    const bytes: Array<string> = []
+    const stream = {
+      write: (input: Uint8Array | string) => {
+        bytes.push(typeof input === "string" ? input : new TextDecoder().decode(input))
+        writes.push(decodeSseWrite(input))
+        return Promise.resolve()
+      },
+    } as unknown as Parameters<typeof makeSseSink>[0]
+    return { stream, writes, bytes }
   }
 
   test("writes data + event line; omits event when undefined", async () => {
@@ -115,17 +122,20 @@ describe("makeSseSink", () => {
     expect(writes).toEqual([{ data: "" }])
   })
 
-  test("forwards id/retry SSE framing (faithful passthrough; id stringified, undefined keys omitted)", async () => {
-    const { stream, writes } = mockStream()
-    const sink = makeSseSink(stream)
-    // An upstream frame carrying SSE `id:`/`retry:` framing must be forwarded verbatim —
-    // a sink that wrote only event/data would silently narrow the bypass-direct passthrough.
+  test("forwards id/retry SSE framing and preserves an explicit empty reset", async () => {
+    const { stream, writes, bytes } = mockStream()
+    const sampled: Array<ClientFrame> = []
+    const sink = makeSseSink(stream, { onGenerationFrame: (frame) => sampled.push(frame) })
     await sink.write({ event: "message", data: "hi", id: 7, retry: 3000 })
-    await sink.write({ event: "message", data: "bye" }) // no id/retry → omitted
+    await sink.write({ event: "message", data: "reset", id: "" })
+    await sink.write({ event: "message", data: "bye" })
     expect(writes).toEqual([
       { data: "hi", event: "message", id: "7", retry: 3000 },
+      { data: "reset", event: "message", id: "" },
       { data: "bye", event: "message" },
     ])
+    expect(sampled).toEqual(writes)
+    expect(bytes[1]).toContain("\nid:\n\n")
   })
 })
 
@@ -145,7 +155,11 @@ describe("makeWsSink", () => {
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+    write: (input: Uint8Array | string) => {
+      const decoded = decodeSseWrite(input)
+      written.push({ data: decoded.data, ...(decoded.event !== undefined && { event: decoded.event }) })
+      return Promise.resolve()
+    },
   } as unknown as Parameters<typeof makeSseSink>[0]
   return { stream, written }
 }

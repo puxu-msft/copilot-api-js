@@ -1132,7 +1132,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：把 `rememberPreReadyFailure` 存的 env 改为 `preflight`（primary 实际 dispatch 用的那份，已 transform、无需重跑 preflight 副作用），使 recovery wire 与 primary wire 恒等；或在 recovery 路径显式对齐 preflight。这样任何 leg 未来重新引入 `preSend`（如 truncation 类前置处理）时 recovery 不会悄悄绕过它。
 - **为何暂缓**：今天无可观测差异；正确的 env 选择在 P4/P5 接 handler 时语境更清晰（届时 recovery env 的实际使用具体化）。**触发条件（值得做）**：B2 P4/P5 接线 `runPreContentRecovery`（届时一并核实/对齐 env），或任何 leg 重新引入 `preSend`。发现方：Task 0.4 review（reviewer，2026-07-23）。**姊妹 nit**：gate 探测的 `outboundPrepareWire` 非纯（`recordFeature` 双发），可控无正确性影响；若精确处理参照 `inspectRequest` 的 `withCapturingManagerAsync` 隔离写法。
 
-## `parallel-test.ts` 的用例汇总仍系统性欠计（2026-07-28，紧随 ANSI 修复）
+## ~~`parallel-test.ts` 的用例汇总仍系统性欠计~~（2026-07-28，紧随 ANSI 修复）→ **已解决 2026-08-09（`e24de3a1`）**
+
+> **处置**：按本条自己开出的「理想架构」执行——tally 改由 junit XML 统计（`parseJUnit` 数 `<failure>`／`<error>`，pass 由 `executed - failed` 派生），脆弱的 stdout 文本解析整体删除。下面保留原文作为记录。
+> **注意本条与 2026-08-09 那条的边界**：修好的是**机制**（真相源不再是会被截断的 stdout），**不是**「历史上那些数字为什么各不相同」——后者从未被定位，也不因本次修复而被解释。
 
 - **根因 / 现状**：`scripts/parallel-test.ts` 汇总各 shard 的 `N pass` / `N fail` 时曾因 bun **即使输出到管道也上色**（`\x1b[0m\x1b[32m 26 pass\x1b[0m`）而恒报 `0 tests`，已修（`5454616b`，strip SGR 后正样本对照 0 → 4243）。但修复后**数字仍与直接命令不一致**：同一棵树上 `bun run test:backend`（= `parallel-test.ts unit it http`）报 **4749 tests**，而 `bun test --parallel .unit.test .it.test .http.test` 报 **6614 tests / 644 files**；单 `unit` 档同样差（4007 vs 4304）。已排除的假设：① 不是发现缺口——`tests/` 内 `.unit.test.ts` 计 414、全仓同样 414，`tests/` 之外只有一个 `exp/` 实验文件（本就不该进门）；② 不是别的 CSI 序列——实测 bun 输出的 CSI final byte 只有 `m`。
 - **当前行为**：**门本身（退出码）是对的**——它由各 shard 自己的 exit code 决定，真失败照样红；坏的是**汇总证据行**：交付报告引用的「N pass」系统性偏小约 25%，且无法与直接命令对账。
@@ -1190,14 +1193,17 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **2026-07-30 新数据点（fast 档也中招，扩大了嫌疑面）**：`tests/infra/atomic-fs.unit.test.ts` 的 `atomicWriteJson > crash during writeFile leaves the previous target intact` 在 `bun run test`（**fast 档**，`unit http`）下 6 次跑红 2 次（4757 pass / 1 fail），**单文件隔离连跑 8 次全绿**。此前记录的三例都在 `test:backend`（16 分片）下——现在 fast 档同样复现，说明嫌疑面是**分片机制本身**（片内共享缓存 / 进程级单例），不是 backend 档特有的资源竞争。该文件末次改动 `85937f27`，与 B2 系列无关。发现方：Task 4.2 评审的邻域观测。
 - **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。
 
-## `parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移（2026-07-30，B2 Task 4.3a 收口复评）
+## ~~`parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移~~（2026-07-30，B2 Task 4.3a 收口复评）→ **机制已消除 2026-08-09（`e24de3a1`）**
+
+> **处置**：按本条开出的「理想架构」执行——汇总改由 junit 统计，stdout 解析删除。**但本条问的是「为什么逐次漂移」，那个问题没有被回答**：修复消除的是「汇总依赖会被截断的 stdout」这个机制，没有证明历史上那四个数字（6631 / 5741 / 6164 / 5810）的差异全部来自它。本条开出的守卫「同一 commit 连跑 3 次汇总数必须一致」**尚未建立**。⚠️ **2026-08-09 划销**：下面「用 junit 枚举做增减验收」那条配套纪律**已作废，不再有效**——junit 名字集合与 tally **同源**（同一批 artifact），加载期抛错的文件既不写行也不写名字、两侧一起缺，所以它**不能**做「用例数没减少」的验收；用例级总量为何不可判见 `docs/coding-conventions.md`「并行执行」节。它保留的窄用途只有：诊断**已回报**名字集合的变化／随机漂移。
 
 - **根因 / 现状**：**未定位**。同一棵树、同一 HEAD、同一条 `bun run test:backend` 连跑四次，汇总行的总数为 **6631 / 5741 / 6164 / 5810**，全部 `0 fail`；而不经分片脚本的直接发现稳定在 `Ran 6642 tests across 649 files`。此前 2026-07-28 已记过「系统性欠计 ~25%」（ANSI 修复之后仍欠），本条是新信息：**欠计量不是常数，逐次随机漂移**，说明各分片汇总存在丢失或竞争，而非某类文件被稳定漏读。
 - **当前行为**：**门本身仍可信**——退出码由各 shard 决定，真失败照样红（本轮多次实测）。坏的只是「跑了多少条」这个仪表。
 - **危害（本轮实际踩到）**：把汇总数当作「用例数不减」的验收证据是**用会漂的尺子量 2 毫米**。B2 系列多轮用过 `6630 → 6631 → 6633` 这类差值，结论碰巧都对（另有运行时名字枚举佐证），但推理不成立。
-- **理想架构 / 若做需改什么**：让分片脚本汇总 **junit reporter 的用例名集合**而非解析 stdout 数字；或至少在汇总行标注「计数不可靠，验收请用 `--reporter=junit` 枚举」。修好后应有守卫：同一 commit 连跑 3 次汇总数必须一致。
-- **为何暂缓**：与 B2 因果链无关；且**验收有可靠替代**（junit 名字集合枚举，本轮已在用）。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手修 `parallel-test.ts` 时。
-- **发现方**：Task 4.3a 收口复评的邻域实测（连跑四次对照）。**配套纪律**：凡「用例数增减」类验收，一律用 junit 枚举或名字集合 diff，**别用分片汇总数**——与记忆 `methodology-test-name-audit-must-enumerate-at-runtime` 同一族（那条讲别用 grep，这条讲别用汇总数）。
+- **理想架构 / 若做需改什么**：让分片脚本汇总 **junit reporter 的用例名集合**而非解析 stdout 数字；或至少在汇总行标注「计数不可靠」。~~验收请用 `--reporter=junit` 枚举~~ **划销（2026-08-09）**：junit 名字集合与 tally **同源**（同一批 artifact），加载期抛错的文件既不写行也不写名字、两侧一起缺，所以它**不能**做「用例数没减少」的验收；用例级总量为何不可判见 `docs/coding-conventions.md`「并行执行」节。修好后应有守卫：同一 commit 连跑 3 次汇总数必须一致——**但注意那条守卫也只检随机漂移，不是完整性 oracle**。
+- **为何暂缓**：与 B2 因果链无关；~~且验收有可靠替代（junit 名字集合枚举）~~ **该替代已于 2026-08-09 划销**——junit 名字集合与 tally **同源**（同一批 artifact），加载期抛错的文件既不写行也不写名字、两侧一起缺，所以它**不能**做「用例数没减少」的验收；用例级总量为何不可判见 `docs/coding-conventions.md`「并行执行」节。当前**没有**可靠的增减验收替代，这是已知缺口。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手修 `parallel-test.ts` 时。
+- **发现方**：Task 4.3a 收口复评的邻域实测（连跑四次对照）。**配套纪律（已收窄）**：分片汇总数**不可**用于任何验收；junit 运行时枚举名字集合**只能**用于诊断已回报名字集合的变化，**不得**用于「用例数增减」——与记忆 `methodology-test-name-audit-must-enumerate-at-runtime` 同一族（那条讲别用 grep，这条讲别用汇总数）。
+  ⚠️ **2026-08-09 收窄**：junit 名字集合**比汇总数强，但不是完整性 oracle**——它和汇总数出自同一份产物，一个在加载期抛错的文件既不写行也不写名字，两侧一起缺、diff 照样干净。所以它能回答「**已回报的**用例名有没有变」，**不能**回答「用例总数有没有减少」。用例级总量为何至今不可判，见 `docs/coding-conventions.md`「并行执行」节的三层划分。
 
 ## 仓库内 worktree 里，裸包名 `@hsupu/ghc-proxy-{token,cli}` 解析到**主树**源码（2026-07-29，worktree 委派 gate 评审的邻域实测）
 
@@ -1310,3 +1316,71 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
 - **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
 - **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。
+
+> **状态更新（2026-08-09，合并 master 时对账）**：本条开出的「理想架构②——改为断言算法性质而非墙钟比值」**已在 master 落地**（`tests/history/v3/store-performance.it.test.ts` 的 query-plan oracle：观察 commit 实际 prepare 的 SELECT/DELETE/UPDATE 语句、断言其计划不退化为 SCAN，并带「planned.length > 0」的正控防空跑），且墙钟比值那条已被 `RUN_PERF_TESTS` gate 移出 `test:backend`、文件级 `setDefaultTimeout(60_000)` 按实测worst case 设定。**同文件那条 CAS 字节比也已重新标定**为 `>=30` physical / `>=50` live——旧的 `10x` 在去重**完全**失效时实测为 9.51 / 10.79，即 live 那一侧毫无鉴别力（见本文件「仓库里仍有文档把同源证据写成独立」条所引评审）。
+> **仍未闭合的部分**：query-plan oracle **严格窄于**原比值断言——它看不见「保持索引计划但成本仍增长」（N+1 点查、行变大、JS 侧 per-operation работы）。那部分现在只由 perf 档承担，而 perf 档默认不跑。**触发条件照旧：再看到相关红，直接做②的延伸，别调阈值。**
+
+## marker 缺席时 History 列表 fallback 走遍全表（2026-08-08，Task 9 验收判据复评的邻域实测）
+
+- **根因 / 现状**：`src/lib/history/queries.ts:267-291` 的 fallback 列表路径，其 `visitV3Summaries` visitor **从不返回 `false`**、也不带 limit，因此 marker 缺席时一次请求会遍历并 hydrate 全部 canonical operation。复杂度类没有变化（该路径此前同样逐行 hydrate），变大的是常数——Task 9 让 fallback 一律从 canonical record 重投影（不再采信缓存 `summary_json`），这是修复 BLOCKER 所必需的，但每行多了一次投影开销。
+- **当前行为**：评审实测 N=2000：**3167ms → 5452ms**。**注意触发条件不是罕见情形**——marker 缺席正是「升级后首次启动、strict scrub 尚未跑完」的常态窗口，也是任一受保护 canonical UPDATE 之后的状态。
+- **理想架构 / 若做需改什么**：与本轮未闭合的 #5（写路径退化无人守）**同一套收口**——把判据从 wall-clock 换成**确定性工作量计数**（本次请求执行的 SQL 语句数 / 扫描行数），断言「第 1 次与第 N 次之比 < 常数」；这类判据不受 CPU 争用影响、无 false-red，且能同时守住读侧这条全表遍历与写侧的每次提交扫描。读侧本身的修法是让 visitor 在攒够 capacity 后返回 `false` 提前终止（游标语义需与 `compareSummaryNewestFirst` 的排序一致，不能简单截断）。
+- **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
+- **发现方**：Task 9 独立验收评审（`docs/tmp/2026-08-08-task9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
+
+## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）→ **载体已换 2026-08-09（`e24de3a1`），根因仍未定位**
+
+> **2026-08-09 处置**：按本条的「理想架构」执行——tally 改由 junit 产物统计，stdout 解析删除。**这不是本条的答案**：它问的是「为什么同一命令给出七个不同的数」，而修复只是把仪表换了一块，没有解释旧仪表为什么乱跳。已知的是**其中一个成因**：shard 在打印 summary 的过程中死掉时，`N fail`／`N pass` 行永远不落，该 shard 对 stdout tally 贡献 0——2026-08-09 实测一次 `3337 tests · 3337 pass · 0 fail`，而同批 junit 是 7529 executed 且**其中一条是真失败**（一条 TimeoutError 被那个绿色的 `0 fail` 盖住）。**这只解释得了「有 shard 异常终止」的那些运行，解释不了全部七个数**，也不构成对上面两个已排除假说的替代。**不补第三个解释。**
+> **交付纪律的更新**：下面那条「不得引用 tally 数字」被 `docs/coding-conventions.md`「并行执行」节的**引用政策**取代——那里定了一张表：什么可以主张（带 commit／命令／原始行的**已观察量**）、什么不可以（总量、增减、规模）。**条件与边界只在那里定义，本行刻意不复述**：这个「满足 X 就能引用」的充分性主张已被独立评审推翻四次、每次换一种措辞在另一份文档里回流，复述一次就多一个漂移点。**历史报告里引用的旧 tally 数字一律不追认**。
+>
+> 本条与上面两条都提到的守卫「同一 commit 连跑 3 次汇总数必须一致」**至今未建立；而且即使建立了也不是完整性 oracle**——它与 tally **同源**，三次可以稳定漏掉同一个文件，只能检出**随机漂移**、检不出**系统性缺失**。它能回答的是这几条暂缓项各自问的那个问题（同一 commit 上的数字为什么逐次变），**不能**用来主张总量或「用例数没减少」。
+
+- **根因 / 现状**：**未定位，且已排除两个假说**。同一命令 `bun run test:backend`、同一发现集合，汇总行的 tests 总数至今观测到 **860 / 2806 / 4200 / 5555 / 5796 / 5846 / 6705** 七个值。① 评审提出的「`stripAnsi` 漏删 ESC 字节」假说**已被探针证伪**——源码中该正则含真实 ESC 字节（`sed`/编辑器渲染时不可见，评审与主会话先后踩了同一渲染陷阱），探针实测 `stripAnsi("\x1b[0m\x1b[32m 13 pass\x1b[0m")` 得 `" 13 pass"` 且 `^\s*(\d+) pass` 匹配成功；② 「shard 输出超管道缓冲、`await p.exited` 早于读取导致丢输出」这一条是**真实隐患、已修**（commit `fa28deb3` 改为并发读取），但修完数字**依旧乱跳** ⇒ 背压不是（唯一）成因。**不补第三个解释**（→ `verified-by-a-wrong-query`：带着「我已核实」的自信的错误查询，比没验证更危险）。
+- **当前行为**：**退出码可信**（取自各 shard 自身退出码，真失败照样红——本轮多次实测，包括一次由 `states-flush-freeze.it.test.ts:74` 引起的真实非零）。坏的只是「跑了多少条」这个仪表。
+- **理想架构 / 若做需改什么**：让分片脚本汇总各 shard 的 **junit 产物**（`--reporter=junit --reporter-outfile`，脚本内已有该形态的先例）而非解析 stdout 数字；或至少在汇总行标注「计数不可靠」。修好后应有守卫：同一 commit 连跑 3 次汇总数必须一致。
+- **交付纪律（立即生效，不等修复）**：交付报告**只引 exit code 与失败用例名**，不得引用 tally 数字作为「用例数不减」或「规模」的证据。本轮已按此执行——Task 9 的进度文件里先前写的 `7198 pass` 已作废并标注更正。
+- **复跑**：`bun run test:backend`（连跑 3 次对比汇总行）。**为何暂缓**：与 Task 9 因果链无关，且交付验收另有依据（退出码 + 定向套件）。~~+ junit 枚举~~ **划销（2026-08-09）**：junit 名字集合与 tally **同源**（同一批 artifact），加载期抛错的文件既不写行也不写名字、两侧一起缺，所以它**不能**做「用例数没减少」的验收；用例级总量为何不可判见 `docs/coding-conventions.md`「并行执行」节。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手改 `parallel-test.ts` 时。
+- **与既有条目的关系**：本条**取代**上面 2026-07-30 那条「汇总用例数逐次漂移」的根因段（那条记的四个数是同一现象的早期样本），新增的是「ANSI 与背压两个假说均已排除」这一信息。**发现方**：Task 9 独立验收评审的跨轮累积观测。
+
+## hooks loader 的缓存目录是相对路径，16 个 shard 共享同一目录并互删（2026-08-08，Task 9 收口复评定位）
+
+- **根因（已定位，非猜测）**：`src/lib/pipeline/hooks/loader.ts` 的 `HOOK_CACHE_DIR = ".hooks-cache"` 是**相对路径**，而 `scripts/parallel-test.ts` 用 `cwd: REPO_ROOT` spawn 全部 16 个 shard ⇒ **所有 shard 共享同一个物理目录**。`cacheInitialized` 是**进程级**的，于是每个 shard 首次加载 hook 时都会 `rmSync` 清空整个共享目录，删掉别的 shard 刚写、正要 `import()` 的文件。写入文件名 `hook-${Date.now()}-${loadSeq}` 里的 `loadSeq` 同样是进程级，**同毫秒会撞名**。
+- **当前行为**：`tests/routes/hooks.http.test.ts` 的 `POST /reload > loads a valid hook module and returns ok:true with exports/version` 在 `bun run test:backend`（16 shards）下偶发失败；**单跑 6 pass / 0 fail**。与 History V3 / 迁移 / 判据改动**零交集**（复评独立核实）。
+- **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
+- **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
+- **发现方**：Task 9 独立验收评审的收口复评（`docs/tmp/2026-08-08-task9-review-acceptance.md` R2-4）。
+
+## `initHistory()` 重入只协调 summary backfill，未协调 terminal persistence lifecycle（2026-08-09，合并态评审定位；**master 既有，非合并引入**）
+
+- **归属先说清楚**：这不是本次合并的回归。`git show 57208559:src/lib/history/state.ts`（`57208559` 即被合并的 master tip）显示 master 上的 `initHistory` 本来就是 `clearInFlight()` + `clearRecentModelOperationTerminalsForTests()` 打头、随后 `openDatabase` / `replaceTerminalSink` / 换 subscriber，**同样没有** `pause()` / `waitForQuiescence()` / `drainModelOperationTerminalSubscribers()` / `drainV3Writer()`。合并相对 master **只增加**了 `stopV3SummaryBackfill()` + `await drainV3SummaryBackfill()`（多覆盖了 backfill 这一条），没有削弱任何既有协调。评审最初把根因归给合并，经上述命令证伪后已接受更正。
+- **根因 / 现状**：重入协议只覆盖 backfill。`src/lib/history/state.ts:100-108` 停并 drain summary backfill 后立即 `clearInFlight()` 与 `clearRecentModelOperationTerminalsForTests()`；`:124-143` 依次 `openDatabase()` → migration/recovery → `startV3SummaryBackfill()` → `admission.replaceTerminalSink()` → unsubscribe → subscribe，整段不阻止新的 History reservation／terminal publication，也不等待旧 subscriber 与 V3 writer 排空。**「backfill 已停止」不等于「旧 History lifecycle 已静止」。**
+- **可观察错误行为**：若 publication P 已进入 recent-terminal pending overlay、其旧 subscriber/write 尚未完成，此时重入 `initHistory(true)`，P 会先从 overlay 消失；旧异步工作随后即使完成，`settleTerminalDurability()` 也因 identity guard 而直接返回（`src/lib/history/recent-terminal.ts:29`：`if (pending.get(operationId) !== publication) return`），durability 结算被静默丢弃。表现为 History 项在持久化窗口内无故消失、durability pending/failed 状态缺失。若 DB path 在重入中变化，旧 writer 还可能与 singleton DB 的 close/reopen 交错。**边界**：已绑定但尚未 publish 的 reservation 不会被 `clearRecent...` 删除——本条不声称「所有 reservation 都丢失」。
+- **修复原料已存在（不必新造 gate）**：`src/lib/history/worker/admission.ts:182-197` 的 `pause()` / `waitForQuiescence()`、`src/lib/history/v3/terminal-bus.ts:71-74` 的 `drainModelOperationTerminalSubscribers()`、以及 `shutdownHistory()` 已在用的 `drainV3Writer()`（`state.ts:217-220`）。**均已逐个打开核实存在。**
+- **理想架构 / 若做需改什么**：把 `initHistory()` 的重入改成完整 lifecycle transition——`pause()` 阻止新 admission → `waitForQuiescence()` 等已保留工作到明确切换点 → unsubscribe → `drainModelOperationTerminalSubscribers()` + `drainV3Writer()` → 停/drain backfill 并切换 DB/sink → 重新 subscribe → `resume()`。顺序必须同时保证「允许已获 reservation 完成」与「禁止 publication 落入无 subscriber 窗口」，**不能只机械加一个 pause**。
+- **为何暂缓**：master 既有缺陷，不在本次合并的因果链上；修它需要重排一段生命周期临界区并配确定性 IT，塞进合并线会让合并的因果链变糊。**触发条件（值得做）**：① 出现 History 项在持久化窗口内消失的实际报告；② 有人再动 `initHistory` 的重入路径或 admission/terminal-bus 生命周期；③ config reload 频率上升。
+- **回归测试建议**：确定性 IT——让 terminal publication 停在 subscriber/write 未完成处，执行 `initHistory(true)` 重入，再释放写入；断言记录不丢、不双写、overlay durability 最终结算、admission 最终 quiescent。正控证明无重入时同一 publication 正常落盘；负控让旧实现稳定复现 transient disappearance。**现有 `tests/history/v3/migrations-wiring.it.test.ts:117-128` 只把 backfill 横跨 `initHistory(false)`，没有把已发布未持久化的 terminal 横跨 `initHistory(true)`，所以它的绿不覆盖本窗口。**
+- **发现方**：合并态接缝评审（`gpt-souls:reviewer`，2026-08-09），报告 `docs/tmp/2026-08-09-merge-state-review-seams.md`；归属由主会话用 `git show` 证伪后评审接受更正。
+
+## `test-timings.json` 给 `store-performance.it.test.ts` 的缓存值与实测不一致，差额随运行波动、未归因（2026-08-09）
+
+- **观测（三次读数，逐条带口径——这里没有「当前稳定值」）**：
+  | 读数 | 口径 | 来源 |
+  |---|---|---|
+  | 5.818051s | 缓存值，锚定 `05fd7c3d` | `rg 'store-performance\.it\.test\.ts' scripts/test-timings.json` |
+  | 9.51s | 某次运行的逐用例之和 | C3 裁决期间的邻域实测，`docs/tmp/2026-08-09-merge-state-review-claims.md` |
+  | 6.726245s | HEAD `a8b846ce` 的逐用例之和（0.049415 + 1.011342 + 5.130231 + 0.535257），整文件 runner wall 7.27s | 收尾评审复跑，`--reporter=junit` |
+- **根因 / 现状**：**未归因，且差额本身不稳定。** 本条第一版把 9.51s 写成「当前值」并据此断言 shard「系统性偏长」——**那是把单样本升格成了稳定真值**，收尾评审用上表第三行推翻。按同一口径，当前差额约 0.91s 而非 3.7s。**首先要回答的不是「为什么少估 3.7s」，而是「这三个读数的离散度有多大、采集口径是否同一」**——在拿到多次同环境分布之前，不存在一个待解释的固定差额。
+- **当前行为**：LPT 按缓存值给该文件配重。若缓存确实系统性低估，该 shard 会偏长——但**这个「若」尚未成立**。它曾被列为把 CAS 那条用例推过原 15s 预算的候选噪声来源之一（超时已按实测放宽到 120s，今天不再表现为红）。
+- **理想架构 / 若做需改什么**：先确认 `bun run test:timings` 的采集口径——记的是文件级 wall 还是用例之和？是否在并发下采集（那样会系统性偏高而非偏低）？**口径查清前不要「顺手刷新缓存」**，那只会把一个没被理解的偏差重新写一遍。要断言性能缺陷，需要多次测量的分布基线，不是单样本。
+- **为何暂缓**：今天无红；只影响分片均衡度，不影响判据正确性。**触发条件（值得做）**：① **多次同环境测量显示缓存显著偏离分布**（不是某一次读数对不上）；② 再次出现「隔离下通过、分片下超时」的用例；③ 有人要依赖 timings 做容量估算；④ 顺手改 `parallel-test.ts` 的分片逻辑时。
+- **发现方**：C3 裁决期间的邻域实测（`reviewer`，2026-08-09）提出，收尾产物评审（`gpt-souls:reviewer`，同日）证伪其「稳定 9.51s」表述并给出第三次读数。**两轮都明确标注未归因，本条沿用，不补第三个解释。**
+
+## 仓库里仍有文档把「同源证据」写成独立 / 拿 tally 承担完整性（2026-08-09，收尾产物评审十二轮累积）
+
+- **已定的权威（不必再讨论，直接照用）**：`docs/coding-conventions.md`「并行执行」节。它定了三件事——① tally 数字的**引用政策**（可主张「该次运行**观察到** N 通过/0 失败」并附 commit、命令、原始 tally 行；**不得**主张总量、规模、「用例数没减少」）；② 退出码 0 是**必要非充分**条件，当前三道门各自的覆盖与缺口；③ 完整性分三层——「请求过的文件有没有在 artifact 里被提及」可判、「仓库应有哪些测试文件」只有部分独立绊线、「本应存在哪些 testcase」**不可判**。
+- **判独立性的机械判据**：要主张两侧独立，**交一张 provenance 图**——每侧的**生产者**是谁、**观测点**在哪、**上游**追到哪。**任一生产者同时控制两侧、或两侧最终追到同一上游，即不独立。**「换一种运行方式」「换一个 parser」「多跑几次」**都不改变上游**。
+- **根因 / 现状**：这个概念错误在本仓多处独立复发，因为它**看起来**像交叉验证。十二轮评审已修的载体：`docs/coding-conventions.md`、`docs/todo/deferred-backlog.md`（本文件三处）、`docs/memory/methodology-missing-evidence-counted-as-zero.md`、`docs/memory/methodology-merge-invalidates-branch-frozen-test-floor.md` + `MEMORY.md` 钩子、`exp/junit-tally-false-green/README.md`、`scripts/parallel-test-artifacts.ts` 与其测试的注释、`docs/spec/anthropic-rewrite-reorg.md`、`docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md`、`docs/plan/2026-08-08-header-deadline-stage2-3/{HANDOVER,KICKOFF}.md`、`docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`、三份 `docs/tmp/2026-08-08-*` 历史报告。
+- **为何暂缓**：**这是一项独立的仓库级文档清理，不是任何一次交付的验收项。** 本次合并的验收在第二轮合并态评审就已闭合（合并范围内 BLOCKER 0 / MAJOR 0）；此后十轮的发现全部是「**别的**文档带同一处概念错误」。权威已立、判据已写，剩余载体属可增量清理的债。用户 2026-08-09 裁决：立为 backlog，停止按轮磨。
+- **若做需改什么**：用 provenance 判据全仓扫一遍（尚未覆盖：`ui/`、`ui-v4/`、`e2e/`、`native/`、历史 `docs/archive/`），逐处判定是「措辞不准」还是「判据真的担不起它承担的不变量」——**后者要连同它守的不变量一起改**，别只改措辞。⚠️ **别顺手改冻结计划的验收强度**：那属于推翻既有裁决，须交该计划所有者（本轮就踩过一次，已撤回并交裁决）。
+- **触发条件（值得做）**：① 有人又用 tally／同批 JUnit 复算论证「测试没减少」；② 新写判据时需要引用独立性判据；③ 顺手改到上述任一文档时。
+- **发现方**：收尾产物评审十二轮（`gpt-souls:reviewer`，2026-08-09），完整逐条证据在 `docs/tmp/2026-08-09-wrapup-artifacts-review.md`。

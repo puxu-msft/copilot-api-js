@@ -22,6 +22,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { tagTransportError } from "~/lib/error/transport-reason"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import {
   //
@@ -90,6 +91,7 @@ function runtime(
     env: requestEnv,
     responseRewrites: [],
     renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+    adapter: createAnthropicDeliveryProtocolAdapter(),
     createState: () => undefined,
     ...(onRenderedFrame && { onRenderedFrame: (_state, frame) => onRenderedFrame(frame) }),
     snapshot: () => ({ label }),

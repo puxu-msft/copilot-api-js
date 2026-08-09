@@ -324,8 +324,11 @@ function seedOrphanJournalRow(dbPath: string, record: ModelOperationRecord): voi
     ensureV3Schema(db)
     const prepared = prepareModelOperation(record)
     db.prepare(
-      "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
-    ).run(prepared.id, prepared.revision, prepared.digest, "terminal", prepared.compressedJournalRecord, Date.now())
+      "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error,format_version) VALUES(?,?,?,?,?,?,NULL,NULL,?)",
+      // format_version travels WITH the payload: the column defaults to 1 (correct for rows
+      // written before it existed), so omitting it stores a v2 envelope as v1 and recovery
+      // then decodes the envelope as a bare record.
+    ).run(prepared.id, prepared.revision, prepared.digest, "terminal", prepared.compressedJournalRecord, Date.now(), prepared.journalFormatVersion)
   } finally {
     db.close()
   }

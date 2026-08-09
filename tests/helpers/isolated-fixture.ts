@@ -55,9 +55,12 @@ import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {
   //
+  drainV3SummaryBackfill,
   drainV3Writer,
   resetV3WriterForTests,
+  setV3TransactionBFailureInjectorForTests,
 } from "~/lib/history/v3/store"
+import { setSummarySnapshotObserverForTests } from "~/lib/history/v3/summary-store"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
 import { resetRawModelsForTests } from "~/lib/models/cache"
@@ -132,6 +135,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "setCaptureWorkObserverForTests", reset: () => setCaptureWorkObserverForTests(undefined) },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "setV3TransactionBFailureInjectorForTests", reset: () => setV3TransactionBFailureInjectorForTests(null) },
+  { name: "setSummarySnapshotObserverForTests", reset: () => setSummarySnapshotObserverForTests(undefined) },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
   { name: "setSummaryPreviewVisitObserverForTests", reset: () => setSummaryPreviewVisitObserverForTests(undefined) },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
@@ -288,6 +293,7 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // or leaks into the next test. Mirrors the production shutdown drain
     // (`shutdownHistory`'s `drainV3Writer` call).
     await drainV3Writer()
+    await drainV3SummaryBackfill()
     restoreStateForTests(snapshot)
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget

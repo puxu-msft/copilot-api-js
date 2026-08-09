@@ -536,9 +536,31 @@ export function createRequestContext(opts: {
     gap: "semantic payload/frames captured; exact raw bytes unavailable; headers/trailers originate from folded views, so repeated header/trailer tuples and original field ordering are unavailable",
   }
 
+  interface CanonicalFrameFields {
+    readonly event?: unknown
+    readonly data?: unknown
+    readonly id?: unknown
+    readonly retry?: unknown
+    readonly raw?: unknown
+  }
+
+  function canonicalFrameFields(frame: unknown): CanonicalFrameFields {
+    if (typeof frame !== "object" || frame === null) return { data: String(frame) }
+    const candidate = frame as CanonicalFrameFields & { kind?: unknown; message?: unknown; idField?: unknown }
+    if (candidate.kind !== "parsed-sse" || typeof candidate.message !== "object" || candidate.message === null) return candidate
+    const message = candidate.message as CanonicalFrameFields
+    const idField = candidate.idField as { kind?: unknown; value?: unknown } | undefined
+    return {
+      ...(message.event !== undefined && { event: message.event }),
+      ...(message.data !== undefined && { data: message.data }),
+      ...(idField?.kind === "present" && { id: idField.value }),
+      ...(message.retry !== undefined && { retry: message.retry }),
+    }
+  }
+
   function frameWireKey(frame: unknown): string | undefined {
     if (typeof frame !== "object" || frame === null) return typeof frame === "string" ? `string:${frame}` : undefined
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     let data: string | undefined
     if (typeof candidate.data === "string") data = candidate.data
     else if (typeof candidate.raw === "string") data = candidate.raw
@@ -553,12 +575,7 @@ export function createRequestContext(opts: {
 
   function captureRawFrame(frame: unknown, sequence: number, track: string): void {
     if (!rawCaptureLease.requested) return
-    const candidate = (typeof frame === "object" && frame !== null ? frame : { data: String(frame) }) as {
-      event?: unknown
-      data?: unknown
-      id?: unknown
-      retry?: unknown
-    }
+    const candidate = canonicalFrameFields(frame)
     const bytes = new TextEncoder().encode(
       JSON.stringify({
         event: typeof candidate.event === "string" ? candidate.event : null,
@@ -572,14 +589,7 @@ export function createRequestContext(opts: {
   }
 
   function canonicalFrameValue(frame: unknown, record?: SseEventRecord): Readonly<Record<string, unknown>> {
-    if (typeof frame !== "object" || frame === null) {
-      return Object.freeze({
-        data: typeof frame === "string" ? frame : String(frame),
-        ...(record?.type !== undefined && { type: record.type }),
-        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
-      })
-    }
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
       ...(candidate.data !== undefined && { data: candidate.data }),

@@ -164,7 +164,7 @@ function geminiTranslationFrames(model: string): Array<string> {
   ]
 }
 
-const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
+const defaultUpstreamFetch = (input: string | URL | Request, init?: RequestInit) => {
   const url =
     typeof input === "string" ? input
     : input instanceof URL ? input.href
@@ -177,7 +177,8 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     return Promise.resolve(createSseResponse(model === GEMINI_CC_MODEL ? geminiTranslationFrames(model) : ccDirectFrames(model)))
   }
   throw new Error(`unexpected upstream URL: ${url}`)
-})
+}
+const upstreamFetchMock = mock(defaultUpstreamFetch)
 
 function parseWire(wire: string): Array<WireFrame> {
   return wire
@@ -190,9 +191,10 @@ function parseWire(wire: string): Array<WireFrame> {
         .filter((line) => line.startsWith("data: "))
         .map((line) => line.slice(6))
         .join("\n")
-      const id = lines.find((line) => line.startsWith("id: "))?.slice(4)
+      const idLine = lines.find((line) => line === "id:" || line.startsWith("id: "))
+      const id = idLine === undefined ? undefined : idLine.slice(idLine.startsWith("id: ") ? 4 : 3)
       const retry = lines.find((line) => line.startsWith("retry: "))?.slice(7)
-      return { ...(event && { event }), data, ...(id && { id }), ...(retry && { retry: Number(retry) }) }
+      return { ...(event && { event }), data, ...(id !== undefined && { id }), ...(retry && { retry: Number(retry) }) }
     })
 }
 
@@ -245,6 +247,60 @@ describe("P0-T1 generation runtime live route frame baselines", () => {
       contexts.push(ctx)
       return ctx
     }
+  })
+
+  test("keeps actual wire and client History aligned for absent, reset, and inherited IDs", async () => {
+    const completion = {
+      id: "chatcmpl_id_projection",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: CC_MODEL,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }
+    const idCases = [
+      {
+        name: "absent",
+        upstream: [`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`],
+        expectedWire: [{ data: JSON.stringify(completion) }, { data: "[DONE]" }],
+        expectedUpstream: [{ data: JSON.stringify(completion), type: "message" }],
+      },
+      {
+        name: "reset",
+        upstream: [`id:\ndata: ${JSON.stringify(completion)}\n\nid: alpha\ndata: [DONE]\n\n`],
+        expectedWire: [{ data: JSON.stringify(completion), id: "" }, { data: "[DONE]" }],
+        expectedUpstream: [{ data: JSON.stringify(completion), id: "", type: "message" }],
+      },
+      {
+        name: "inherit",
+        upstream: [`id: alpha\n\ndata: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`],
+        expectedWire: [{ data: JSON.stringify(completion) }, { data: "[DONE]" }],
+        expectedUpstream: [{ data: JSON.stringify(completion), type: "message" }],
+      },
+    ]
+
+    for (const idCase of idCases) {
+      upstreamFetchMock.mockImplementation(() => Promise.resolve(createSseResponse([...idCase.upstream])))
+      const response = await createFullTestApp().request("/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-session-id": `generation-id-${idCase.name}` },
+        body: JSON.stringify({ model: CC_MODEL, messages: [{ role: "user", content: idCase.name }], stream: true }),
+      })
+      expect(response.status).toBe(200)
+      const wire = parseWire(await response.text())
+      expect(wire).toEqual(idCase.expectedWire)
+      const record = contexts.at(-1)?.modelOperationTerminalRecord
+      if (!record?.terminal || !record.egress) throw new Error(`missing sealed generation record for ${idCase.name}`)
+      const clientWireValues = canonicalClientFrames(record).map(({ value }) => {
+        const { type: _type, synthetic: _synthetic, ...wireValue } = value as Record<string, unknown>
+        return wireValue
+      })
+      expect(clientWireValues).toEqual(idCase.expectedWire)
+      const upstreamHandles = record.attempts[0]?.upstreamResponse?.frames ?? []
+      const upstreamValues = upstreamHandles.map((handle) => record.arena.frames.find((frame) => frame.handle === handle)?.value)
+      expect(upstreamValues).toEqual(idCase.expectedUpstream)
+    }
+    upstreamFetchMock.mockImplementation(defaultUpstreamFetch)
   })
 
   test("locks direct and translated frame order, post-loop flush, terminal usage, and [DONE] semantics", async () => {

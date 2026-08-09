@@ -66,6 +66,7 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { setHooksConfig } from "~/lib/state"
+import { semanticSseMessage } from "~/lib/transport/parsed-sse-frame"
 import { hooksRoutes } from "~/routes/hooks/route"
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
@@ -146,7 +147,7 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     if (!result.ok) throw new Error("expected ok result")
     const frames: Array<UpstreamFrame> = []
-    for await (const f of result.upstream.frames) frames.push(f)
+    for await (const f of result.upstream.frames) frames.push(semanticSseMessage(f))
     return frames[0]?.data ?? ""
   }
 
