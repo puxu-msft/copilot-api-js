@@ -2,113 +2,144 @@
 
 ## 评审范围
 
-- `docs/memory/methodology-missing-evidence-counted-as-zero.md` 与 `docs/memory/MEMORY.md` 的新增索引钩子（`a8b846ce`）。
-- `docs/todo/deferred-backlog.md` 在 `63568fee`、`53ae4903` 的全部改动。
-- `docs/coding-conventions.md` 在 `ca2653ec` 的新增段。
-- `exp/junit-tally-false-green/README.md`（`bac4732e`）。
-- `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md` 的 checkpoint 节（`f7932527`，并对照当前 HEAD 上的后续修订）。
+- `docs/memory/methodology-missing-evidence-counted-as-zero.md` 与 `docs/memory/MEMORY.md` 的新增索引钩子。
+- `docs/todo/deferred-backlog.md` 的本轮 tally、History lifecycle 与 timing 改动。
+- `docs/coding-conventions.md` 的 JUnit tally 约定。
+- `exp/junit-tally-false-green/README.md` 及其 artifact。
+- `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md`。
+- 复评轮次 2：整改提交 `7016435e`、`30559e07`，重点检查整改是否引入新缺陷。
+
+## 轮次 1 结论摘要
+
+轮次 1 verdict：修复 MAJOR 后可进入下一阶段，BLOCKER 0、MAJOR 7、MINOR 1。七条 MAJOR 分别是：实验 README 将人工转录称作原始证据；稳定约定漏掉 `INCOMPLETE` 前提；“任何部分退化全绿”被反例推翻；单次 timing 被升格成稳定值；checkpoint 混用两个时间锚；progress 仍标进行中并保留已完成队列；同一旧全称在多个载体传播。MINOR 是复算配方硬编码 16 shards。完整原始发现仍可从提交 `30559e07^:docs/tmp/2026-08-09-wrapup-artifacts-review.md` 读取。
+
+# 复评轮次 2（整改提交 `7016435e`、`30559e07`）
 
 ## 已读取／执行的证据
 
-- 仓库 HEAD：`a8b846ce8ca12c78eb856c9b7316e0c0b3bd398a`；评审开始时 `git status --short` 无输出。
-- 已读上述五类产物的当前全文或本轮 diff，并读 `docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md` 对账。
-- 后续各发现逐条列出命令与输出；所有仓库命令均绑定 `/home/xp/src/copilot-api-js/.claude/worktrees/placeholder`。
+- `git status --short`：复评开始时无输出。
+- 已读两个整改 commit 的完整 diff，以及整改后 README、memory、coding conventions、backlog、progress 和测试注释全文。
+- 对仓库 artifact、Git object 和仍存临时原件分别取 SHA256；逐字执行整改后的复算配方。
+- 全仓搜索旧全称断言；构造 `unexpected-only` 文件身份错配；对 progress 的关闭 commit 和当前时态语句做 Git object 级核对。
 
 ## 总体 verdict
 
-**修复 MAJOR 后可进入下一阶段。BLOCKER：0。**
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 4、MINOR 2。**
 
 ## 事实性发现
 
-### 已验证的承重前提：加载期抛错确实不会进入 JUnit XML
+### [MAJOR] `docs/coding-conventions.md:50-52`、`docs/todo/deferred-backlog.md:1258` — “无 INCOMPLETE 即可引用 tally”仍漏掉 `unexpected` identity mismatch
 
-- **命题**：`docs/memory/methodology-missing-evidence-counted-as-zero.md:17` 与 `exp/junit-tally-false-green/README.md:33` 声称，测试文件在加载期抛错时，Bun 会在自身 summary 计失败，但该文件不产生任何 JUnit 行。
-- **命令**：在 `/home/xp/.claude/jobs/a7c2cc1a/tmp/wrapup-junit-load-probe/` 创建一个顶层 `throw new Error("load boom")` 的文件和一个普通通过文件，然后运行 `bun test --reporter=junit --reporter-outfile=.../result.xml <load-boom> <ordinary>`。
-- **输出**：Bun 1.3.14 退出码 1，summary 为 `1 pass / 1 fail / 1 error / Ran 2 tests across 2 files`；`result.xml` 的根节点却是 `tests="1" failures="0"`，且只包含 `ordinary.unit.test.ts`，全文没有 `load-boom.unit.test.ts`。
-- **结论**：该承重前提成立，不构成 BLOCKER。接手方据此保留 `INCOMPLETE` 标记是正确动作。
+- **现象**：整改把引用条件写成“tally 行不带 `INCOMPLETE`”，但代码只在 `fileComparison.missing.length > 0` 时添加该标记；`unexpected.length > 0` 只在上方打印错误并令进程退出 1，tally 行仍无任何不完整／集合错配标记。
+- **证据／命令输出**：当前 `scripts/parallel-test.ts:213-217,242-254` 把 `missingFiles` 传给 `formatTallyLine`，没有传 `unexpectedFiles`。独立运行 `compareFileIdentities(["tests/a.unit.test.ts"], ["tests/a.unit.test.ts", "tests/extra.unit.test.ts"])` 得 `missing: [] / unexpected: [extra]`；随后按真实参数格式化 tally，输出仍是 `2 tests · 2 pass · 0 fail`，没有 `INCOMPLETE`。
+- **接手方错误动作**：报告作者按新约定看到“无 INCOMPLETE”便会引用这 2 条作为目标发现集合的总量或“全绿”证据，尽管运行时集合含一个 discovery 未授权／未预期文件且命令实际退出 1。
+- **建议处置**：把 tally 的 completeness 状态扩成完整 identity mismatch（missing + unexpected），任一非空都在同一行标 `INCOMPLETE` 或 `IDENTITY MISMATCH`；文档引用条件写成“无 `INCOMPLETE`／identity mismatch 且命令 exit 0”。补 unexpected-only 单测，不能只改文档。代码修复建议 `gpt-souls:implementer`，文档同步建议 `gpt-souls:doc-writer`。
 
-### 已验证的复跑路径：README 配方在当前 16-shard 产物上可执行
+### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:3-4` — `closed-at: 7016435e` 指向关闭动作发生前的 commit
 
-- **命令**：`PARALLEL_TEST_ARTIFACT_DIR=/home/xp/.claude/jobs/a7c2cc1a/tmp/wrapup-fast-artifacts bun run test:fast`；随后逐字执行 README 第 41-52 行的 `bun -e` 配方，仅把 `<artifacts-dir>` 替换为该绝对路径。
-- **输出**：runner 为 `16 shards · 5360 tests · 5360 pass · 0 fail · 5360 executed · 1 skipped · 52.63s`；配方输出 `{ executed: 5360, failed: 0, pass: 5360 }`，与 tally 一致。
-- **结论**：配方本身可执行；它依赖当前机器恰为 16 shards，这一可移植性边界另见后续发现。
+- **现象**：frontmatter 声称文件“闭合于 `7016435e`”，但 `7016435e` 只提交实验 artifact；progress 状态关闭、剩余项划销和写入权移交实际都在其子提交 `30559e07`。
+- **证据／命令输出**：`git show 7016435e:<progress-file> | rg '^status:|^closed-at:|剩余项'` 输出仍是 `status: in-progress`、无 `closed-at`、`## 剩余项`；`git show 30559e07:<progress-file>` 才出现“已完成”与错误的 `closed-at: 7016435e`。`git rev-parse 30559e07^` 精确等于 `7016435e`。
+- **接手方错误动作**：接手方 checkout `closed-at` 所指 commit 核验，会得到仍在进行中的档案与未关闭队列，进而认为状态回退或关闭记录不可信。
+- **建议处置**：把 `closed-at` 改为实际完成关闭动作的 `30559e07`；若 `7016435e` 想表达 artifact／工作内容基线，应另命名为 `evidence-complete-at` 或 `work-complete-at`，不要冒充关闭提交。修复方建议 `gpt-souls:doc-writer`。
 
-### [MAJOR] `exp/junit-tally-false-green/README.md:3-27` — 自称“原始证据”，实际只保存了事后人工转录，核心历史数字仍不可独立核实
+### [MAJOR] `docs/tmp/2026-08-09-merge-state-review-claims.md:169-175` — 第四处权威报告仍保留已被反例推翻的“任何部分退化全绿”结论
 
-- **现象**：README 说“本目录保存的是……那次运行的原始证据”，并把 `3337`、`7529`、`16.29342` 与特定 XML 行作为已坐实事实；但仓库只保存了一份事后写成的 Markdown，没有原 stdout、XML、哈希、附件或可由当前仓库重建该次运行的输入。第 34、55 行又明确承认 16 份 XML 未收仓、完整日志已失效。
-- **证据／命令输出**：`git log --all --oneline -- exp/junit-tally-false-green/README.md` 只有 `bac4732e` 这一笔，即这份 README 自身；全仓排除本轮互相转述的 memory／progress／review／conventions 后，`rg -n "3337|7529|16\.29342|merge-backend2|parallel-test-VZxJ3f" ...` 仅命中 `scripts/parallel-test.ts:232` 的同源注释与 backlog 的同源复述，没有原始 artifact。`git show --no-patch --format=fuller e24de3a1` 证明提交信息早已声称同一组数，但提交信息与后来 README 同属作者转述，不是独立 ground truth。
-- **接手方错误动作**：接手方会把“已固化原始证据”当成可以独立审计的 primary evidence，进而把 `3337/7529/16.29342` 写入新的规范、基线或根因说明；实际只能确认“作者在多个载体重复了同一说法”。这正好重犯该记忆要防的“没读到却当成已读到”。
-- **建议处置**：不要再称“原始证据”。若原 artifact 仍能从 job/transcript/tool-result 恢复，收进 `exp/` 并附生成环境、命令、文件哈希；若已不可恢复，把精确数字统一降级为“同一轮记录的未独立核实转录”，将可独立复现的加载期抛错 PoC 与当前 parser 行为作为现存强证据。修复方建议 `gpt-souls:doc-writer`；数字真实性无法补证时不得靠更多同源复述升级证据等级。
+- **现象**：memory、progress 和测试注释已收窄，但其引用的判据评审报告仍写“任何部分性的 dedup 退化……两条断言都绿”，并据此给出约 11 倍沉默区间。该报告是 progress 第 207 行直接链接的裁决依据，不是无关归档。
+- **证据／命令输出**：全仓搜索旧全称，除用于留痕的更正句外，仍命中 `docs/tmp/2026-08-09-merge-state-review-claims.md:170` 的肯定断言。独立 47/48 反例已得 `physicalRatio=9.516`，旧 `>=10` physical 断言会红，直接推翻该句。
+- **接手方错误动作**：接手方沿 progress 的“报告”链接追溯裁决时，会重新采信已被正文其他位置撤回的错误全称，并可能据此设计阈值或声称覆盖整个退化区间。
+- **建议处置**：评审报告需追加醒目的更正／superseded 段，明确 169-175 的外推已被 47/48 反例推翻；保留端点事实与“live 对完全失效无鉴别力、physical 余量薄”的窄结论。修复方建议 `gpt-souls:doc-writer`。
 
-### [MAJOR] `docs/coding-conventions.md:48`、`docs/todo/deferred-backlog.md:1258` — 稳定约定仍把 JUnit tally 写成无条件可信，漏掉已知的 `INCOMPLETE` 条件
+### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:44-80` — 关闭后仍保留当前时态的“在途意图／待跑／未审不得关闭／继续更新”指令
 
-- **现象**：约定文档说“tally 的真相源是 JUnit XML”，只把“nonzero 且没有 `N fail`”的 crash 重跑称为兜底；backlog 又宣布 2026-08-09 后“不得引用 tally 数字”的纪律解除。两处都没有写关键前提：只有 `missingFiles === 0`、无 `INCOMPLETE` 时这些数才可当总量；加载期抛错时 JUnit 会少行，crash 分类器也可能不触发。
-- **证据／命令输出**：上述独立 load-time probe 得到 Bun summary `1 pass / 1 fail / 1 error / 2 files`，XML 却为 `tests=1 failures=0` 且完全缺失失败文件。当前代码 `scripts/parallel-test.ts:212-217,242-254` 通过 `compareFileIdentities` 发现 missing，并把 `missingFiles` 送入 tally；`scripts/parallel-test-artifacts.ts:220-239` 明确写“these counts are a floor, not a total”。因此代码合同已经是“JUnit + identity completeness”，不是文档所写的“JUnit 即真相源”。
-- **接手方错误动作**：接手方会照稳定约定或 backlog 的“纪律解除”直接摘取 `N tests/N pass/N fail`，即使同一行带 `INCOMPLETE`，甚至在实现新的报告器时只解析 XML、不做文件身份对账；结果仍会把加载失败算成不存在。
-- **建议处置**：将权威约定改成“JUnit testcase 行提供已观察计数，discovery↔runtime file identity 决定计数是否完整；`INCOMPLETE` 时数字只是 floor，禁止作规模／增减／全绿证据”。backlog 的解除也必须加同一条件，并明确“同一 commit 连跑三次”不是完整性的替代。修复方建议 `gpt-souls:doc-writer`；同步对账 memory/README 的相同措辞。
+- **现象**：frontmatter 与“剩余项”说文件已停止更新，但紧接着仍有标题 `## 在途意图`，第 50 行写“合并前必须由独立 reviewer 裁决，未审不得提交或关闭 Task 9”，第 52 行命令“继续每个语义 commit 同步本文件”，第 68 行写“完整 backend 与 architecture 门禁待跑，不能据此提前关闭 Task 9”；第 74、80 行也保留“待独立 reviewer 最终裁决／官方门仍未绿”的当前时态。顶部没有把这些后续章节整体标成“历史快照、已被后文取代”。
+- **证据／命令输出**：`git show 30559e07:<progress-file> | rg '继续每个语义 commit|合并前必须由独立reviewer|待跑|不得.*关闭|待独立reviewer'` 精确命中上述行；同一文件第 36-42 行又声称门禁与评审全部闭合。
+- **接手方错误动作**：接手方无法确定这些是已失效历史约束还是仍承重的未闭合 gate，可能重复评审、继续更新已封存文件，或反过来忽略真正仍开放的历史债。仅在“剩余项”内写“下面三项不是当前队列”不足以覆盖后面的独立章节。
+- **建议处置**：把 `在途意图` 改为“历史在途意图（快照于 <sha>，均由后文收口取代）”，在 `本轮红绿证据` 前加覆盖整个章节的历史边界；对明确已失效的命令句逐条加 `已完成／已 superseded`，尤其删除或划销“继续更新本文件”。保留历史证据不等于保留可执行现在时。修复方建议 `gpt-souls:doc-writer`。
 
-### [MAJOR] `docs/memory/methodology-missing-evidence-counted-as-zero.md:25`、`docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:203` — “任何部分退化按构造全绿”是被反例推翻的全称断言
+### [MINOR] `exp/junit-tally-false-green/README.md:7,16,43` — “本文数字都可从原件复算”与 `7529` 不可复算自相矛盾
 
-- **现象**：两份文档都从健康端 `109.68/218.58` 与完全失效端 `9.51/10.79` 外推“任何部分退化”在旧 10x 门下都会绿。这个结论需要所有部分退化都单调落在阈值之上，但没有对应实验；完全失效端的 physical 本来就在 10 以下，因此靠近该端的部分退化完全可能仍低于 10。
-- **证据／命令输出**：先运行保留下来的 `/home/xp/.claude/jobs/a7c2cc1a/tmp/scratch/cascontrol.it.test.ts`，得到健康 `physicalRatio=109.8525 / liveRatio=218.7468`，4 pass；运行 `casmut.it.test.ts` 得完全失效 `9.51348 / 10.79397`，旧 physical `>=10` 断言红。随后复制为 `caspartial47.it.test.ts`，只让前 47/48 个 operation 内容唯一、保留第 48 个 operation 使用共享内容——这是“尚保留一部分复用”的部分退化，不是完全失效；实跑得到 `physicalRatio=9.51575 / liveRatio=10.79469`，旧 physical 断言仍红。一个反例足以推翻“任何部分退化全绿”。
-- **接手方错误动作**：接手方会把“端点测量”误当成覆盖整个退化空间的证明，在其他判据上照搬“两个端点夹住所有中间态”的方法；这会制造新的机制故事与错误阈值论证。当前 30/50 阈值仍比旧值强，但不能用该全称句证明其覆盖所有部分退化。
-- **建议处置**：把结论收窄为已证事实：“完全失效时 live 仍过 10，physical 仅以约 0.49 失败；旧阈值对严重退化的余量过薄，且 live 对该目标失效无鉴别力。”若要主张部分退化覆盖，必须参数化复用比例并实测曲线或证明单调边界。同步修正测试内同款注释。文档修订交 `gpt-souls:doc-writer`；判据覆盖曲线如需建立，可交 `gpt-souls:perf-engineer`。
+- **现象**：第 7 行仍全称“本文的数字都可以从原件复算”，第 16、43 行却正确说明仅保存 1/16 XML，`7529 executed` 不能从本目录复算，只能从 run.log 读取。
+- **证据／命令输出**：整改配方对仓库 artifact 实跑得到 `1 shard / 429 executed / 1 failed / 428 pass`，不能得到 7529；对仍存在的 `/tmp/parallel-test-VZxJ3f` 全 16 份实跑才得到 `7529/1/7528`。
+- **接手方错误动作**：读者只看开头会把“原日志中记载 7529”升级成“仓库 artifact 可独立重算 7529”。
+- **建议处置**：第 7 行改为“本文引用的原始 tally 行与 shard-06 失败可从原件直接核对；只有 shard-06 计数可复算，全量 7529 仅在 run.log 中留痕、不可由本目录 XML 重算”。
 
-### [MAJOR] `docs/todo/deferred-backlog.md:1286-1291` — 把一次 9.51s 观测写成当前稳定真值与“系统性偏长”，当前复跑已不支持中心前提
+### [MINOR] `exp/junit-tally-false-green/README.md:51-68` — 新枚举配方仍未检查 shard 编号连续，缺一份时会静默把子集当批次复算
 
-- **现象**：条目标题和正文把 `5.818s vs 9.51s`、差额 3.7s 写成当前状态，并由此断言 LPT “实为 9.5s”且 shard “系统性偏长”；但没有运行日期、commit、命令、样本次数。原评审报告其实已把残差标为“可能是运行方差”“未核实归因”，条目却把单次读数提升成稳定当前状态。
-- **证据／命令输出**：`rg -n 'store-performance\.it\.test\.ts' scripts/test-timings.json` 得缓存 `5.818051`；我在 HEAD `a8b846ce` 运行 `bun test tests/history/v3/store-performance.it.test.ts --reporter=junit --reporter-outfile=...`，退出 0、`4 pass / 0 fail`，XML 四个 testcase 的时间为 `0.049415 + 1.011342 + 5.130231 + 0.535257 = 6.726245s`，不是 9.51s；整文件 runner wall 为 7.27s。当前差额按同一“逐用例之和”口径约 0.91s，而非 3.7s。`git log ... -- scripts/test-timings.json` 表明缓存锚定 `05fd7c3d`，但 backlog 没写这个 commit。
-- **接手方错误动作**：接手方会直接启动“为什么稳定少估 3.7s”的调查、拒绝刷新 timing cache，或把 CAS 超时归咎于一条并不存在的稳定 9.5s 文件负载；实际先要回答的是运行方差、采集版本和样本分布，当前并无“系统性 9.5s”的证据。
-- **建议处置**：把条目改成带基线的历史观测：“`05fd7c3d` 缓存 5.818s；评审某次 HEAD/命令测得 9.51s；当前复跑 6.726s，差异具有运行方差，是否需要刷新或改采集机制未定。”触发条件应是“多次同环境测量显示缓存显著偏离分布”，不是沿用单样本。若要断言性能缺陷，交 `gpt-souls:perf-engineer` 建立多次分布基线；文档修订交 `gpt-souls:doc-writer`。
+- **现象**：整改从硬编码 16 改为枚举并检查非空，解决了机器 CPU 数差异；但没有检查编号连续或声明期望 shard 集。若一个完整 artifact 目录丢失中间某份 XML，配方会照常输出较小总量。
+- **证据／命令输出**：配方只执行 `filter(...).sort()` 与 `length === 0` 检查；没有验证 `shard-01..NN` 连续。对本目录只有 `shard-06.xml` 的刻意子集也会正常输出 `shards: 1`，说明配方无法区分“有意保存一份”和“完整批次丢了 15 份”。
+- **接手方错误动作**：接手方会把缺 shard 的目录当“任意一批完整产物”复算，并再次把没读到的 shard 计为零。
+- **建议处置**：配方增加模式参数：`--partial` 明确允许证据子集；默认完整模式要求编号从 01 连续，并最好读取 runner metadata／run.log 的 shard 总数交叉核对。README 当前仓库样本使用 partial 模式，避免把“故意只存一份”与“意外缺失”混为一谈。
 
-### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:181-208` — checkpoint 的 HEAD 锚仍是 `b9b5895b`，正文却已写入该锚之后的裁决与修复
+## 已确认的整改
 
-- **现象**：小节标题仍称“HEAD `b9b5895b`”，但后续正文说 `0144edcb`、`27113ce4` 已修并称两份评审闭合；这两个 commit 都是 `b9b5895b` 的后代。在标题所给快照 checkout 下，这些“已修”事实不存在。
-- **证据／命令输出**：`git diff f7932527..HEAD -- <progress-file>` 显示后续 `aae1ec08` 把“待裁决”替换成闭合 verdict，却未更新标题锚；`git log --oneline f7932527..HEAD -- <progress-file>` 只有 `aae1ec08`。`git log --first-parent --oneline ca5f4cf7^..53ae4903` 显示被裁决批次共 10 个提交，包含 `0144edcb`、`27113ce4`，而 `b9b5895b` 仅是其中较早一笔。两份报告则在 `8ba5a109` 才落库。
-- **接手方错误动作**：接手方按标题 checkout `b9b5895b` 或以它为复验基线，会期待 `INCOMPLETE` 修复、30/50 阈值与最终裁决已经存在；实际会得到旧实现，并可能把复验差异误判成回归。反过来，按当前正文继续执行又没有一个明确的闭合基线。
-- **建议处置**：保留原 checkpoint 快照时，应把后续内容单独标成“状态更新，核验于 `<闭合 SHA>`”，并说明原锚只覆盖 181-196 的历史证据；或把标题更新为闭合 commit，并在正文另存原始 `b9b5895b` 证据点。不要让一个 heading 同时冒充两个时间点。修复方建议 `gpt-souls:doc-writer`。
-
-### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:1-39` — 文件仍自称 `in-progress` 且列出已完成的剩余项，活跃写入权没有闭合
-
-- **现象**：frontmatter 仍为 `status: in-progress`；“剩余项”仍要求跑完整门禁、做两视角评审、Task 9 闭合后转移写入权。但同一文件第 138 行已写“最终 verdict：可合并，BLOCKER 0 / MAJOR 0”，第 198 行又写两份合并态评审均闭合；权威进度账 `.superpowers/sdd/progress.md:27` 明确 Task 9 实现候选已完成、正交评审收口，Task 10 才是 blocked 项。
-- **证据／命令输出**：`rg -n 'status:|## 剩余项|最终verdict|两份评审均已闭合' <progress-file>` 同时命中 `status: in-progress`、35-39 的旧剩余项、138 的最终可合并 verdict、198 的闭合裁决。`git show --stat --oneline 2df07a1a` 的提交信息就是 `docs: close Task 9 review with final gate evidence`，并修改本文件及 `.superpowers/sdd/progress.md`；后者当前第 27 行写 Task 9 已完成评审收口。
-- **接手方错误动作**：三个月后的接手方会重复跑已完成评审、误以为 Task 9 仍未完成，或继续把旧 progress 文件当活跃写入点，与 `.superpowers/sdd/progress.md` 形成双状态源；也可能因“Task 10 不推进”误判为仍等待 Task 9，而真实 blocker 是 Tasks 7/8/9 的整体 activation gate。
-- **建议处置**：按 progress 协议将该文件状态改成已完成／已由权威 ledger 接管，清理或改写“剩余项”为历史已完成结果，并明确新的活状态源是 `.superpowers/sdd/progress.md`；不要继续把历史运行日志当当前工作队列。修复方建议 `gpt-souls:doc-writer`。
-
-### [MINOR] `exp/junit-tally-false-green/README.md:41-52` — 配方声称可复算“任意一批产物”，却把 shard 数硬编码为 16
-
-- **现象**：当前 runner 用 `Math.min(files.length, os.cpus().length)` 动态决定 buckets，而配方固定读取 `shard-01.xml` 到 `shard-16.xml`。在少于 16 CPU 的机器上会读不存在文件；若未来 shard 数超过 16，又会静默漏算后续 XML。
-- **证据／命令输出**：`scripts/parallel-test.ts:131-153` 显示 shard 数来自 `os.cpus().length`；README 配方为 `for (let i = 1; i <= 16; i++)`。本机当前恰为 16，所以实跑成功并输出 5360；这只证明正样本，不证明“任意一批”。
-- **接手方错误动作**：接手方在 8-core CI 上照抄会得到 ENOENT，在 32-core 产物上可能只复算前 16 份并把截断结果当全量。
-- **建议处置**：从目录枚举并自然排序 `shard-*.xml`，断言至少一份且编号连续；不要由机器 CPU 数反推已有 artifact。修复方建议 `gpt-souls:doc-writer`。
-
-
-## 已核实但未形成发现的范围
-
-- **backlog 三条旧 tally 条目**：确认标题没有把“历史七个数字的根因未定位”和“3-run 稳定性守卫未建立”藏掉；`docs/todo/deferred-backlog.md:1188-1197,1255-1265` 明写这两项仍开放。因此没有把“已解决／机制已消除”本身另报缺陷。真正问题是该条在 1258 无条件解除 tally 引用纪律，已并入上面的 JUnit completeness MAJOR。
-- **新增 `initHistory()` 条目**：逐行打开并核实 `src/lib/history/state.ts:100-143`、`src/lib/history/worker/admission.ts:182-207`、`src/lib/history/v3/terminal-bus.ts:35-74`、`src/lib/history/recent-terminal.ts:27-38`、`tests/history/v3/migrations-wiring.it.test.ts:117-128`；`git show 57208559:src/lib/history/state.ts` 确认缺口在被合并 master 上已存在，`git diff 57208559:... HEAD:...` 确认合并只新增 summary-backfill stop/drain/start。引用行和归属成立；条目给出触发条件、已有 primitives、顺序约束与确定性测试形状，可直接启动独立设计／实施批次。
-- **memory 索引钩子与交叉引用**：`docs/memory/MEMORY.md:30` 含触发症状“门禁在真失败之上报 0 fail”、三种防漏动作和阈值标定提示，不是裸目录项。三个 `[[wiki-link]]` 目标文件均存在。除已经单列的“任何部分退化”全称过强和 evidence provenance 外，未发现额外断链。
-- **数字与 SHA**：`git rev-list --count 6d431481..2df07a1a` 为 108，`..57208559` 为 404；两父相对 merge-base 的 changed-file 集交集为 149；`git show --cc ... | rg '^@@@' | wc -l` 为 53。`e24de3a1` 前后 discovery baseline 实算 714→727。`e24de3a1`、`0144edcb`、`27113ce4`、`57208559` 均可解析为 commit。`30/50` 阈值在当前测试代码中存在；保留的 control/mutation harness 实跑得到健康 `109.8525/218.7468`、完全失效 `9.51348/10.79397`。精确历史 `3337/7529/16.29342` 的证据等级问题已单列。
-- **定向测试**：`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 得 `18 pass / 0 fail`；`bun test tests/history/v3/store-performance.it.test.ts --reporter=junit ...` 得 `4 pass / 0 fail`。未跑 `test:backend`，遵守任务约束；用 `test:fast` 只为生成 README 配方所需当前 artifact，得 `5360 pass / 0 fail`。
-
-## 结构怪味扫描
-
-- `docs/todo/deferred-backlog.md:1127-1265` — **怪味类型：同一 tally 问题存在三份部分重叠条目，状态分别为“已解决／机制已消除／载体已换”，且新纪律分散复述。** 处置：本轮不要求合并历史记录；记录为 backlog 文档结构债，理由是三条分别保留不同历史样本与未闭合根因，贸然合并会丢 provenance。应指定 1255 条为当前结论入口，前两条显式 `superseded-by`，稳定约定只落 `docs/coding-conventions.md`，避免以后再次出现 1258 与约定文档不同步。
-- `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:1-208` — **怪味类型：运行日志与当前状态混写，导致同文件同时有 `in-progress`、旧剩余项、最终 verdict 与后续合并态裁决。** 处置：本轮修；这是两条 MAJOR 的共同结构根因，不另增严重度。
-- 其余扫描范围：memory 正文与索引、coding conventions 新增段、exp README。判据为重复实现／职责错位／同一事实多载体且强弱不一；除上述和已列事实发现外无额外结构怪味。
-
-## 主观建议
-
-### [建议] `docs/memory/methodology-missing-evidence-counted-as-zero.md:25` — 阈值标定教训与“缺失证据计零”主轴耦合过松
-
-- **改进点**：同一记忆最后附 CAS 阈值标定，索引钩子也被迫同时承担两个触发面。两者同属 verification，但一个是 evidence completeness，一个是 oracle calibration。
-- **预期影响**：未来按“看到 0/空/none”触发本条的人会读到不相关阈值材料；按“阈值取整”找教训的人则不一定搜到本条，降低召回精度。
-- **推荐做法**：把 CAS 实例下沉到 `methodology-new-oracle-discriminating-power-is-experimental` 或独立 calibration 条目，本条只留交叉链接与一句摘要；索引钩子保持聚合器症状词聚焦。
+- artifact 两个提交文件与仍存源文件逐字节 SHA256 相同：run.log `8cd82fae2ef5f5160920c9d587e7ebb73126da293effcf9904d8b94a82ac4773`、shard-06.xml `101d99a32862ecb29cad62b608ac9c1cc46e0a36361987b3f825b2d609db7bdf`；从 `7016435e` Git object 直接取内容的 hash 也一致。run.log 确有 1330 行、真实 ANSI、末行 exit 1 和 artifact 路径；XML 确有 688 行及目标 TimeoutError。
+- 仍存的 16 份 `/tmp/parallel-test-VZxJ3f/shard-*.xml` 独立复算为 `7529 executed / 1 failed / 7528 pass`，仅 shard-06 含 `<failure|error>`；README 关于“本仓只保留 1/16，故本目录不能复算 7529”的边界正确。
+- 环境声明与探针一致：Linux 6.18 WSL2、16 CPU、Bun 1.3.14 revision `0d9b296a`。
+- timing 条目已改成三读数、各带口径与 commit，未再把 9.51s 当稳定值；本轮未发现新问题。
+- 三个指定载体（memory、progress、测试注释）的收窄措辞一致，均只保留端点事实并记录 47/48 反例；问题是第四处评审报告漏改，已单列 MAJOR。
 
 ## 最终计数
 
-- BLOCKER：0。
-- MAJOR：7。
-- MINOR：1。
-- NIT：0。
-- 主观建议：1。
+- 轮次 1：BLOCKER 0、MAJOR 7、MINOR 1。
+- 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 3（整改提交 `dd0bcd2d`、`4f90642b`）
+
+## 复评范围与方法
+
+- 读取两个整改 commit 的完整 diff，并通读 tally 实现、全部新增测试、coding conventions、backlog、实验 README、claims 更正和 progress 全文。
+- 核对所有 runner 提前退出点：零发现集合、artifact 缺失、XML parse throw、child 非零、JUnit failure、missing identity、unexpected identity。
+- 运行当前定向测试；在 `/home/xp/.claude/jobs/a7c2cc1a/tmp/` 制作仅移除 `OUT-OF-SCOPE` 机制的副本做正向 mutation；从 README 逐字复制配方分别跑单 shard、完整 16 shard 和缺少末尾 shard 的 1..15 集合。
+- 以构造 XML 检验“exit 0 是 tally 可信度唯一充分判据”的反方向。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 4。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:52`、`docs/todo/deferred-backlog.md:1258` — “退出码 0 是 tally 可信度唯一充分判据”仍是 false-green
+
+- **现象**：整改覆盖了 missing／unexpected 两个**文件集合**方向，却没有覆盖“文件存在于两侧，但该文件内部部分 testcase 行被 parser 忽略”的计数失真。`parseJUnit` 明确把缺 `classname` 或 `name` 的 well-formed testcase 当 `other` 丢弃，且不校验 `<testsuite tests=…>`／根 `tests=…` 属性；只要同文件还有一个正常 testcase，文件身份对账仍完全相等，child 退出 0，最终 runner 也退出 0，但计数偏小。
+- **证据／命令输出**：构造一个声明 `tests="2"` 的同文件 XML，含一条完整 testcase 与一条缺 `classname` 的 testcase。当前 `parseJUnit` 输出 `files:[tests/a.unit.test.ts], executed:1, failed:0`；`compareFileIdentities` 输出 `missing:[], unexpected:[]`；代入 `parallel-test.ts:255` 的退出条件得到 `wouldExitNonzero:false`。仓库现有测试 `tests/infra/parallel-test-artifacts.unit.test.ts:88-95` 还把“忽略缺 legacy identity 字段的 well-formed testcase”冻结为预期行为。
+- **接手方错误动作**：报告作者会因 exit 0 把 `executed/pass` 当完整总量；Bun reporter 一旦改变／遗漏 testcase identity 字段，或 artifact 出现语义残缺但 XML 语法仍合法，runner 会再次把“没读到行”计成零。
+- **建议处置**：不要把 exit 0 宣称为 tally 完整性的充分证明。生产 runner 应 fail-closed：遇到任何 `<testcase>` 缺必需 identity 字段就抛错，且把 parser 统计的 executed/skipped 与 suite/root 声明计数做一致性检查；至少冻结一个“同文件一条正常＋一条缺字段”负控，旧实现必须红。文档只可说“exit 0 表明当前已实现的退出门均未触发”，不能说“唯一充分判据”。代码修复建议 `gpt-souls:implementer`。
+
+### [MAJOR] `exp/junit-tally-false-green/README.md:51-73` — “编号从 1 连续”仍检不出缺少末尾 shard，配方会把 1..15 子集当完整批次
+
+- **现象**：新配方能拒绝只有 `shard-06` 或中间断号，却不知道预期最大编号；缺最后一份时，`01..15` 仍满足“从 1 连续”，会正常出数。
+- **证据／命令输出**：从 README 逐字复制配方：对仓库单 shard 如期抛 `got 6 — this batch is a SUBSET`；对完整 `/tmp/parallel-test-VZxJ3f` 输出 `16 / 7529 / 1 / 7528`；再复制原件的 shard-01..15、只省略 shard-16，**同一配方退出 0**并输出 `{shards:15, executed:6934, failed:1, pass:6933}`。
+- **接手方错误动作**：artifact 目录若只丢最后一份，接手方会把 6934 当总量；这正是该 README 要防的“没读到却当作零”。
+- **建议处置**：完整模式必须从独立 metadata 读取 expected shard count（例如 runner 原子写 manifest，或解析同批 run.log 的 `N shards`）并断言集合精确等于 `1..N`；没有 expected count 时只能标“可枚举子集”，不得声称完整。配方应同时保留 single/middle/trailing 三种缺失负控。
+
+### [MAJOR] `docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-ready-snapshot.md:3-4,70-82` — progress 仍有冲突的关闭锚与未被历史边界覆盖的陈旧门禁结论
+
+- **现象**：`closed-at` 已改为 `30559e07`，但同一 frontmatter 的 `status` 字符串仍写“闭合于 `7016435e`”。“在途意图”已正确标历史，但独立的“本轮红绿证据”章节仍在第 75、76、82 行以当前语气声称官方门未绿、guard 待最终裁决；第 96 行才说“官方门未绿已过期”。
+- **证据／命令输出**：`rg '7016435e|30559e07|closed-at|闭合于'` 同时命中 status 的 701 与字段的 305。`rg '待独立|未绿|待跑|不得.*关闭'` 命中第 70、75、76、82 行；只有第 70 行加了“写于当时／已跑完”，第 75、76、82 没有被“在途意图”标题覆盖。
+- **接手方错误动作**：按 status checkout 701 会看到文件仍未关闭；按正文搜索“官方门”会同时得到“仍未绿”和“已过期”两个权威声音，可能重复 gate／review 或把正确闭合状态当成后来的误写。
+- **建议处置**：status 与 `closed-at` 统一为 305；给整个“本轮红绿证据”章节加明确快照基线和 superseded 指针，或逐条给 75、76、82 添加“后续已推翻／已闭合”标记。历史证据可以保留，但不能继续使用无时间限定的现在时。
+
+### [MAJOR] `docs/tmp/2026-08-09-merge-state-review-claims.md:173-181` — 更正正文准确，但下游结论仍重复被推翻的“只能拦彻底失效”
+
+- **现象**：追加更正确地保留了两项仍成立的核心事实：live 对完全失效无鉴别力，physical 在完全失效端只有 0.49 余量；没有过度撤销原发现。但更正后的第 180 行仍肯定地说该用例“实际只能拦住去重彻底失效”，与第 173 行承认 47/48 部分退化也会红直接矛盾。
+- **证据／命令输出**：`rg '只能拦住|47/48|更正'` 同时命中 173 的反例与 180 的旧后果描述。47/48 实测 `physicalRatio=9.516 < 10`，所以“只能拦彻底失效”已被同一个反例推翻。
+- **接手方错误动作**：接手方读完更正继续往下，会再次得到旧结论，误判旧 guard 对所有 partial degradation 都无覆盖。
+- **建议处置**：不改写历史原文也可以，但更正必须显式声明它同时 supersede 第 169-171 **及第 180-181**；把当前有效结论收窄为端点鉴别力与余量，不再断言 partial 区间覆盖。
+
+## 已确认无问题的整改
+
+- `OUT-OF-SCOPE` 与 `INCOMPLETE` 的方向语义正确，二者同时出现时也都展示。当前 focused suite 为 `20 pass / 0 fail`。
+- 鉴别力正控成立：在树外副本只把 `unexpectedNote` 强制为空，新加的 unexpected-only 与 both-directions 两条测试恰好 `2 fail`；恢复后的当前实现 20 条全绿。第一次全文件副本 mutation 因树外依赖解析失败，不作为证据；随后用只含 `TallyInput/formatTallyLine` 的聚焦副本排除了该混淆。
+- artifact 缺失会 `process.exit(1)`；`parseJUnit` 语法错误未被捕获，会令顶层异常退出非零；发现集合为空会退出 1；child 非零、JUnit failure、missing、unexpected 都进入最终非零条件。问题只在 parser 可静默接受的语义漏行，因此“exit 0 充分”仍不成立。
+- claims 追加更正没有否定原本成立的 live/physical 端点事实；问题仅是后续旧结论未同步 supersede。
+- README 当前配方与实跑版本逐字一致；partial 与完整两个用户点名的控制均得到预期结果，但 trailing omission 暴露第三个方向。
+- `runner_git_blob` 三处一致为 `a27bf46dc41649c90090d6670b391b5b8bf57517`。
+
+## 最终计数
+
+- 轮次 1：BLOCKER 0、MAJOR 7、MINOR 1。
+- 复评轮次 2：BLOCKER 0、MAJOR 4、MINOR 2。
+- 复评轮次 3：BLOCKER 0、MAJOR 4、MINOR 0。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。

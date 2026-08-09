@@ -1,6 +1,6 @@
 ---
 slug: task9-ready-snapshot
-status: 已完成 —— 活跃写入权已移交 `.superpowers/sdd/progress.md`（2026-08-09，闭合于 `7016435e`）
+status: 已完成 —— 活跃写入权已移交 `.superpowers/sdd/progress.md`（2026-08-09，闭合于 `30559e07`）
 closed-at: 30559e07
 base: 0dca450e951b1c1ba72acb041501f8b5a3f65453
 branch: worktree-placeholder
@@ -53,7 +53,11 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 - 修改management status测试前已记录其守护不变量与依据：`GET /api/status` 的persisted count必须只数 `v3_operations`，不能解析坏 `summary_json`；依据是测试名、注释与status count专用SQL。旧fixture通过DROP `v3_operation_summaries_after_summary_update` 构造pre-trigger artifact，但该trigger已被002矩阵退役；当前protected-update trigger允许canonical update并只poison／撤marker，所以直接写坏 `summary_json` 已足以激活原oracle。删除硬编码DROP不放宽count断言，也不改产品行为。
 - ~~继续每个语义 commit 同步本文件，禁止 amend 历史。~~ —— **已停止**：本文件于 2026-08-09 关闭，活跃写入权在 `.superpowers/sdd/progress.md`。
 
-## 本轮红绿证据
+## 本轮红绿证据（历史快照，写于合并 master **之前**）
+
+> ⚠️ **本节整节都是当时的读数，其中关于「官方门禁」的结论已被后续推翻。** 当时的结论是「官方 16-shard 命令在本机未绿、只有低并发 4-shard 全绿」；合并 master 并修掉两个门禁缺陷后，官方 `bun run test:backend` 已实测全绿（`7538 tests · 7538 pass · 0 fail`、退出码 0、无任何完整性标记）——见上面「剩余项」第 1 条与「裁决结果」节。
+>
+> **有一条当时的判断特别值得后来人警惕**：本节把官方门的失败大量归因为「5 秒超时／资源争用的 false-red」。后来查明，那类运行里**至少有一次的 crash 底下压着一条真失败**（一条 `TimeoutError` 被汇总行的绿色 `0 fail` 盖住，原件见 `exp/junit-tally-false-green/`）。**不要照搬「超时都是 false-red」这个结论**——先去 junit 产物里查。
 
 - 红 1：shared primitive／observer 导出缺失，测试文件在模块加载时报 `Export named 'setSummarySnapshotObserverForTests' not found`。
 - 红 2：primitive 最小实现后，search sidecar 内只撤 marker，旧接线错误 resolved；期望 `History summary projection is not ready after persisted full-text search`。

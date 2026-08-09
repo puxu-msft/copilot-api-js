@@ -48,29 +48,33 @@
 bun run test:backend            # 产物目录打印在末行 artifacts=<dir>
 ```
 
-用当前解析器对任意一批产物复算。**shard 数由 `os.cpus().length` 决定，不是常数 16**，所以从目录枚举而不是数到 16；并且**断言编号连续**——缺一份 XML 时静默把子集当成完整批次，正是本目录要防的那个错误的翻版：
+用当前解析器对任意一批产物复算。**这里不数 shard 编号**——上一版数了，而且错了：编号「从 1 连续」检不出**缺末尾一份**（`01..15` 照样满足），实测缺 `shard-16` 时它退出 0 并输出 `6934`，把子集当成了完整批次。正确的完整性 oracle 是 runner 自己用的那个：**把产物里出现的文件集合与仓库的发现基线对账**，缺哪份 shard，它承载的文件就不在集合里。
 
 ```bash
 bun -e '
   import { readdirSync, readFileSync } from "node:fs"
   import path from "node:path"
-  import { parseJUnit } from "./scripts/parallel-test-artifacts"
+  import { compareFileIdentities, parseJUnit } from "./scripts/parallel-test-artifacts"
   const dir = process.argv[1]
-  const names = readdirSync(dir).filter((n) => /^shard-\d+\.xml$/.test(n))
-  const numbers = names.map((n) => Number(/^shard-(\d+)\.xml$/.exec(n)[1])).sort((a, b) => a - b)
-  if (numbers.length === 0) throw new Error(`no shard-*.xml under ${dir}`)
-  for (const [index, value] of numbers.entries()) {
-    if (value !== index + 1) throw new Error(`shard numbering is not contiguous from 1: got ${numbers.join(",")} — this batch is a SUBSET, its counts are not a total`)
-  }
-  let executed = 0, failed = 0
-  for (const value of numbers) {
-    const name = `shard-${String(value).padStart(2, "0")}.xml`
-    const id = parseJUnit(readFileSync(path.join(dir, name), "utf8"), process.cwd())
-    executed += id.executed; failed += id.failed
+  const names = readdirSync(dir).filter((n) => /^shard-\d+\.xml$/.test(n)).sort()
+  if (names.length === 0) throw new Error(`no shard-*.xml under ${dir}`)
+  const seen = new Set(), root = process.cwd()
+  let executed = 0, failed = 0, skipped = 0
+  for (const name of names) {
+    const id = parseJUnit(readFileSync(path.join(dir, name), "utf8"), root)
+    executed += id.executed; failed += id.failed; skipped += id.skipped
+    for (const f of id.files) seen.add(f)
     for (const f of id.failedIdentities) console.log("FAIL", f.file, "›", f.name, `(${f.type})`)
   }
-  console.log({ shards: numbers.length, executed, failed, pass: executed - failed })
+  const baseline = JSON.parse(readFileSync("tests/infra/entry-test-discovery-baseline.json", "utf8"))
+  const cmp = compareFileIdentities(baseline.files, [...seen])
+  console.log({ shardFiles: names.length, executed, failed, pass: executed - failed, skipped })
+  if (cmp.missing.length > 0) console.log(`INCOMPLETE: ${cmp.missing.length} discovered file(s) absent from these artifacts — the counts above are a FLOOR, not a total. e.g. ${cmp.missing.slice(0, 3).join(", ")}`)
+  if (cmp.unexpected.length > 0) console.log(`OUT-OF-SCOPE: ${cmp.unexpected.length} file(s) not in the baseline reported rows`)
+  if (cmp.missing.length === 0 && cmp.unexpected.length === 0) console.log("file identity: complete")
 ' <artifacts-dir>
 ```
 
-**对本目录保存的那一份复算会故意失败**——它只有 `shard-06.xml`，编号不从 1 开始连续，脚本会抛 `this batch is a SUBSET`。这是设计如此：想单看那一份，直接读 `artifacts/shard-06.xml` 里的 `<failure type="TimeoutError" />` 行，或对单文件调用 `parseJUnit`，**但不要把它的计数当作那次运行的总量**。
+**注意基线的口径**：`entry-test-discovery-baseline.json` 是 `unit`+`it`+`http` 三档的全集，也就是 `test:backend` 的口径。拿它去对 `test:fast` 的产物会报出大量 `missing`——那是**口径不同**，不是产物残缺。要对别的档位，请换用对应的发现集合。
+
+**对本目录保存的那一份复算，会打印 `INCOMPLETE` 并列出缺失文件**——它只有 `shard-06.xml`。这是设计如此：想单看那一份，直接读 `artifacts/shard-06.xml` 里的 `<failure type="TimeoutError" />` 行，**但不要把它的计数当作那次运行的总量**。
