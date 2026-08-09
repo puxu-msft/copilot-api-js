@@ -104,6 +104,8 @@
 
 **本轮有两个根阻断点**：stage 1（共享主树未查，护栏所致）与 stage 8（清单修订后未重审）。按 `requires` 传播，**2–17 全部受阻**。解阻路径：先补 stage 1 的共享主树 `git status`（需在共享检出执行，本会话做不到），再重审清单，其余动作证据已在，可依序重新宣告。
 
+**「契约达成」列的读法**（Round 5 判 major 后补）：`❌ 未达成` 记**本 stage 自身的直接缺口**，`⛔ 受阻（n）` 记**经 `requires` 图从 stage n 传播来的阻断**。**两者可以同时成立且必须同时写出**——stage 8／16／17 就是这种情形：它们各有直接缺口，其前置链**同时**受根阻断点阻断，所以补上自身缺口也不会立刻达成。只写直接缺口会让读者以为「把这一项做了就好」。
+
 | # | stage | 动作／证据 | 契约达成 | 说明 |
 | --- | --- | --- | --- | --- |
 | 1 | `freeze_truth` | ⚠️ 部分 | ❌ **未达成** | **根阻断点 A**。只冻结了本 worktree 与 `master`；契约要求「在每个 repository 与 worktree 分别跑 `git status --short --branch`」，**共享主树因隔离护栏未查** |
@@ -113,7 +115,7 @@
 | 5 | `archive_docs` | ✅ | ⛔ 受阻（1） | 本轮无待归档 plan／实验产物；已删项目 skill 的自验日志由 peer 归档至 `docs/archive/` |
 | 6 | `reconcile_live_docs` | ✅ | ⛔ 受阻（1） | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
 | 7 | `discover_nonfile_candidates` | ✅ | ⛔ 受阻（1） | 首轮列 2 条，reviewer 独立枚举补出整批；三轮双向对账后 diff 为空，共 12 条 |
-| 8 | `review_temp_manifest` | ❌ 未做 | ❌ **未达成** | **根阻断点 B**。清单在评审后又被修订（行 73 字节数 431277→431517）→ 按 skill 自己的规则先前结论作废 |
+| 8 | `review_temp_manifest` | ❌ 未做 | ❌ 未达成；⛔ 受阻（1） | **根阻断点 B**。清单在评审后又被修订（行 73 字节数 431277→431517）→ 按 skill 自己的规则先前结论作废。**同时**其前置 4／7 均受阻于 1，故即便重审也要等 1 解阻 |
 | 9 | `clean_temp` | — 未执行 | ⛔ 受阻（1,8） | **零删除**，56 项全留交 harness 回收；动作根本没发生，故不宣告达成 |
 | 10 | `resolve_branch` | ✅ | ⛔ 受阻（1,8） | 见上节：branch keep；worktree 三条前置齐备、去留交用户 |
 | 11 | `draft_terminal_report` | ✅ | ⛔ 受阻（1,8） | 即本文件 |
@@ -121,8 +123,8 @@
 | 13 | `verify_installed_location` | ✅ | ⛔ 受阻（1,8） | 从共享 checkout 实跑（`pwd -P` 已确认）：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail |
 | 14 | `recommend_assets` | ✅ | ⛔ 受阻（1,8） | 见「可复用资产」节五条 |
 | 15 | `update_terminal_report` | ✅ | ⛔ 受阻（1,8） | 按第 3、4 轮 major 整改 |
-| 16 | `review_closeout_final` | ❌ 未闭环 | ❌ **未达成** | 已跑第 3 轮（4 major）与第 4 轮（3 major），**均未 0 major** |
-| 17 | `report_terminal` | ❌ | ❌ **未达成** | `requires: [review_closeout_final]`；**本文件不是终态交付件** |
+| 16 | `review_closeout_final` | ❌ 未闭环 | ❌ 未达成；⛔ 受阻（1,8） | 已跑第 3 轮（4 major）、第 4 轮（3 major）、第 5 轮（1 major），**均未 0 major** |
+| 17 | `report_terminal` | ❌ | ❌ 未达成；⛔ 受阻（1,8） | `requires: [review_closeout_final]`；**本文件不是终态交付件** |
 
 **最终验证证据（每项标注新跑／复用，锚到 commit）**：
 
