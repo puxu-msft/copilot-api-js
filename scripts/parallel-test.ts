@@ -40,12 +40,19 @@ import path from "node:path"
 
 import {
   //
+  parseDiscoveryBaseline,
+  skipIdentityKey,
+} from "./entry-evidence-schema"
+import {
+  //
   compareFileIdentities,
   parseJUnit,
 } from "./parallel-test-artifacts"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..")
 const TIMINGS_PATH = path.join(REPO_ROOT, "scripts/test-timings.json")
+/** The tier the entry discovery baseline is frozen against; see the staleness warning below. */
+const BACKEND_SUFFIXES = ["unit", "it", "http"]
 
 const argv = process.argv.slice(2)
 const update = argv.includes("--update")
@@ -223,6 +230,37 @@ writeArtifactAtomically(
   path.join(artifactDir, "skipped-multiset.json"),
   `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`,
 )
+
+// Warn the day the entry discovery baseline goes stale, not sixteen minutes into T0.0f.
+//
+// capture-entry-evidence.ts runs all fifteen invocations before it reconciles any of them
+// against the baseline, so a DETERMINISTIC drift -- someone adds a native-gated case and the
+// frozen allowed_skipped does not list it -- costs a full batch before anything says so. That
+// happened: seven such cases accumulated and only surfaced when the producer was invoked.
+//
+// Warning, never failing: this is a routine developer run, not the entry gate. The gate stays
+// where it is. Only the backend tier is comparable -- a narrower suffix set legitimately skips
+// less, so comparing it would cry wolf on every `test:fast`. The identity key and the parser
+// are the production ones, so this cannot drift away from what the gate will actually assert.
+if (suffixes.length === BACKEND_SUFFIXES.length && suffixes.every((suffix) => BACKEND_SUFFIXES.includes(suffix))) {
+  const baselinePath = path.join(REPO_ROOT, "tests/infra/entry-test-discovery-baseline.json")
+  if (existsSync(baselinePath)) {
+    const allowed = parseDiscoveryBaseline(readFileSync(baselinePath, "utf8")).allowed_skipped
+    const expected = new Map(allowed.map((skip) => [skipIdentityKey(skip), skip.count]))
+    const actual = new Map(skippedIdentities.map((skip) => [skipIdentityKey(skip), skip.count]))
+    const drift = [
+      ...[...expected.keys()].filter((key) => !actual.has(key)).map((key) => `missing ${key}`),
+      ...[...actual.keys()].filter((key) => !expected.has(key)).map((key) => `unexpected ${key}`),
+      ...[...expected.entries()].flatMap(([key, count]) => (actual.has(key) && actual.get(key) !== count ? [`count ${key}`] : [])),
+    ]
+    if (drift.length > 0) {
+      console.error(`[parallel-test] entry discovery baseline is stale: ${drift.length} skip identities differ from this run.`)
+      console.error("[parallel-test] capture-entry-evidence.ts will exit 5 on this. Re-freeze allowed_skipped before taking entry evidence.")
+      for (const line of drift.slice(0, 10)) console.error(`[parallel-test]   ${line.split(String.fromCodePoint(0)).join(" :: ")}`)
+      if (drift.length > 10) console.error(`[parallel-test]   ... and ${drift.length - 10} more`)
+    }
+  }
+}
 
 // Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
 // can never disagree with them (bun prints pass/fail on their own lines per shard).
