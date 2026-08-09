@@ -225,11 +225,9 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
    * read path evaluates filters against columnar fast fields, so a stale version surviving
    * anywhere would show up as a duplicate id or a match on a superseded `state`.
    *
-   * What this does NOT cover: the alive-bitset branch in `list_search_blocking`. Probed
-   * against tantivy 0.26.1, this write pattern materializes the delete during the commit
-   * (live segments report `deletes: null`), so the superseded document is physically gone
-   * rather than tombstoned, and disabling that branch leaves this test green. See the
-   * comment on `let alive = ...` for why the branch is kept regardless.
+   * This two-document form does not reliably leave a tombstone behind: with so few documents
+   * the superseded one tends to be its segment's only occupant, and such a segment is dropped
+   * whole. The tombstone path is covered by the test below.
    */
   test("returns only the surviving version of a re-indexed operation, across segment boundaries", async () => {
     const indexPath = path.join(freshDir("native-list-supersede-index-"), "index")
@@ -263,6 +261,74 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
     await index.close()
   })
 
+  /**
+   * Covers the alive-bitset branch in `list_search_blocking`: `for_each_no_score` walks the raw
+   * docset, so a document deleted but still tombstoned in a live segment is handed to us and must
+   * be filtered out here. Remove that filter and the superseded `state` becomes matchable again.
+   *
+   * Whether a delete leaves a tombstone is not something the caller controls — one `flush` spreads
+   * documents across several segments, and a segment with no live document left is dropped whole
+   * rather than tombstoned. That is why this fixture is large and supersedes many documents: the
+   * dominant segment held 65–99% of the corpus across every probe run, so at least one superseded
+   * document lands in a segment that still holds live ones. The assertion on `meta.json` is there
+   * to make that a stated precondition rather than an assumption — if tantivy's segment policy ever
+   * changes, this fails as "the fixture no longer builds the state" instead of quietly testing
+   * nothing.
+   */
+  test("excludes superseded documents that survive as tombstones in a live segment", async () => {
+    const indexPath = path.join(freshDir("native-list-tombstone-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    // `committedAt` sits strictly inside the frozen target, so every document is covered without
+    // having to enumerate a boundary set.
+    const base = { operationKind: "generation", committedAt: 5, content: "tombstone needle", sessionId: "s1" }
+    const total = 200
+    const supersededIds = Array.from({ length: 20 }, (_, index_) => `op-${String(index_ * 10).padStart(3, "0")}`)
+
+    for (let index_ = 0; index_ < total; index_ += 1) {
+      await extended.upsertSummary({ ...base, operationId: `op-${String(index_).padStart(3, "0")}`, createdAt: 1000 + index_, state: "streaming" })
+    }
+    await index.flush()
+    for (const operationId of supersededIds) {
+      const ordinal = Number(operationId.slice(3))
+      await extended.upsertSummary({ ...base, operationId, createdAt: 1000 + ordinal, state: "completed" })
+    }
+    await index.flush()
+
+    // Precondition: the delete really did leave a tombstone, so the branch under test is reached.
+    const meta = JSON.parse(fs.readFileSync(path.join(indexPath, "meta.json"), "utf8")) as {
+      segments: Array<{ deletes: { num_deleted_docs: number } | null }>
+    }
+    const tombstoned = meta.segments.reduce((sum, segment) => sum + (segment.deletes?.num_deleted_docs ?? 0), 0)
+    expect(tombstoned).toBeGreaterThan(0)
+
+    const query = {
+      query: "tombstone needle",
+      operationKinds: [],
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [],
+      direction: "older",
+      limit: 1000,
+    }
+    // Every operation appears exactly once, tombstones notwithstanding.
+    const all = await extended.listSearch(query)
+    expect(all.total).toBe(total)
+    expect(new Set(all.operationIds).size).toBe(total)
+    // The superseded versions must not remain matchable on their OLD state, and the survivors
+    // must carry the new one. This is the assertion the alive-bitset filter is load-bearing for.
+    const streaming = await extended.listSearch({ ...query, states: ["streaming"] })
+    expect(streaming.total).toBe(total - supersededIds.length)
+    expect(streaming.operationIds).not.toContain(supersededIds[0])
+    const completed = await extended.listSearch({ ...query, states: ["completed"] })
+    expect(completed.total).toBe(supersededIds.length)
+    expect([...completed.operationIds].sort()).toEqual([...supersededIds].sort())
+
+    await index.close()
+  })
   /**
    * Optional fields produce no columnar column at all in a segment where no document
    * carried them, which is distinct from "the column exists and every value differs".
