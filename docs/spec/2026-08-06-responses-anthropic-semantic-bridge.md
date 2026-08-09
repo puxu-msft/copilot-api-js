@@ -313,15 +313,27 @@ type CompatibilityErrorRendererFor<TF extends BridgeTargetFormat> = TF extends "
  * `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 正是这个形状，
  * 实施者照房内惯例写就会掉进去。
  *
- * **不变量**：registry／表的值类型必须是「**具体实例化的联合**」（每个 `targetFormat`
- * 字面量各一臂），不得是「**单个宽实例化**」。已实测的最小对照：
- * 联合容器下错配报 `TS2322`（`errorRenderer.targetFormat` 两臂都匹配不上）、正确装配无红；
- * 宽实例化容器下同一份错配 exit 0。
+ * **不变量**：registry／表的值类型必须是「**零类型参数的封闭联合**」——每个 `targetFormat`
+ * 字面量各一臂、别名本身**不带任何类型参数**：
  *
- * **未验证**：本规格不冻结该联合别名的**确切写法**——`RequestBridgeProfile` 另有 8 个类型参数，
- * 它们在联合臂里该取何值（各臂独立推断／existential／helper 泛型）尚未实测。
- * 实施者自选写法，但必须由 P1 Step 5b 的两格负样本证明「联合容器错配报错、宽容器不报错」，
- * 以此锁住不变量而非锁住写法。
+ * ```ts
+ * type AnyProfile = Profile<"anthropic-messages"> | Profile<"openai-responses">   // ✅
+ * ```
+ *
+ * **不得**是「单个宽实例化」，**也不得**是「带开放参数或默认值的泛型别名」——后者实测同样 false-green：
+ *
+ * ```ts
+ * type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile<TF>
+ * // satisfies Record<X, HelperProfile> —— 裸用时等价于 Profile<BridgeTargetFormat>，错配 exit 0
+ * ```
+ *
+ * 这条「零类型参数」的限定不是修辞：它是第五轮评审用独立 PoC 实测击穿前一版
+ * 不变量（当时只写「具体实例化的联合」）后补上的。已实测在封闭联合下正确报红的姿势包括：
+ * helper 泛型 identity 中转、`Object.assign`／spread、`Partial<Record>`、裸索引签名、
+ * 分两步赋值、mapped-type 分布式生成、共享 builder 返回宽类型（共 7 类）。
+ *
+ * **未验证**：本规格不冻结联合别名里**其余 8 个类型参数**该取何值（各臂独立推断／existential／
+ * helper 泛型）——尚未实测。实施者自选，但必须由 P1 Step 5b 的三格负样本证明判别力仍在。
  */
 
 interface RequestBridgeProfile<

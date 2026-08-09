@@ -32,3 +32,15 @@ export const good = {
 export const bad = {
   anthropic: { targetFormat: "anthropic-messages", errorRenderer: responsesRenderer },
 } satisfies Record<string, AnyProfile>
+
+// --- Posture O (added round 5): generic alias with a WIDE DEFAULT, used bare ---
+// Looks like it satisfies "use a union alias for the container value type", but the
+// alias is still an OPEN generic: `HelperProfile` bare == `Profile<BridgeTargetFormat>`.
+// MEASURED: NO error on the mismatch below. This posture broke the round-4 invariant,
+// which only said "union of concrete instantiations" — hence the tightened wording
+// "zero type parameters, closed union".
+type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile<TF>
+
+export const postureO = {
+  anthropic: { targetFormat: "anthropic-messages", errorRenderer: responsesRenderer },
+} satisfies Record<string, HelperProfile>

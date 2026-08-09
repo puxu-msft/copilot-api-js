@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：第四轮复评——两侧各 1 MAJOR，均已实测复核并整改（提交见下）。整改后需第五轮。
+> **状态**：第五轮复评——管线接线侧判「**计划可定稿**」；协议契约侧 1 MAJOR（我的类型修法被独立 PoC 击穿），已实测复核并整改。整改后需第六轮**仅协议侧**复评。
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
@@ -11,6 +11,8 @@
 > **第三轮基线**：`7c5ba2ed`（代码基线 master `837fe522`）
 >
 > **第四轮基线**：`62075b12`（管线侧）／`7c5ba2ed`（协议侧）
+>
+> **第五轮基线**：`2bf81b6c`
 
 ## 评审视角
 
@@ -203,3 +205,37 @@ Produces 要求「candidate fork 原样共享 records 值」，mutation 要求�
 上一轮我总结的是「每写一条断言就问『把目标机制改坏会红吗』」。**这一轮证明那句话不够**——第三轮我正是这么问的、也自认为答了，结果还是恒绿，因为我**在脑子里回答**了这个问题。真正管用的判据只有一条：**把断言实际写出来，包括找到注入点**。三条恒绿里有两条不是"想不到会恒绿"，而是"根本没有注入缝"——这种缺陷只有在动手写测试时才会撞到，纯思考撞不到。
 
 对应到计划文本的可执行要求：凡是写「注入 X 并断言 Y」的判据，**必须同时点名 X 的注入缝在哪个类型/参数上**；点不出来就说明这条判据当前写不出来，应当先补缝或明确降级为人工检查（并说明它不是自动门），不许留一条看起来是门、实际零判别力的断言。
+
+## 第五轮（复评，基线 `2bf81b6c`）
+
+| 视角 | 结论 |
+|---|---|
+| 管线接线 | **计划可定稿**（0 BLOCKER / 0 MAJOR，三条命题全部成立）+ 2 minor |
+| 协议契约 | **不可定稿**（0 BLOCKER / 1 MAJOR）——我的修法被独立 PoC 击穿 |
+
+### MAJOR E（协议）：Posture O 击穿「具体实例化的联合」这条不变量
+
+第四轮我把修法定为「registry 值类型必须是**具体实例化的联合**」，并自认为实测过。第五轮 reviewer **没有复用我的 PoC**，而是先重现我的基线、再自行构造 6 种我没测的实例化姿势，找到一个反例：
+
+```ts
+type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile<TF>
+// satisfies Record<X, HelperProfile> —— 错配 exit 0、零报错
+```
+
+它**字面上像是符合我的不变量**（用了别名、名字里有 union 的意思），实际仍是**未封闭的开放泛型**，裸用时等价于 `Profile<BridgeTargetFormat>`。
+
+**我方复核**：自己写 PoC 独立复现——`postureO` 无报错、零参封闭联合的 `bad` 报 `TS2322`，确认属实。已把 Posture O 追加进 `exp/bridge-profile-renderer-binding/union-container.ts`（现四处观测点）。
+
+**整改**：不变量收紧为「**零类型参数的封闭联合**」，并明写「不得是带开放参数或默认值的泛型别名」+ 反例代码。Step 5b 从两格扩为**三格**（具体实例化 / 容器实例化 / 泛型别名）。reviewer 另实测 7 类姿势在零参封闭联合下全部正确报红，一并记入 PoC README。
+
+**这是本轮最重要的一条教训**：第四轮我写下「已实测」时，测的是**我想得到的那两种姿势**。「我想不出还有别的写法」不构成穷举证据——PoC README 的「它没有证明什么」已补上这一条，因为这份 PoC 自己的历史就是反例。**这也是我在派活时明确请对方去找「第三种姿势」的直接收益**：如果只问「我的修法对不对」，大概率会得到「对」。
+
+### 管线接线侧：定稿 + 2 minor（均已采纳）
+
+- **`(deps.X ?? X)(...)` 的解析写法必须写进计划**：只说「加 `DriverDeps.resolveRequestTranslationRuntime?`」不够——实施者若在 `runRequest` 里直接调自由函数，spy 永不触发，`runRequest 计数=1` 会在**实现其实正确**时翻红（false-red，白跑一轮）。已按 `resolveRouteDecision` 的 `(deps.decideRoute ?? decideRoute)(parsed)` 形状写明。
+- **`deepFreezeDiagnostic` 非幂等陷阱**：函数首行 `Object.isFrozen(value)` 早退会**跳过整棵子树**，故绝不能先 `Object.freeze(diag)` 再调它——那样 `records` 仍可 push，Task 3.1 的 `toThrow` 会在实现「看起来完全正确」时红。已复核函数体属实并写进计划。
+- 另收紧一处措辞：恒绿原因 ②「mock codec 的 env 没有 `requestState`」是测试约定而非强制；已改为两种情形（未填 → legacy 分支；填了且已迁 → 真实 cell）**都不成立**，结论不变但陈述更严谨。
+
+### 未采纳
+
+无。本轮 1 MAJOR + 2 minor + 1 措辞收紧全部采纳。

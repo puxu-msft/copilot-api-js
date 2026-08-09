@@ -160,11 +160,13 @@ Commit: `feat(bridge): add Responses target grammar`
 - [ ] **Step 3: 跑红灯。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts`。Expected: FAIL，缺class／renderer。
 - [ ] **Step 4: 实现唯一矩阵。** Request incompatible-continuation=422，其余request=400，response=502；Anthropic HTTP/terminal与OpenAI HTTP/Responses terminal形状逐字按spec；renderer不读transport classifier。
 - [ ] **Step 5: mutation。** 把response改400、Anthropic terminal用invalid_request、Responses terminal漏sequence、bodyCommitted两支生成不同taxonomy后精确红。
-- [ ] **Step 5b: profile↔renderer 错配的编译期红灯（两格，缺一不可）。** 在 `tests/semantic-bridge/types.typecheck.unit.test.ts`：
+- [ ] **Step 5b: profile↔renderer 错配的编译期红灯（三格，缺一不可）。** 在 `tests/semantic-bridge/types.typecheck.unit.test.ts`：
   **格 1（具体实例化）**：构造 `targetFormat:"anthropic-messages"` 的 profile 却挂 `createResponsesCompatibilityErrorRenderer()`，断言**编译失败**（`@ts-expect-error`）；反向同理。若实现退回裸 `CompatibilityErrorRenderer` 联合体，该格因「`@ts-expect-error` 未触发」（`TS2578`）而红。
-  **格 2（容器实例化，⚠️ 别漏）**：把同一份错配放进 registry 形状的容器里再断言。**实测事实（tsc 5.9.3 `--strict`）**：`satisfies Record<X, Profile<BridgeTargetFormat>>` 这种**宽实例化**容器下，错配 **exit 0、零报错**；换成**具体实例化的联合**（每个 `targetFormat` 字面量各一臂）后，同一份错配报 `TS2322`、且正确装配不误红。故本格要同时钉住两件事：正确的联合写法**报错**，且**不得**采用宽实例化写法。
-  **为什么必须有格 2**：`hub-translate.ts` 现有 `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 就是宽容器形状，实施者照房内惯例写就会掉进去，而格 1 完全看不见这个姿势。
-  **这两格不可省**：8 格运行时测试测的是各协议内部正确性，**覆盖不到装配错配**——这是判据之间的缝，不是某条判据写错。
+  **格 2（容器实例化）**：把同一份错配放进 registry 形状的容器里再断言。**实测事实（tsc 5.9.3 `--strict`）**：`satisfies Record<X, Profile<BridgeTargetFormat>>` 这种**宽实例化**容器下，错配 **exit 0、零报错**；换成**零类型参数的封闭联合**（每个 `targetFormat` 字面量各一臂）后，同一份错配报 `TS2322`、且正确装配不误红。
+  **格 3（泛型别名，⚠️ 最隐蔽）**：把容器值类型换成**带宽默认值的泛型别名**并裸用——`type HelperProfile<TF extends BridgeTargetFormat = BridgeTargetFormat> = Profile<TF>`，`satisfies Record<X, HelperProfile>`。**实测 exit 0、错配零报错**。本格断言这种写法**不被采用**（即：若实现把容器值类型写成这种形式，格 2 的错配断言会因「`@ts-expect-error` 未触发」转红）。
+  **为什么三格缺一不可**：格 1 看不见容器姿势；格 2 看不见「别名仍是开放泛型」这一姿势——`HelperProfile` 字面上像是符合「用联合别名」的要求，实际等价于宽实例化。**格 3 正是第五轮评审用独立 PoC 击穿前一版修法后补上的**，前一版不变量只写「具体实例化的联合」，允许了这个写法。
+  **背景**：`hub-translate.ts` 现有 `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 就是容器形状，实施者照房内惯例写就会掉进格 2／格 3 的坑。
+  **这三格不可省**：8 格运行时测试测的是各协议内部正确性，**覆盖不到装配错配**——这是判据之间的缝，不是某条判据写错。
 - [ ] **Step 6: 运行。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts && bun run typecheck`。Expected: PASS。
 - [ ] **Step 7: commit。** Commit: `feat(error): add bridge compatibility renderers`
 
