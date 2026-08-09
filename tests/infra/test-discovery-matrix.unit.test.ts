@@ -43,4 +43,41 @@ describe("test discovery matrix", () => {
       .map(([name, body]) => `${name}: ${body}`)
     expect(offenders, `backend test script(s) invoke a frontend suite — frontend tests must be run explicitly:\n${offenders.join("\n")}`).toEqual([])
   })
+
+  // `test:perf` names its files literally instead of globbing, which reopens exactly the orphan
+  // blind spot this file exists to close — and in a MORE hidden form than an untiered file: a
+  // perf-gated case still carries a tier suffix and still shows up in the discovery baseline as an
+  // allow-listed skip, so it looks supervised while nothing runs it. Tie the two sides together:
+  // the files that opt into the perf gate must be exactly the files the script runs.
+  const PERF_ENV = "RUN_PERF_TESTS"
+  const perfGatedFiles = async (): Promise<Array<string>> => {
+    const found: Array<string> = []
+    for (const relative of scan("tests")) {
+      if (relative.endsWith("test-discovery-matrix.unit.test.ts")) continue // this guard names the var itself
+      if ((await Bun.file(`${REPO_ROOT}/${relative}`).text()).includes(PERF_ENV)) found.push(relative)
+    }
+    return found.sort()
+  }
+
+  test("every perf-gated test file is named by the test:perf script", async () => {
+    const scripts = ((await Bun.file(`${REPO_ROOT}/package.json`).json()) as { scripts: Record<string, string> }).scripts
+    const scriptFiles = [...(scripts["test:perf"] ?? "").matchAll(/tests\/\S+?\.(?:unit|it|http|pty|e2e)\.test\.ts/g)].map((match) => match[0]).sort()
+    const gated = await perfGatedFiles()
+    expect(
+      gated,
+      `perf-gated files and the test:perf script disagree — a gated case nobody runs still shows up as an allow-listed skip, so it looks supervised.\ngated: ${gated.join(", ")}\nscript: ${scriptFiles.join(", ")}`,
+    ).toEqual(scriptFiles)
+    // The comparison only means something if the scan found anything at all.
+    expect(gated.length).toBeGreaterThan(0)
+  })
+
+  test("the perf-gate scan notices a file the script does not name (positive control)", async () => {
+    const planted = "tests/infra/perf-scan-control.unit.test.ts"
+    await Bun.write(`${REPO_ROOT}/${planted}`, `import { test } from "bun:test"\n// ${PERF_ENV}\ntest("placeholder", () => {})\n`)
+    try {
+      expect(await perfGatedFiles()).toContain(planted)
+    } finally {
+      await Bun.$`rm -f ${REPO_ROOT}/${planted}`.quiet()
+    }
+  })
 })
