@@ -293,6 +293,31 @@ describe("History Worker generation isolation", () => {
     expect(scheduled).toEqual([40, 80])
   })
 
+  test("a NEW generation ACKing a message an older one already settled is a protocol violation", async () => {
+    const { runtime, transports } = scriptedRuntime()
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    const messageId = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-crossgen-1")), () => {})
+    transports[0]?.emitPersistResult(messageId, "persisted")
+    expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+
+    transports[0]?.emitExit(1)
+    transports[1]?.emitReady()
+
+    // Generation 2 never received this message: a replayed envelope is only re-sent while
+    // still unacked, and this one was settled before the crash. Without the generation on
+    // the tombstone this reads as a benign duplicate and a Worker inventing message IDs
+    // runs on undetected.
+    transports[1]?.emitPersistResult(messageId, "persisted", 2)
+
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toMatch(/generation 2 ACKed message .*which generation 1 had already settled/)
+    expect(runtime.snapshot().duplicateAcksTotal).toBe(0)
+  })
+
   test("a duplicate ACK is tolerated once, and a changed outcome is terminal", async () => {
     const { runtime, transports } = scriptedRuntime()
 
