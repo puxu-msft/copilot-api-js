@@ -65,6 +65,14 @@ registry 清零后，进程进入 `finalizing`：
 
 旧进程**立即停止 accept 新连接 + 优雅 drain 已有连接**的同时，新进程**立刻监听并接受新会话**——换代期间 :4141 对客户端零停机。
 
+> ⚠️ **「零停机」只对新建连接成立，对 keep-alive 连接池不自动成立**（2026-08-09 实测事故，已修）。一次接管从 13:02:06Z 开始，客户端到 **13:09:24Z** 仍在收 `503 Server is shutting down`——七分钟后、新实例早已在服务。History 在 13:01:57.734Z–13:11:46.755Z 之间**零记录**，因为关机期的拒绝在建 `RequestContext` 之前就返回了，故障在我们自己的记录里**天然不可见**。
+> 两条机制都能把客户端钉死在垂死的旧进程上，事故证据**不足以区分是哪一条**，因此两条都堵：
+> - **(A) 客户端连接池复用旧 socket**——它根本不会向内核请求新连接，于是永远到不了新实例。堵法：关机期返回的任何**失败**响应都带 `Connection: close`，由最外层的 `shutdownConnectionCloseMiddleware` 统一负责（`src/lib/observability/middleware.ts`）。放在最外层是因为关机期的拒绝不止一条路径：config/token 中间件排在它之前且带 await，抛错直接进 `server.onError`；等在 History admission 上的请求被 `stopHistoryAdmission()` 中止后同样由 `onError` 塑形。
+> - **(B) 旧进程还没走到关 listener 那一步**——`gracefulShutdown` Step 1 曾把 `server.close(false)` 排在 `drainAdmissionHandoffs()` 与交接专属的 `freeze*` 落盘之后，二者都无上界；背着大量 History 写入积压时可以卡住数分钟，而这期间它**既拒绝、又继续 accept**。堵法：`server.close(false)` 移到置 `_isShuttingDown` 之后、**所有 await 之前**（`src/lib/shutdown.ts`），这才让本节开头那句里的「立即停止 accept」为真。
+>
+> 守卫在 `tests/shutdown/shutdown.unit.test.ts`（顺序不变量 + 组合真实中间件栈的 ingress 拒绝断言，含 pre-gate 抛错路径）。注意既有的 `tests/e2e/handover.e2e.test.ts` **守不住这两条**：它只断言 fresh connection 在 5 秒内收敛到新进程，并显式容忍重叠期的 503/ECONNRESET。
+> **残留（已知、未做）**：drain 期间**成功**返回的 2xx 不加该头，客户端下一次请求仍会先吃一条 503 再重连；要覆盖它就得给已在流式传输的 SSE 响应加头，那是另一个问题，此处未决。
+
 ### 统一机制：SO_REUSEPORT 重叠窗口接管
 
 三种运行环境（裸手动 / systemd / pm2）**共用同一个 app 层接管协议**，只是「谁按下交接信号」不同。核心是一个**重叠窗口**——新旧进程短暂同时持有 :4141。
@@ -154,6 +162,7 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 ### 实现前置 PoC 门槛
 
 - **① reusePort overlap 下内核连接分发正确性**：旧进程关 listen fd 后，新连接 100% 到新进程、无 RST / 无丢连。这是零停机的唯一硬保证，实现前必须实测绿。⚠️ **探针必须每次新建 TCP 连接**（`Connection: close` + `keepalive: false` 或 `net.connect`）——实测用默认 `fetch()` keep-alive 连接池会**假阳性 FAIL**（8/8 复现：客户端复用了指向旧进程的旧连接，被误判成「内核仍往旧进程分发新连接」）。这类「看似测内核、实则测客户端连接池」的陷阱须用「keep-alive vs fresh-connection 双探针交叉验证」排除。
+    ⚠️ **但当年只修了探针、没修生产**：那个 8/8 复现的「客户端复用指向旧进程的旧连接」不只是测量假象，**真实 keep-alive 客户端的行为与那个「有问题的探针」完全一致**——它同样不会去建新连接，所以本条 PoC 证明的「关旧 listener 后新连接 100% 落新进程」对连接池客户端**根本不适用**。2026-08-09 该形态以生产事故出现（见上「目标」节的实测记录与两条修复）。
 - **② sd_notify 传输选型 PoC**：`node:dgram` 不支持 AF_UNIX datagram（实测 `Bad socket type`），需 PoC 定 systemd `$NOTIFY_SOCKET` 的 `SOCK_DGRAM` 发送方式（`bun:ffi sendto` / spawn `systemd-notify` / 原生绑定包）。仅卡 systemd sd_notify 腿；pm2 + 接管腿不受影响，可先行。
 
 （socket activation 曾要求的「node-under-Bun + fd-inherited 的 WS/流式」PoC **已随其否决而移除**——见下。）
