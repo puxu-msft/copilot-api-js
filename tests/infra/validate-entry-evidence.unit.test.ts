@@ -1,9 +1,20 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { type EntryEvidenceReceiptV1Expected, validateEntryEvidenceReceiptV1 } from "../../scripts/entry-evidence-receipt"
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
+// Nearly every case here builds a temp git tree, commits into it once per control, and re-runs the
+// validator — work that lands on top of bun's 5000ms default rather than comfortably inside it.
+// Measured standalone on an unloaded machine, cases came in at 5055ms, 5071ms, 5151ms and 6036ms, and
+// one reached 8927ms when re-run isolated; under `test:fast` sharding they tip over regularly. The
+// timeout is set per file rather than per case because the pressure is a property of the fixture
+// strategy, not of any one case — fixing only the case you happened to watch fail leaves the rest.
+// Nothing here is slower than the work it does warrants; the default is simply too tight for it, and
+// a guard that reddens with machine load, in a file unrelated to whatever the reader was changing,
+// gets deleted rather than diagnosed.
+setDefaultTimeout(120_000)
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
 const HANDOVER = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
@@ -919,13 +930,7 @@ describe("entry evidence validator C7-C9", () => {
         cleanup(f)
       }
     }
-    // Explicit timeout: each control commits into its own temp git tree and re-runs the validator, so
-    // the case sits right on bun's 5000ms default — measured standalone and unloaded on this machine
-    // it came in at 6036ms, 5151ms, and once under the line. Under `test:fast` sharding it tips over
-    // more often. Nothing here is slower than it should be for the work it does; the default is just
-    // too tight, and a load-dependent false-red on a guard is the kind that gets deleted rather than
-    // diagnosed. Assertions are untouched.
-  }, 120_000)
+  })
 
   test("registry infrastructure parses frozen plan and reconciles fake executions", () => {
     expect(PLAN_MUTATIONS).toHaveLength(28)
