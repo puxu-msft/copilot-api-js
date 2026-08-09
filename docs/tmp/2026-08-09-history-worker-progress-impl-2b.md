@@ -41,27 +41,33 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 ## 在途意图（决定与理由）
 
+- **pin/unpin 在 2b→6 窗口期不可用（用户 2026-08-09 裁决）。** 主线程句柄变只读后，`POST /api/entries/:id/{pin,unpin}` 是**唯一**剩下的主线程生产写路径（`setEntryPinState` → `setPinned` → `setV3OperationPinned` → `getDatabase()`，而 cutover 后 `getDatabase()` 抛 `database not initialized`）。计划把 `set-pinned` 排在 Batch 6 的 RPC surface（plan:807），2b 章节没提它。给用户的三个选项是「提前搬进 Worker／接受窗口期不可用／拆独立小批次」，用户选**接受窗口期不可用**——依据 CLAUDE.md「无向后兼容负担：允许短期报错／功能不可用」。落法：route 返回**显式 503 + 可解码说明**（不是 500 崩），并登记 `docs/todo/deferred-backlog.md`，Batch 6 的 `set-pinned` RPC 落地时摘除。
+  - 取证（本会话实跑）：`rg -n 'setPinned' src/routes/` → 仅 `src/routes/history/handler.ts:223`（`src/routes/negotiation/route.ts:96` 是同名不同函数、feature-negotiation，无关）；`rg -n 'clearHistory' src/routes/` 为空，确认 `clearV3Store` 的 test-only 属实、不是第二条生产写路径。
+- **`ensureV3Schema` 可安全跑在只读句柄上（实测，非推断）。** 每个读函数开头都调它，而它第一行是无条件 `db.exec(V3_SCHEMA_SQL)`（DDL）。探针结论：readonly 连接上 `CREATE TABLE/INDEX IF NOT EXISTS` 对**已存在**对象是真 no-op、不抛；只有创建**不存在**的对象才抛 `attempt to write a readonly database`。因 `initHistory` 先 `await runtime.start()`（Worker 的 `initialize` 已 `ensureV3Schema(opened)`）再装只读句柄，顺序保证 schema 已齐、`ensureV3Schema` 在 version 匹配时早退（store.ts:305）。**这条依赖顺序，不是依赖巧合**——若将来只读句柄先于 Worker ready 安装，读路径会当场抛。
+
 - **维护与 summary backfill 提前搬进 Worker（用户 2026-08-09 裁决）。** plan 的 2b 同时写着「Worker 独占 semantic write connection」和「本批不迁 maintenance」，**两者不可兼得**：`incrementalVacuum`／`checkpointWal`／`runOptimize` 与 `startV3SummaryBackfill` 全是**写**，主线程句柄一旦变只读它们必然失败。给用户的三个选项是「接受空窗／提前搬／调整批次顺序」，用户选**提前搬**。spec §1.15 本就把这些划归 Worker，协议侧 `maintenanceIntervalMs` 与 `stop-maintenance` 早已存在，**未新增任何协议消息**。
 - **`stopMaintenance()` 由 `void` 改 `Promise<void>`。** §8.2 step 4 明确「不排空可恢复 backlog，只完成已领取 unit」——「已领取的那个做完」只有在调用方能等它时才可观测。
 - **`getV3PersistRetryConfigForTests` 去掉 `ForTests` 后缀。** cutover 让它有了真实生产消费者（Worker 的 `initialize` 必须拿到已配置的 retry 预算），继续叫 `ForTests` 是名实不符。
 - **`maintenance.ts` 的 tick 由 `getDatabase()` 改为**参数**。** 同一原因：主线程句柄将是只读的。同时导出 `V3_MAINTENANCE_INTERVAL_MS`，让 cutover 传的值与 tick 默认值**同源**，不再各写一个字面量。
 
-## 当前进度（commit `52bed7f7`，typecheck 绿、测试**尚未**绿）
+## 当前进度（commit `a404180e`，typecheck 绿、`test:backend` **0 fail**）
 
-**已完成（第一半 cutover）：**
-- `initHistory` 不再 open/schema/migrate/recover semantic DB；改为 `runtime.start(...)` → `installHistoryReadDatabase(openDatabaseReadonly(dbPath))` → `admission.replaceTerminalSink(runtime)`。Worker 以 **raw disabled** 启动（3b 前主线程 raw manager 仍是唯一 raw authority）。
-- `shutdownHistory` 的 `drainV3Writer()` 换成 `runtime.drain()` + `runtime.shutdown()`；`closeDatabase()` 换成 `closeHistoryReadDatabase()`。
-- `stopHistoryBackgroundWork` 改为发 `stopMaintenance()` 给 Worker。
-- `startHistoryBackfills()` 变成空实现（backfill 由 Worker 的 `initialize` 启动）。
-- backend 真正拥有 maintenance tick 与 summary backfill；`close()` 里也兜底停掉（防止跳过 `stop-maintenance` 的路径把 timer 留给已关闭的句柄）。
+**门禁实测（本会话，commit `8c5424e5` 上跑的 backend 档）：** `env -u RUN_PERF_TESTS bun run test:backend` → `16 shards · 6717 tests · 6717 pass · 0 fail · 36 skipped`。起点对照：会话开始时 fast 档是 `113 fail · 2 shard crash`。**总数不可引用**（同树同 commit 连跑会变，见 CLAUDE.md），只有 `0 fail` 是判据。`a404180e` 之后只跑了受影响文件（149 pass / 0 fail），**合并前须重跑整档**。
 
-**下一步（按此顺序）：**
-1. **accessor 切换**：`queries.ts`／`sessions.ts`／`stats.ts`／`routes/status/route.ts` 还有 **8 处** `getDatabase()`（命令：`rg -n 'getDatabase\(\)' src/lib/history/queries.ts src/lib/history/sessions.ts src/lib/history/stats.ts src/routes/status/route.ts`）。只改**生产默认**，显式传 DB 的测试／primitive 不动。
-2. **测试 bootstrap**：`bun test tests/history/worker` 当前 **122 pass／8 fail**。已看到的失败形态是 `History Worker runtime is terminally failed: History Worker runtime is not started`——`initHistory` 现在会启动 registry 单例 runtime，凡是走 `initHistory` 的测试都会拿到**真 Worker**，bootstrap／resetter 需要相应处理（很可能要在 `test-bootstrap.ts` 注入 in-process 或 fake runtime，并在 reset 时 `resetHistoryPersistenceRuntimeForTests()`）。**这是本批剩余工作量的大头，先做它再往下走。**
-3. 2b.3 删 `legacy-terminal-sink.ts` 及生产安装 + architecture 守卫（禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`、禁生产 registry 引用 legacy adapter）。
-4. 2b.1 terminal subscriber 契约测试、2b.4 线程隔离正负对照、2b.5 交付不等 ACK。
-5. **启动 deadline**（2a 裁决留下的硬性前置，见上表最后一项）。
-6. 门禁：计划指定四个测试文件 + `env -u RUN_PERF_TESTS bun run test:backend` + `bun run build:backend`；再独立评审到 0 blocker／major。
+**已完成：**
+- **2b.2 cutover 全部落地。** `initHistory` 启 Worker → 装只读句柄；`queries/sessions/stats` 与 `v3/store` 的 8 个读入口改 `getHistoryReadDatabase()`；写 primitive（`ensureV3Schema`／`startV3SummaryBackfill`／`clearV3Store`／`recoverV3Journal`）保留 `getDatabase()` 默认——它们的默认值只有「自己开了句柄的调用方」够得到（测试、脚本、Worker）。
+- **`initHistory` 恢复幂等**，判据是三条：路径相同 + registry 单例还在 + 只读句柄还在。任一被拿走就整体重装，对拆装顺序免疫。
+- **测试基座换成磁盘产物 + in-process Worker 后端**（工厂而非单实例，防止后续重建静默拉起真 Worker）。`:memory:` 与两句柄设计结构上不兼容，11 个自钉 `:memory:` 的文件改用 `historyTestDbPath()`。
+- **`clearHistory()` 的擦库半边改为注入 seam**（生产侧没有该能力——主线程擦库正是本批要消灭的第二写者）。
+- **2b.3 完成**：删 `legacy-terminal-sink.ts` 及其两条专属测试；新增架构守卫（`state.ts` 禁调 `enqueueModelOperationWithOutcome`／`drainV3Writer`；`src/` 禁引用 legacy adapter），两条都带正样本对照，第一条已用「重新注入 `drainV3Writer()` 调用」实测变红。
+- **顺带解环**：`read-connection` 的类型改从 driver 取 + 删掉 `entries.ts → queries.ts` 死边，SCC 由 43 环/50 文件降到 37/43，7 个文件离开环（`shutdown`、`ws/index`、`ws/broadcast`、`adaptive-rate-limiter`、`fetch-utils`、`history/lifecycle-state`、`observability/active-request-wire`）。基线已按项目纪律重冻结（成员 +0）。
+
+**剩余（按此顺序）：**
+1. **2b.1 terminal subscriber 契约测试**（见上「剩余项及验收」的断言集）。
+2. **2b.4 线程隔离正负对照**：真 Worker 注入 500ms sync block，主线程 metronome 与 `/health/liveness` max gap 不跟随；**同 harness 换 in-process backend 必须观察到约 500ms gap**（正控）。`tests/history/worker/fixtures/in-process-runtime.ts` 已为此备好。
+3. **2b.5 模型交付不等 ACK**：mock Worker 延迟 ACK，HTTP response 已返回而 reservation/unacked 保留，ACK 后释放。
+4. **启动 deadline**（2a 裁决的硬性前置，见「剩余项及验收」最后一项与 deferred-backlog 末节）。
+5. **门禁**：计划指定四个测试文件 + `env -u RUN_PERF_TESTS bun run test:backend` + `bun run build:backend`；再独立评审到 0 blocker／major。
 
 ## 已改动的既有守卫（`red-tests-may-be-guarding-something`，逐条落盘待评审裁决）
 
