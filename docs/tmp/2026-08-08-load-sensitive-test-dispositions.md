@@ -950,7 +950,10 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
   control: inherit only (no scrub)             -> {"raw":"1","gateWouldRun":true}
   production shape: RUN_PERF_TESTS: undefined  -> {"raw":null,"gateWouldRun":false}
   ```
-  控制组证明探针有鉴别力（不清除时子进程**确实看得见** `"1"`），生产形状下子进程读到 `null`。顺带确认了一个本来可能静默失效的点：**Bun 对 `env` 里的 `undefined` 是删除该键，而不是把它字符串化成 `"undefined"`**——若是后者，变量仍为真值。
+  控制组证明探针有鉴别力（不清除时子进程**确实看得见** `"1"`），生产形状下子进程读到 `null`。顺带确认了一个本来可能静默失效的点：**Bun 对 `env` 里的 `undefined` 是删除该键，而不是把它字符串化成 `"undefined"`**——评审独立复现（`{"typeofIt":"undefined","present":false}`）。
+
+  > **精度更正**：派活时把这一点写成「若字符串化则变量仍为真值、不查就会失效」——**那比证据强一档**。本链路唯一的消费者是 `process.env.RUN_PERF_TESTS === "1"`，`"undefined" !== "1"`，**即便真被字符串化，这条 gate 也不会失效**。所以查这一点是正当的（省得依赖一个未经证实的运行时语义），但它不是「不查就会出事」。**又一次「范围写宽一档」**，与本文档记的另外三次同源。
+
 - **口径变更须知**：本轮起 `scripts/` **首次出现改动**。此前多轮记录里的「生产代码零差异」是相对 `c672dda8` 且范围含 `scripts/` 的断言，**从这一改动起不再成立**；`src/`、`packages/`、`native/` 仍为零差异。拿旧断言对账的人请以本条为准。
 
 **`test:perf` 的孤儿盲区已上守卫（Q4）**：脚本写死单文件会重新打开 `test-discovery-matrix` 自述要杜绝的「已分档但无脚本运行」盲区，而且形态**更隐蔽**——被 gate 的用例仍带 tier 后缀、仍以 allow-listed skip 出现在 baseline 里，**看着像被管着**。新增守卫扫描 `tests/` 中出现 `RUN_PERF_TESTS` 的文件集合，断言它等于 `test:perf` 脚本列出的集合，并带两条正控：①断言扫描结果非空（否则比较空对空恒真）；②**种一个只出现在扫描侧的文件**，证明扫描确实会发现它。5 pass / 0 fail。
@@ -1043,7 +1046,11 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 | skipped **计入** executed | 7297 + 1（新增）= **7298** |
 | skipped **排除**在外（真相） | 7297 + 1 − 1 = **7297** |
 
-实测 **7297**——**数据本身就证否了那个假说**，只是当时没有把两个预测分别写出来，就直接把「数字没变」读成了「不下降」。**一次同时改变两个变量的观测，区分不了两个假说**；而巧合的 +1/−1 抵消让错误结论看起来有实测背书。
+实测 **7297**——**数据本身就证否了那个假说**，只是当时没有把两个预测分别写出来，就直接把「数字没变」读成了「不下降」。**注意这里同时改了两个变量，但那不是失败原因**：两个假说对这次观测的预测（7298 / 7297）本就不同，观测**有**鉴别力；巧合的 +1/−1 抵消只是让错误结论**看起来**有实测背书而已。
+
+> **第三种「改了内容不改指向它的东西」**：撤回这条结论时，我先改了结论本身，再改了未处置#6 里的复述（F1 一轮），**却漏了这句支撑它的论证措辞**——它一度与四行后的正确表述直接矛盾。前两种形态是**索引**与**复述**，这是第三种：**论证**。
+> **动作**：撤回一个结论时，grep 的对象不止是结论，还要包括**支撑它的那句理由**——理由往往用完全不同的词写成，grep 结论关键词是命中不到的。
+
 
 **可复用的判据**（**已修正——第一版把本案的失败归错了因**）：
 
@@ -1060,7 +1067,23 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 **当前状态**：`minimum_executed` 保持 **7297** 不动——不是因为「下限与 executed 无关」，而是因为本轮净变化恰为 0（+1 oracle，−1 gate），实测 executed 仍是 7297。**下一个单独 gate 用例的人必须同步核对 executed 与该下限。**
 
-**后续观测（Q4 之后）**：新增的两条 perf-gate 守卫用例把 executed 抬到 **7299**。`minimum_executed` 是**下限**，7299 ≥ 7297 故不判红，**本轮不动它**（上调下限属收紧既有 guard，不由实施者自决）。**登记为观察**：下限现比实测低 2，意味着「悄悄少跑两条」不会被它拦住；是否重新锚定交裁决。
+**后续观测（Q4 之后）**：新增的两条 perf-gate 守卫用例把 executed 抬到 **7299**。
+
+**F2 · 下限已重锚到 7299（收紧，不是放宽）**
+
+- **为什么零 false-red 风险**：后端档里与环境相关的 gate 只有两个——`!isNativeHistorySearchAvailable()` 与 `!PERF_TIER`。**当前测量配置两者都处在「跳得最多」的状态**（未构建 native 产物、`RUN_PERF_TESTS` 未设），任何其它合法环境只会**执行更多**用例。故 7299 是 executed 的**下确界**，把下限锚到它不可能误伤。
+- **数字口径**（缺一不可）：`7299 executed / 36 skipped`，取自 `bun run test:backend`（`parallel-test.ts unit it http`，16 分片），**前提是 `native/history-search/*.node` 未构建**（已实测确认不存在）且 `RUN_PERF_TESTS` 未设。构建了 native 产物后 executed 会更高、skipped 更低——**那种环境下不要拿这个数字对账**。
+- **为什么不受 `red-tests-may-be-guarding-something` 拦截**：该规则触发面是「删除或放宽既有 guard」，**收紧不在其内**。正确类比是 `circular-deps-ratchet` 的重冻结——降环后重新冻结基线是维护动作，不是裁决事项。
+- **明文步骤（否则 slack 会自己长回来）**：**增删任何后端档用例后，必须重新实测 executed 并同步重锚 `minimum_executed`。** 命令：`bun run test:backend`，取汇总行的 `N executed` 写回 `tests/infra/entry-test-discovery-baseline.json` 的 `minimum_executed`，然后用 `parseDiscoveryBaseline` 复验该文件仍规范。**别沿用文档里的旧值**——本轮 7297 → 7299 就是因为新增了两条守卫用例。
+
+**F1 · Q4 正控原先把真实文件写进 `tests/`，已改为 `/tmp` 一次性小树**
+
+原实现 `Bun.write` 到 `tests/infra/perf-scan-control.unit.test.ts`、扫描后 `finally` 删除。问题不在「怕它红」，而在**爆炸半径正落在门上**：`capture-entry-evidence.ts:232/265` 把发现的文件集合与冻结值比对，**并发的独立全量运行若落在那约 0.18s 窗口内就会多看到一个文件**，报「discovery baseline differs from entry tree」并指向一个**已经不存在**的文件；硬杀时 `finally` 不执行还会留下未追踪文件。单次暴露虽小，但 T0.0f 要连跑 15 轮、本机常年有 peer 在跑套件。**这正是本轮一直在治的「红了却被误判成门坏了」**。
+
+修法：把扫描根**参数化**（`perfGatedFiles(root)`），正控在 `mktemp -d` 出来的一次性树里种两个文件（一个带 gate、一个不带），断言只挑出前者——覆盖不减反增（多了「不带 gate 的文件不会被误挑」这一半）。**真实 `tests/` 全程零写入。**
+
+**边界（已写进守卫注释）**：这条守卫只认**字面量** `RUN_PERF_TESTS`。换一个变量名、或经 `env[NAME]` 之类的间接引用开 gate，它**全盲**。
+
 
 
 
