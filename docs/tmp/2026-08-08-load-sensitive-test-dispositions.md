@@ -1340,7 +1340,36 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 **裁决已闭合**：(c) 退役提案**不采纳，保留该用例**（理由见上：要退役它的前提已被这次修复消灭）。它不再挂在未处置清单上。
 
+### 第 10、11 条（合并前验证抓到，随新 master 进来的 peer 测试）
+
+#### 第 10 条 · `uds-transport.it.test.ts` —— **不是 B 类，per-test 预算根本不是约束**
+
+派活时判为「B 类硬超时，5057.89ms vs 5000ms 默认预算」。**分型后证否了这个判断**：
+
+- 隔离下逐步收紧预算，最慢用例是这一条，**524.15ms**（其余 23 条在 500ms 内全过）。
+- **决定性实验**：把 per-test 预算放宽到 **120s**、在 64 spinner 下重跑 → **仍然 1 fail**，但错误变成
+  `expect(received).toHaveLength(expected) / Expected length: 50 / Received length: 0`——**不是超时**。
+- 根因：`uds-client.ts:155-158` 有 **never-throw 契约**——包括它自己的 `queryTimeoutMs` 在内的任何失败都返回 `[]`。而 `DEFAULT_QUERY_TIMEOUT_MS = 5_000`（`:112`），该用例用的是默认值，payload 是 50 × 300KB ≈ **15MB**。
+- **`5057.89ms` 与 `5000ms` 两个数字几乎相等不是巧合**：真正先到期的是**客户端自己的 5s 查询超时**，bun 的 5s 预算只是随后也到期。**只放宽 bun 预算，会把一个超时失败变成一个 length-0 断言失败**——上面已实测。
+
+**处置**：给该用例显式传 `connectTimeoutMs: 30_000, queryTimeoutMs: 120_000`（**fixture 参数，生产默认值一字未动**），并加文件级 `setDefaultTimeout(30_000)`（算术：524ms × 10 = 5.2s；5057.89ms × 3 = 15.2s；取大者进 30s 档）。**断言零改动。**
+
+两方向：mutation 把 `protocol.ts:26` 的 `MAX_FRAME_BYTES` 从 16MB 降到 1MB → 红（`Received length: 0`），证明断言仍咬得住；64 spinner（loadavg 38→56）下 **24 pass / 0 fail**。
+**据实记一笔**：该用例对「超时」与「帧上限过小」两种成因**给出完全相同的症状**（都是 length 0），这是 never-throw 契约的直接后果，不是本轮引入的，也不由我改。
+
+#### 第 11 条 · `ui-v3-decoupling.unit.test.ts` —— B 类，但**它已经在逼近，不只是本次超**
+
+- 隔离下该用例 **5 次采样稳定在 5.5–6.3s**；但另有两次 ~20.2s 的独立观测（16 分片下 20157ms、本机一次 20289ms），说明它有约 **4x 的重尾**。
+- 原 per-test 预算 15s ÷ 典型 6s ≈ **2.5x**，而重尾已经越过它——**答案是「已经逼近」而非「偶然超一次」**。
+- 它在测试里加载完整 typed flat ESLint 配置并逐个询问 `ui/` 下每个源文件，**耗时会随仓库与 eslint 配置增长**。
+
+**处置**：删掉 per-test 的 `, 15_000`（连同那行已被编辑弄乱、语序颠倒的注释），改文件级 `setDefaultTimeout(120_000)`。算术：6.3s × 10 = 63s；20.16s × 3 = 60.5s；取大者 → 120s 档。**断言零改动。**
+**120s 不是拍脑袋**：64 spinner（loadavg 57→85）下该文件实测 **47.08s**——60s 档在这种负载下只剩 1.3x 余量。
+
+**登记不动手**：本次 `test:backend` 的 `executed` 已随新 master 升到 **7360**（`minimum_executed` 仍 7299，是下限故不判红）。按我写下的「增删用例后须重锚」步骤本应同步，但**这批用例不是我加的**，且重锚属收紧既有 guard——交裁决。
+
 ### G3 · 扫描口径扩大：共同根因不是「用了墙钟」
+
 
 前八条都被归成「用 wall-clock 当判据」，第 9 条一个时间断言都没有却同族——说明原来的口径**太窄**。更准的共同根因是：
 

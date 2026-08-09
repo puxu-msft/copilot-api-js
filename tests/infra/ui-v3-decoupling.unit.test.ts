@@ -3,9 +3,17 @@ import {
   //
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import { ESLint } from "eslint"
+
+// 这里没有任何一条判据是计时的。但其中一条要加载完整的 typed flat ESLint 配置、再逐个询问
+// `ui/` 下每个源文件是否被忽略，隔离下稳定在 5.5–6.3s（本轮 5 次采样），而在 16 分片下被实测到
+// 20157ms；本机另有一次 20289ms 的独立观测，说明它有个约 4x 的重尾，不是纯粹被负载拉长的。
+// 120s 同时满足「≥10x 隔离最坏（63s）」与「≥3x 分片已观测最坏（60.5s）」。
+// ⚠️ 这条的耗时会**随仓库与 eslint 配置变大而增长**，所以它是本文件里最先需要重新量的那条。
+setDefaultTimeout(120_000)
 
 // 旧 Vue 前端 `ui/` 已于 2026-07-28 从主编译链整体断开（退役 ui-v4 的一步）：
 // 不是 workspace 成员、不在根 tsconfig 里、不被 root eslint 扫、后端档位脚本也不聚合它。
@@ -87,7 +95,7 @@ describe("legacy Vue ui/ stays detached from the main chain", () => {
     // 正样本对照：证明 isPathIgnored 不是对什么都返回 true。
     expect(await eslint.isPathIgnored(`${REPO_ROOT}src/server.ts`)).toBe(false)
     expect(await eslint.isPathIgnored(`${REPO_ROOT}ui-v4/src/main.tsx`)).toBe(false)
-  }, 15_000) // 5 s unit timeout even though the same exhaustive check is correct and terminates normally. // intentionally an integration oracle. Under 16-way suite load it can exceed Bun's generic // Loading the complete typed flat config and asking ESLint about every ui/ source file is
+  })
 
   test("root ui scripts invoke ui/ directly, never through the workspace filter", async () => {
     const pkg = await readJson("package.json")

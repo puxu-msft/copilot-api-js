@@ -28,6 +28,7 @@ import {
   beforeAll,
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import fs from "node:fs"
@@ -85,6 +86,13 @@ async function assertNoUncaughtException(fn: () => Promise<void>): Promise<void>
     process.off("uncaughtException", onUncaught)
   }
 }
+
+// Nothing here is timed; these cases bind real Unix domain sockets, and one of them pushes ~15MB
+// through one. Bun's 5s per-test default is a wall-clock budget, not one of this file's invariants —
+// under the 16-shard runner the multi-segment case was measured at 5057.89ms against it while its
+// slowest isolated run is 524ms. 30s clears both 10x that isolated worst and 3x the worst seen under
+// sharding. Same shape as `tests/infra/validate-entry-evidence.unit.test.ts`.
+setDefaultTimeout(30_000)
 
 describe("UDS server + client round-trip", () => {
   test("client query() returns rows a fake search function produced", async () => {
@@ -444,7 +452,14 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     cleanupServers.push(server)
     await server.listen()
 
-    const client = createHistorySearchUdsClient({ socketPath })
+    // Budget belongs to the CLIENT here, not to bun. `client.query` has a never-throw contract
+    // (uds-client.ts:155-158): any failure — including its own `queryTimeoutMs` — returns []. With
+    // the 5s default and a ~15MB payload (50 x 300KB), contention makes the client give up and this
+    // assertion then reads `Received length: 0`, NOT a timeout. Measured: raising only bun's
+    // per-test budget to 120s still failed exactly that way, so the per-test budget was never the
+    // binding constraint. Overriding the client timeouts here is a fixture parameter; production
+    // defaults are untouched.
+    const client = createHistorySearchUdsClient({ socketPath, connectTimeoutMs: 30_000, queryTimeoutMs: 120_000 })
     const rows = await client.query("q", undefined, 50)
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)
