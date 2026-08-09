@@ -64,6 +64,7 @@
     "test:fast:isolated": "bun test --parallel .unit.test .http.test",
     "test:http": "bun test --parallel .http.test",
     "test:it": "bun test --parallel .it.test",
+    "test:perf": "RUN_PERF_TESTS=1 bun test tests/history/v3/store-performance.it.test.ts",
     "test:pty": "bun test .pty.test",
     "test:timings": "bun scripts/parallel-test.ts --update unit it http",
     "test:ui": "cd ui && bun run test",

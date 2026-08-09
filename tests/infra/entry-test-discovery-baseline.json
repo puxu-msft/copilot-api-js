@@ -964,6 +964,15 @@
     },
     {
       "kind": "testcase",
+      "file": "tests/history/v3/store-performance.it.test.ts",
+      "classname": "History V3 store performance (timing — perf tier only)",
+      "name": "prepare and commit do not depend on prior session history length",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "whole-suite-skip"
+    },
+    {
+      "kind": "testcase",
       "file": "tests/openai/cc-to-anthropic-stream.unit.test.ts",
       "classname": "cc-to-anthropic-stream — interleaved parallel tool-call args (reviewer gap #1)",
       "name": "interleaved tool args never emit a content_block_delta on an already-stopped block",
