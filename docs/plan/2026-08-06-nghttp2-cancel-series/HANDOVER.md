@@ -268,17 +268,25 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 ### B.5.2 A4 canonical diagnostics
 
-**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口（2026-08-09 更新）：** A4 已开工、**尚未完成**；下述批次 1 已合并 master，批次 2–5 未实施，因此「现有 History 无法回答取消发起方或 session 关联」这一判断**仍然成立**。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
+**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口（2026-08-09 更新）：** A4 已开工、**尚未完成**；下述批次 1 已合并 master，批次 2–5 未实施，因此「现有 History 无法回答取消发起方、也无法回答 **H2 transport session**（H2 连接身份，即计划 §Transport event schema 要新增的 H2 session ref）关联」这一判断**仍然成立**。⚠️ **别把它读成「History 没有任何 session 概念」**：History 早已有客户端会话维度 `sessionId`（`EntrySummary.sessionId` 在 `src/lib/history/core-types.ts`、`HistoryEntry.sessionId` 在 `src/lib/history/types.ts`，由 `src/lib/history/v3/projection.ts` 从 `record.identity.sessionId` 投影），那是**另一个身份域**——客户端 conversation，不是 H2 连接。**绝不可拿 `sessionId` 承载 H2 connection identity**，两者碰撞会同时毁掉两边的可裁决性。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
 
-**批次划分与状态**（划分由执行会话所拟，不是正式计划的一部分；正式计划只给整体范围、未分批）：
+**批次划分与状态**（划分由执行会话所拟，不是正式计划的一部分；正式计划只给整体范围、未分批）。**状态核验于 `7f7a073003618f290bfe1881a7adcd310e165ff1`**；表里的「未开始」是那一刻的读数，**不要当作当前态直接引用**，按下方命令重取：
 
-| 批次 | 内容 | 状态 |
+| 批次 | 内容 | 状态（@ `7f7a0730`） |
 |---|---|---|
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
 | A4-2 | `H2StreamDiagnostic` schema + `onTransportDiagnostic` 发射 + 经既有 `AttemptDiagnostic` 持久化 | 未开始 |
 | A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | 未开始 |
 | A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
+
+**怎么重取这张表的状态**（三条都要跑，缺一会误判）：
+
+1. A4-1 是否仍在主线：`git merge-base --is-ancestor c9a115a5 master && echo landed`。
+2. 相关路径此后有无新提交：`git log --oneline 7f7a0730..master -- src/lib/transport src/lib/pipeline src/lib/context src/lib/history/v3/projection.ts`。
+3. 符号是否已出现：`git grep -nE 'H2StreamDiagnostic|H2SessionDiagnostic|onTransportDiagnostic|releaseStreamSlot|transportFailure' master -- src packages tests`。
+
+⚠️ **第 3 条为空不能单独证明「未开始」**——它只证明这几个**拼写**不存在，换个命名的等价实现照样为空。**只要第 2 条有输出，就必须去读那些提交的源码再下判断**，别拿空 grep 收工。（这正是本仓 `freeze-hit-set-not-zero-hits` 与「否定性结论不自证」那条教训的实例。）
 
 **A4-1 的验收证据**（测于 `7f7a0730`，命令可重跑）：`bun run typecheck` 绿；`bun run test:backend` 0 fail；判别性断言做过变异对照——把实现换成 sibling 的 `selectGenerationAttempt` + 写当前 attempt 的写法后，`records a diagnostic against the named dispatch without moving the ambient current attempt` 精确转红在「ambient 游标未被移动」那条断言上（**归属断言在变异下仍绿**，故它单独没有判别力）。**未做**：独立 reviewer／verifier 与 merged-state review——按下方验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批次一次。
 
