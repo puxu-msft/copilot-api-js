@@ -110,6 +110,31 @@ export function freezeHistorySearchTarget(db: Database): HistorySearchFreshnessT
   return { committedAt: boundary.committed_at, operationIdsAtBoundary }
 }
 
+/**
+ * Freeze the search target AND decide which of the caller's overlay rows the index already owns —
+ * as ONE snapshot, because the two answers are only meaningful together.
+ *
+ * Read as separate statements they can disagree: a row committing in between lands after the target
+ * boundary, so the sidecar will not count it, while the ownership probe already sees it persisted
+ * and the caller drops it from the overlay. The row then appears nowhere. The window is narrow, but
+ * it is the same shape as the await-sized one that reached production, so it is closed structurally
+ * rather than argued about — a deferred transaction holds one read snapshot across both queries.
+ *
+ * Returning them together is the point: a caller cannot pair a target with ownership taken at some
+ * other moment, because there is nothing to pair.
+ */
+export function freezeHistorySearchOwnership(
+  db: Database,
+  overlayIds: ReadonlyArray<string>,
+  options: QueryOptions,
+): { target: HistorySearchFreshnessTarget | null; indexOwned: Set<string> } {
+  return db.transaction(() => {
+    const target = freezeHistorySearchTarget(db)
+    const indexOwned = new Set(overlayIds.filter((operationId: string) => hasPersistedSummaryMatching(db, operationId, options)))
+    return { target, indexOwned }
+  })()
+}
+
 export function getPersistedSummariesByIds(db: Database, operationIds: ReadonlyArray<string>): Array<EntrySummary> {
   if (operationIds.length === 0) return []
   const rows = db

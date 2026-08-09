@@ -46,7 +46,7 @@ import {
 } from "./v3/store"
 import {
   //
-  freezeHistorySearchTarget,
+  freezeHistorySearchOwnership,
   getPersistedSummariesByIds,
   getPersistedSummary,
   hasPersistedSummaryMatching,
@@ -182,13 +182,27 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
  * that "matches the search" cannot mean two different things inside a single merged page. No needle
  * → always matches.
  *
- * Matching stays a lowercase substring test while the persisted index tokenizes. That residual
- * difference is deliberate: the overlay may over-match relative to the index, which surfaces a row
- * slightly early rather than hiding one, and it never produces the reverse.
+ * A multi-word needle is split and matched term by term, the way the index tokenizes, because a
+ * plain substring test disagrees with the index in BOTH directions and the second one hurts:
+ * against `please fix the hello-world bug`, the index matches `hello world` and a substring test
+ * does not. Rows the index cannot see yet are the overlay's alone to show, so under-matching there
+ * hid a just-finished request from the most ordinary query there is, until the sidecar caught up and
+ * it reappeared.
+ *
+ * A single-token needle keeps the substring test, which still over-matches relative to the index —
+ * `orld` finds `world` here and not there. That direction is deliberate: it surfaces a row early
+ * rather than hiding one, and it is what makes a search box usable as you type.
  */
 function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
   if (!needle) return true
-  return text.toLowerCase().includes(needle.toLowerCase())
+  const haystack = text.toLowerCase()
+  const terms = needle
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+  if (terms.length <= 1) return haystack.includes(needle.toLowerCase())
+  const tokens = new Set(haystack.split(/[^a-z0-9]+/).filter(Boolean))
+  return terms.every((term) => tokens.has(term))
 }
 
 /**
@@ -422,30 +436,29 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
   if (!isSummaryProjectionReady(db)) {
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
-  const target = freezeHistorySearchTarget(db)
   /**
-   * Ids the overlay must NOT contribute, resolved in the SAME pre-await snapshot as the sidecar
-   * target: rows the index can already see are the index's to judge and to count.
+   * The frozen target and the set of rows the index already owns, taken as ONE snapshot.
    *
-   * Two failures made this the criterion. Reading it AFTER the await let a row commit inside the
-   * window and fall through both counters — too late for the frozen target, so `persistedTotal`
-   * missed it, yet already persisted when classified, so `transientCount` skipped it as well.
-   * And deciding by "is it persisted?" alone was still wrong even when frozen, because the two
-   * sides do not agree on what matches: the overlay tests a lowercase substring while the index
-   * tokenizes, so searching `orld` against a `hello world` document matches here and not there.
-   * Such a row was shown while nothing counted it — the same `entries.length=1, total=0` shape,
-   * now reachable without any race at all.
+   * Ownership is the criterion because the two sides cannot be made to agree perfectly: the index
+   * tokenizes, and the overlay — which must answer for rows the index has never seen — can only
+   * approximate that. A row judged by both could be shown by the overlay, excluded from the
+   * sidecar's total, and skipped by the transient count for being persisted: listed while nothing
+   * counted it. Giving those rows to the index outright removes the disagreement wherever the index
+   * has an opinion, and leaves the overlay exactly the rows it alone can answer for.
    *
-   * Handing those rows to the sidecar outright removes the disagreement instead of trying to
-   * reconcile it. The overlay keeps only what the index cannot see yet, which is the job it
-   * exists for; and a row's membership stops changing as it crosses the persistence boundary.
+   * A row's membership still shifts as it crosses the persistence boundary — a single-token needle
+   * over-matches in the overlay and not in the index — so `corpusMatchesSearch` narrows that to the
+   * direction that shows a row early rather than hiding one.
+   *
+   * Reading the target and the ownership set apart would reopen a narrower version of the same
+   * hole — see `freezeHistorySearchOwnership`, which is why they arrive together.
    */
-  const indexOwnedOverlayIds = new Set(
-    [...inFlightSummaries, ...recentSummaries]
-      .filter((summary) => hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind }))
-      .map((summary) => summary.id),
+  const { target, indexOwned } = freezeHistorySearchOwnership(
+    db,
+    [...inFlightSummaries, ...recentSummaries].map((summary) => summary.id),
+    { ...options, operationKind },
   )
-  const overlaySummaries = [...inFlightSummaries, ...recentSummaries].filter((summary) => !indexOwnedOverlayIds.has(summary.id))
+  const overlaySummaries = [...inFlightSummaries, ...recentSummaries].filter((summary) => !indexOwned.has(summary.id))
   let persistedRows: Array<EntrySummary> = []
   let persistedTotal = 0
   let persistedHasOlder = false
