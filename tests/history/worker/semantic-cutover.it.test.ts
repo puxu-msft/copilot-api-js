@@ -161,6 +161,12 @@ let runtime: ManualAckRuntime
 
 beforeEach(async () => {
   resetModelOperationTerminalBusForTests()
+  // Disable first, so the bring-up below is a real one. `initHistory` is idempotent against
+  // the same artifact, and a predecessor file in this worker may have left History up on the
+  // very path this file uses — in which case the double injected on the next line would be
+  // adopted as the sink but never started, and every assertion here would be about a runtime
+  // that never received the config it is supposed to be running under.
+  await initHistory(false)
   runtime = new ManualAckRuntime()
   setHistoryPersistenceRuntimeForTests(runtime)
   setStateForTests({ historyDbPath: historyTestDbPath() })

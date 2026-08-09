@@ -314,6 +314,7 @@
     "tests/history/worker/restart-policy.unit.test.ts",
     "tests/history/worker/runtime.it.test.ts",
     "tests/history/worker/semantic-backend.it.test.ts",
+    "tests/history/worker/semantic-cutover.it.test.ts",
     "tests/history/worker/source-registry.it.test.ts",
     "tests/history/worker/status.unit.test.ts",
     "tests/infra/abort-bridge.unit.test.ts",
