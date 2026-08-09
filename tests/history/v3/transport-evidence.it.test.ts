@@ -280,7 +280,7 @@ describe("History V3 transport evidence substrate", () => {
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_transport_evidence").get() as { n: number }).n).toBe(1)
 
     getDatabase().exec("DROP TRIGGER fail_v3_operation")
-    expect(recoverV3Journal()).toBe(1)
+    expect(recoverV3Journal().recovered).toBe(1)
     expect(hydrateTransportEvidence(getDatabase(), prepared.id).map(({ sequence }) => sequence)).toEqual([1])
   })
 
@@ -294,7 +294,7 @@ describe("History V3 transport evidence substrate", () => {
 
     getDatabase().prepare("DELETE FROM v3_journal_evidence_refs WHERE operation_id=? AND revision=? AND sequence=2").run(prepared.id, prepared.revision)
 
-    expect(recoverV3Journal()).toBe(0)
+    expect(recoverV3Journal().recovered).toBe(0)
     expect(getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(prepared.id)).toBeNull()
     expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(prepared.id) as { error: string }).error).toMatch(
       /journal evidence refs mismatch/i,
@@ -309,7 +309,7 @@ describe("History V3 transport evidence substrate", () => {
     getDatabase().exec("DROP TRIGGER fail_v3_operation")
     getDatabase().prepare("UPDATE v3_journal_evidence_refs SET encoding='text' WHERE operation_id=? AND revision=?").run(prepared.id, prepared.revision)
 
-    expect(recoverV3Journal()).toBe(0)
+    expect(recoverV3Journal().recovered).toBe(0)
     expect(getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(prepared.id)).toBeNull()
     expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(prepared.id) as { error: string }).error).toMatch(
       /invalid journal evidence ref encoding: text/i,
@@ -345,7 +345,7 @@ describe("History V3 transport evidence substrate", () => {
     getDatabase().exec("DROP TRIGGER fail_v3_operation")
     getDatabase().prepare("UPDATE v3_journal SET format_version=999 WHERE operation_id=?").run(prepared.id)
 
-    expect(recoverV3Journal()).toBe(0)
+    expect(recoverV3Journal().recovered).toBe(0)
     expect(getV3Operation(prepared.id)).toBeUndefined()
     expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(prepared.id) as { error: string }).error).toMatch(
       /unsupported journal format version: 999/i,
@@ -526,7 +526,7 @@ describe("History V3 transport evidence substrate", () => {
       )
       .run(second.id, second.id, first.id)
 
-    expect(recoverV3Journal()).toBe(1)
+    expect(recoverV3Journal().recovered).toBe(1)
     expect(getDatabase().prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(first.id)).toBeNull()
     expect((getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(first.id) as { error: string }).error).toMatch(
       // Pinned to the decode-time assertion's own wording. The adjacent

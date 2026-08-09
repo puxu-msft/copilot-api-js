@@ -11,6 +11,7 @@ import type { EntrySummary } from "~/lib/history/types"
 
 import {
   //
+  isTransientSqliteError,
   runHistoryWrite,
   runHistoryWriteAsync,
 } from "~/lib/history/persist-guard"
@@ -163,6 +164,13 @@ export interface PreparedOperation {
   manifest: Uint8Array
   compressedManifest: Uint8Array
   compressedJournalRecord: Uint8Array
+  /**
+   * The format the payload beside it was actually encoded in. Carried here so a caller
+   * writing the row cannot pair a v2 envelope with the column's DEFAULT 1 -- that mismatch
+   * decodes the envelope as a bare record and dies on `record.identity`, which is exactly
+   * what a hand-rolled fixture INSERT did when the two travelled separately.
+   */
+  journalFormatVersion: number
   transportEvidence: Array<PreparedTransportEvidence>
   objects: Array<PreparedObject>
   sequenceNodes: Array<PreparedSequenceNode>
@@ -777,6 +785,7 @@ export function prepareModelOperationWithTransportEvidence(
     manifest,
     compressedManifest: compressBytes(manifest),
     compressedJournalRecord: compressBytes(journalRecord),
+    journalFormatVersion: JOURNAL_FORMAT_VERSION,
     transportEvidence,
     objects: [...objectsByHash.values()],
     sequenceNodes: [...sequenceNodesByHash.values()],
@@ -874,7 +883,7 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         for (const evidence of prepared.transportEvidence) insertTransportEvidence(db, evidence)
         db.prepare(
           "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error,format_version) VALUES(?,?,?,?,?,?,NULL,NULL,?)",
-        ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now(), JOURNAL_FORMAT_VERSION)
+        ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now(), prepared.journalFormatVersion)
         const journalRefStatement = db.prepare(
           "INSERT INTO v3_journal_evidence_refs(operation_id,revision,dispatch_index,sequence,digest,byte_length,encoding) VALUES(?,?,?,?,?,?,?)",
         )
@@ -989,6 +998,13 @@ export interface TransientRetryOptions {
    * timer — mirroring the `abortableDelay` scale seam.
    */
   now?: () => number
+  /**
+   * Backoff seam, defaulting to `abortableDelay`. The History Worker injects a
+   * recording implementation so a test can adjudicate the ACTUAL per-wait value the
+   * backend asked for — asserting the config round-tripped through the protocol
+   * proves nothing about whether the commit loop consumed it.
+   */
+  delay?: (ms: number, signal?: AbortSignal) => Promise<void>
 }
 
 export interface TransientRetryOutcome {
@@ -1029,6 +1045,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
   const maxAttempts = Math.max(1, opts.maxAttempts)
   const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
   const now = opts.now ?? Date.now
+  const delay = opts.delay ?? abortableDelay
   const startedAt = now()
   let attempts = 0
   for (;;) {
@@ -1048,7 +1065,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
       return { ok: false, conflict: false, attempts, capReason: "max-total-ms" }
     }
     try {
-      await abortableDelay(backoffMs, opts.signal)
+      await delay(backoffMs, opts.signal)
     } catch {
       // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
       // but keep retrying up to the cap — abort shortens backoff, it doesn't stop
@@ -1888,8 +1905,30 @@ function refsEqual(left: ReadonlyArray<TransportEvidenceRef>, right: ReadonlyArr
   )
 }
 
+/** One journal row that is still uncommitted after a recovery pass. */
+export interface V3JournalRecoveryFailure {
+  readonly operationId: string
+  readonly revision: number
+  readonly error: string
+  /** persist-guard classified it transient (BUSY/LOCKED/IOERR): a later pass can still succeed. */
+  readonly transient: boolean
+}
+
+/**
+ * Outcome of one recovery pass.
+ *
+ * `failures` exists because the count alone cannot distinguish "nothing to recover" from
+ * "nothing COULD be recovered". Stamping the `error` column and returning a number made an
+ * unrecoverable journal invisible to the caller, which is exactly the silent degradation
+ * spec §8.1 forbids at the Worker startup gate.
+ */
+export interface V3JournalRecoveryResult {
+  readonly recovered: number
+  readonly failures: ReadonlyArray<V3JournalRecoveryFailure>
+}
+
 /** Resume terminal journal rows that were appended but never committed. */
-export function recoverV3Journal(db: Database = getDatabase()): number {
+export function recoverV3Journal(db: Database = getDatabase()): V3JournalRecoveryResult {
   ensureV3Schema(db)
   const rows = db
     .prepare("SELECT operation_id,revision,digest,payload_gz,created_at,format_version FROM v3_journal WHERE committed_at IS NULL ORDER BY created_at")
@@ -1902,6 +1941,7 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
     format_version: number
   }>
   let recovered = 0
+  const failures: Array<V3JournalRecoveryFailure> = []
   for (const row of rows) {
     try {
       const { record: recoveredRecord, refs } = decodeJournalPayload(row.format_version, row.payload_gz, row.operation_id)
@@ -1932,14 +1972,19 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
       commitPreparedOperation(db, prepared)
       recovered++
     } catch (error) {
-      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(
-        error instanceof Error ? error.message : String(error),
-        row.operation_id,
-        row.revision,
-      )
+      const message = error instanceof Error ? error.message : String(error)
+      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(message, row.operation_id, row.revision)
+      failures.push({
+        operationId: row.operation_id,
+        revision: row.revision,
+        error: message,
+        // A locked/busy database can succeed on a later pass; a corrupt payload or a digest
+        // mismatch never will. The caller decides what each class means for startup.
+        transient: isTransientSqliteError(error),
+      })
     }
   }
-  return recovered
+  return { recovered, failures }
 }
 
 export function resetV3WriterForTests(): void {

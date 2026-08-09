@@ -95,7 +95,7 @@ describe("frozen History V3 transport-evidence legacy fixtures", () => {
   ] as const) {
     test(`recovers frozen journal-v1 whose digest came from ${label}`, () => {
       insertLegacyJournal(digest)
-      expect(recoverV3Journal()).toBe(1)
+      expect(recoverV3Journal().recovered).toBe(1)
       const hydrated = getV3Operation(frozenRecord.identity.operationId)
       expect(hydrated?.identity).toEqual(frozenRecord.identity)
       expect(hydrated?.arena).toEqual(frozenRecord.arena)
@@ -106,7 +106,7 @@ describe("frozen History V3 transport-evidence legacy fixtures", () => {
 
   test("does not accept a manifest-v3 digest as a journal-v1 oracle", () => {
     insertLegacyJournal("0".repeat(64))
-    expect(recoverV3Journal()).toBe(0)
+    expect(recoverV3Journal().recovered).toBe(0)
     expect(getV3Operation(frozenRecord.identity.operationId)).toBeUndefined()
     expect(
       (getDatabase().prepare("SELECT error FROM v3_journal WHERE operation_id=?").get(frozenRecord.identity.operationId) as { error: string }).error,

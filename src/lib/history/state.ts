@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type { ScopedPublisher } from "~/lib/observability"
 
 import { PATHS } from "~/lib/config/paths"
@@ -128,7 +130,19 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // The following migrations exclusively own existing-database transitions.
   ensureV3Schema(getDatabase())
   await applyForwardMigrations(getDatabase())
-  recoverV3Journal(getDatabase())
+  const journalRecovery = recoverV3Journal(getDatabase())
+  // The legacy main-thread writer deliberately CONTINUES on an unrecoverable journal row:
+  // this path is still the production authority until Batch 2b, and turning a corrupt row
+  // into a startup failure here would change existing production behavior. The Worker's
+  // startup gate (`worker/backend.ts`) is where spec §8.1 refuses to become ready. Logging
+  // it is not optional though — the previous code stamped the DB column and said nothing,
+  // so an operation that could never be replayed was lost with no operator-visible signal.
+  if (journalRecovery.failures.length > 0) {
+    consola.error(
+      `[history] ${journalRecovery.failures.length} journal row(s) could not be recovered and remain uncommitted:`,
+      journalRecovery.failures.map((failure) => `${failure.operationId}@${failure.revision}: ${failure.error}`).join("; "),
+    )
+  }
   // Integrity readiness is part of opening the canonical V3 store, not an optional
   // post-listen optimization. The worker remains asynchronous and cooperatively
   // stoppable; starting it here guarantees every production lifecycle has a
