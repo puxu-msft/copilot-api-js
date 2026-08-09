@@ -397,7 +397,7 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
    **无论 V1/V2 结果如何，都不由实施者修改这四条断言**——删或放宽既有 guard 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something` 必须交独立裁决；实施者只负责把证据备齐。
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
-5. **`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。** 实测（第 8 条 Mutation F）：放宽到 2000 就抓不到「deadline 实际等待时长 = 请求值的 6 倍」这一类了，因为因果 oracle 断言的 message 里嵌的是**请求值**、不是实际时长。所以本轮**保持 200 不变**。放宽 = 放弃该覆盖，属放宽既有 guard，须独立裁决。若要既保覆盖又降敏感，需改生产契约（把**实际**等待时长放进 failure）或注入可控时钟 seam——**两条都未实施、未验证**。
+5. ~~**`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。**~~ **已由 M2 关闭，不再需要裁决。** 原登记的前提（「要么保覆盖、要么降敏感，二选一」）是错的：那个二选一只在 `DEADLINE_MS` 钉死为 50 时成立。M2 保持上界的相对形状 `DEADLINE_MS * 4` 不变、把 fixture 的 deadline 放大到 500，鉴别力与绝对余量同时拿到（实测三行见 M2 节）。**不涉及放宽既有 guard。**
 6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后恒 35）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。
 7. **`store-performance.it.test.ts` 的「commit 成本不随历史长度增长」判据对该缺陷类鉴别力弱。** 实测：注入「按 hash 点查退化为全表扫描 + 逐行解压」后，**改前写法 ratio 3.37、改后写法 ratio 4.62，双双低于阈值 5，都不红**。根因是 ratio 的自归一化——该缺陷让冷热两端一起变慢。这是**既有局限**（改前改后同样存在，已用并跑对照钉死），不是 M1 引入的。收紧阈值或换判据形状都属于改既有 guard，须独立裁决。
 8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
@@ -485,7 +485,30 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 **顺带发现（不在本轮范围，但会同样打掉 T0.0f）**：run 2 的那次 `1 fail` **不是** store-performance，而是 `tests/transport/http2-generation-reconcile.it.test.ts:377`「row 1 — pre-header req.error」，错误文本 `test setup: server stream/session missing`。同 HEAD 隔离单跑该文件 **11 pass / 0 fail**。本轮改动只碰了 `tests/history/v3/store-performance.it.test.ts` 一个文件（`git diff --stat HEAD` 可证），与它无关。**这是套件里的又一条同族 flaky**，登记进未处置第 8 条。
 
+### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
+**评审指出我的约束是假的，这一条我判它成立。** 我原先写的「放宽上界就失去覆盖」是**真的**，但它**只在把 `DEADLINE_MS` 钉死在 50 时成立**——而 50 本身不承重（fixture 的 deadline 取多少，与「deadline 被尊重」这条不变量无关）。上界的鉴别力挂在**相对形状 `DEADLINE_MS * 4`** 上，不挂在绝对毫秒上；把 fixture 按比例放大，鉴别力不变而绝对余量变宽。
+
+**三行对照全部自己复跑过**（不是采信评审转述），mutation 为「deadline 腿的实际时长 = 请求值的 6 倍」（`/tmp/mut-item8-wrong-deadline-duration.patch`）：
+
+| 配置 | Mutation F | 健康 |
+|---|---|---|
+| `DEADLINE_MS=50`，上界 200（改前） | **红 301** | 绿 |
+| `DEADLINE_MS=50`，上界 2000 | **绿 —— 失去覆盖** | 绿 |
+| `DEADLINE_MS=500`，上界 `DEADLINE_MS*4`=2000（本次） | **红 3008** | **绿，11 pass** |
+
+第三行是本轮实测的：健康 `11 pass / 0 fail`，注入 mutation 后 `Expected: < 2000 / Received: 3008`。
+
+**处置**：`DEADLINE_MS` 50 → 500，上界保持相对形状 `DEADLINE_MS * 4` 不动（自动从 200 变 2000）。**生产代码零改动**，断言的相对形状零改动。
+
+- 绝对余量：150ms → **约 1500ms**（健康 elapsed ≈ deadline ≈ 500ms，上界 2000ms）。
+- 代价：约 450ms 墙钟（文件 0.60s → 1.09s）。gate 化的 handler 意味着这 450ms 是**唯一**新增等待，收尾仍是开闸即返回。
+- 争用验证：64 spinner（loadavg 31→37）下 **11 pass / 0 fail，2.77s**。
+
+**未处置清单第 5 条据此撤下**——那条登记的是「放宽上界须裁决」，现在的答案是**不放宽上界**，改放大 fixture，两个目标同时达成，不构成放宽既有 guard。
+
 ## 第二批收口验收（第 5–8 条全部落地后）
+
 
 
 `bun run typecheck` —— 绿。源码残留核验：`git --no-optional-locks diff --stat -- src/ packages/ native/ scripts/` 行数 **0**。

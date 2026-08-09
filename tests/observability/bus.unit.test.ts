@@ -180,7 +180,14 @@ describe("createBus", () => {
 
   test("publishAndFlush respects deadlineMs", async () => {
     const bus = createBus()
-    const DEADLINE_MS = 50
+    // The deadline is the fixture's only real timer, so it sets the absolute margin the bound below
+    // gets to work with. 500ms rather than the original 50ms: the bound's DISCRIMINATING power is
+    // relative (`DEADLINE_MS * 4`), so scaling the fixture leaves it intact while widening the
+    // absolute slack from 150ms to ~1500ms. Measured against a mutation that runs the timer for 6x
+    // the requested value: at 50/200 it reddens at 301ms, at 50/2000 it slips through, and at
+    // 500/2000 it reddens at 3008ms with the healthy file still 11 pass. Costs ~450ms of wall clock
+    // and no production change.
+    const DEADLINE_MS = 500
     let done = 0
     // The handler waits on a gate we never open before asserting, rather than on a timer. The
     // original slept 500ms "intentionally past the deadline"; a gate is the limiting case of that
@@ -215,15 +222,14 @@ describe("createBus", () => {
     expect(deadlineFailure).toBeInstanceOf(Error)
     expect((deadlineFailure as Error).message).toBe(`Observability flush deadline exceeded after ${DEADLINE_MS}ms`)
     expect(done).toBe(0) // handler still in-flight
-    // Bound on the deadline's DURATION, deliberately kept at the old 4x (200ms). This one is NOT a
-    // loose outlier backstop like the streaming cases': the causal assertions above prove the
-    // deadline leg fired and that it reported the value we asked for, but the reported value is the
-    // REQUESTED one — an implementation whose timer runs for a different duration than it reports
-    // still satisfies them. Measured: with the timer set to 6x the request, a 2000ms ceiling passes
-    // while this one reddens, so widening it would trade away real coverage. Widening is therefore a
-    // guard-weakening decision, recorded for adjudication rather than taken here; see the
-    // dispositions doc. An implementation that ignores the deadline and waits for the handler shows
-    // up as a per-test timeout instead, since the gate stays shut.
+    // Bound on the deadline's DURATION, and it is NOT a loose outlier backstop like the streaming
+    // cases'. The causal assertions above prove the deadline leg fired and that it reported the
+    // value we asked for, but the reported value is the REQUESTED one — an implementation whose
+    // timer runs for a different duration than it reports still satisfies them, so this bound is
+    // the only thing covering that. Keep it RELATIVE: what carries the coverage is the 4x, not the
+    // absolute milliseconds, which is why scaling DEADLINE_MS up buys margin for free (see there).
+    // An implementation that ignores the deadline and waits for the handler shows up as a per-test
+    // timeout instead, since the gate stays shut.
     expect(elapsed).toBeLessThan(DEADLINE_MS * 4)
 
     releaseHandler()
