@@ -919,7 +919,13 @@ describe("entry evidence validator C7-C9", () => {
         cleanup(f)
       }
     }
-  })
+    // Explicit timeout: each control commits into its own temp git tree and re-runs the validator, so
+    // the case sits right on bun's 5000ms default — measured standalone and unloaded on this machine
+    // it came in at 6036ms, 5151ms, and once under the line. Under `test:fast` sharding it tips over
+    // more often. Nothing here is slower than it should be for the work it does; the default is just
+    // too tight, and a load-dependent false-red on a guard is the kind that gets deleted rather than
+    // diagnosed. Assertions are untouched.
+  }, 120_000)
 
   test("registry infrastructure parses frozen plan and reconciles fake executions", () => {
     expect(PLAN_MUTATIONS).toHaveLength(28)
