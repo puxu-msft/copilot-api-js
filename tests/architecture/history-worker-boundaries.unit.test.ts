@@ -300,3 +300,49 @@ describe("History Worker crash handling never synthesises a terminal state", () 
     expect(declaredMembers.has("recordFailure")).toBe(true)
   })
 })
+
+/**
+ * The in-process V3 writer entry points the Batch 2b cutover took off the production path.
+ *
+ * They survive as primitives for tests, scripts and the Worker's own backend; what must not
+ * come back is the main thread calling them, because that is the second writer this whole
+ * migration exists to remove. A source guard rather than a behavioural one on purpose: the
+ * regression it catches is someone reaching for the old, still-exported function while
+ * everything else keeps working, which no runtime assertion notices.
+ */
+const RETIRED_MAIN_THREAD_WRITER_CALLS = ["enqueueModelOperationWithOutcome", "drainV3Writer"] as const
+
+function identifierCalls(node: ts.Node, name: string): number {
+  let calls = 0
+  const visit = (candidate: ts.Node): void => {
+    if (ts.isCallExpression(candidate) && ts.isIdentifier(candidate.expression) && candidate.expression.text === name) calls++
+    ts.forEachChild(candidate, visit)
+  }
+  visit(node)
+  return calls
+}
+
+describe("History semantic writes have left the main thread", () => {
+  const stateFile = path.join(repoRoot, "src/lib/history/state.ts")
+  const stateSource = ts.createSourceFile(stateFile, readFileSync(stateFile, "utf8"), ts.ScriptTarget.Latest, true)
+
+  test("state.ts drives the Worker runtime and never the in-process V3 writer", () => {
+    for (const name of RETIRED_MAIN_THREAD_WRITER_CALLS) {
+      expect(identifierCalls(stateSource, name), `src/lib/history/state.ts still calls ${name}() — the semantic writer lives on the Worker`).toBe(0)
+    }
+    // Positive control: a zero above has to mean "absent", not "the walker sees nothing".
+    expect(identifierCalls(stateSource, "drainModelOperationTerminalSubscribers")).toBeGreaterThan(0)
+  })
+
+  test("no production module installs a legacy in-process terminal sink", async () => {
+    const offenders: Array<string> = []
+    for await (const relative of new Glob("**/*.ts").scan({ cwd: path.join(repoRoot, "src") })) {
+      const source = await readFile(path.join(repoRoot, "src", relative), "utf8")
+      if (/legacy-terminal-sink|LegacyHistoryTerminalSink/.test(source)) offenders.push(`src/${relative}`)
+    }
+    expect(offenders, "the legacy terminal-sink adapter was the Batch 2a bridge; production must reach the Worker runtime directly").toEqual([])
+    // Positive control for the scan itself: it really is reading source, and would find a name that IS there.
+    const registry = await readFile(path.join(repoRoot, "src/lib/history/worker/registry.ts"), "utf8")
+    expect(registry).toContain("HistoryPersistenceRuntimeImpl")
+  })
+})

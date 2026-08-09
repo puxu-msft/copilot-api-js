@@ -74,7 +74,13 @@ describe("shutdownHistory (post-V2-removal surgery)", () => {
     expect(source).not.toMatch(/\bretryPendingFinalizations\(\)/)
     // The V3 drain chain must still be present and referenced in shutdownHistory.
     expect(source).toMatch(/drainModelOperationTerminalSubscribers\(\)/)
-    expect(source).toMatch(/drainV3Writer\(\)/)
+    // Since the Batch 2b cutover the second half of that chain is the runtime's own
+    // `drain()` — the writer is on the Worker side of the boundary. `drainV3Writer` must
+    // be gone from this file ENTIRELY, doc comments included: it lingered in one for a
+    // while, and the positive assertion that used to look for it was satisfied by that
+    // comment alone — passing for exactly the reason the note above says it avoids.
+    expect(source).toMatch(/runtime\.drain\(\)/)
+    expect(source).not.toMatch(/drainV3Writer/)
   })
 
   describe("behavioral: a record published just before shutdown is durably persisted", () => {

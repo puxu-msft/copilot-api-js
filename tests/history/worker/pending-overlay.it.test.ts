@@ -6,12 +6,7 @@ import {
   test,
 } from "bun:test"
 
-import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
-import type {
-  //
-  HistoryPersistenceOutcome,
-  ModelOperationTerminalPublication,
-} from "~/lib/history/worker/protocol"
+import type { ModelOperationTerminalPublication } from "~/lib/history/worker/protocol"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
@@ -29,7 +24,6 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
-import { LegacyHistoryTerminalSink } from "~/lib/history/worker/legacy-terminal-sink"
 
 function terminalRecord(operationId: string) {
   return createModelOperationRecorder({
@@ -49,44 +43,6 @@ function publication(operationId: string) {
 }
 
 beforeEach(() => resetModelOperationTerminalBusForTests())
-
-describe("legacy terminal sink adapter", () => {
-  test("returns stable message IDs and reports the old writer outcome exactly once", async () => {
-    const persisted: Array<ReturnType<typeof terminalRecord>> = []
-    const sink = new LegacyHistoryTerminalSink({
-      enqueueRecord: async (record: ModelOperationRecord) => {
-        persisted.push(record)
-        return "conflict"
-      },
-    })
-    const value = publication("legacy-conflict")
-    let callbacks = 0
-    const outcome = new Promise<string>((resolve) => {
-      const messageId = sink.enqueue({ protocolVersion: 1, publication: value }, (result: HistoryPersistenceOutcome) => {
-        callbacks++
-        resolve(result)
-      })
-      expect(messageId).toBe(1)
-    })
-
-    await expect(outcome).resolves.toBe("conflict")
-    expect(persisted).toEqual([value.record])
-    expect(callbacks).toBe(1)
-  })
-
-  test("converts an unexpected old-writer rejection to failed without throwing", async () => {
-    const sink = new LegacyHistoryTerminalSink({
-      enqueueRecord: () => Promise.reject(new Error("legacy writer exploded")),
-    })
-    let resolveOutcome!: (outcome: HistoryPersistenceOutcome) => void
-    const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => {
-      resolveOutcome = resolve
-    })
-
-    expect(() => sink.enqueue({ protocolVersion: 1, publication: publication("legacy-failed") }, resolveOutcome)).not.toThrow()
-    await expect(outcome).resolves.toBe("failed")
-  })
-})
 
 describe("model operation terminal publication ownership", () => {
   test("transfers an operation-owned raw attachment exactly once", () => {

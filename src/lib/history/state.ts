@@ -223,10 +223,10 @@ export function stopHistoryBackgroundWork(): void {
  * had no production caller (the deleted `HistorySink` was the only one). The
  * V3 terminal-bus subscriber (`subscribeModelOperationTerminals`, wired in
  * `initHistory` below) is the sole production persistence path and drains via
- * `drainModelOperationTerminalSubscribers` + `drainV3Writer` — unsubscribe
- * FIRST (stop accepting new terminal records), then drain the subscriber
- * queue, then drain the writer's own pending/in-flight commits, THEN close.
- * Async; awaited by the shutdown sequence before process exit.
+ * `drainModelOperationTerminalSubscribers` followed by the runtime's own
+ * `drain()` — unsubscribe FIRST (stop accepting new terminal records), then
+ * drain the subscriber queue, then wait for the Worker to settle every un-ACKed
+ * item, THEN close. Async; awaited by the shutdown sequence before process exit.
  *
  * The history-search UDS client needs no explicit shutdown step — it is
  * stateless per query (each `query()` opens and closes its own short-lived
@@ -241,10 +241,7 @@ export async function shutdownHistory(): Promise<void> {
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
-  // §8.2 step 5: wait for every un-ACKed persistence item to reach a terminal outcome,
-  // then close the Worker (step 7). `drain()` replaces the old in-process `drainV3Writer()`
-  // — the writer is not on this thread any more, so awaiting a local queue would prove
-  // nothing about what actually reached disk.
+  // §8.2 step 5: wait for every un-ACKed persistence item to reach a terminal outcome, then close the Worker (step 7). This replaces the in-process writer drain the V3 store used to expose: the writer is not on this thread any more, so awaiting a local queue would prove nothing about what actually reached disk.
   const runtime = startedRuntime()
   if (runtime) {
     await runtime.drain()
