@@ -1124,7 +1124,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：把 `rememberPreReadyFailure` 存的 env 改为 `preflight`（primary 实际 dispatch 用的那份，已 transform、无需重跑 preflight 副作用），使 recovery wire 与 primary wire 恒等；或在 recovery 路径显式对齐 preflight。这样任何 leg 未来重新引入 `preSend`（如 truncation 类前置处理）时 recovery 不会悄悄绕过它。
 - **为何暂缓**：今天无可观测差异；正确的 env 选择在 P4/P5 接 handler 时语境更清晰（届时 recovery env 的实际使用具体化）。**触发条件（值得做）**：B2 P4/P5 接线 `runPreContentRecovery`（届时一并核实/对齐 env），或任何 leg 重新引入 `preSend`。发现方：Task 0.4 review（reviewer，2026-07-23）。**姊妹 nit**：gate 探测的 `outboundPrepareWire` 非纯（`recordFeature` 双发），可控无正确性影响；若精确处理参照 `inspectRequest` 的 `withCapturingManagerAsync` 隔离写法。
 
-## `parallel-test.ts` 的用例汇总仍系统性欠计（2026-07-28，紧随 ANSI 修复）
+## ~~`parallel-test.ts` 的用例汇总仍系统性欠计~~（2026-07-28，紧随 ANSI 修复）→ **已解决 2026-08-09（`e24de3a1`）**
+
+> **处置**：按本条自己开出的「理想架构」执行——tally 改由 junit XML 统计（`parseJUnit` 数 `<failure>`／`<error>`，pass 由 `executed - failed` 派生），脆弱的 stdout 文本解析整体删除。下面保留原文作为记录。
+> **注意本条与 2026-08-09 那条的边界**：修好的是**机制**（真相源不再是会被截断的 stdout），**不是**「历史上那些数字为什么各不相同」——后者从未被定位，也不因本次修复而被解释。
 
 - **根因 / 现状**：`scripts/parallel-test.ts` 汇总各 shard 的 `N pass` / `N fail` 时曾因 bun **即使输出到管道也上色**（`\x1b[0m\x1b[32m 26 pass\x1b[0m`）而恒报 `0 tests`，已修（`5454616b`，strip SGR 后正样本对照 0 → 4243）。但修复后**数字仍与直接命令不一致**：同一棵树上 `bun run test:backend`（= `parallel-test.ts unit it http`）报 **4749 tests**，而 `bun test --parallel .unit.test .it.test .http.test` 报 **6614 tests / 644 files**；单 `unit` 档同样差（4007 vs 4304）。已排除的假设：① 不是发现缺口——`tests/` 内 `.unit.test.ts` 计 414、全仓同样 414，`tests/` 之外只有一个 `exp/` 实验文件（本就不该进门）；② 不是别的 CSI 序列——实测 bun 输出的 CSI final byte 只有 `m`。
 - **当前行为**：**门本身（退出码）是对的**——它由各 shard 自己的 exit code 决定，真失败照样红；坏的是**汇总证据行**：交付报告引用的「N pass」系统性偏小约 25%，且无法与直接命令对账。
@@ -1182,7 +1185,9 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **2026-07-30 新数据点（fast 档也中招，扩大了嫌疑面）**：`tests/infra/atomic-fs.unit.test.ts` 的 `atomicWriteJson > crash during writeFile leaves the previous target intact` 在 `bun run test`（**fast 档**，`unit http`）下 6 次跑红 2 次（4757 pass / 1 fail），**单文件隔离连跑 8 次全绿**。此前记录的三例都在 `test:backend`（16 分片）下——现在 fast 档同样复现，说明嫌疑面是**分片机制本身**（片内共享缓存 / 进程级单例），不是 backend 档特有的资源竞争。该文件末次改动 `85937f27`，与 B2 系列无关。发现方：Task 4.2 评审的邻域观测。
 - **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。
 
-## `parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移（2026-07-30，B2 Task 4.3a 收口复评）
+## ~~`parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移~~（2026-07-30，B2 Task 4.3a 收口复评）→ **机制已消除 2026-08-09（`e24de3a1`）**
+
+> **处置**：按本条开出的「理想架构」执行——汇总改由 junit 统计，stdout 解析删除。**但本条问的是「为什么逐次漂移」，那个问题没有被回答**：修复消除的是「汇总依赖会被截断的 stdout」这个机制，没有证明历史上那四个数字（6631 / 5741 / 6164 / 5810）的差异全部来自它。本条开出的守卫「同一 commit 连跑 3 次汇总数必须一致」**尚未建立**，因此下面的配套纪律（用 junit 枚举、别用汇总数做增减验收）**继续有效**，直到那条守卫落地。
 
 - **根因 / 现状**：**未定位**。同一棵树、同一 HEAD、同一条 `bun run test:backend` 连跑四次，汇总行的总数为 **6631 / 5741 / 6164 / 5810**，全部 `0 fail`；而不经分片脚本的直接发现稳定在 `Ran 6642 tests across 649 files`。此前 2026-07-28 已记过「系统性欠计 ~25%」（ANSI 修复之后仍欠），本条是新信息：**欠计量不是常数，逐次随机漂移**，说明各分片汇总存在丢失或竞争，而非某类文件被稳定漏读。
 - **当前行为**：**门本身仍可信**——退出码由各 shard 决定，真失败照样红（本轮多次实测）。坏的只是「跑了多少条」这个仪表。
@@ -1247,7 +1252,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
 - **发现方**：Task 9 独立验收评审（`docs/tmp/2026-08-08-task9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
 
-## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）
+## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）→ **载体已换 2026-08-09（`e24de3a1`），根因仍未定位**
+
+> **2026-08-09 处置**：按本条的「理想架构」执行——tally 改由 junit 产物统计，stdout 解析删除。**这不是本条的答案**：它问的是「为什么同一命令给出七个不同的数」，而修复只是把仪表换了一块，没有解释旧仪表为什么乱跳。已知的是**其中一个成因**：shard 在打印 summary 的过程中死掉时，`N fail`／`N pass` 行永远不落，该 shard 对 stdout tally 贡献 0——2026-08-09 实测一次 `3337 tests · 3337 pass · 0 fail`，而同批 junit 是 7529 executed 且**其中一条是真失败**（一条 TimeoutError 被那个绿色的 `0 fail` 盖住）。**这只解释得了「有 shard 异常终止」的那些运行，解释不了全部七个数**，也不构成对上面两个已排除假说的替代。**不补第三个解释。**
+> **交付纪律的更新**：下面那条「不得引用 tally 数字」**在 2026-08-09 之后的运行上解除**——新数字取自 junit，且解析器有变异对照（置空 failure 捕获分支 → 同一批产物回到 `failed=0`、两条正向判据变红）。**但历史报告里引用的旧 tally 数字一律不追认**。守卫「同一 commit 连跑 3 次汇总数必须一致」**仍未建立**，建立前不要把「连跑数字一致」当已证事实。
 
 - **根因 / 现状**：**未定位，且已排除两个假说**。同一命令 `bun run test:backend`、同一发现集合，汇总行的 tests 总数至今观测到 **860 / 2806 / 4200 / 5555 / 5796 / 5846 / 6705** 七个值。① 评审提出的「`stripAnsi` 漏删 ESC 字节」假说**已被探针证伪**——源码中该正则含真实 ESC 字节（`sed`/编辑器渲染时不可见，评审与主会话先后踩了同一渲染陷阱），探针实测 `stripAnsi("\x1b[0m\x1b[32m 13 pass\x1b[0m")` 得 `" 13 pass"` 且 `^\s*(\d+) pass` 匹配成功；② 「shard 输出超管道缓冲、`await p.exited` 早于读取导致丢输出」这一条是**真实隐患、已修**（commit `fa28deb3` 改为并发读取），但修完数字**依旧乱跳** ⇒ 背压不是（唯一）成因。**不补第三个解释**（→ `verified-by-a-wrong-query`：带着「我已核实」的自信的错误查询，比没验证更危险）。
 - **当前行为**：**退出码可信**（取自各 shard 自身退出码，真失败照样红——本轮多次实测，包括一次由 `states-flush-freeze.it.test.ts:74` 引起的真实非零）。坏的只是「跑了多少条」这个仪表。
