@@ -73,6 +73,14 @@ pub struct ListSearchResult {
     pub has_older: bool,
     pub has_newer: bool,
     pub invalid_cursor: bool,
+    /// The caller's query string is not one this index can parse.
+    ///
+    /// A RETURN VALUE rather than an error, for the same reason `invalid_cursor` is one: it is a
+    /// statement about the request, and the caller must be able to tell it apart from "this index
+    /// failed". Signalling it through the napi `Status` instead does NOT work — measured, that
+    /// status is shared with request-decoding faults such as a missing field, so a version skew
+    /// between caller and index would have been reported as a bad query.
+    pub invalid_query: bool,
 }
 
 /// The index's OWN commit state, read from Tantivy rather than from any marker this
@@ -95,16 +103,6 @@ pub struct IndexGeneration {
 
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
-}
-
-/// A query string the parser rejects is a BAD REQUEST, not a sidecar failure.
-///
-/// It carries `Status::InvalidArg` so the caller can tell the two apart: the search box is free
-/// text, and `error:` or a leading `-` are things a user types, not evidence that the index is
-/// broken. Reported as a generic failure it became "the sidecar is unavailable", which took down
-/// the whole listing — including the in-flight half, which needs no index at all.
-fn invalid_query_error(error: impl std::fmt::Display) -> Error {
-    Error::new(Status::InvalidArg, error.to_string())
 }
 
 /// Every field `list_search` filters, sorts, or paginates on is `FAST` (columnar), because
@@ -508,9 +506,19 @@ fn list_search_blocking(
         Box::new(AllQuery)
     } else {
         let parser = QueryParser::for_index(index, vec![fields.content]);
-        parser
-            .parse_query(&request.query)
-            .map_err(invalid_query_error)?
+        match parser.parse_query(&request.query) {
+            Ok(query) => query,
+            Err(_) => {
+                return Ok(ListSearchResult {
+                    operation_ids: Vec::new(),
+                    total: 0,
+                    has_older: false,
+                    has_newer: false,
+                    invalid_cursor: false,
+                    invalid_query: true,
+                })
+            }
+        }
     };
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, content_query)];
     clauses.extend(
@@ -705,6 +713,7 @@ fn list_search_blocking(
             has_older: false,
             has_newer: false,
             invalid_cursor: true,
+            invalid_query: false,
         });
     }
     let on_requested_side = |candidate: &&ListCandidate| match cursor {
@@ -753,6 +762,7 @@ fn list_search_blocking(
         has_older,
         has_newer,
         invalid_cursor: false,
+        invalid_query: false,
     })
 }
 

@@ -49,6 +49,13 @@ export interface NativeHistoryListSearchResult {
   hasOlder: boolean
   hasNewer: boolean
   invalidCursor: boolean
+  /**
+   * The query string is not one the index can parse. A field rather than a thrown error, so it
+   * cannot be confused with a genuine index failure — the napi status is shared with
+   * request-decoding faults (a missing field also arrives as `InvalidArg`), so inferring intent
+   * from it would report a caller/index version skew as a bad query.
+   */
+  invalidQuery: boolean
 }
 
 /**
