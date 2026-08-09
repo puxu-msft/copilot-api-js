@@ -117,3 +117,14 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 ### 已知与本批无关的既有红（基线对照确认）
 
 `bun test tests/history tests/infra --parallel` 有 **5 条稳定失败**（`history-api` 3 条行累积、`durability-overlay` 1 条、`history-store` 的 `clearHistory` 1 条）。在 `e3f8e5f2` 拉的**只读对照 worktree** 上跑同一条命令同样 5 fail，故与本批改动无关；`test:backend`（`scripts/parallel-test.ts` 分片）上这些文件是绿的，差异来自分片形态而非代码。**不要据这条命令的红去改本批代码。**
+
+## 第三轮：GPT 复审（`e3f8e5f2..4c1ec429`）的处置
+
+复审判 **1 blocker + 3 major**，并确认上一轮 5 条里 3 条已闭合（并发撕裂、start 后泄漏的正常路径、2b.5 走 HTTP）。四条全部处置：
+
+- **[blocker] 启动 deadline 的进程级 oracle** → `tests/e2e/history-startup-deadline.e2e.test.ts`（commit `19088b92`）。**这条的判据是被变异逼出来的**：去掉入口 `process.exit(1)` 后，进程继续走到 Phase 4、因缺 token 而死，**非零退出且耗时几乎相同**（7206ms vs 7180ms），当时写的四条断言全部照绿。真正有裁决力的是「deadline 报告之后没有任何后续动作」。细节与恢复方式见 `docs/todo/deferred-backlog.md` 该条（已标记闭合）。
+- **[major] rollback 的 cleanup 失败会遮蔽原错并留下 runtime** → commit `1c1464d2`。cleanup 每步隔离 + 失败只记日志、原错误保持主错误；registry 的引用改在 **`finally`** 里 compare-and-clear。**注意这里不是「先清后 await」**：`tests/history/worker/registry.unit.test.ts` 有一条既有守卫钉着「shutdown 进行中引用仍可见」，它防的是并发者在窗口期再造一个 writer、两个 runtime 同时以为自己拥有写连接。我第一版改成「先清引用再 await」，当场被那条守卫判红——`finally` 才同时满足两个不变量。
+- **[major] deadline 可配置值超过 timer 上限会反转成约 1ms** → commit `ebe31242`。schema 上界 + setter 钳制。同一提交修掉复审顺带指出的误导日志（bring-up 在 deadline 之前正常失败时也会打「deadline 已报告」）。
+- **[major] 2b.4 少了计划要求的 `/health/liveness` 腿** → commit `66c2bc42`。这条我认账：**是我单方面把冻结判据缩窄成 metronome 一条**，理由写在注释里（同一事件循环、等价观测）——论证本身没错，但缩窄冻结判据不是实现者能单方面做的决定。补上后实测：真 Worker 臂 liveness 10ms、in-process 臂 532ms，两侧都是 200。
+
+**复审对我三个自问的独立结论**（都判为非 blocker/major，理由值得留档）：① 生命周期队列被卡死的 bring-up 永久堵塞——生产上信号处理器要到 History ready **之后**才安装（`start.ts:567`），所以启动卡住期间首个 SIGTERM 走 OS 默认终止，根本进不了队列；我原先注释里写的「排到队尾、第二信号强退」**不符合生产接线**，结局反而更安全。② 落败 bring-up 的 `.catch` 没有吞掉返给调用方的错误。③ `startup-deadline-config.ts` 的拆分不构成重复实现；更理想的长期形状是 config parser 产出 startup options、由 composition root 显式传入，彻底去掉 module-global setter——**登记为可选改进，不在本批**。
