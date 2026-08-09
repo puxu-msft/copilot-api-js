@@ -37,14 +37,18 @@ export function createAnthropicDeliveryProtocolAdapter(): AnthropicDeliveryAdapt
       const parsed = parseFramePayload(frame, "Anthropic")
       if (!parsed.ok) return parsed.classified
       const payload = parsed.payload as { type?: unknown; index?: unknown }
-      if (payload.type === "ping" && isControlCapability(controlCapability, "protocol-ping")) {
+      // The canonical payload `type` stays authoritative, but it is not the only place the wire carries it.
+      // The `error` shape reaches us as `event: error` with a body of just `{ error: { ... } }` whenever the canonical error rewrite is off — a byte-identical passthrough the config explicitly supports — so keying solely off `payload.type` made this classifier's correctness depend on a switch the user can turn off.
+      // Falling back to the SSE `event` line is additive: every frame that already declares a payload `type` classifies exactly as before. `adapters/responses.ts` reads its event line first for the same reason.
+      const frameType = typeof payload.type === "string" ? payload.type : frame.event
+      if (frameType === "ping" && isControlCapability(controlCapability, "protocol-ping")) {
         return { kind: "control", frame, capability: controlCapability }
       }
       const unit = () => {
         if (typeof payload.index !== "number") return undefined
         return { boundary: "content-block" as const, key: String(payload.index) }
       }
-      switch (payload.type) {
+      switch (frameType) {
         case "content_block_start": {
           const identity = unit()
           return identity ?
@@ -86,7 +90,7 @@ export function createAnthropicDeliveryProtocolAdapter(): AnthropicDeliveryAdapt
           }
         }
         default: {
-          return frameFailure("unexpected-frame", `unsupported Anthropic frame type: ${String(payload.type)}`, frame, undefined)
+          return frameFailure("unexpected-frame", `unsupported Anthropic frame type: ${String(frameType)}`, frame, undefined)
         }
       }
     },

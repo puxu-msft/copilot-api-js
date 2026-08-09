@@ -64,6 +64,17 @@ export function createDeliveryGrammar({ mode }: CreateDeliveryGrammarOptions): D
   const acceptTerminal = (terminal: Extract<DeliveryFrameClass, { kind: "response-terminal" }>["terminal"]): ReadonlyArray<DeliveryOutcome> => {
     if (mode === "unit" && openUnit) {
       const discard = discardOpen("response terminal arrived with an open unit")
+      // A SUCCESSFUL terminal arriving mid-unit is a protocol violation — the producer claimed the response ended while a block it opened was never closed — so it stays an error.
+      // A FAILED terminal is not: upstream is allowed to die at any point, including halfway through a block.
+      // Collapsing that into a protocol error destroys the one fact the retry decision needs, because a `terminal-with-open-unit` is not an upstream failure and the buffered path then reads the missing terminator as a truncation and retries a decision the upstream already made.
+      // Both frozen rules are satisfied by keeping them apart: the half-unit is still discarded (no partial block ever reaches the wire), and the failure still surfaces as the terminal it is.
+      if (terminal.semantic === "failed") {
+        state = "terminal"
+        return Object.freeze([
+          ...(discard ? [discard] : []),
+          Object.freeze({ kind: "response-terminal" as const, terminal, responseFrames: Object.freeze([]) }),
+        ])
+      }
       return enterError([
         ...(discard ? [discard] : []),
         error("terminal-with-open-unit", "response terminal arrived before the open unit closed", terminal.sourceFrame, undefined),

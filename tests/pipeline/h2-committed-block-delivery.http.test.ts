@@ -1,9 +1,11 @@
 /**
  * Companion to `i9-h2-buffered-probe.http.test.ts` (Task 37 seam re-review).
  *
- * That probe pins the retry decision: an H2 terminal `event:error` must not be retried as a truncation.
- * This one pins the OTHER half of the same spec rule — delivery. Spec §5.3 M1 requires the H2 error frame to be taken into account "在 commitBoundaries 与重试判定中", i.e. content committed before the error must still reach the client, and the error must be surfaced rather than swallowed.
- * Without it, a fix that only satisfies the retry half would look complete while silently dropping a fully committed block.
+ * What this pins: content already committed by an earlier boundary survives a terminal upstream error, the error reaches the client, and nothing is retried — across BOTH settings of `errorShapingEnabled`, because with shaping off the `error` frame arrives as `event: error` with no canonical `type` in its body and the adapter has to recognise it from the event line alone.
+ *
+ * What this does NOT pin, stated because a reviewer measured it: it is not a control for "the error frame is itself a commit boundary". Deleting the adapter's `error` case leaves this test green — the preceding `content_block_stop` has already flushed the block, and once bytes are committed the retry gate refuses to retry regardless of how the error is classified. The shape is structurally incapable of discriminating that mechanism.
+ *
+ * The mechanism controls live elsewhere: `i9-h2-buffered-probe` (error with no prior content — discriminates the retry decision) and `i9-followup-midblock-error` (error mid-block — discriminates the grammar's failed-terminal branch).
  */
 import {
   //
@@ -24,7 +26,11 @@ import {
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { createSseResponse, frameTypesInOrder } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  frameTypesInOrder,
+} from "../helpers/sse"
 
 const MODEL = "claude-sonnet-4.6"
 
@@ -48,7 +54,7 @@ const upstreamFetchMock = mock(() => {
 const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
-describe("H2 terminal error after a committed block, on the L2 buffered path", () => {
+describe.each([true, false])("H2 terminal error after a committed block, on the L2 buffered path (errorShapingEnabled=%s)", (errorShapingEnabled) => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -63,6 +69,7 @@ describe("H2 terminal error after a committed block, on the L2 buffered path", (
       staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
+      errorShapingEnabled,
       bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
       bufferedRetryContinuationShared: { enabled: false, message: "network issue. please continue" },
     })
@@ -73,14 +80,13 @@ describe("H2 terminal error after a committed block, on the L2 buffered path", (
   test("delivers the already-committed block AND surfaces the error, without retrying", async () => {
     const res = await app.request("/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-session-id": "h2-committed-block" },
+      headers: { "Content-Type": "application/json", "x-session-id": `h2-committed-block-${String(errorShapingEnabled)}` },
       body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 64, stream: true }),
     })
     expect(res.status).toBe(200)
     const sse = await res.text()
     const types = frameTypesInOrder(sse)
 
-    // The committed block must survive the terminal error — a fix that only stops the retry but drops the buffer would pass the sibling probe and fail here.
     expect(sse).toContain("committed-prefix")
     expect(types).toContain("content_block_stop")
     expect(types).toContain("error")

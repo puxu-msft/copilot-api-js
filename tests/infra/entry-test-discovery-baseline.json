@@ -521,6 +521,7 @@
     "tests/pipeline/hooks/replay.it.test.ts",
     "tests/pipeline/hooks/toolkit.unit.test.ts",
     "tests/pipeline/hub-translate.unit.test.ts",
+    "tests/pipeline/i9-followup-midblock-error.http.test.ts",
     "tests/pipeline/i9-h2-buffered-probe.http.test.ts",
     "tests/pipeline/inspect-request.unit.test.ts",
     "tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts",
