@@ -1,33 +1,24 @@
 import consola from "consola"
 
+import { getHistoryStartupDeadlineMs } from "./startup-deadline-config"
 import { initHistory } from "./state"
 import { peekHistoryPersistenceRuntime } from "./worker/registry"
 
+// The knob itself lives in a leaf module so the config layer can write it without importing this one — see startup-deadline-config.ts. Re-exported here so callers still have a single startup-deadline surface.
+export {
+  //
+  getHistoryStartupDeadlineMs,
+  HISTORY_STARTUP_DEADLINE_MS,
+  setHistoryStartupDeadlineMs,
+} from "./startup-deadline-config"
+
 /**
- * How long process startup waits for History to become usable before giving up.
+ * Why a deadline exists at all.
  *
  * The Worker's restart budget rate-limits startup retries but deliberately does not cap them: a retryable startup error (spec's transient set — `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_IOERR`) may well clear on attempt N+1, and turning "tried N times" into a permanent fatal would make a temporary fault unrecoverable for the lifetime of the process (the cap Batch 2a briefly had was withdrawn by user ruling on 2026-08-09 for exactly that reason). So the budget is right and the missing piece is elsewhere: SOMEONE has to decide when the process as a whole stops waiting, and that is the party that owns process startup, not the runtime.
  *
  * Without this, a peer holding the semantic write lock indefinitely leaves the process neither serving nor exiting — spec §8.1 forbids listening before History is ready, and the retry loop never terminates — which replaces a loud `exit 1` with a silent hang that no supervisor can act on.
- *
- * 30s is chosen to be far longer than a healthy bring-up (schema reconcile plus journal recovery, measured in tens of milliseconds) and longer than the restart budget's 30s backoff cap, so a deadline hit means the failure has persisted across several real attempts rather than catching one slow start.
  */
-export const HISTORY_STARTUP_DEADLINE_MS = 30_000
-
-/**
- * Configured deadline, fed by `history.startup_deadline_ms` through the config apply pass.
- *
- * A module-local value rather than a `state` field, following `setV3PersistRetryConfig`: exactly one consumer reads it, exactly once, before the server listens — a state field plus change listeners would buy nothing, since nobody can usefully react to it after startup has already finished.
- */
-let configuredDeadlineMs = HISTORY_STARTUP_DEADLINE_MS
-
-export function setHistoryStartupDeadlineMs(deadlineMs: number): void {
-  configuredDeadlineMs = deadlineMs
-}
-
-export function getHistoryStartupDeadlineMs(): number {
-  return configuredDeadlineMs
-}
 
 /**
  * History did not become usable within the startup deadline.
@@ -54,7 +45,7 @@ export class HistoryStartupDeadlineError extends Error {
  *
  * `deadlineMs <= 0` disables the deadline (waits forever), which is only appropriate for callers that are not a process entry point.
  */
-export async function initHistoryWithinStartupDeadline(enable: boolean, deadlineMs: number = configuredDeadlineMs): Promise<void> {
+export async function initHistoryWithinStartupDeadline(enable: boolean, deadlineMs: number = getHistoryStartupDeadlineMs()): Promise<void> {
   // Disabling History does no I/O and cannot hang; a deadline there would only add a timer to every startup that runs without History.
   if (!enable || deadlineMs <= 0) {
     await initHistory(enable)

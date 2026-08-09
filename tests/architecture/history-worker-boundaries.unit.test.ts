@@ -130,6 +130,8 @@ const ALLOWED_BACKEND_IMPORTERS = [
   //
   "src/lib/history/worker/history-worker.ts",
   "tests/history/worker/fixtures/in-process-runtime.ts",
+  // Batch 2b's thread-isolation control: a Worker entry that wraps the REAL backend in a synchronous block. It has to be the real backend — a stand-in that merely slept would prove nothing about where History's work runs.
+  "tests/history/worker/fixtures/blocking-backend-worker.ts",
   "tests/history/worker/fixtures/crash-window-worker.ts",
   "tests/history/worker/fixtures/permanent-failure-worker.ts",
   "tests/history/worker/fixtures/retry-observer-worker.ts",

@@ -13,7 +13,7 @@ import fs from "node:fs/promises"
 import { z } from "zod"
 
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
-import { setHistoryStartupDeadlineMs } from "~/lib/history/startup-deadline"
+import { setHistoryStartupDeadlineMs } from "~/lib/history/startup-deadline-config"
 import {
   //
   DEFAULT_V3_PERSIST_RETRY_CONFIG,
