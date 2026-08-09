@@ -81,11 +81,14 @@
   3. ~~`review_closeout_final` 未闭环~~ —— **已闭环**：第 3 轮 4 major、第 4 轮 3 major 全部采纳整改，第 5 轮逐条专项复审 M1／M2／M3 均闭合，**0 blocker／0 major、判可定稿**。
   4. 本报告与清单、各轮评审报告的最后一笔修订需由用户执行一次 fast-forward（判定命令见状态行）。
 
+- **Task 2a 已由同伴会话接手**（2026-08-09，worktree `/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a`、分支 `history-worker-batch-2a`）。本会话**不再推进 Task 2a**，本分支与其 worktree 也不得被它复用。启动前硬门于 `master@d8296920` 实跑三条全过，plan blob 两侧同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`。
+  ⚠️ **交给接手方的一条现状**：`22c8e08b..master` 期间 peer 落了 `954a1bff fix: release history admission on capture failure`（改 `src/lib/context/lightweight-model-operation.ts`），修的是 capture 失败时 admission 未释放——**与本轮 Batch 1b 修的 post-bind reservation 泄漏是同一接缝**。本报告中关于 admission 释放路径的描述可能已非最新，依赖前须重验。「同一接缝短期内两次泄漏是否有共同根因」**只是观察，未查证，不得当结论**。
+
 ⚠️ **「尚待动作：无」曾是本报告最危险的一句话**：它与同一文档里的阶段表、「评审处置」节、复验清单第 6 条同时存在且互相否定，读者按哪一句行动都有理有据。**紧接着的第二版又犯了同型错误**——只列 8／16／17「三项」，把 `requires` 传播漏掉了，Round 4 判 major。教训已记在 `docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md` 与 `docs/memory/methodology-ordering-gate-needs-a-trigger-that-reads-it.md` 的射程内。
 
 ## 分支与 worktree 归宿（`resolve_branch`）
 
-- **分支 `worktree-history-worker-batch-1b-resume`：裁决＝保留（keep），不删。** 依据：收尾产物的最后修订提交尚未进入 `master`（判定命令见状态行），该分支是它们唯一的持久来源；`finishing-a-development-branch` 三选一里 merge 对交付内容已完成、discard 需用户显式授权且会丢这些提交，故取 keep。
+- **分支 `worktree-history-worker-batch-1b-resume`：集成条件已满足，删除与否由用户决定。** 判定命令 `git -C <repo> merge-base --is-ancestor worktree-history-worker-batch-1b-resume master`——成立即表示本分支全部提交已进 `master`，`finishing-a-development-branch` 的 merge 分支已走完，可安全 `git branch -d`（该命令自带未合并保护）。**不写死「keep」**：初版写的是「keep，因为收尾产物尚未进 master」，那个理由在用户合并的那一刻就失效了，属 [[methodology-closeout-doc-goes-stale-the-moment-the-merge-lands]] 登记的会过期断言。**本会话不自行删除分支。**
 - **worktree `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`：三条移除前置已具备，是否移除由用户决定。**
   - `worktree_clean`：本轮各次提交后 `git status --short` 为空（评审报告落盘等新增文件另行提交）。
   - `head_reachable`：**成立**——判定命令 `git -C <worktree> branch --contains HEAD`，输出非空即成立。**不写死 commit**：HEAD 每次提交都前移，写死的锚点只能证明某个旧候选可达。实测 `HEAD=b98fe5bb` 时输出 `* worktree-history-worker-batch-1b-resume`（`9a6226b6` 同样命中）。HEAD 可由持久 branch ref 到达，**删除 worktree 不会删除该 branch，也不会丢这些提交**。
