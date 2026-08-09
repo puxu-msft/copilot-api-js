@@ -5,10 +5,10 @@ branch: history-worker-batch-2a
 worktree: /home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a
 plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session
-status: active
+status: done
 ---
 
-> **状态：进行中。** 本文件是 Batch 2a 的活跃进度真相源；`impl-1`／`impl-1b` 已停更、只作历史证据。只记 git 不保存的三项：剩余项及验收、在途意图、已作废路线。
+> **状态：已完成（`59989488`，2026-08-09 合入 `master`）。本文件已停更，只作历史证据。** 三轮独立评审收口至 0 blocker／0 major。**后续会话别把它当活的真相源**：Batch 2a 的当前状态以 [plan 的 Batch 2a 状态行](../plan/2026-08-07-history-persistence-worker.md) 为准，留给 2b 的前置以 [deferred-backlog](../todo/deferred-backlog.md) 末节为准。
 
 ## 启动前硬门（本会话实跑）
 
@@ -28,7 +28,7 @@ status: active
 - [x] `fatal-state.unit.test.ts`：fatal 终结全部未 ACK 为 failed、reservation 各释放一次、后续 enqueue 立即 failed、`drain()` 确定性 reject、config waiter reject、与迟到旧 ACK 交错无双释放；另加 restart 窗口内 fatal／drain 两条。
 - [x] 评审发现的四处生产缺陷已修（journal recovery 静默吞失败／fatal 不终止 Worker／restart 携旧 config／backoff 期 shutdown 遗留未结算），另修一处实测发现的可重试启动错误被误判为 fatal。
 - [x] 门禁与 mutation 正控（见下）。
-- [ ] 独立 review 到 0 blocker／major，再 fast-forward 合 `master`，回填计划状态行。
+- [x] 独立 review 到 0 blocker／major，再 fast-forward 合 `master`，回填计划状态行。三轮评审共提出 4 blocker ＋ 14 major，全部处置；其中一条（重启预算上限）两位评审结论相反，交用户裁决后撤回并登记 backlog。
 
 ## 门禁证据（合并态 commit `7936d3f4`，worktree `.worktrees/history-worker-batch-2a`）
 

@@ -69,7 +69,8 @@
 - [config.schema.json 只由 .describe() 生成](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s
 - [bun test 慢的三层根因](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片
-- [提前建 `.rejects` 断言挂死整个测试文件](reference-bun-test-eager-rejects-assertion-hangs-file.md) — 零输出、5s 超时不触发；`-t` 匹配不到时能跑完＝判据；改 `.then(ok,err)` 捕获
+- [提前建 `.rejects` 断言挂死整个测试文件](reference-bun-test-eager-rejects-assertion-hangs-file.md) — 零输出、显式 per-test 超时也不触发；改 `.then(ok,err)`；守卫被变异后 promise 永不 settle 时改 `Promise.race` 短定时器，否则变异对照拿不到红
+- [新测试的红与绿都会过度声称](methodology-new-test-red-and-green-both-overclaim.md) — 红：新测试 flaky 先当真缺陷查（错误消息与预期不同＝线索，非争用）；绿：N-bounded 推不出全称，把 ∀ 性质挪到结构判据并用 AST 而非文本
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 不用的大 BLOB 白读 + ORDER BY 末项不在索引
 - [Tantivy 读路径等值比 ordinal](methodology-fastfield-ordinal-not-per-doc-dictionary-lookup.md) — 逐文档 `ord_to_str` 慢 16 倍；基线须含无过滤场景
 - [测 elapsed 注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — 跨 await 不冻结
