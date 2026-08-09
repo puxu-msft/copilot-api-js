@@ -476,3 +476,55 @@
 
 - 复评轮次 9：BLOCKER 0、MAJOR 5、MINOR 0、NIT 0。
 - 当前 verdict：**修复 MAJOR 后可进入下一阶段**。
+
+
+# 复评轮次 10（整改提交 `7aba6468`）
+
+## 复评范围与方法
+
+- 读取 `7aba6468` 完整 diff、commit message 与九处整改后的最终文本；重新核对 runner／parser 的 producer、artifact、observation point 与 upstream。
+- 扩展扫描整个 `docs/memory/`、`.claude/skills/`、`docs/spec/`，并复扫 tally 相关 README／backlog／约定／代码与测试注释；判据仍是任一生产者共同控制两侧或两侧追到同一上游即不独立。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 2。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:76` — “这里没有任何一个独立完整性 oracle，别再找第四个”把当前缺口写成禁止寻找可行方案的全称命令
+
+- **现象**：前半句若限定为“当前已实现／本节列出的机制”，事实成立；后半句“别再找第四个”却禁止未来建立新的、真正不同上游的 oracle。独立 oracle 并非概念上不可能：例如由 TypeScript AST／Bun runtime registration instrumentation 独立枚举 testcase declaration／registration identity，再与 JUnit observation 比较；它是否值得、是否覆盖动态生成测试需另证，但其可行性足以推翻“不要再找”的全称。
+- **证据**：同文 `:62,66` 仍规定增减类结论**需要**独立完整性 oracle；`:70` 仅证明当前“没有任何东西独立枚举”，没有证明未来不存在可实现方案。“别再找第四个”会与该需求形成死锁。
+- **接手方错误动作**：后续任务真正需要证明 no-decrease／total 时，会把该句当架构禁令，放弃设计 provenance 不同的新 oracle，或继续永久把目标标成不可判。
+- **建议处置**：改成“**当前已实现的三类证据中没有独立完整性 oracle；不要把现有同源信号重新命名成第四个。若要建立新 oracle，先提交 producer／observation point／upstream provenance 图，并分别验证 false-green 与 false-red。**”这保留防复发力度，但不把未知写成不可能。
+
+### [MAJOR] `docs/spec/anthropic-rewrite-reorg.md:90`、`docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md:25` — 扩展扫描发现两份 live spec 仍把同源 tally／JUnit 当 no-decrease 或独立复算证据
+
+- **现象**：前者把 `bun run test:backend`“收集用例数不减”写成 commit invariant；后者把 runner tally 与同批 16-shard JUnit leaf recount 称为“独立重算”。两者正是本轮已撤销的两种主张，且未带 superseded／历史限定。
+- **证据**：`anthropic-rewrite-reorg.md:90` 的 no-decrease 只点名同一个 backend tally，没有独立 expected testcase population；`2026-08-06-http2...md:25` 的 recount 与 runner 共享 Bun producer 和同批 JUnit artifacts，按 `docs/memory/methodology-merge-invalidates-branch-frozen-test-floor.md:12` 的新裁决只能抓 parser／aggregation 错，不能称独立。
+- **接手方错误动作**：执行旧 spec 的 Phase 1 会继续以 observed tally diff 放行“测试未减少”；阅读阶段 1 验收的人会把两个 parser 的一致性升级成 producer completeness。
+- **建议处置**：前者把 invariant 收窄为“该次运行 observed count 未下降，仅作 tripwire，不证明 testcase population 未减少”，若 no-decrease 真承重则标缺独立 oracle；后者将“独立重算”改为“同源第二-parser 复算”，明确能力边界。修订建议 `gpt-souls:doc-writer`。
+
+## 已确认整改与扫描 disposition
+
+- 轮次 9 五条均已按实际 provenance 闭合：第 1 层收窄为 identity mention；root totals 明确 producer-relative；leaf recount 降为第二 parser；backlog 旧相反动作已划销；README 明确 baseline 不参与 runner 且只作 coverage check。
+- `scripts/parallel-test-artifacts.ts` 与定向测试的注释已一致说明“独立于我方 parser、不独立于 Bun producer”；本轮实现只改注释，不改行为。
+- 定向 `bun test tests/infra/parallel-test-artifacts.unit.test.ts`：`26 pass / 0 fail`。未重跑 backend；提交信息所附原始 tally 只按 observed-count policy 采用。
+- 扩展扫描范围：整个 `docs/memory/`、`.claude/skills/`、`docs/spec/`，以及轮次 9 的 runner／parser／tests／README／backlog／coding conventions。搜索独立 oracle/count、交叉验证、第二原理、完整性、no-decrease、JUnit/tally/minimum_executed，并对承重命中逐条追 producer／observation／upstream。
+- `.claude/skills/` 未发现 tally 主题的同源独立性主张；其他“独立 oracle”命中多为真实 SDK、counterpart、精确数学重算或不同持久观察点，不与本轮共享上游。`docs/memory/` 的 tally 载体现已一致收窄。新增未闭合命中仅为上述两份 spec。
+
+## 结构怪味扫描
+
+- `docs/coding-conventions.md:76` — **全称禁令替代当前状态**；处置：本轮收窄为 current-state + provenance admission rule，不能留 backlog，因为它直接阻断正确未来方案。
+- `docs/spec/anthropic-rewrite-reorg.md:90` 与 `docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md:25` — **同一证据政策跨文档漂移**；处置：本轮同步 supersede／收窄，避免接手方沿 live spec 复发。
+
+## 收敛判定
+
+- **当前无未闭合 BLOCKER。**
+- **当前仍有 2 个未闭合 MAJOR**：全称“别再找第四个”过强；两份 spec 仍保留同源 no-decrease／independent recount 主张。
+- 因此尚不能最终收口。轮次 9 的五条已闭合，未发现新的实现行为缺陷；阻碍收口的是仍会指导接手方采取错误验证动作的文档合同。
+
+## 最终计数
+
+- 复评轮次 10：BLOCKER 0、MAJOR 2、MINOR 0、NIT 0。
+- 当前 verdict：**修复 MAJOR 后可进入下一阶段**。
