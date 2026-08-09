@@ -1246,15 +1246,58 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
 
-## `store-performance.it` 的耗时比值断言在 16-shard 下间歇性失败（2026-08-08 合并态验证时发现）
+## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-08 合并态验证 + 2026-08-09 A3 复评 round 4，两个会话独立撞到同一问题）
 
-- **根因 / 现状**：`tests/history/v3/store-performance.it.test.ts` 的「prepare and commit do not depend on prior session history length」断言的是**耗时比值**，对 CPU 争用敏感。在 `bun run test:backend` 的 16-shard 负载下会间歇性变红；单文件独跑 3/3 稳定通过。同文件的「CAS live physical bytes …10x smaller」也观测到过一次同类失败。
-- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含本条 + 上述 CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail（仅本条）、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
+> 本条由两条独立发现合并而成：peer 会话在 Batch 1b 合并态验证时记下 `store-performance.it` 的比值断言与三次全量运行的 A/B；A3 合并态复评 round 4 记下另外三条断言与「两类红」的区分。两边证据互补，故并成一条——分两条会让下一个人修了一条漏另一条。
+
+- **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条。**具体断言（这是要改的清单，不是「某些测试」）**：
+  - `tests/history/v3/summary-query-performance.it.test.ts:162-163` —— `expect(large.elapsedMs).toBeLessThan(Math.max(50, small.elapsedMs * 5))`。比值那半稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
+  - `tests/history/v3/store-performance.it.test.ts` 的 “CAS live physical bytes are at least 10x smaller…” —— 观测到 17.3s / 18.3s，隔离复跑 9.31s；撞的是**测试自身耗时**而非断言，属默认超时型。
+  - ~~`tests/history/v3/store-performance.it.test.ts` 的 “prepare and commit do not depend on prior session history length” —— 断言的是**耗时比值**，对 CPU 争用敏感（peer 会话观测，详见下节）。~~ **已由 peer 会话闭合**（合并进本分支时确认）：该 test 移入 `describe.skipIf(!PERF_TIER)`，只在 `RUN_PERF_TESTS=1`（`bun run test:perf`）下跑，`test:backend` 里显式 skip；同时在 backend 档补了**确定性 oracle**——断言热路径语句保持索引计划而非退化成扫描。这正是下节的修法②，**且是本清单里唯一被这样处理的一条**，其余四条仍原样成立。
+  - `tests/history/search/uds-transport.it.test.ts` 的 “a large multi-segment response reassembles correctly” —— 5004ms，正好撞 bun **5000ms 默认单测超时**。
+  - `tests/architecture/package-boundaries.unit.test.ts` 的 “stream-error outcomes are minted in exactly one place” —— 5028ms，同样撞默认超时。**这一条是纯静态源码守卫**（grep 源码形状），见下。
+  - `tests/telemetry/backfill-wiring.unit.test.ts:158` 的 “接线 3 — init 清理 `.tmp.*` 孤儿、不删 JSON 本体” —— `await new Promise((r) => setTimeout(r, 20))` **拿固定 20ms 睡眠当「fire-and-forget 清理已完成」的判据**，随后断言 `readdirSync(tmpDir)` 里没有 `.tmp.` 残留。16 分片负载下 20ms 不够，孤儿还在 → 红；单文件隔离跑 8 pass / 0 fail。**这条是第三类形态**（见下），修法是把睡眠换成轮询（`tests/helpers/wait-until.ts` 已有）。发现于 2026-08-09 本分支合并 master 后的合并态全后端跑；本分支对 `tests/telemetry/` 与 `src/lib/telemetry*` **零改动**（`git diff --stat <merge-base>..HEAD -- tests/telemetry src/lib/telemetry` 为空），故不是本轮引入。
+- **三类问题，别混**：① **判据里含 wall-clock 绝对值**（第一条）——这是预算设计问题，改 oracle 就能永久消失；② **撞 5000ms 默认超时**（CAS、uds-transport、package-boundaries 三条）——其中「静态源码守卫」那条的结果**不可能**被运行时改动影响，它超时只说明进程当时太慢，与「负载敏感 perf」是两回事，值得单独给这类文件设 `--timeout` 或拆分；③ **固定睡眠冒充完成信号**（telemetry 那条）——被测的异步动作没有可观测的完成事件，于是用一个睡眠去猜它做完了；这类**不需要重定预算**，换成轮询即可根治，是三类里最便宜的。
+- **当前行为**：机器安静时全绿。同一提交、同一份代码实测对照：负载下 98.91s / 4 fail，安静时 71.68s / **0 fail**。所以这些红**不是**确定性回归；但代价是每次全后端跑完都要人工分辨「这条红是真的吗」，而**分辨成本本身会训练人挥手放过红灯**——本仓 2026-07-28 已经因此吃过一次亏。
+- **理想架构 / 若做需改什么**：交 `perf-engineer` 建**可复现基线**后重定预算：① 判据里去掉 wall-clock 绝对地板，只保留比值与事件循环 gap（这两项对负载稳健）；② 确需绝对值的，按机器实测校准而非拍脑袋，并给这些文件单独的 `--timeout`；③ 超时型（非断言型）的红要能区分「机器慢」与「真的卡住」，否则每次都得靠隔离复跑来判。**注意**：`60-evidence-and-criteria` 的 `false-red-from-process-global-quantities` 与「污染型 flaky」签名相同（单跑绿、全量红），两者要并列排查、可同时成立。
+- **为何暂缓**：A3 合并态复评的范围是那六条 finding 的合并态正确性，不是测试预算工程；重定预算需要先建基线，是独立的一次验证链。本轮已按最小判别动作取证（记测试名与断言、看判据里有无 wall-clock 绝对值、安静/负载对照），结论足以支撑「不阻塞本轮收口」。
+- **触发条件（值得做）**：① 有人开始例行性地把全后端的红当噪声；② 要把 `test:backend` 接进任何自动门禁时——那时 flake 会直接变成假红拦路；③ 这类红开始出现在**断言型**而非超时型判据上，那说明预算问题已经蔓延。
+- **发现方**：A3 合并态复评 round 4 两位 reviewer——GPT 侧裁决我的 flake 归因「成立但须限定为『不是本轮修复造成』」，Claude 侧进一步指出依据里「只有 perf 文件会红」不成立并给出最小判别动作（`docs/tmp/2026-08-08-a3-merged-state-review-{gpt,claude}-round4.md`）。
+
+### peer 会话（2026-08-08 Batch 1b 合并态验证）的独立观测，与上文互补
+
+- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含 `store-performance.it` 的「prepare and commit do not depend on prior session history length」+ CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
 - **不是什么**：不是 `worktree-fix-shutdown-review-findings` 引入的——该分支对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交，无直接改动（`git log --first-parent 44457047~1..765bb2be -- tests/history/v3/ src/lib/history/v3/` 为空）。
-- **两条 legacy Vue 守卫（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿**——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
-- **理想架构 / 若做需改什么**：耗时比值不适合在共享 CPU 的分片 runner 里当通过条件。可选路径：①把该断言迁到不并行的档位（如 `test:pty` 之外另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。②最长远——它测的本来就是「不依赖历史长度」这个性质。
-- **为何暂缓**：属既有测试的判据形态问题，不是产品缺陷；且本轮任务未触及 History V3 store，就地改它会把两件事混进同一次验证链。**但它会持续制造 false-red**，按 `docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 的判据，这正是「wall-clock 预算/比值当通过条件」那一类。
-- **触发条件**：再次在 CI 或全量运行中看到本条变红时，直接做②，不要调阈值——调阈值是打地鼠。
+- **两条 legacy Vue 守卫**（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
+- **该会话给出的三条修法（比上文更具体，优先采纳②）**：①把该断言迁到不并行的档位（如另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。**②最长远——它测的本来就是「不依赖历史长度」这个性质。**
+- **该会话的触发条件**：再次看到本条变红时**直接做②，不要调阈值**——调阈值是打地鼠。
+- **落地结果（2026-08-09，本分支合并 master 时确认）**：peer 最终**同时做了①与②**——`test:perf` 档 + `RUN_PERF_TESTS=1` gate 把比值断言移出 `test:backend`，索引计划 oracle 留在 backend 档当真正的门。比值断言**没有删除也没有放宽**（源码注释记录了一次「改成 `Math.max(coldCommitMs * 5, 60)` 地板」的纯放宽并已回退），只是不再当门禁。**本条到此闭合，上文清单里其余四条不受影响。**
+
+## History 搜索的多词语义是 OR，未与用户确认（2026-08-09，A3 合并态复评 round 4 派生的产品问题）
+
+- **现状**：持久化侧走 Tantivy `QueryParser` 的**默认 OR**——实测 `bug zzzabsent` 命中只含 `bug` 的文档。本轮把 overlay 对齐到了它（`corpusMatchesSearch` 用 `some`），因此**两侧一致**、不再有「未索引行被藏起来」的缺陷。但「一致」不等于「这是用户想要的语义」。
+- **为什么是个问题**：多数搜索框（含各家 IDE 与 issue tracker）默认 AND，多词查询越多词结果越少；这里恰好相反，词越多结果越宽。用户搜「anthropic 超时」会得到所有含「anthropic」**或**含「超时」的记录。
+- **若改需动什么**：native 侧 `QueryParser::set_conjunction_by_default()`，overlay 侧 `some` → `every`（并保持 `\p{L}\p{N}` 切分）。**注意这会改变所有已索引行的搜索语义**，属产品决策而非缺陷修复；改完 `tests/history/search/overlay-index-agreement.it.test.ts` 的样本表要重取（它以真实索引为 oracle，会自动跟着变），并补一条「多词收窄结果」的正控。
+- **为何暂缓**：这是用户的取舍，不是可以由执行方替他做的判断（`ask-if-scope-shrink`）。本轮的缺陷（两侧不一致）已闭合，语义选择独立于它。
+- **触发条件**：用户对搜索结果「太宽」有反馈时；或要给搜索加 UI 提示（如「匹配任意词」）时——那等于把当前语义暴露给用户，届时最好一并确认。
+
+## 搜索匹配有两份实现：Tantivy 与 JS 手写近似（2026-08-09，A3 合并态复评 round 5 的结构怪味）
+
+- **根因 / 现状**：持久化侧由 Tantivy 的 `SimpleTokenizer` + `QueryParser` 决定「什么算命中」，overlay 侧（`queries.ts` 的 `corpusMatchesSearch`）是一份 JS 手写近似。**近似追了四轮**：子串 → 逐 term AND → Unicode 切分 → OR + 逐 term `includes`，每一版都被以真实索引为 oracle 的探针证伪过一次。
+- **当前行为**：不变量已由机器守住——`tests/history/search/overlay-index-agreement.it.test.ts` 断言 **index ⇒ overlay**（蕴含而非等价），10 组语料真建索引真查询，回退 AND 会报出具体不一致。所以「藏行」这个方向是安全的。**剩余代价是过宽**：多词 needle 里任一 term 只要是语料的子串就算命中，故 `a zzzabsent` 会命中 `cartoon`（"a" 是子串）——实测 native total=0 而 overlay 命中。这只影响 recent/in-flight 那一小段窗口（上限 256），落盘后归属移交 sidecar 自动收敛，不产生 total/cursor 自相矛盾。
+- **理想架构 / 若做需改什么**：把「给定 corpus 与 query 是否命中」下沉为 **native 共用能力**（暴露一个不建索引的 match/evaluate 入口，或让 overlay 行也走一次内存索引），overlay 与持久化侧共用同一个 evaluator，双实现随之消失。届时 agreement gate 从「单向蕴含」升级为「等价」，并可以删掉 `corpusMatchesSearch` 里所有关于切分与 AND/OR 的注释——那些正是反复出错的地方。
+- **为何暂缓**：本轮范围是 A3 六条 finding 的合并态正确性；下沉 tokenizer 要动 native 接口与 napi 签名，是独立改动。**更重要的判断**：继续给手写近似打补丁的边际收益已经很低——四轮下来每一版都更接近但仍不等价，而 GPT 侧 reviewer 明确建议「不要继续扩手写近似」。所以下次再遇到不一致，正确动作是做这次下沉，而不是改第五版正则。
+- **触发条件（值得做）**：① agreement gate 再红一次；② 有人要给 overlay 加第二个匹配维度（如按 model / 按字段搜）——那会让双实现的面积翻倍；③ 要把搜索语义改成 AND（见上一条 backlog）时顺手做，因为那本来就要同时改两侧。
+- **发现方**：A3 合并态复评 round 5（`docs/tmp/2026-08-08-a3-merged-state-review-gpt-round5.md`「结构怪味扫描」节），主会话实测复核过宽反例。
+
+## 全部 term 都超长的搜索被判成「查询无法解析」并回 400（2026-08-09，A3 复评 round 6 的接缝发现）
+
+- **根因 / 现状**：native 的 `QueryParser` 先解析成功，再由默认分析链的 `RemoveLongFilter` 把 ≥40 字节的 token 全部滤掉；若 needle 的**每个** term 都超长（例如 `<摘要A> <摘要B>`），结果是一个空查询，而当前实现把它归进 `invalid_query: true` → daemon 贴 `invalid-query` 线码 → handler 回 **400「Unsupported search query」**。实测（`exp/history-search-list-perf/round8-probe.ts` 的 `two long needles` 行）：`listSearch` 返回 `invalidQuery=true`。
+- **当前行为**：这类查询语法**完全合法**，只是所有 term 被长度过滤器滤空。诚实的答案是 **200 + persisted 侧为空**，而不是告诉用户「你的查询没法解析」。这是 round-3 引入的 `invalid_query` 返回值与索引自带长度过滤器之间的接缝——两者分别在不同轮次落地，没人看过交界处。**改动早于本轮的 token 长度修复**，与 overlay 侧无关。
+- **理想架构 / 若做需改什么**：在 native 侧把「解析失败」与「解析成功但 term 集为空」分成两种结果——前者仍走 `invalid_query`，后者按普通空结果返回（`total=0`）。overlay 侧无需改动：它对同一 needle 已经返回 false，两侧一致。补一条对照：`<摘要A> <摘要B>` 必须 200 且 persisted 为空，而 `foo:` 仍必须 400。
+- **为何暂缓**：本轮范围是 overlay 与索引的匹配一致性；这条落在 native 的错误分类上，且需要区分两种「空」才不至于把真正的解析失败也降级成空结果，值得自己的一次验证。用户可观察的影响也小于 overlay 那几条：它只在「查询里每个词都超过 40 字节」时触发。
+- **触发条件（值得做）**：① 有用户反馈「搜两个 hash 报错」；② 下次动 `invalid_query` 这条线码时顺手分开；③ 若将来放宽或移除 `RemoveLongFilter`，这条自然消失，改之前先确认。
+- **发现方**：A3 合并态复评 round 6（Claude 侧收尾意见第 2 条），主会话用 `round8-probe.ts` 实测复现 `invalidQuery=true`。
 
 ## History Worker 的启动重试无截止时间，Batch 2b 接线时必须补（2026-08-09，Batch 2a 三轮评审的裁决产物）
 

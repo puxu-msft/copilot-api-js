@@ -46,6 +46,7 @@ export const INPUT_FORMAT_LABEL: Record<EndpointType, string> = {
   "openai-chat-completions": "openai-cc",
   "openai-responses": "openai-re",
   "gemini-generate-content": "gemini",
+  "openai-embeddings": "openai-emb",
 }
 
 export interface LogLineParts {

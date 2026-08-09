@@ -264,7 +264,8 @@ async function handleRequest(
     const response: HistorySearchWireResponse = { rows }
     writeReply(socket, response)
   } catch (error) {
-    const code = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "invalid-cursor" ? "invalid-cursor" : undefined
+    const raw = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined
+    const code = raw === "invalid-cursor" || raw === "invalid-query" ? raw : undefined
     const reply: HistorySearchWireError = { error: errorText(error), ...(code ? { code } : {}) }
     writeReply(socket, reply)
   }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "runner_git_blob": "a27bf46dc41649c90090d6670b391b5b8bf57517",
-  "minimum_executed": 7606,
+  "minimum_executed": 7613,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",
     "tests/anthropic/anthropic-client.it.test.ts",
@@ -269,6 +269,7 @@
     "tests/history/search/daemon-entry-status.it.test.ts",
     "tests/history/search/daemon-service.it.test.ts",
     "tests/history/search/daemon.it.test.ts",
+    "tests/history/search/overlay-index-agreement.it.test.ts",
     "tests/history/search/protocol.unit.test.ts",
     "tests/history/search/search-rest-cutover.it.test.ts",
     "tests/history/search/uds-transport.it.test.ts",
@@ -294,6 +295,7 @@
     "tests/history/v3/readonly-store.it.test.ts",
     "tests/history/v3/recovery-projection.unit.test.ts",
     "tests/history/v3/recovery-script.it.test.ts",
+    "tests/history/v3/search-target-ownership.it.test.ts",
     "tests/history/v3/store-performance.it.test.ts",
     "tests/history/v3/store.it.test.ts",
     "tests/history/v3/summary-integrity-dml.it.test.ts",
@@ -822,7 +824,25 @@
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search native list-search",
+      "name": "excludes superseded documents that survive as tombstones in a live segment",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/daemon.it.test.ts",
+      "classname": "history-search native list-search",
       "name": "pairs each batched-resolved operation id with its own document",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/daemon.it.test.ts",
+      "classname": "history-search native list-search",
+      "name": "reports an unparsable query as invalidQuery, keeping a malformed request an error",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -850,6 +870,15 @@
       "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search native list-search",
       "name": "selects the same set whether a filter is answered by the index or per document",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/daemon.it.test.ts",
+      "classname": "history-search native list-search",
+      "name": "treats an empty filter value as no filter without loosening a real one",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -937,6 +966,33 @@
     },
     {
       "kind": "testcase",
+      "file": "tests/history/search/overlay-index-agreement.it.test.ts",
+      "classname": "overlay and index agree in both directions",
+      "name": "a needle sharing nothing with the row still matches nothing",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/overlay-index-agreement.it.test.ts",
+      "classname": "overlay and index agree in both directions",
+      "name": "in-flight rows match the index, and only the index",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/overlay-index-agreement.it.test.ts",
+      "classname": "overlay and index agree in both directions",
+      "name": "recent terminal rows match the index over the JSON corpus it will actually hold",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
       "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "GET entries?search traverses real HTTP -> UDS -> sidecar -> Tantivy and returns the narrow summary page",
@@ -958,6 +1014,15 @@
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
       "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "a facet other than inbound returns empty + partial even with a reachable sidecar (projection has no data for it)",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/search-rest-cutover.it.test.ts",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
+      "name": "an unparsable query is 400 while an unreachable sidecar stays 503",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"

@@ -79,8 +79,13 @@ type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "gemini"
 
 const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in", "prepare-wire"])
 
-/** entryId → format: the stored `endpoint` discriminant maps 1:1 to a dry-run format. */
-const ENDPOINT_TO_FORMAT: Record<EndpointType, DryRunFormat> = {
+/**
+ * entryId → format: the stored `endpoint` discriminant maps 1:1 to a dry-run format, except for
+ * `openai-embeddings`, which has no generation pipeline to dry-run. It is absent rather than
+ * mapped to a neighbouring format, so `resolveFormat` can reject it instead of silently
+ * inspecting an embeddings entry as if it were a chat completion.
+ */
+const ENDPOINT_TO_FORMAT: Partial<Record<EndpointType, DryRunFormat>> = {
   "anthropic-messages": "anthropic",
   "openai-chat-completions": "openai-cc",
   "openai-responses": "openai-responses",
@@ -223,12 +228,20 @@ function buildEnv(ctx: RequestContext, cfg: ResponseFormatConfig, tools: unknown
   } as unknown as RequestEnvelope
 }
 
-/** Resolve the dry-run format: explicit param > entry endpoint mapping > `anthropic` (inline default). */
-function resolveFormat(body: DryRunBody, entryEndpoint?: EndpointType): DryRunFormat {
+/**
+ * Resolve the dry-run format: explicit param > entry endpoint mapping > `anthropic` (inline default).
+ * `undefined` means the entry's endpoint has no dry-run pipeline (embeddings); callers turn that
+ * into a 400 rather than falling back, since any fallback would inspect the payload under the
+ * wrong codec and report a plausible-looking result.
+ */
+function resolveFormat(body: DryRunBody, entryEndpoint?: EndpointType): DryRunFormat | undefined {
   if (body.format) return body.format
   if (entryEndpoint) return ENDPOINT_TO_FORMAT[entryEndpoint]
   return "anthropic"
 }
+
+const unsupportedDryRunEndpoint = (endpoint: EndpointType | undefined) =>
+  `Dry-run does not support entries recorded on the '${endpoint}' endpoint; pass an explicit \`format\` to override.`
 
 /**
  * Build the REAL per-format codec + driver for the request side, then run `inspectRequest`
@@ -320,6 +333,7 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
     }
     if (!payload) return c.json({ error: "Request-side stages need `request` (inline payload) or `entryId`" }, 400)
     const format = resolveFormat(body, entryEndpoint)
+    if (!format) return c.json({ error: unsupportedDryRunEndpoint(entryEndpoint) }, 400)
     try {
       const { result: inspection, events } = await inspectFormatRequest(format, payload, body.stopAfter as RequestInspectStage)
       return c.json({
@@ -389,6 +403,7 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
   }
 
   const format = resolveFormat(body, entryEndpoint)
+  if (!format) return c.json({ error: unsupportedDryRunEndpoint(entryEndpoint) }, 400)
   const cfg = RESPONSE_FORMAT_CONFIG[format]
   const stream = frames !== undefined
   const skipRender = body.stopAfter === "rewrite-out"

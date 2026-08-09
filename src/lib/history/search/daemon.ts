@@ -611,10 +611,15 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
       direction: request.cursor?.direction ?? "older",
       limit: request.limit,
     })
+    if (result.invalidQuery) {
+      // A caller fault, reported through the same channel as `invalid-cursor` so the HTTP layer can
+      // answer 400. Everything else the index can go wrong with still throws and still reads as 503.
+      throw Object.assign(new Error(`Unsupported search query: ${request.query}`), { code: "invalid-query" as const })
+    }
     if (result.invalidCursor) {
       throw Object.assign(new Error(`Unknown or filtered summary cursor: ${request.cursor?.operationId ?? "unknown"}`), { code: "invalid-cursor" as const })
     }
-    const { invalidCursor: _invalidCursor, ...page } = result
+    const { invalidCursor: _invalidCursor, invalidQuery: _invalidQuery, ...page } = result
     return {
       ...page,
       attestation: {

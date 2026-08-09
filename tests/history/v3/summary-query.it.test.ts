@@ -12,6 +12,7 @@ import path from "node:path"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
   clearInFlight,
@@ -54,8 +55,14 @@ import {
   SUMMARY_PROJECTION_READY_KEY,
   withValidatedSummarySnapshot,
 } from "~/lib/history/v3/summary-store"
+import {
+  //
+  publishModelOperationTerminal,
+  resetModelOperationTerminalBusForTests,
+} from "~/lib/history/v3/terminal-bus"
 import { createDatabase } from "~/lib/sqlite/driver"
 
+import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
 function persist(input: {
@@ -134,6 +141,9 @@ afterEach(() => {
   setHistorySearchClientForTests(undefined)
   setSummarySnapshotObserverForTests(undefined)
   clearInFlight()
+  // The recent-terminal bus is process-global like the in-flight map, and a record left on it is
+  // an overlay row every later test in this file silently inherits.
+  resetModelOperationTerminalBusForTests()
   closeDatabase()
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -337,6 +347,179 @@ describe("persisted list-search facade", () => {
     expect(compatible.entries.map((entry) => entry.id)).toEqual(["search-failed"])
     expect(calls).toBe(1)
     expect(capturedStates).toEqual(["failed"])
+  })
+
+  /**
+   * The overlay and the index do not agree on what "matches" means — the overlay tests a lowercase
+   * substring, the index tokenizes — so a row visible to both can match on one side only. Whichever
+   * way that disagreement is resolved, `total` must account for every row in `entries`; the failure
+   * this guards against is a page that shows a row nothing counted.
+   *
+   * The resolution is that a row the index already holds belongs to the index: it is dropped from
+   * the overlay rather than contributed with different semantics, so the answer stops changing as a
+   * row crosses the persistence boundary.
+   */
+  test("does not show a persisted row the sidecar did not match, whatever the overlay's substring test says", async () => {
+    persist({ id: "overlap-cartoon", startedAt: 100 })
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+
+    // The SAME operation is also on the recent bus, carrying text the overlay's substring test hits.
+    const recorder = createModelOperationRecorder({ identity: { operationId: "overlap-cartoon", kind: "generation", createdAt: 100 } })
+    const payload = recorder.registerPayload({ messages: [{ role: "user", content: "a cartoon" }] }, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload } })
+    publishModelOperationTerminal(historyTerminalPublication(recorder.commitTerminal({ outcome: "completed" })))
+
+    // The sidecar tokenizes, so an infix like `art` does not match `cartoon`: it returns nothing.
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [],
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    const result = await getHistorySummariesAsync({ search: "art", limit: 10 })
+
+    expect(result.total).toBeGreaterThanOrEqual(result.entries.length)
+    expect(result).toMatchObject({ entries: [], total: 0 })
+  })
+
+  /**
+   * The positive control for the test above, and it is not optional: after ownership moved every
+   * index-visible row to the sidecar, contributing rows the index CANNOT see yet is the overlay's
+   * only remaining job. Without this, replacing the overlay with an empty list passes the whole
+   * file — measured, before this test existed.
+   *
+   * The multi-word case is here for a second reason. The overlay cannot ask the index about a row
+   * the index has never seen, so it approximates the tokenizer; a plain substring test failed
+   * `hello world` against `hello-world`, which hid a just-finished request from an ordinary query
+   * for as long as it took the sidecar to catch up.
+   */
+  test("shows and counts a recent row the index cannot see yet, including for a multi-word query", async () => {
+    persist({ id: "anchor-row", startedAt: 100 })
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+
+    // Terminal, on the recent bus, NOT persisted — visible to nobody but the overlay.
+    const recorder = createModelOperationRecorder({ identity: { operationId: "unindexed-row", kind: "generation", createdAt: 200 } })
+    const payload = recorder.registerPayload(
+      { messages: [{ role: "user", content: "please fix the hello-world bug" }] },
+      { origin: { stage: "ingress", track: "client" } },
+    )
+    recorder.recordIngress({ request: { payload } })
+    publishModelOperationTerminal(historyTerminalPublication(recorder.commitTerminal({ outcome: "completed" })))
+
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [],
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    for (const search of ["hello-world", "hello world", "fix hello"]) {
+      const result = await getHistorySummariesAsync({ search, limit: 10 })
+      expect(result.entries.map((entry) => entry.id)).toEqual(["unindexed-row"])
+      expect(result.total).toBe(1)
+    }
+    // A query carrying one word the row lacks must STILL match, because the index is OR by default
+    // (`bug zzzabsent` matches a document containing only `bug` — measured). An earlier version of
+    // this test asserted the opposite and would have made the correct fix look like a regression.
+    expect(await getHistorySummariesAsync({ search: "hello zzzabsent", limit: 10 })).toMatchObject({ entries: [{ id: "unindexed-row" }], total: 1 })
+    // The real negative control: no term of the needle appears anywhere in the row.
+    expect(await getHistorySummariesAsync({ search: "zzzabsent qqqabsent", limit: 10 })).toMatchObject({ entries: [], total: 0 })
+  })
+
+  /**
+   * The overlay's tokenizer is an approximation of the index's, and the approximation was ASCII-only
+   * — which produces no terms at all for a non-Latin script, silently falling through to a substring
+   * test the index disagrees with. Since the overlay is the only way to see a row the index has not
+   * indexed yet, that was a hole for every language that is not written in ASCII.
+   *
+   * The corpora here are punctuated the way the index needs to see word boundaries, and each pair is
+   * one the real index matches — calibrated in `exp/history-search-list-perf/cjk-probe.ts` rather
+   * than assumed, since the two tokenizers are not the same code.
+   */
+  test.each([
+    ["你好，世界", "你好 世界"],
+    ["значение по умолчанию", "значение умолчанию"],
+    ["Grüße aus München", "grüße münchen"],
+    ["please fix the hello-world bug", "hello world"],
+  ])("matches an unindexed row for a multi-word query over %s", async (content, search) => {
+    persist({ id: "anchor-row", startedAt: 100 })
+    expect(validateAndMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+
+    const recorder = createModelOperationRecorder({ identity: { operationId: "script-row", kind: "generation", createdAt: 200 } })
+    const payload = recorder.registerPayload({ messages: [{ role: "user", content }] }, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload } })
+    publishModelOperationTerminal(historyTerminalPublication(recorder.commitTerminal({ outcome: "completed" })))
+
+    // The sidecar matches nothing, so the overlay answers alone — which is exactly the window this
+    // guards: a row it cannot see yet is visible only if the overlay's tokenizer agrees with it.
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [],
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    const result = await getHistorySummariesAsync({ search, limit: 10 })
+    expect(result.entries.map((entry) => entry.id)).toEqual(["script-row"])
+    expect(result.total).toBe(1)
   })
 })
 
