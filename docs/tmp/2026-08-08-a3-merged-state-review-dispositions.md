@@ -55,4 +55,24 @@
 - [x] 收齐两侧共 8 条并逐条复核（全部成立）
 - [x] 实施 8 条
 - [x] 全后端 `test:backend`（3609/3610，唯一失败为既有 flake，见上）
-- [ ] 复评到 0 blocker / 0 major
+- [x] round 2 复评：GPT 0 blocker/1 major、Claude 0 blocker/3 major（去重后 3 条），全部复核成立并修复
+- [ ] round 3 复评到 0 blocker / 0 major
+
+## Round 2 复评（两侧独立收敛到同一条）
+
+报告：`2026-08-08-a3-merged-state-review-gpt-round2.md`；Claude 侧无 Write 工具，其正文转录进 `2026-08-08-a3-merged-state-review-claude-round2.md`。
+
+**两位独立指向同一条**：substring/tokenized 双语义可再造 `entries.length=1,total=0`。GPT 说「可再次制造」，Claude 进一步证明它**已不需要竞态**——这对该条构成交叉佐证。
+
+| # | 发现 | 我的复核 | 处置 |
+|---|---|---|---|
+| R1 | `code === "InvalidArg"` 判据过宽：napi 用同一状态报「字段缺失/类型不符」，基础设施故障被误报成 400 | **成立，且是我 round 1 新引入的缺陷**。探针实测：`foo:` → `InvalidArg`，`limit: undefined` → **同样** `InvalidArg`（`Missing field \`limit\``）。两者不可区分，「不完整就 fail-loud」的 503 契约被假 400 绕过 | 采纳（C）·`14f7c6d4`：改用 native 已有的 `invalid_cursor` **返回值**范式，新增 `invalid_query: bool`；不再从传输层状态反推语义 |
+| R2 | overlay 子串 vs 索引分词，`entries` 有行而 `total` 不计；且我 round 1 的注释声称「已排除该形态」 | **成立**。探针实测同一 corpus `hello world cartoon`：`orld`/`art` → tantivy total=0 而 JS 子串 true。`hasPersistedSummaryMatching` 走的 `compileSummaryWhere` **不含 search 项**，故归属判据答非所问 | 采纳（C）·`f2c4ba09`：不调和两套语义（那要在 JS 重实现分词并保持同步），而是**消灭「两套」**——索引已能看见的行归索引裁决与计数，overlay 只保留索引还看不见的部分。连带修正 `requireMatch` 与 cursor 解析的同一处不一致 |
+| R3 | 三条行为修复零回归测试；400/503 跨四模块任一环退化都不会变红 | **成立**。`rg 'invalid-query\|InvalidSearchQueryError'` 在 `tests/` 零命中 | 采纳（C）·`852f9b92`：补三条，各带正负对照 |
+
+**Round 2 验证**：`typecheck` 绿、eslint 干净；`bun test tests/history/` 583 pass/0 fail（较 round 1 的 579 正好 +4）；**全后端 5594 pass / 0 fail**（executed 7329，较 round 1 的 7325 +4，与新增回归数一致；round 1 那条 `store-performance` 超时未复现）。
+
+**变异对照**（三条新测试逐条打）：
+- 400 映射：注释掉 `result.invalidQuery` 分支 → HTTP 返回 200 而非 400，变红。
+- overlay 归属：把 `overlaySummaries` 改回包含索引已拥有的行 → `entries` 列出 1 行而 `total=0`，正是 bug 的准确形态。
+- **第一次变异没变红，值得记**：不是修复无效，而是 fixture 里的 `sessionId` 过滤在 search 判定之前就丢掉了 overlay 行——测试通过但什么都没测到。这是「mutation 没变红」的第三解（fixture 造不出被测状态），去掉该过滤后才真正获得判别力。
