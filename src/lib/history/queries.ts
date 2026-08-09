@@ -202,16 +202,31 @@ function summaryMatchesOperationKind(summary: EntrySummary, operationKind: NonNu
  * A single-token needle keeps the substring test. That over-matches by design — it is what makes a
  * search box usable as you type — and it is bounded: one term, not one term out of several.
  */
+const INDEX_TOKEN_BYTE_LIMIT = 40
+
+/**
+ * Tokenize the way the index does, including the part that throws tokens away.
+ *
+ * Tantivy's default chain ends in `RemoveLongFilter`, so a token of 40 bytes or more never reaches
+ * the index and can never be matched there — measured: a 39-character token is searchable, a
+ * 40-character one is not. Keeping such tokens here would match rows the index cannot, which is the
+ * over-match that took the first page. The limit is in BYTES, so a Chinese token of fourteen
+ * characters is already over it.
+ */
+function indexableTokens(lowercased: string): Array<string> {
+  return lowercased.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0 && Buffer.byteLength(token) < INDEX_TOKEN_BYTE_LIMIT)
+}
+
 function corpusMatchesSearch(text: string, needle: string | undefined): boolean {
   if (!needle) return true
   const haystack = text.toLowerCase()
-  const terms = needle
+  const rawTerms = needle
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
-  if (terms.length <= 1) return haystack.includes(needle.toLowerCase())
-  const tokens = new Set(haystack.split(/[^\p{L}\p{N}]+/u).filter(Boolean))
-  return terms.some((term) => tokens.has(term))
+  if (rawTerms.length <= 1) return haystack.includes(needle.toLowerCase())
+  const tokens = new Set(indexableTokens(haystack))
+  return rawTerms.filter((term) => Buffer.byteLength(term) < INDEX_TOKEN_BYTE_LIMIT).some((term) => tokens.has(term))
 }
 
 /**

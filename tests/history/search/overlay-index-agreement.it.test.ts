@@ -85,14 +85,26 @@ function recentRecord(content: string) {
 interface Pair {
   content: string
   needle: string
-  /** A one-word needle is a substring match by design, so it may match where the index does not. */
-  singleTerm?: true
+}
+
+/**
+ * Whether a needle is one term, derived by the same split the predicate uses rather than annotated
+ * by hand — a mis-annotated pair would silently grant itself the over-match exemption.
+ */
+function isSingleTerm(needle: string): boolean {
+  return (
+    needle
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean).length <= 1
+  )
 }
 
 /**
  * Pairs span the ways two tokenizers drift: punctuation inside a word, a term the row lacks,
- * non-Latin scripts, digits, and — critically — short terms against the id- and key-dense JSON that
- * `projectSearchableText` actually produces, which is where a substring test goes wrong.
+ * non-Latin scripts, digits, the id- and key-dense JSON that `projectSearchableText` actually
+ * produces (where a substring test goes wrong), and the length at which the index stops indexing a
+ * token at all.
  */
 const PAIRS: Array<Pair> = [
   { content: "please fix the hello-world bug", needle: "hello world" },
@@ -110,9 +122,15 @@ const PAIRS: Array<Pair> = [
   { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "fix it" },
   { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "a bug" },
   { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "commit editor" },
-  // Single-term needles: substring by design, listed so the exemption is per pair and not a blanket.
-  { content: "please fix the hello-world bug", needle: "orld", singleTerm: true },
-  { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "429", singleTerm: true },
+  // The index drops tokens of 40 bytes or more (`RemoveLongFilter`), so the boundary is a real
+  // agreement axis: 39 is searchable, 40 is not, and a digest never is.
+  { content: `id ${"a".repeat(39)} done`, needle: `${"a".repeat(39)} zzzabsent` },
+  { content: `id ${"a".repeat(40)} done`, needle: `${"a".repeat(40)} zzzabsent` },
+  { content: `digest ${"9f".repeat(32)} recorded`, needle: `${"9f".repeat(32)} zzzabsent` },
+  // Single-term needles: substring by design. Kept in the table so the exemption is exercised, not
+  // assumed — `isSingleTerm` decides which they are.
+  { content: "please fix the hello-world bug", needle: "orld" },
+  { content: "commit the editor change, request id 5f1429ab, waiting for upstream", needle: "429" },
 ]
 
 async function indexSaysMatch(needle: string, corpusForIndex: string): Promise<boolean> {
@@ -150,16 +168,19 @@ describe.skipIf(!isNativeHistorySearchAvailable())("overlay and index agree in b
    */
   test("in-flight rows match the index, and only the index", async () => {
     const disagreements: Array<string> = []
-    for (const { content, needle, singleTerm } of PAIRS) {
+    for (const { content, needle } of PAIRS) {
       const indexed = await indexSaysMatch(needle, content)
       clearInFlight()
       putInFlight(liveEntry(content))
       const overlay = listHistoryOverlaySummaries(needle).length > 0
       if (indexed && !overlay) disagreements.push(`hidden: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
-      if (!indexed && overlay && !singleTerm) disagreements.push(`over-matched: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
+      if (!indexed && overlay && !isSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(content)} / ${JSON.stringify(needle)}`)
     }
     expect(disagreements).toEqual([])
-  })
+    // Builds one real Tantivy index per pair, so the run time tracks the machine rather than the
+    // behaviour under test. The explicit budget keeps a loaded shard from reporting a timeout where
+    // the assertion would have passed — the very failure mode recorded in the deferred backlog.
+  }, 120_000)
 
   /**
    * The recent-bus lane, which is the one that matters most: its corpus is `projectSearchableText`
@@ -168,17 +189,17 @@ describe.skipIf(!isNativeHistorySearchAvailable())("overlay and index agree in b
    */
   test("recent terminal rows match the index over the JSON corpus it will actually hold", async () => {
     const disagreements: Array<string> = []
-    for (const { content, needle, singleTerm } of PAIRS) {
+    for (const { content, needle } of PAIRS) {
       const record = recentRecord(content)
       const indexed = await indexSaysMatch(needle, projectSearchableText(record))
       resetModelOperationTerminalBusForTests()
       publishModelOperationTerminal(historyTerminalPublication(record))
       const overlay = listHistoryOverlaySummaries(needle).length > 0
       if (indexed && !overlay) disagreements.push(`hidden: ${JSON.stringify(needle)}`)
-      if (!indexed && overlay && !singleTerm) disagreements.push(`over-matched: ${JSON.stringify(needle)}`)
+      if (!indexed && overlay && !isSingleTerm(needle)) disagreements.push(`over-matched: ${JSON.stringify(needle)}`)
     }
     expect(disagreements).toEqual([])
-  })
+  }, 120_000)
 
   test("a needle sharing nothing with the row still matches nothing", () => {
     putInFlight(liveEntry("please fix the hello-world bug"))
