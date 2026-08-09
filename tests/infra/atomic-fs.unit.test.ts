@@ -239,20 +239,26 @@ describe("createSerializedAsyncFn", () => {
     expect(parsed.n).toBe(49)
   })
 
-  test("without serialization, an earlier-invoked write overwrites a later-invoked one (regression guard)", async () => {
-    // Documents the failure mode `createSerializedAsyncFn` exists to prevent: with raw
-    // `atomicWriteJson`, what lands on disk is decided by PHYSICAL write order, so the last
-    // invocation has no claim on the final state.
+  test("raw atomicWriteJson gives invocation order no authority: the first-invoked write lands last and wins", async () => {
+    // WHAT THIS IS FOR — a falsifiable statement, not a label: with raw `atomicWriteJson`, the
+    // bytes on disk are decided by PHYSICAL write order alone, so the last invocation has no claim
+    // on the final state. That is the property `createSerializedAsyncFn` exists to supply, and this
+    // case shows its absence concretely.
     //
-    // This used to be expressed as reverse-staggered sleeps plus `expect(n).not.toBe(2)`, which is
-    // not a valid way to state it: "not guaranteed to win" means "sometimes loses", and a single
-    // sample cannot express "sometimes". Its own comment conceded the outcome was scheduler-decided
-    // ("Allows n=0 or n=1 depending on scheduler") while asserting it deterministically — so when
-    // the scheduler let n=2 land first, it went red on the 6th gate round with nothing broken.
+    // WHAT IT DOES NOT DO — measured, so nobody over-values it: it has NO discriminating power of
+    // its own. Degrading `createSerializedAsyncFn` to a pass-through leaves it green 0/8 (that is
+    // caught by "serializes overlapping calls in invocation order", 8/8). Breaking replacement so a
+    // write never overwrites an existing file does redden it, but reddens `overwrites existing file
+    // atomically` and the 50-write case in the same run — and the former is the deterministic test
+    // written for exactly that. It is kept for what it demonstrates, not for what it alone catches.
     //
-    // Restated as a deterministic construction with NO timers: the first-invoked call is held at a
-    // gate, the last-invoked call is awaited to completion, and only then is the first released.
-    // Physical order is fixed by construction, so the outcome is exact rather than "not 2".
+    // It previously said "last-invoked write is NOT guaranteed to win" and checked that with a
+    // single sample, `expect(n).not.toBe(2)`, under reverse-staggered sleeps. "Not guaranteed" means
+    // "sometimes loses", which one sample cannot express — its own comment conceded the outcome was
+    // scheduler-decided while asserting it deterministically, and it went red on a gate round with
+    // nothing broken. Now constructed with a gate and NO timers: the first-invoked call is held, the
+    // last-invoked call is awaited to completion, then the first is released. Physical order is
+    // fixed by construction, so the expectation is exact rather than "not 2".
     const target = path.join(workDir, "racing-raw.json")
     let releaseFirst!: () => void
     const gate = new Promise<void>((resolve) => {
