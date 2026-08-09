@@ -2,13 +2,30 @@
 
 > **状态：进行中（阶段 1 已交付，阶段 2/3 未开工）**
 >
-> **核验基线：** 2026-08-08，本地 `master` = `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；阶段 1 代码终点 = `bea1dfa3d61896bf2089958676bd1236269877d9`，spec 状态提交 = `d47492a69d1cd7a66fa08b63ad8d717bafbdf194`。复现：`git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master`。**未 push**，全部提交都在本地。
+> **核验基线：** 2026-08-08，本地 `master` = `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`；阶段 1 代码终点 = `bea1dfa3d61896bf2089958676bd1236269877d9`，spec 状态提交 = `d47492a69d1cd7a66fa08b63ad8d717bafbdf194`。复现：**`git rev-parse refs/heads/master`**（**别写 `git -C <主树>`**——在隔离 worktree 会话里会被护栏拒绝；worktree 共享 refs，裸命令实测同值）。**未 push**，全部提交都在本地。
 >
 > **分支与 worktree：** 阶段 1 在隔离 worktree `/home/xp/src/copilot-api-js/.claude/worktrees/nghttp2-header-deadline`（分支 `worktree-nghttp2-header-deadline`）完成，已 fast-forward 进 `master`。阶段 2 请**另开新 worktree**，不要复用该树。
 >
-> **未提交 WIP：** 本交接落盘时，共享主树 `/home/xp/src/copilot-api-js` 有其他会话的未提交改动（`config.yaml`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md` 及若干未追踪 `docs/` 文件）。**那些不是本任务的**，不得 stage、commit、stash 或还原。接手时自行 `git -C /home/xp/src/copilot-api-js status --short` 重取。
+> **收尾后的分支状态（2026-08-08，由独立评审证伪后更正）：** ⚠️ 本行先前写「该分支全部提交已是 `master` 祖先」，**那是错的**——写下它时分支已有若干收尾提交未进主线。**别用字面数字，它会漂**（一度写 5，随后就成了 7）；用命令取当前值：`git merge-base --is-ancestor worktree-nghttp2-header-deadline master`（未合入时退出 1）与 `git rev-list --count master..worktree-nghttp2-header-deadline`。**因此本刷新段在写作时并不在 `master` 上**（`git show master:<本文件> | grep 收尾时刷新` 零命中）——从 `master` 开新树的接手方会读到没有刷新段的旧版。
+>
+> **一个更稳的事实（不随提交数变化）**：`git diff --name-only master...worktree-nghttp2-header-deadline` **只有 `docs/` 下的路径、无任何代码路径**——即这些未合入提交全是文档，孤立它们不会丢失代码，但会丢失本轮的收尾记录与两份评审报告。
+>
+> **正确顺序（用户已裁决：分支删除、worktree 保留）**：① 先在主树 `git merge --ff-only worktree-nghttp2-header-deadline`；② 确认 `merge-base --is-ancestor` 退出 0；③ 再删分支。**顺序不能颠倒**：`git branch -d` 对未合入分支会拒绝，而 `-D` 会把这些 docs 提交打成孤立提交。另注意该分支正被本 worktree 检出，**`branch -d` 在检出状态下物理上删不掉**（`cannot delete branch ... used by worktree`），须先在该 worktree `git checkout --detach` 或移除该 worktree。**执行前以 `git branch --list worktree-nghttp2-header-deadline` 与上面两条命令为准，不要相信本行的时态。**
+>
+> **未提交 WIP：** 本交接落盘时，共享主树 `/home/xp/src/copilot-api-js` 有其他会话的未提交改动（`config.yaml`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md` 及若干未追踪 `docs/` 文件）。**那些不是本任务的**，不得 stage、commit、stash 或还原。接手时自行 `git -C /home/xp/src/copilot-api-js status --short` 重取。⚠️ **若你也在隔离 worktree 里，这条命令会被护栏拒绝**（实测：`-C` 指向共享 checkout 的 git 操作被拦），改到主树会话里跑，或让用户代跑。
 >
 > **已跑门禁（阶段 1 合并态，锚定 `bea1dfa3`）：** `bun run typecheck` 绿；`bun run lint:all` 绿；`bun run test:backend` = `7279 executed / 30 skipped / 0 fail`。独立 code reviewer 与 verifier 各自复评 PASS（0 blocker / 0 major / 0 minor）。
+>
+> **⚠️ 收尾时刷新（2026-08-08 23:21 UTC，`master` = `5720855929c78b6b601b64c57b9329513edcd98e`）：** 上面那组数字仍然成立，但**只在它锚定的 `bea1dfa3` 上成立**；此后主线大幅前进，你现在跑会得到**不同的数字**，那不是回归：
+>
+> - 最近一次合并态实测（`f4efacfe`）是 `7297 executed / 35 skipped / 0 fail`。executed 涨是主线新增测试；skipped 从 30 涨到 35 的 **5 条增量全部是 `describe.skipIf(!NATIVE)`**（已核，无 todo／whole-suite-skip 混入；本机无 native 产物即 skip，属预期，见 CLAUDE.md 测试分档节）。⚠️ **`0 fail` 不是稳定可复现的，且不止一条**：全套件 16 分片并行下，实测**两个**文件会因负载而红，单独跑均绿——
+>   - `tests/history/v3/store-performance.it.test.ts`（撞 15s timeout；单跑 3 pass / 0 fail）
+>   - `tests/e2e-client/keepalive-idle-reset.it.test.ts`（`keepalive M-2 … armSilent (positive control)`；单跑 3 pass / 0 fail）
+>
+>   撞到时**先按文件单跑判别**（`bun test <该文件>`）是真回归还是机器负载，别当成你的改动引入。收尾时这两条在同一次 `test:backend` 里同时红过一次，而当时分支 delta 是纯文档（`git diff --name-only master...<branch>` 无代码路径），故与本轮改动无关。
+> - `tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped` 与实测 skip 数存在缺口（收尾时为 31 vs 35，**这两个数会随 peer 补登记而变，别当固定值**；重取：`bun -e 'console.log(require("./tests/infra/entry-test-discovery-baseline.json").allowed_skipped.length)'` 与 `bun run test:backend` 输出行里的 `skipped`）。⚠️ **归因已更正**：先前写「差的 4 条来自 `08046d5c`」是错的——`08046d5c` 实测**是 `bea1dfa3` 的祖先**（`git merge-base --is-ancestor 08046d5c bea1dfa3` 退出 0），早于阶段 1，不可能是来源。真实来源是 **`d38fcb9c`（+4，给 `tests/history/search/daemon.it.test.ts` 加了 191 行）**；另 +1 来自 `7a99a254`，**已由本分支 `7af27044` 登记**。（我原先用 `git log -S '<describe 名>'` 定位，那找到的是**引入该字符串**的提交，不是**新增这些测试**的提交——`-S` 查的是字符串出现次数变化。）**这部分缺口不归你修**，但下面这条归你：
+> - ⚠️ **`test:backend` 会读这份 baseline，别记成「不读」**：`tests/infra/entry-evidence-schema.unit.test.ts:13,17` 用 `readFileSync` 读的就是真实文件，且在 backend 档内；`:25` 精确 `toEqual` 断言 `baseline.files` 等于实际发现的测试文件集合。**推论——阶段 2 你只要新增／改名／**删除**任何 `tests/**` 下的 `*.{unit,it,http}.test.ts`，`test:backend` 就会红在这条，必须同步更新 `files`**（判据是**集合相等**，所以删文件与加文件同样会红），这属于你的活。⚠️ **限定别丢**：glob 只覆盖 `tests/` 目录下这三个后缀；`.pty` / `.e2e` 与 `tests/` 之外的路径**不在其中，误加进去会让 `toEqual` 当场红**。它校验的另一半是 canonical 形态（`parseDiscoveryBaseline` 查键序、字节序排序、唯一性，含 `allowed_skipped` 自身结构），但**不**把 `allowed_skipped` 与运行时实际 skip 集合比对——那个 exact multiset 比对只在 `scripts/capture-entry-evidence.ts` / `scripts/validate-entry-evidence.ts`，且 **`capture-entry-evidence.ts:265` 的 `runner_git_blob` / `files` 检查（`fail(4)`）排在 multiset 门之前**，所以 producer 先撞哪一道要看实际。`minimum_executed`（当前 7279）是**地板**不是等式，实测 7297 满足它、不会红。
+> - **阶段 1 的验收证据不因主线前进而失效**（user-rule `moving-shared-head-is-not-failure`）；要重新验证时按上面的锚点重跑，别拿新数字去对旧断言。
 
 **阅读顺序：** ① 本文；② 同目录 [KICKOFF.md](KICKOFF.md)（可直接复制成新会话第一条消息）；③ 冻结规格 [spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md](../../spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md) 的 §3 不变量、§5.2/§5.3 阶段产物与 §6 夹具纪律；④ 实施计划 [2026-08-06-http2-cancel-provenance-and-header-deadline.md](../2026-08-06-http2-cancel-provenance-and-header-deadline.md) 的阶段 2/3 任务；⑤ 需要 transport 背景时读 [DESIGN.md](../../DESIGN.md) 的 transport 活架构行。**spec 是阶段契约的 SSOT**，本文只交接状态、证据、冲突与开工顺序。
 

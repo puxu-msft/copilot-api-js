@@ -1240,11 +1240,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
 
-## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-09，A3 合并态复评 round 4 的邻域发现）
+## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-08 合并态验证 + 2026-08-09 A3 复评 round 4，两个会话独立撞到同一问题）
+
+> 本条由两条独立发现合并而成：peer 会话在 Batch 1b 合并态验证时记下 `store-performance.it` 的比值断言与三次全量运行的 A/B；A3 合并态复评 round 4 记下另外三条断言与「两类红」的区分。两边证据互补，故并成一条——分两条会让下一个人修了一条漏另一条。
 
 - **根因 / 现状**：全后端并发跑（`scripts/parallel-test.ts` 16 分片）时反复出现单条红，每次换一条。**具体断言（这是要改的清单，不是「某些测试」）**：
   - `tests/history/v3/summary-query-performance.it.test.ts:162-163` —— `expect(large.elapsedMs).toBeLessThan(Math.max(50, small.elapsedMs * 5))`。比值那半稳健，**`50` 这个绝对地板**在高负载下就是「把进程全局量当通过条件」。
   - `tests/history/v3/store-performance.it.test.ts` 的 “CAS live physical bytes are at least 10x smaller…” —— 观测到 17.3s / 18.3s，隔离复跑 9.31s；撞的是**测试自身耗时**而非断言，属默认超时型。
+  - `tests/history/v3/store-performance.it.test.ts` 的 “prepare and commit do not depend on prior session history length” —— 断言的是**耗时比值**，对 CPU 争用敏感（peer 会话观测，详见下节）。
   - `tests/history/search/uds-transport.it.test.ts` 的 “a large multi-segment response reassembles correctly” —— 5004ms，正好撞 bun **5000ms 默认单测超时**。
   - `tests/architecture/package-boundaries.unit.test.ts` 的 “stream-error outcomes are minted in exactly one place” —— 5028ms，同样撞默认超时。**这一条是纯静态源码守卫**（grep 源码形状），见下。
 - **两类问题，别混**：① **判据里含 wall-clock 绝对值**（上面第一条）——这是预算设计问题，改 oracle 就能永久消失；② **撞 5000ms 默认超时**（后三条）——其中「静态源码守卫」那条的结果**不可能**被运行时改动影响，它超时只说明进程当时太慢，与「负载敏感 perf」是两回事，值得单独给这类文件设 `--timeout` 或拆分。
@@ -1253,6 +1256,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：A3 合并态复评的范围是那六条 finding 的合并态正确性，不是测试预算工程；重定预算需要先建基线，是独立的一次验证链。本轮已按最小判别动作取证（记测试名与断言、看判据里有无 wall-clock 绝对值、安静/负载对照），结论足以支撑「不阻塞本轮收口」。
 - **触发条件（值得做）**：① 有人开始例行性地把全后端的红当噪声；② 要把 `test:backend` 接进任何自动门禁时——那时 flake 会直接变成假红拦路；③ 这类红开始出现在**断言型**而非超时型判据上，那说明预算问题已经蔓延。
 - **发现方**：A3 合并态复评 round 4 两位 reviewer——GPT 侧裁决我的 flake 归因「成立但须限定为『不是本轮修复造成』」，Claude 侧进一步指出依据里「只有 perf 文件会红」不成立并给出最小判别动作（`docs/tmp/2026-08-08-a3-merged-state-review-{gpt,claude}-round4.md`）。
+
+### peer 会话（2026-08-08 Batch 1b 合并态验证）的独立观测，与上文互补
+
+- **观测口径（三次全量运行，均在合并态或其父提交上）**：合并前 `58f4c45d^1` 一次 3 fail（含 `store-performance.it` 的「prepare and commit do not depend on prior session history length」+ CAS 条 + 两条 legacy Vue 守卫）；合并后 `58f4c45d` 第一次 1 fail、第二次 **0 fail**。**两侧都出现过、且第二次干净**，故与该次合并的内容无关。
+- **不是什么**：不是 `worktree-fix-shutdown-review-findings` 引入的——该分支对 `tests/history/v3/` 与 `src/lib/history/v3/` 只有来自 master 的 merge 提交，无直接改动（`git log --first-parent 44457047~1..765bb2be -- tests/history/v3/ src/lib/history/v3/` 为空）。
+- **两条 legacy Vue 守卫**（`ui/ is not in the root tsconfig project graph`、`root eslint ignores every file under ui/`）在合并前那次红、合并后两次绿——**未确证成因**。合并的 delta 里只有 `ui/tsconfig.json` 补 path 映射，按理不改变根 tsconfig 图；因此**不主张「是本次合并修好的」**，它们同样可能是负载/分片顺序敏感。要定论需要单独做 A/B。
+- **该会话给出的三条修法（比上文更具体，优先采纳②）**：①把该断言迁到不并行的档位（如另设 perf 档）；②改为断言**算法性质**而非墙钟比值（例如 prepare/commit 的 SQL 计划或读取行数不随历史长度增长）；③保留比值但把阈值锚到同轮测得的基线而非绝对倍数。**②最长远——它测的本来就是「不依赖历史长度」这个性质。**
+- **该会话的触发条件**：再次看到本条变红时**直接做②，不要调阈值**——调阈值是打地鼠。
 
 ## History 搜索的多词语义是 OR，未与用户确认（2026-08-09，A3 合并态复评 round 4 派生的产品问题）
 

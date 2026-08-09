@@ -769,6 +769,15 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
+      "classname": "history-search cursor is bound to the index that produced it",
+      "name": "a cursor that outlived its index cannot certify the rebuilt one — while an intact index keeps its cursor",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    },
+    {
+      "kind": "testcase",
+      "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search daemon freshness attestation",
       "name": "accepts a covered frozen target and rejects a target beyond the durable flushed frontier",
       "ordinal": 1,

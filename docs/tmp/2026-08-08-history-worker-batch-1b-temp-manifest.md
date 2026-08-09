@@ -1,6 +1,7 @@
 # History Worker Batch 1b 临时证据处置清单
 
-> 状态：Batch 1b 已集成主线（`master@d1011fe7`）。终审两轮闭环（首轮 0 blocker／2 major → 整改后复审 0 blocker／0 major、可定稿）；本清单与终态报告的闭环提交待再次 fast-forward 进 `master`。
+> 状态：Batch 1b 已集成主线（交付内容最后合并点 `4c30e6eb`，在 `master@58f4c45d` 祖先中；本清单自身的修订提交每次会再次领先 `master`）。**清理动作：本会话零删除**，56 项全部保留交 harness 自动回收——每项的长期价值均已在已提交接收者中，故清理何时发生都不删唯一副本。**归档价值逐类审计已执行（2026-08-08）：56 项无一需归档**，逐类判定与两处实测发现见终态报告「临时证据」节——不要因为「没人审过」而重做这次审计。
+> ⚠️ **本清单在上一次独立评审之后又被修订过（状态行与清理动作），按本清单自身的规则，那次 0 blocker／0 major 的结论已作废、尚未重审。** 由于本轮**零删除**、56 项全部保留交 harness 回收，该缺口不构成数据丢失风险；但**在重审通过之前，任何人不得据本清单执行删除**。
 > 清单根：`/home/xp/.claude/jobs/0ff74836/tmp`
 > 冻结边界：2026-08-08，在 `batch1b-terminal-report-message.txt` 与 `shared-main-index.terminal-review.snapshot` 产生后重新枚举；递归包含 regular file 与 symlink，不含目录。
 > 总计：56 项路径；字节快照 6568459 bytes（初次冻结）／6568699 bytes（终审前重枚举）／6568699 bytes（fast-forward 落地后重枚举，无漂移）。
@@ -69,6 +70,6 @@
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.final-closeout.snapshot` | file | 431215 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.post-v1.snapshot` | file | 431215 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
 | `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.snapshot` | file | 429196 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
-| `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.terminal-review.snapshot` | file | 431277 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
+| `/home/xp/.claude/jobs/0ff74836/tmp/shared-main-index.terminal-review.snapshot` | file | 431517 | 共享 main index 只读快照，用于碰撞集检查 | 当前共享 `master`、候选 Git tree 与终态报告中的零碰撞结论 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
 | `/home/xp/.claude/jobs/0ff74836/tmp/ws-shutdown-sequence-probe.log` | file | 127873 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
 | `/home/xp/.claude/jobs/0ff74836/tmp/ws-shutdown-x10.log` | file | 130143 | 测试、构建、mutation 或诊断原始输出 | `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 的已提交证据摘要 | 保留至 job 自动清理 | 无时序前置（该行接收者已提交，清理何时发生都不删唯一副本） |
