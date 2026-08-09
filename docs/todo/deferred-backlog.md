@@ -1299,3 +1299,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：先确认 `bun run test:timings` 的采集口径——记的是文件级 wall 还是用例之和？是否在并发下采集（那样会系统性偏高而非偏低）？**口径查清前不要「顺手刷新缓存」**，那只会把一个没被理解的偏差重新写一遍。要断言性能缺陷，需要多次测量的分布基线，不是单样本。
 - **为何暂缓**：今天无红；只影响分片均衡度，不影响判据正确性。**触发条件（值得做）**：① **多次同环境测量显示缓存显著偏离分布**（不是某一次读数对不上）；② 再次出现「隔离下通过、分片下超时」的用例；③ 有人要依赖 timings 做容量估算；④ 顺手改 `parallel-test.ts` 的分片逻辑时。
 - **发现方**：C3 裁决期间的邻域实测（`reviewer`，2026-08-09）提出，收尾产物评审（`gpt-souls:reviewer`，同日）证伪其「稳定 9.51s」表述并给出第三次读数。**两轮都明确标注未归因，本条沿用，不补第三个解释。**
+
+## 仓库里仍有文档把「同源证据」写成独立 / 拿 tally 承担完整性（2026-08-09，收尾产物评审十二轮累积）
+
+- **已定的权威（不必再讨论，直接照用）**：`docs/coding-conventions.md`「并行执行」节。它定了三件事——① tally 数字的**引用政策**（可主张「该次运行**观察到** N 通过/0 失败」并附 commit、命令、原始 tally 行；**不得**主张总量、规模、「用例数没减少」）；② 退出码 0 是**必要非充分**条件，当前三道门各自的覆盖与缺口；③ 完整性分三层——「请求过的文件有没有在 artifact 里被提及」可判、「仓库应有哪些测试文件」只有部分独立绊线、「本应存在哪些 testcase」**不可判**。
+- **判独立性的机械判据**：要主张两侧独立，**交一张 provenance 图**——每侧的**生产者**是谁、**观测点**在哪、**上游**追到哪。**任一生产者同时控制两侧、或两侧最终追到同一上游，即不独立。**「换一种运行方式」「换一个 parser」「多跑几次」**都不改变上游**。
+- **根因 / 现状**：这个概念错误在本仓多处独立复发，因为它**看起来**像交叉验证。十二轮评审已修的载体：`docs/coding-conventions.md`、`docs/todo/deferred-backlog.md`（本文件三处）、`docs/memory/methodology-missing-evidence-counted-as-zero.md`、`docs/memory/methodology-merge-invalidates-branch-frozen-test-floor.md` + `MEMORY.md` 钩子、`exp/junit-tally-false-green/README.md`、`scripts/parallel-test-artifacts.ts` 与其测试的注释、`docs/spec/anthropic-rewrite-reorg.md`、`docs/spec/2026-08-06-http2-cancel-provenance-and-header-deadline.md`、`docs/plan/2026-08-08-header-deadline-stage2-3/{HANDOVER,KICKOFF}.md`、`docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`、三份 `docs/tmp/2026-08-08-*` 历史报告。
+- **为何暂缓**：**这是一项独立的仓库级文档清理，不是任何一次交付的验收项。** 本次合并的验收在第二轮合并态评审就已闭合（合并范围内 BLOCKER 0 / MAJOR 0）；此后十轮的发现全部是「**别的**文档带同一处概念错误」。权威已立、判据已写，剩余载体属可增量清理的债。用户 2026-08-09 裁决：立为 backlog，停止按轮磨。
+- **若做需改什么**：用 provenance 判据全仓扫一遍（尚未覆盖：`ui/`、`ui-v4/`、`e2e/`、`native/`、历史 `docs/archive/`），逐处判定是「措辞不准」还是「判据真的担不起它承担的不变量」——**后者要连同它守的不变量一起改**，别只改措辞。⚠️ **别顺手改冻结计划的验收强度**：那属于推翻既有裁决，须交该计划所有者（本轮就踩过一次，已撤回并交裁决）。
+- **触发条件（值得做）**：① 有人又用 tally／同批 JUnit 复算论证「测试没减少」；② 新写判据时需要引用独立性判据；③ 顺手改到上述任一文档时。
+- **发现方**：收尾产物评审十二轮（`gpt-souls:reviewer`，2026-08-09），完整逐条证据在 `docs/tmp/2026-08-09-wrapup-artifacts-review.md`。

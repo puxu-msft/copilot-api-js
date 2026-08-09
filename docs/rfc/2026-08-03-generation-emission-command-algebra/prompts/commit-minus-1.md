@@ -41,7 +41,7 @@
 
 | Task | TDD 施工顺序（不重写 RFC 判据） |
 |---|---|
-| `T0.0a` | 先写 post-`balance()`/pre-spawn 静默删文件的失败正控，预期 rc 非零且点名缺失文件；再让每个真实 shard 产出 JUnit file identity，逐次与独立磁盘 manifest 双向集合对账，正确真实 run 转绿。（该 manifest 的独立性口径有未决问题，见 cutover-plan 的对应条目。） |
+| `T0.0a` | 先写 post-`balance()`/pre-spawn 静默删文件的失败正控，预期 rc 非零且点名缺失文件；再让每个真实 shard 产出 JUnit file identity，逐次与独立磁盘 manifest 双向集合对账，正确真实 run 转绿。（「独立」= 相对被验收的那次 run 独立，不要求结构独立于 discovery 规则；用户 2026-08-09 裁决，见 cutover-plan 的对应条目。） |
 | `T0.0b` | 先写 runnable→skip 的失败 mutation，预期点名 `file+classname+name+ordinal`；再输出 executed/skipped 与 skipped multiset，覆盖整文件 skip、native skip、todo 的合法形态。 |
 | `T0.0c` | 先让 reporter 只留在 `refreshTimings()`、或让合并器漏一个 shard，预期 file identity 门因目标机制红；再接通实际 shard JUnit 收集，正确 full run 转绿。**同时按 plan §0.4f 冻结接口实现/版本化 `scripts/capture-entry-evidence.ts` 与 `tests/infra/entry-test-discovery-baseline.json` v1**；合成 fixture 验树外 OUT、独立 `minimum_executed`、15-run/JUnit 对账、失败无 manifest、成功原子写入。不得另选 producer CLI/schema。 |
 | `T0.0e` | **实现 plan §0.4f 已冻结的唯一接口**：`scripts/validate-entry-evidence.ts`、完整 CLI flags、pointer block v1、evidence-manifest v1 与稳定 exit/`FAIL C<n>:` contract；不得另选 env/flags/schema。先以合成 git 图、A/P、唯一 pointer block、树外 manifest、15 logs/JUnit 跑完整正样本；按 `EV-01`…`EV-28` 每次只篡改一个合成输入，预期唯一稳定 fail code/message。不得引用未来真实 A/P。 |
