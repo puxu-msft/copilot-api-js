@@ -75,6 +75,16 @@ export function createAnthropicDeliveryProtocolAdapter(): AnthropicDeliveryAdapt
             terminal: { semantic: "complete", sourceFrame: frame, diagnostic: { source: "wire-frame", terminal: "message_stop" } },
           }
         }
+        // An in-band upstream error (H2 — overload / server_error) is a terminal upstream DECISION, not a transport cut: spec §5.3 M1 says commit it and fail, never retry.
+        // Without this case the frame fell through to `unexpected-frame`, which is neither a unit-close (so the grammar could not project it into `commitBoundaries`) nor in `isUpstreamFailure` (so `sawUpstreamError` stayed false).
+        // The buffered path then read the missing `message_stop` as a truncation and retried a terminal error.
+        // Mirrors `adapters/responses.ts`, which maps `error` alongside `response.failed`.
+        case "error": {
+          return {
+            kind: "response-terminal",
+            terminal: { semantic: "failed", sourceFrame: frame, diagnostic: { source: "wire-frame", terminal: "error" } },
+          }
+        }
         default: {
           return frameFailure("unexpected-frame", `unsupported Anthropic frame type: ${String(payload.type)}`, frame, undefined)
         }
