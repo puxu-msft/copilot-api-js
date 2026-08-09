@@ -5,9 +5,9 @@
  *
  * The pair is deliberately symmetric. Both arms drive the SAME backend through the SAME message loop with the SAME injected block (`withSynchronousBlock`); the only difference is whether a thread boundary sits in between. The in-process arm is the negative control that proves the probe can see a freeze at all — without it, "the main thread stayed responsive" is indistinguishable from "the metronome cannot detect anything".
  *
- * Why a metronome rather than a `/health/liveness` request: that route is a synchronous JSON handler (`src/server.ts`, `c.json({ status: "alive" })`) with no dependencies, so it is delayed by exactly the stall measured here — an HTTP round trip would observe the same quantity through more machinery and with coarser resolution. The measurement below is of the resource both share.
+ * Both observations named by the plan are taken: the metronome (fine-grained, measures the loop itself) and a real `/health/liveness` request through the app (coarse, but it is the thing an operator actually probes). Keeping only the timer was tempting and wrong — a timer cannot show that HTTP dispatch completes inside the blocking window.
  *
- * Measured at the commit that introduced this file: worker arm 30ms, in-process arm 1053ms (two 500ms blocks with no tick in between). The thresholds are set far inside that gap on purpose; re-measure rather than relax them if this ever runs close.
+ * Measured when the liveness leg was added: worker arm stalls 32ms and answers `/health/liveness` in 10ms; in-process arm stalls 1050ms (two 500ms blocks with no tick in between) and takes 532ms to answer the same probe. Both return 200 — the difference is entirely in when. The thresholds sit far inside those gaps on purpose; re-measure rather than relax them if this ever runs close.
  */
 
 import {
@@ -24,6 +24,8 @@ import type { HistoryPersistenceOutcome } from "~/lib/history/worker/protocol"
 
 import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
 
+import { createFullTestApp } from "../../helpers/test-app"
+
 import { withSynchronousBlock } from "./fixtures/blocking-backend"
 import { createInProcessHistoryPersistenceRuntime } from "./fixtures/in-process-runtime"
 import {
@@ -35,6 +37,7 @@ import {
 } from "./fixtures/semantic-envelope"
 
 const blockingWorkerUrl = new URL("./fixtures/blocking-backend-worker.ts", import.meta.url)
+const app = createFullTestApp()
 
 /** Long enough that a frozen loop is unmistakable, short enough to run twice per arm. */
 const BLOCK_MS = 500
@@ -61,15 +64,23 @@ function track<T extends HistoryPersistenceRuntimeImpl>(runtime: T): T {
 }
 
 /**
- * Longest stretch during which the main thread could not run a timer callback.
+ * Longest stretch during which the main thread could not run a timer callback, plus how long a real `/health/liveness` request took while the same work was in flight.
  *
- * This is the property a user feels: a request handler, a health probe and this metronome are all just callbacks waiting for the same loop, so whatever gap this sees is the gap they would see.
+ * Two observations of one property, kept together on purpose. The metronome measures the event loop directly and finely; the liveness request is the user-visible end of it — an operator's probe, served by the same loop, through the real app and router. Task 2b.4 names both, and a timer alone cannot show that HTTP dispatch actually completes inside the blocking window.
  */
-async function longestMainThreadStall(drive: () => Promise<void>): Promise<number> {
+async function observeMainThreadDuring(drive: () => Promise<void>): Promise<{ stall: number; livenessMs: number; livenessStatus: number }> {
   const ticks: Array<number> = [Date.now()]
   const metronome = setInterval(() => ticks.push(Date.now()), TICK_MS)
+  let livenessMs = 0
+  let livenessStatus = 0
   try {
-    await drive()
+    const driven = drive()
+    // Issued WHILE the work is in flight, not after it: the question is whether the probe can be served during the block, so it must be racing the block rather than following it.
+    const startedAt = Date.now()
+    const response = await app.request("/health/liveness")
+    livenessMs = Date.now() - startedAt
+    livenessStatus = response.status
+    await driven
   } finally {
     clearInterval(metronome)
   }
@@ -77,7 +88,7 @@ async function longestMainThreadStall(drive: () => Promise<void>): Promise<numbe
 
   let longest = 0
   for (let i = 1; i < ticks.length; i++) longest = Math.max(longest, ticks[i] - ticks[i - 1])
-  return longest
+  return { stall: longest, livenessMs, livenessStatus }
 }
 
 /** Start the runtime and persist one real terminal operation — initialize and persist are exactly the two calls the fixture blocks. */
@@ -97,17 +108,23 @@ describe("History persistence does not block the main thread", () => {
   test("a Worker blocking for half a second leaves the main thread running, while the same block in-process freezes it", async () => {
     const workerDb = tempDb("history-isolation-worker-")
     const workerRuntime = track(new HistoryPersistenceRuntimeImpl({ workerUrl: blockingWorkerUrl, workerData: { blockMs: BLOCK_MS } }))
-    const workerStall = await longestMainThreadStall(driveOneOperation(workerRuntime, workerDb.dbPath, "op-isolation-worker"))
+    const worker = await observeMainThreadDuring(driveOneOperation(workerRuntime, workerDb.dbPath, "op-isolation-worker"))
 
     const inProcessDb = tempDb("history-isolation-inprocess-")
     const inProcessRuntime = track(createInProcessHistoryPersistenceRuntime({}, (backend) => withSynchronousBlock(backend, BLOCK_MS)))
-    const inProcessStall = await longestMainThreadStall(driveOneOperation(inProcessRuntime, inProcessDb.dbPath, "op-isolation-inprocess"))
+    const inProcess = await observeMainThreadDuring(driveOneOperation(inProcessRuntime, inProcessDb.dbPath, "op-isolation-inprocess"))
 
     // NEGATIVE CONTROL FIRST: if this does not freeze, the metronome is blind and the assertion below means nothing.
-    expect(inProcessStall).toBeGreaterThanOrEqual(BLOCK_MS * 0.8)
+    expect(inProcess.stall).toBeGreaterThanOrEqual(BLOCK_MS * 0.8)
 
     // The claim. Compared RELATIVELY as well as absolutely: an absolute bound alone turns every loaded CI machine into a false red, while the ratio survives a slow machine because both arms slow together.
-    expect(workerStall).toBeLessThan(BLOCK_MS * 0.5)
-    expect(inProcessStall).toBeGreaterThan(workerStall * 2)
+    expect(worker.stall).toBeLessThan(BLOCK_MS * 0.5)
+    expect(inProcess.stall).toBeGreaterThan(worker.stall * 2)
+
+    // The same property at the user-visible end: an operator's liveness probe is answered during the Worker's block, and is held hostage by the in-process one.
+    expect(worker.livenessStatus).toBe(200)
+    expect(inProcess.livenessStatus).toBe(200)
+    expect(worker.livenessMs).toBeLessThan(BLOCK_MS * 0.5)
+    expect(inProcess.livenessMs).toBeGreaterThanOrEqual(BLOCK_MS * 0.8)
   })
 })
