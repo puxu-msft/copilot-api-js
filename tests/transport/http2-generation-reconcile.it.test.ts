@@ -72,6 +72,24 @@ afterEach(async () => {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Wait for a CONDITION, never for a duration. Several cases here need "the request has reached the
+ * server" or "the session entry has been published" before they can assert, and none of those has an
+ * `await` that covers it — the response is deliberately held open. A fixed `sleep()` in that role is
+ * a wall-clock bet that contention loses; one such bet was the root cause of the
+ * "test setup: server stream/session missing" flake seen under the 16-shard runner.
+ *
+ * `label` is what makes a timeout diagnosable: without it a stalled predicate looks identical to the
+ * assertion that follows it failing for real.
+ */
+async function waitUntil(predicate: () => boolean, label: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`test setup: timed out waiting for ${label}`)
+    await sleep(5)
+  }
+}
+
 describe("h2 generation-based retire-and-replace", () => {
   autoRestoreState()
 
@@ -120,8 +138,9 @@ describe("h2 generation-based retire-and-replace", () => {
     }
 
     const responsePromise = http2Fetch(`${url}/slow`, {})
-    // Give the request time to reach the server and start streaming.
-    await sleep(30)
+    // (b) same-form bet as row 1, converted: nothing here awaits the response (the handler holds the
+    // stream open on purpose), so the snapshot entry has no readiness signal other than this wait.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1, "the /slow request to reach the server and publish its session entry")
 
     reconcileH2SessionsForConfigChange()
     const duringDrain = getH2SessionStatusSnapshot()
@@ -169,8 +188,9 @@ describe("h2 generation-based retire-and-replace", () => {
     }
 
     const fetchPromise = http2Fetch(`${url}/racing`, {})
-    // Let the slow "connect" start (connectCount becomes 1) before reconciling.
-    await sleep(10)
+    // (b) converted: the condition is literally "the slow connect has started", which `connectCount`
+    // exposes directly — no reason to guess at how long that takes.
+    await waitUntil(() => connectCount === 1, "the slow connect to start")
     reconcileH2SessionsForConfigChange()
     const generationAfterReconcile = getH2ReconcileStatus().lastCompletedGeneration
 
@@ -212,9 +232,11 @@ describe("h2 generation-based retire-and-replace", () => {
     }
 
     const responsePromise = http2Fetch(`${url}/reschedule-to-zero`, {})
-    await sleep(30) // request reaches server; session+entry created at the 15ms cadence
-
-    await sleep(40) // ~2-3 ticks at the OLD 15ms cadence before reconcile
+    // (b) converted: both waits had observable conditions. The first is the published session entry;
+    // the second is "enough old-cadence ticks have happened to make the assertion below meaningful",
+    // which pingSpy counts directly — sleeping 40ms was a guess at the same thing.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1, "the request to reach the server and publish its session entry")
+    await waitUntil(() => pingSpy.mock.calls.length >= 2, "at least two pings at the old 15ms cadence")
     const callsBeforeReconcile = pingSpy.mock.calls.length
     expect(callsBeforeReconcile).toBeGreaterThanOrEqual(2)
 
@@ -390,7 +412,10 @@ describe("activeStreamCount exactly-once across every real stream-termination pa
     // the "test setup" throw below. (Reproduced deterministically by shortening that sleep to 0.)
     // Both conditions are needed: the server must hold the stream, AND the client-side entry must
     // have appeared in the snapshot, which is published on its own cadence.
-    for (let i = 0; i < 400 && !(serverStream?.session && getH2SessionStatusSnapshot().length === 1); i++) await sleep(5)
+    await waitUntil(
+      () => Boolean(serverStream?.session) && getH2SessionStatusSnapshot().length === 1,
+      "the server to hold the stream and the client entry to appear in the snapshot",
+    )
 
     const before = getH2SessionStatusSnapshot()
     expect(before).toHaveLength(1)
