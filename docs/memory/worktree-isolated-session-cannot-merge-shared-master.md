@@ -20,6 +20,9 @@ metadata:
 2. 用 `git merge-base --is-ancestor master HEAD` 证明可 fast-forward——这是可交付的机械判据。
 3. 报告里给出用户要跑的那一条：`git -C /home/xp/src/copilot-api-js merge --ff-only <branch>`。
 
+⚠️ **别把 `--ff-only` 说成必定成功——它会在你交出命令之后失效。** 「可 fast-forward」是**你最后一次提交那一刻**的性质，而用户读到消息、切过去执行之间，peer 随时可能推进 `master`，`--ff-only` 当场被拒。本会话连中两次：第一次我自己发现 `master` 已前进 21 笔、先合入再重新交付；第二次用户直接报「无法 FF」，最终以 merge commit 落地。
+**How to apply:** 交命令时同时给出退路，别让用户卡在被拒的命令上——「若报 `Not possible to fast-forward`，说明 peer 又前进了，改用 `git merge <branch>`（会产生 merge commit，同样正确）；或叫我先合一次 `master` 再交付」。**并且事后核对合并没有吞掉你的改动**：`git diff --stat HEAD master -- <你改过的路径>`，只应看到 peer 新增、不应有你的文件被修改或删除。**`--ff-only` 被拒的分诊别按成因清单对号入座**，见 [[methodology-ff-only-refusal-is-not-a-conflict]]。
+
 **Why:** 「已合并」和「可合并」是两个不同的完成态；把后者说成前者，用户会以为主线已经带上改动。多次集成合并后需要重新验证的只是**受影响路径**——若某次集成只带入 docs／skill，按 `moving-shared-head-is-not-failure` 不必重跑全量。
 
 Related: [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]
