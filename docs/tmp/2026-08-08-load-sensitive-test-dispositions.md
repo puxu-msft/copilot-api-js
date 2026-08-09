@@ -357,6 +357,11 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 
 ## 未处置清单（登记，不在本轮改，交独立裁决）
 
+> **「撤下」与「裁决通过」是两回事，别混。** 一条登记项被划掉可能出于两种完全不同的原因：
+> - **裁决通过** —— 前提成立、确实存在取舍，由未卷入的一方作出选择。走流程。
+> - **撤下（前提不成立）** —— 登记时依据的那个二选一/约束**经实测根本不存在**，于是没有什么可裁的。此时正确动作是**撤下并写明前提为何不成立**，而不是走一遍流程再盖章通过——后者会把一个错误前提追认成「已裁决的事实」，下一个人会以为那个取舍真的存在过。
+> 本清单第 5 条属于**后者**（见 M2）。
+
 按 user-rule `63-engineering-practice` 的 `red-tests-may-be-guarding-something`：删除或放宽既有 guard、以及重塑判据，合并前必须交独立 reviewer 或用户裁决，不得由实施者自判放行。以下四条都属此类，本轮**只记录不动手**。
 
 1. **`store-performance.it.test.ts:166` `liveRatio >= 10` 对「去重丢失」几乎没有鉴别力。** 实测：破坏跨 operation CAS 去重时 `physicalRatio` 掉到 9.10（红），`liveRatio` 只掉到 10.54（**仍绿**）。两条断言量的是不同的东西，都该留；但若将来只保留 `liveRatio`，这条 guard 就是假绿。证据见本文第 2 节。
@@ -422,6 +427,32 @@ PROBE after-20s    liveTimerDelaysMs = [] frames = 6
 - **「同形」只是症状层面的相似**。判鉴别力结构要问的是：**去掉这条断言后，哪些退化还会被抓住？** 这个问题只能靠**对每条候选 mutation 实跑**回答，读代码读不出来——本轮 8 次里有 5 次我的读码判断被实跑推翻。
 - **「mutation 没变红」永远有两解**：测试没咬住 vs mutation 没打到被走到的路径。本轮命中后者 **3 次**（第 3、4 条与 V1）。分辨方法是**独立观测被测机制本身**（子进程直跑 rc、插探针打印状态），不是再读一遍代码。
 - **否定性结论（「这条断言抓不到东西」）不自证**，需要「注入真实缺陷而它不红」的正面证据；拿不到就老实写 inconclusive，别升级成「盲」。
+
+### 同一个错误在本轮复发三次：把「我的判据证明了什么」写宽一档
+
+这三次不是各自独立的口误，是**同一个形态**，值得单独拎出来：
+
+| 次序 | 我写下的命题 | 实际证明的 | 差在哪 |
+|---|---|---|---|
+| 1 | 那四条 `liveTimerDelaysMs` 断言「鉴别力为零」 | 只观测到「当前基线下真空通过」 | 把「这次没约束到东西」写成了「永远抓不到东西」 |
+| 2 | 探针证明「BEFORE the abort, nothing may settle」 | 只证明「这一瞬间未 settle」 | 把一个瞬间写成了整段窗口 |
+| 3 | 修正版说「within one microtask tick」 | 连 1 个 tick 都不覆盖（实测：1/2/3 tick 与 `setTimeout(0)` 全判 pending） | **修正它的那次修正本身又宽了一档** |
+
+第 3 次尤其要记：它是**在修第 2 次的过程中**犯的，而且**写进了会长期留在仓库的测试注释**——比写在临时文档里危险得多。
+
+**可执行的自查动作**（在写下任何「这条判据证明了 X」之前做，包括写在注释里的）：
+
+> **举一个刚好不满足 X、却能通过这条判据的输入。举不出来才可以写 X；举得出来，就把 X 缩小到那个输入之外。**
+
+对照上面三次：第 2 次只要问「有没有一个晚一点 settle 的 promise 能通过？」——`Promise.resolve().then(...)` 就是，20 秒就能证否。第 3 次同理，我却把范围从「窗口」缩到「一个 tick」就停手了，**没有再问一遍**。**缩小范围之后要重新跑一次这个自查**，因为新范围是一个新命题。
+
+第 1 次的形态略有不同（否定性断言），自查动作是上一节最后那条：**要主张「抓不到」，得拿出「注入真实缺陷而它不红」的正面证据**。
+
+### 附带：`Edit` 之后立刻验标题（本轮踩中四次）
+
+本轮用 `Edit` 插入新章节时，`old_string` 拿小节标题当锚点、`new_string` 忘了写回去，**静默删标题**——**发生了四次**（第 7 条残留复核段一次、M1 一次、M2 一次、本节一次），全部在通读或即时检查时发现并补回。四次都不报错，因为 `Edit` 只校验 `old_string` 唯一命中。
+
+**固定动作**：每次用 `Edit` 插入或替换跨小节的内容后，**立刻**跑一次 `rg -n "^## " <文件>` 或 grep 被当作锚点的那一行，确认它还在。这比「下次仔细些」有用，因为它是一条命令而不是一个意愿。
 
 ## 工具性教训：`Edit` 的替换覆盖面（本轮踩中一次，写成机械判据）
 
@@ -618,7 +649,43 @@ PROBE windows: new(abort→resolve) = 0 ms ; legacy(start→resolve, includes se
 
 **诚实边界**：本条**从未在 `run-02.log` 里红过**，上面也没有「它会红」的断言——只有「旧帧余量 3.5x、新帧余量在毫秒分辨率下不可测」这两个实测数字，以及本会话在其它文件上观测到的 4–6x 争用放大。旧写法在更重争用下是否真的会红，**未验证**。
 
-> **注释精度更正（协调方指出，随第 6 条一并提交）**：新注释原写「BEFORE the abort, nothing may settle this race」，但 `Promise.race([racePromise, Promise.resolve(STILL_PENDING)])` 实际只证明「**在一个微任务 tick 内**没有 settle」——需要 2 个以上微任务才 settle 的路径会从探针底下溜过去。已改写为受证据支持的表述（「未在一个微任务 tick 内 settle；abort 就在下一行发出，那个 tick 就是全部窗口」），并显式标注该探针的边界。**写下的命题比证明的强**，与前面撤回「鉴别力为零」是同一类错误。
+> **注释精度更正（两轮，第二轮才对）**：
+>
+> 第一版写「BEFORE the abort, nothing may settle this race」——过头。
+> 第二版改成「within one microtask tick」——**仍然过头，只是少了一档**。
+> **实测才定下第三版**（探针 `/tmp/m3-race-probe.ts`，bun 1.3.14，本轮亲自复跑而非采信转述）：
+>
+> | `p` 的形态 | `Promise.race([p, Promise.resolve(S)])` 判定 |
+> |---|---|
+> | 构造时**已 settled** | **SETTLED** |
+> | 1 个微任务后 settle | 判 PENDING |
+> | 2 个微任务后 settle | 判 PENDING |
+> | 3 个微任务后 settle | 判 PENDING |
+> | `setTimeout(0)` 后 settle | 判 PENDING |
+> | 永不 settle | 判 PENDING |
+> | （sentinel 放第一个参数位）1 微任务后 settle | 判 PENDING —— 参数顺序不改变结论 |
+>
+> 真命题是：**「在这一行执行的那一瞬间尚未 settle」**——既不是「一个 tick 内」，也不是「永不」。它连一个 tick 都覆盖不了。三条用例的注释与本记录已全部按这一版改写。
+
+### M3 · 三处微任务探针的命题强度（已处置）
+
+**处置 1：措辞。** 第 5、7 条的注释与上面的 §5 更正块，全部改成「at the instant this line ran」，并把「它连一个 tick 都不覆盖」这条限制**写进注释本身**（不只是写进本文档）——因为注释才是下一个读者会看到的东西。第 6 条原注释写的是 "not immediately, and not across a real stall"，**本来就是准确的**，未改。
+
+**处置 2：第 7 条补第二探针——补，理由是实测的假绿，不是类比。**
+
+评审构造的假绿场景：`idleTimeoutMs > 0` 时，race 在构造后**晚一个微任务**自发 resolve 成 `STREAM_ABORTED`（与 abort 无关）。我把它做成 mutation 实跑（`/tmp/mut-m3-spontaneous-resolve-one-tick.patch`，在 `stream.ts:251` 处 `if (idleTimeoutMs > 0) racers.push(Promise.resolve().then(() => STREAM_ABORTED))`）：
+
+| 第 7 条的形态 | 该 mutation 下 |
+|---|---|
+| **只有第一探针**（本轮此前的状态） | **1 pass —— 假绿确认成立** |
+| **补上第二探针后**（本次） | **0 pass / 1 fail**，红在第二探针 `:733`，`Expected: Symbol(still-pending) / Received: Symbol(STREAM_ABORTED)` |
+
+所以这个假绿是**真实可达**的，不是理论担忧，第 7 条必须补。形状照第 6 条：真实 `setTimeout(50)` stall + 第二次探针。为什么 stall 有效：睡眠会把微任务队列排空，此后**已 settled 的 `p` 确实会赢** race（上表第一行），于是自发 resolve 暴露出来。50ms 远低于该用例的 `idleTimeoutMs = 5000`，不干扰它要测的「abort 赢过空闲超时」。单侧安全——睡得更久只让「仍 pending」更成立。
+
+**为什么第 6 条不需要再补**：它本来就有 stall-后探针，且其 `idleTimeoutMs = 0`（该 mutation 按 `idleTimeoutMs > 0` 触发，对它不适用）。评审复核也确认第 6 条成立。
+
+改后：全文件 **25 pass / 0 fail**，typecheck、eslint 绿，`git diff -- src/ packages/` = 0。
+
 
 ## 6. `tests/streaming/stream-shutdown-race.it.test.ts` — `raceIteratorNext resolves STREAM_ABORTED when signal fires during stall`
 

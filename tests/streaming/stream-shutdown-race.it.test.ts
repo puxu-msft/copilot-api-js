@@ -157,12 +157,15 @@ describe("raceIteratorNext", () => {
       abortSignal: controller.signal,
     })
 
-    // Causal half, and the part the old `elapsed < 200` never supplied: the race has not settled
-    // within one microtask tick, and the abort is issued on the very next line, so that tick is the
-    // whole window. The iterator never resolves and the idle timeout is off, so anything settling in
-    // it would not have been caused by the abort. (Strictly: a path needing two or more microtask
-    // ticks to settle would slip past this probe — the claim is one tick, not "never".) Reads no
-    // clock, so contention cannot move it.
+    // Causal half, and the part the old `elapsed < 200` never supplied: the race had not settled at
+    // the instant this line ran, and the abort is issued on the very next line. Be precise about how
+    // little that is — measured, `Promise.race([p, Promise.resolve(S)])` reports SETTLED only when
+    // `p` was ALREADY settled as the race was constructed; a `p` resolving one, two or three
+    // microtasks later, or on a `setTimeout(0)`, is still reported pending. So this probe covers an
+    // instant, NOT a tick and not "never". It is enough here because the iterator never resolves and
+    // the idle timeout is off, so there is no mechanism that could settle the race before the abort;
+    // the idle-timeout case below, where such a mechanism does exist, adds a second probe after a
+    // real stall. Reads no clock, so contention cannot move it.
     expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
 
     const abortedAt = Date.now()
@@ -716,9 +719,20 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
       abortSignal: controller.signal,
     })
 
-    // Not settled before the abort. Unlike the two cases above this one has no lower bound, so it
-    // had no cover at all for "resolves without being aborted" — measured: mutating the
+    // Not settled at the instant this line runs. Unlike the two cases above this one has no lower
+    // bound, so it had no cover at all for "resolves without being aborted" — measured: mutating the
     // already-aborted fast path to misfire on a live signal left this case fully green.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+    // ...and still not settled after a real stall. This second probe is NOT redundant, because the
+    // first one is weaker than it looks: `Promise.race([p, Promise.resolve(S)])` reports SETTLED only
+    // when `p` was ALREADY settled as the race was constructed — measured, a `p` resolving one, two
+    // or three microtasks later is still reported pending. So a path that resolves spontaneously a
+    // tick after construction slips past the first probe entirely. Sleeping drains the microtask
+    // queue, after which an already-settled `p` does win the race. Measured: with the race made to
+    // resolve STREAM_ABORTED one microtask after construction whenever an idle timeout is armed, the
+    // first probe alone left this case green and this one reddens. One-sided — a longer stall only
+    // makes "still pending" more true — and 50ms is far below the 5000ms idle timeout.
+    await new Promise((resolve) => setTimeout(resolve, 50))
     expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
 
     const abortedAt = Date.now()
