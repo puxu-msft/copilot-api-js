@@ -40,6 +40,7 @@
 - [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=user-level skill `closing-a-development-session` 的 `verification-log.md`（投票规则唯一权威）
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制（对偶于核实他人断言）
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错
+- [收尾汇总的表述系统性强于其证据](methodology-closeout-summaries-overstate-their-evidence.md) — 五种形态全由评审而非自查抓到：数字无 selector（34/34）、汇总压掉真实计数（「四路 0/0」）、描述自己刚做的动作写反方向（3 处）、全称词没穷举范围（「无穷回归」）、判据里集合名词没定义（「本批」）；定稿前对每个概括问五问、每问带失败动作。**本条第一版自己又犯了其中两条**（搬错计数、把三轮压成两轮）
 - [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的常在你配置那层之下(实为 undici headersTimeout ~300s)
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff
 - [诊断日志是会撒谎的权威声音 / 从日志断代码前先核实运行进程含修复 / 工具输出反常先疑代理链路别编叙事](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径恒打零；生产日志可能陈旧进程打，同类第二例先比 process 指纹，见 [stale-process](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md)；工具输出异常先怀疑单条代理转发链路损坏、用磁盘/独立 oracle 复核、引用命令前确认真实 tool_use/result，见 [no-fabrication](feedback-dont-fabricate-evidence-or-tool-distrust-narratives.md)
@@ -109,7 +110,7 @@
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；[amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) peer 在你 commit 与 amend 之间提交→你静默改写对方 commit，reflog 取回原 message 立刻还原(先验 tree 一致)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) rename/usages 跨提交
-- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
+- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；**边界：「两份都保」只对两侧纯新增成立**，一方改写了 base 已有内容时并列保留会把对方已完成的实施退回成待办，判别看 diff3 的 `|||||||` 段 + 断言 `ours[:len(base)]==base`；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
 - [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 交叉验证只数叶节点、别按 suite 属性求和
