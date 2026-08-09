@@ -286,3 +286,57 @@
 - 复评轮次 5：BLOCKER 0、MAJOR 1、MINOR 1。
 - 复评轮次 6：BLOCKER 0、MAJOR 1、MINOR 0。
 - 当前 verdict：修复 MAJOR 后可进入下一阶段。
+
+
+# 复评轮次 7（整改提交 `b3855a86`）
+
+## 复评范围与方法
+
+- 读取 `b3855a86` 完整 diff，并通读 claim scope 表、其前后机制说明、backlog 当前入口、progress 指针和 memory 教训。
+- 用两个具体接手场景走查：PR 描述如何引用一次 backend 运行；重构验收如何判断“用例没有减少”。
+- 全仓搜索 observed/总量/增减/完整性 oracle/同一 commit 连跑等复述，核对权威表与 backlog 是否给出相反动作。
+- 核对当前交付话术是否满足表内四项：窄 claim、commit、命令、原始 tally 行。
+
+## 总体 verdict
+
+**修复 MAJOR 后可进入下一阶段。BLOCKER：0。复评新增 MAJOR 1、MINOR 1。**
+
+## 事实性发现
+
+### [MAJOR] `docs/coding-conventions.md:66` — 把“同一 commit 连跑 N 次集合一致”列作独立 completeness oracle 候选，与本仓已证边界相反
+
+- **现象**：claim scope 表本身正确地禁止用 tally 证明总量或不减；但紧接着说升级到总量需要独立 completeness oracle，并把“同一 commit 连跑 N 次集合一致”列作示例。该检查仍由同一 runner／producer／parser 产生，两次可稳定漏掉同一个文件或 testcase，不独立，也不能证明完整性。
+- **证据／命令输出**：`docs/todo/deferred-backlog.md:1258` 已明确写“三次一致仍可能三次都少同一个文件”，且 `:1190-1197` 只把该守卫定位为稳定性／漂移检查，不是 completeness 证明。权威段的“例如”却把它升级为可把观察量变成总量的候选，两个当前载体给接手方相反路线。
+- **接手方错误动作**：要证明重构“用例没有减少”的人会按权威示例实现 N-run consistency，三次都稳定漏同一测试后就把 observed count 升级成 total／no-decrease，重新制造这组文档一直在防的同源假绿。
+- **建议处置**：删除这个示例并明确 N-run consistency 只能检测随机漂移，不能证明 completeness。总量／不减需要来源独立、能枚举目标集合成员的 oracle，例如冻结并比较 runtime test identity multiset，且其生产链不得复用 tally parser；具体 oracle 仍未设计时就保持“未决”，不要放一个已知不合格的候选。文档修订建议 `gpt-souls:doc-writer`。
+
+### [MINOR] 当前协调方交付话术 — 缺少政策要求的“原始 tally 行”，尚未完全符合 claim scope 表
+
+- **现象**：本轮给出的门禁话术是“门禁 @`b3855a86`：`lint:all` 零 error、`bun run test:backend` 观察到 7544 通过 / 0 失败、退出码 0、无任何完整性标记”。它具备 commit、命令和窄 observed claim，但没有逐字附上表要求的 raw tally line。
+- **证据／命令输出**：claim scope 表第 56 行要求 commit、命令与“原始 tally 行”三项同时存在。当前话术是人工摘要，不是形如 `[parallel-test] 16 shards · ...` 的原始行；历史 artifact 证明原始行还包含 shards、executed、skipped、wall 与标记位置，这些被摘要省略。
+- **接手方错误动作**：PR 读者无法确认摘要有没有漏掉同一行上的 `INCOMPLETE`／`OUT-OF-SCOPE` 或其他限定，只能再次相信作者转录。
+- **建议处置**：PR／交付描述逐字粘贴原始 tally 行，或附仓库内 artifact 路径与行号；保持“观察到”措辞。当前话术只需补这一项，不应升级成“全量 7544”。
+
+## 场景走查
+
+- **PR 描述测试结果**：表能给出明确动作——写“在 `b3855a86`，运行 `bun run test:backend`，观察到 N pass／0 fail”，并附原始 tally 行；不得写“项目共有 N 条测试”。政策可执行。
+- **证明重构没有减少用例**：表也给出明确否决——不能用两个 tally 数之差；必须另取独立 completeness oracle。当前唯一问题是紧随其后的候选示例本身不独立，已列 MAJOR。
+- **话术边界**：协调方的“观察到 7544 通过／0 失败”没有越界成 total 或 no-decrease；只缺 raw line，故定 MINOR。
+
+## 已确认无新增问题的范围
+
+- claim scope 表已从“信任谓词”正确改成“允许／禁止的结论强度”，观察量与总量、单次报告与增减验收分界清楚。
+- backlog 指针保留旧数字不追认、N-run 未建立及其非 completeness 边界，未削成裸指针；progress 仍保留命令、带 commit 的历史读数和路由理由。
+- 未发现第五份当前文档重新定义 tally 引用政策；其他命中是历史报告、普通命令 exit code 或非 tally 语境。
+- runner blob 三处仍为 `a27bf46dc41649c90090d6670b391b5b8bf57517`；`b3855a86` 只改文档，没有改变门禁实现。
+
+## 收敛判定
+
+- **当前无未闭合 BLOCKER。**
+- **当前仍有 1 个未闭合 MAJOR**：权威 claim policy 推荐了已知不独立的 completeness oracle 候选。因此尚不能最终收口。
+- 除该候选外，前六轮所有 BLOCKER/MAJOR 均已闭合；本轮未发现新的实现正确性缺陷。
+
+## 最终计数
+
+- 复评轮次 7：BLOCKER 0、MAJOR 1、MINOR 1。
+- 当前 verdict：修复 MAJOR 后可进入下一阶段。
