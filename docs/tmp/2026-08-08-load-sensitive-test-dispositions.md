@@ -943,7 +943,17 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 **实施形状**：`describe.skipIf(!PERF_TIER)` 包住计时用例（`RUN_PERF_TESTS=1` 开启），新增 `test:perf` 脚本并**接进 `test:ci`**（P3：只靠人记得手敲的档位等于慢性死亡；CLAUDE.md 档位 SSOT 已同步写明它的定位与何时跑）；后端档里它变成一条**显式 allow-listed skip**，而不是凭空消失。baseline `allowed_skipped` 35 → 36，条目 identity **取自真实 JUnit 输出**（含 XML 转义，手写必错），插入后用 `parseDiscoveryBaseline` 复验。
 
-**⚠️ T0.0f 开跑前检查**：确认环境里 **`RUN_PERF_TESTS` 为空**。它一旦被设上，那条计时用例会真跑而不是 skip，**skip 多重集随之改变**，门会以 `multiset mismatch` 失败——而该报错**指不到根因**，排查成本极高。
+**⚠️ T0.0f 开跑前检查** —— **已从人肉自评升级为结构性不变量（Q3）**。原先只在 CLAUDE.md 写一条「确认 `RUN_PERF_TESTS` 为空」，那是靠记性的自评闸门。现在 `scripts/capture-entry-evidence.ts` 构造子进程 env 时显式写 `RUN_PERF_TESTS: undefined`，调用方环境里即使设了也带不进去。
+
+- **正样本对照**（不是只看代码改了）：`RUN_PERF_TESTS=1 bun exp/tmp-b-probe/env-scrub-probe.ts`
+  ```
+  control: inherit only (no scrub)             -> {"raw":"1","gateWouldRun":true}
+  production shape: RUN_PERF_TESTS: undefined  -> {"raw":null,"gateWouldRun":false}
+  ```
+  控制组证明探针有鉴别力（不清除时子进程**确实看得见** `"1"`），生产形状下子进程读到 `null`。顺带确认了一个本来可能静默失效的点：**Bun 对 `env` 里的 `undefined` 是删除该键，而不是把它字符串化成 `"undefined"`**——若是后者，变量仍为真值。
+- **口径变更须知**：本轮起 `scripts/` **首次出现改动**。此前多轮记录里的「生产代码零差异」是相对 `c672dda8` 且范围含 `scripts/` 的断言，**从这一改动起不再成立**；`src/`、`packages/`、`native/` 仍为零差异。拿旧断言对账的人请以本条为准。
+
+**`test:perf` 的孤儿盲区已上守卫（Q4）**：脚本写死单文件会重新打开 `test-discovery-matrix` 自述要杜绝的「已分档但无脚本运行」盲区，而且形态**更隐蔽**——被 gate 的用例仍带 tier 后缀、仍以 allow-listed skip 出现在 baseline 里，**看着像被管着**。新增守卫扫描 `tests/` 中出现 `RUN_PERF_TESTS` 的文件集合，断言它等于 `test:perf` 脚本列出的集合，并带两条正控：①断言扫描结果非空（否则比较空对空恒真）；②**种一个只出现在扫描侧的文件**，证明扫描确实会发现它。5 pass / 0 fail。
 
 **确定性 oracle 的做法**：包住 `db.prepare` 跑一次真实 commit，收集**生产实际发出的**语句，再对其中读 history 量级表的 SELECT 逐条跑 `EXPLAIN QUERY PLAN`，断言没有 `SCAN`。**不在测试里重写 SQL**——那只能证明那份副本。
 
@@ -1035,9 +1045,22 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 实测 **7297**——**数据本身就证否了那个假说**，只是当时没有把两个预测分别写出来，就直接把「数字没变」读成了「不下降」。**一次同时改变两个变量的观测，区分不了两个假说**；而巧合的 +1/−1 抵消让错误结论看起来有实测背书。
 
-**可复用的判据**：写下「实测证明了 X」之前，先问 **「与 X 竞争的那个假说，对这次观测的预测是什么？」**——如果两者预测相同，这次观测就没有鉴别力，不管数字多干净。这与本文档「分类被推翻」一节记的形态同源：那节是**范围**写宽一档，这节是**鉴别力**没检验。
+**可复用的判据**（**已修正——第一版把本案的失败归错了因**）：
+
+第一版写的是「先问竞争假说对这次观测的预测是什么；预测相同就说明没有鉴别力」。**那条通则本身成立，但拦不住本案**——上表自己写着两个预测是 **7298 vs 7297**，**不同**，这次观测**有**鉴别力，当场就该证否错误结论。真实的失败不是「观测没有鉴别力」，而是**根本没算过任何一个预测**，直接把「数字没变」当成了确认。
+
+正确的判据：
+
+> **先把每个假说对这次观测的预测分别写下来，再看实测落在哪一侧。**
+> 预测相同 → 这次观测没用，换一个观测。
+> 预测不同 → **必须逐个对照**，不得用「数字没变／数字符合预期」代替对照。
+
+本案落在第二条：预测不同却没做对照。**「数字没变」从来不是一个对照**——它只说明观测值等于某个你脑子里没写下来的基准。
+
 
 **当前状态**：`minimum_executed` 保持 **7297** 不动——不是因为「下限与 executed 无关」，而是因为本轮净变化恰为 0（+1 oracle，−1 gate），实测 executed 仍是 7297。**下一个单独 gate 用例的人必须同步核对 executed 与该下限。**
+
+**后续观测（Q4 之后）**：新增的两条 perf-gate 守卫用例把 executed 抬到 **7299**。`minimum_executed` 是**下限**，7299 ≥ 7297 故不判红，**本轮不动它**（上调下限属收紧既有 guard，不由实施者自决）。**登记为观察**：下限现比实测低 2，意味着「悄悄少跑两条」不会被它拦住；是否重新锚定交裁决。
 
 
 
@@ -1223,7 +1246,7 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 5. ~~**`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。**~~ **已由 M2 关闭，不再需要裁决。** 原登记的前提（「要么保覆盖、要么降敏感，二选一」）是错的：那个二选一只在 `DEADLINE_MS` 钉死为 50 时成立。M2 保持上界的相对形状 `DEADLINE_MS * 4` 不变、把 fixture 的 deadline 放大到 500，鉴别力与绝对余量同时拿到（实测三行见 M2 节）。**不涉及放宽既有 guard。**
-6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943 / 6147，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后 35，perf gate 后 36）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。**另注意 `executed` 计入 skipped**，见上文「多一条 skip ≠ 少一条 executed」。
+6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943 / 6147 / 6728，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后 35，perf gate 后 36）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。**注意 `executed` 严格排除 skipped**（`parallel-test-artifacts.ts:129` 的 `} else executed += 1`），所以单独 gate 一条用例会让它掉 1——本轮它没掉，是因为同时新增了一条 oracle 用例，净变化为 0；详见上文那条已撤回结论的记录。
 7. **`store-performance.it.test.ts` 对「保持索引计划的历史依赖成本增长」这一缺陷类零覆盖（本轮**扩大**了敞口，不是缩小）。** 原记的是「ratio 自归一化吸收缺陷」；确定性 oracle 落地后重估结论是**不撤下**：oracle 抓的是**查询计划退化**，与 ratio 的自归一化**不是同一件事**。三分：①#7 原引的那次 mutation（点查→全表扫描）**已被 oracle 确定性覆盖**；②「ratio 会吸收冷热同时变慢的缺陷」这条一般性结论**仍成立**；③「保持索引计划、成本却随历史增长」**两者都不覆盖**。且计时判据已移出后端档，故**后端档对该类零尝试**——现在**没有人真正守住它**。
 8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
 
