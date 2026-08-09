@@ -75,9 +75,17 @@ status: active
 - `src/lib/history/recent-terminal.ts`：未 ACK 全量 overlay 与已 ACK 有界 recent cache。
 - `src/lib/history/sqlite/read-connection.ts`：写入先行阶段的主线程 readonly handle registry；Batch 2b 安装，Batch 6c 删除。
 - `tests/history/worker/fixtures/worker-entry.ts`：协议测试 Worker fixture。
+- `tests/history/worker/fixtures/semantic-envelope.ts`：共享 record／envelope／start-config／临时 DB builder（record 刻意做得「富」，否则 `v3_tracks` 为空、落盘断言分不出真提交与桩）。
+- `tests/history/worker/fixtures/scripted-transport.ts`：逐条手写回复的 transport；用于伪造正确 Worker 绝不会发的流量（退休 generation 的 ACK、指定时刻的 `fatal`）。
+- `tests/history/worker/fixtures/in-process-runtime.ts`：跑真实消息循环＋真实 backend 的进程内 runtime（spec §12.1）。
+- `tests/history/worker/fixtures/crash-window-worker.ts`：在四个指定时刻 `process.exit()` 的 Worker entry；marker 文件记录崩溃瞬间的行数，用于证明注入点确实落在它命名的时刻。
+- `tests/history/worker/fixtures/retry-observer-worker.ts`：注入 delay seam 与 transient 提交失败，把每次实测等待写文件回读。
+- `tests/history/worker/fixtures/permanent-failure-worker.ts`：注入**永久**写失败，使 `failed` outcome 可达（否则该分支无判别力）。
+- `tests/history/worker/fixtures/retryable-startup-worker.ts`：前 N 次 initialize 抛 transient 失败，验 spec §7.1 的可重试启动错误走重启而非 fatal。
 - `tests/history/worker/*.unit.test.ts`：纯状态机与 fake backend。
 - `tests/history/worker/*.it.test.ts`：真 Worker、SQLite、crash、source/dist runtime。
-- `tests/architecture/history-worker-boundaries.unit.test.ts`：生产 import／owner／入口集合守卫。
+- `tests/history/sqlite/read-connection.unit.test.ts`：主线程 readonly handle registry 的状态机（spec §11.2 要求未接线代码必须被测试真实执行）。
+- `tests/architecture/history-worker-boundaries.unit.test.ts`：生产 import／owner／入口集合守卫，含 Worker-only 模块不得进主线程模块图的线程归属守卫。
 
 现有承重文件：
 
@@ -450,6 +458,8 @@ bun run test:backend
 Commit: `feat(history): gate model operations on persistence capacity`
 
 ### Task 2a / Batch 2a: Semantic Worker Backend
+
+**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/tmp/2026-08-08-history-worker-progress-impl-2a.md](../tmp/2026-08-08-history-worker-progress-impl-2a.md)。
 
 **Files:**
 - Create: `src/lib/history/worker/backend.ts`

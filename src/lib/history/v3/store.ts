@@ -11,6 +11,7 @@ import type { EntrySummary } from "~/lib/history/types"
 
 import {
   //
+  isTransientSqliteError,
   runHistoryWrite,
   runHistoryWriteAsync,
 } from "~/lib/history/persist-guard"
@@ -788,6 +789,13 @@ export interface TransientRetryOptions {
    * timer — mirroring the `abortableDelay` scale seam.
    */
   now?: () => number
+  /**
+   * Backoff seam, defaulting to `abortableDelay`. The History Worker injects a
+   * recording implementation so a test can adjudicate the ACTUAL per-wait value the
+   * backend asked for — asserting the config round-tripped through the protocol
+   * proves nothing about whether the commit loop consumed it.
+   */
+  delay?: (ms: number, signal?: AbortSignal) => Promise<void>
 }
 
 export interface TransientRetryOutcome {
@@ -828,6 +836,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
   const maxAttempts = Math.max(1, opts.maxAttempts)
   const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
   const now = opts.now ?? Date.now
+  const delay = opts.delay ?? abortableDelay
   const startedAt = now()
   let attempts = 0
   for (;;) {
@@ -847,7 +856,7 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
       return { ok: false, conflict: false, attempts, capReason: "max-total-ms" }
     }
     try {
-      await abortableDelay(backoffMs, opts.signal)
+      await delay(backoffMs, opts.signal)
     } catch {
       // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
       // but keep retrying up to the cap — abort shortens backoff, it doesn't stop
@@ -1370,8 +1379,30 @@ export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOp
   return record
 }
 
+/** One journal row that is still uncommitted after a recovery pass. */
+export interface V3JournalRecoveryFailure {
+  readonly operationId: string
+  readonly revision: number
+  readonly error: string
+  /** persist-guard classified it transient (BUSY/LOCKED/IOERR): a later pass can still succeed. */
+  readonly transient: boolean
+}
+
+/**
+ * Outcome of one recovery pass.
+ *
+ * `failures` exists because the count alone cannot distinguish "nothing to recover" from
+ * "nothing COULD be recovered". Stamping the `error` column and returning a number made an
+ * unrecoverable journal invisible to the caller, which is exactly the silent degradation
+ * spec §8.1 forbids at the Worker startup gate.
+ */
+export interface V3JournalRecoveryResult {
+  readonly recovered: number
+  readonly failures: ReadonlyArray<V3JournalRecoveryFailure>
+}
+
 /** Resume terminal journal rows that were appended but never committed. */
-export function recoverV3Journal(db: Database = getDatabase()): number {
+export function recoverV3Journal(db: Database = getDatabase()): V3JournalRecoveryResult {
   ensureV3Schema(db)
   const rows = db
     .prepare("SELECT operation_id,revision,digest,payload_gz,created_at FROM v3_journal WHERE committed_at IS NULL ORDER BY created_at")
@@ -1383,6 +1414,7 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
     created_at: number
   }>
   let recovered = 0
+  const failures: Array<V3JournalRecoveryFailure> = []
   for (const row of rows) {
     try {
       const recoveredRecord = JSON.parse(decoder.decode(decompressBytes(row.payload_gz))) as ModelOperationRecord
@@ -1395,14 +1427,19 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
       commitPreparedOperation(db, prepared)
       recovered++
     } catch (error) {
-      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(
-        error instanceof Error ? error.message : String(error),
-        row.operation_id,
-        row.revision,
-      )
+      const message = error instanceof Error ? error.message : String(error)
+      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(message, row.operation_id, row.revision)
+      failures.push({
+        operationId: row.operation_id,
+        revision: row.revision,
+        error: message,
+        // A locked/busy database can succeed on a later pass; a corrupt payload or a digest
+        // mismatch never will. The caller decides what each class means for startup.
+        transient: isTransientSqliteError(error),
+      })
     }
   }
-  return recovered
+  return { recovered, failures }
 }
 
 export function resetV3WriterForTests(): void {
