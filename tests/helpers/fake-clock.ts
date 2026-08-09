@@ -25,8 +25,7 @@ export class FakeClock {
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
       const delayMs = ms || 0
       if (options.intercept && !options.intercept(delayMs)) {
-        let id: ReturnType<typeof setTimeout>
-        id = this.origSet(() => {
+        const id: ReturnType<typeof setTimeout> = this.origSet(() => {
           this.realTimers.delete(id)
           cb()
         }, delayMs)

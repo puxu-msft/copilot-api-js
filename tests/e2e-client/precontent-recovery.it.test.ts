@@ -162,7 +162,10 @@ describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
       (_url, init) =>
         new Promise<Response>((_resolve, reject) => {
           const signal = init.signal
-          const rejectAbort = (): void => reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"))
+          const rejectAbort = (): void => {
+            const reason: unknown = signal?.reason
+            reject(reason instanceof Error ? reason : new DOMException("The operation was aborted.", "AbortError"))
+          }
           if (signal?.aborted) rejectAbort()
           else signal?.addEventListener("abort", rejectAbort, { once: true })
         }),

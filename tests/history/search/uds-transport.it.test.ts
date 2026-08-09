@@ -436,6 +436,14 @@ describe("UDS client never-throw contract (crash-safety-critical)", () => {
 })
 
 describe("length-prefix fragmentation over a REAL socket (not just the in-memory decoder)", () => {
+  // 50 x 300KB across a real socket is genuine I/O work, and the oracle here is
+  // reassembly, never elapsed time. Sharing a machine with 15 other shards pushed
+  // this past both bun's 5s default test budget AND the client's 5s
+  // DEFAULT_QUERY_TIMEOUT_MS -- and the second one fails silently, because query()
+  // never throws: it resolved to [] and the assertion reported "expected 50,
+  // received 0", which reads like a reassembly bug rather than a deadline. Both
+  // budgets are named explicitly here. Do not shrink the payload instead; the
+  // multi-segment size is the thing under test.
   test("a large multi-segment response reassembles correctly", async () => {
     const socketPath = freshSocketPath()
     const bigContent = "y".repeat(300_000)
@@ -444,12 +452,12 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     cleanupServers.push(server)
     await server.listen()
 
-    const client = createHistorySearchUdsClient({ socketPath })
+    const client = createHistorySearchUdsClient({ socketPath, queryTimeoutMs: 20_000 })
     const rows = await client.query("q", undefined, 50)
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)
     expect(rows[49]?.operationId).toBe(`${bigContent}-49`)
-  })
+  }, 30_000)
 })
 
 describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — unlike query(), DOES distinguish success/failure)", () => {
