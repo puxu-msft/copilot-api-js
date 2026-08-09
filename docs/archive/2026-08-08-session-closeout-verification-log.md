@@ -1,6 +1,14 @@
+> **归档说明（2026-08-08）**：这是已删除的项目 skill `session-closeout` 的自验记录，**原样保留、票数不重置**。
+>
+> 该 skill 已并入 user-level 的 `closing-a-development-session`（收尾编排）与 `writing-handover-docs`（交接、进度文件、容量终态接力）。**通用的投票规则已随正文迁到 `~/.claude/skills/closing-a-development-session/verification-log.md`**；本文件保留的是**本仓的实例证据**——每条观测的会话、sha、正负样本与「验法被证否后怎么改」的过程，那些是项目专有的、迁过去反而失去出处。
+>
+> 新的观测请写进上面那个全局 log（其 V 编号自 V1 重新起算，与本文件的 V 编号**不是同一套**，别混）。本文件不再追加。
+
+---
+
 # session-closeout 自验记录
 
-[SKILL.md](SKILL.md) 「自验」节的落点。**每次用完本 skill，至少给你能观察到的那几条各写一行**——这不是可选的仪式，它是这份 skill 唯一的实战反馈通道：指令文本的静态自洽已被跨模型评审确认，**它在真实压力下会不会被照做，只能靠这里累积**。
+（历史原文，下面这句在当时指的是已删除的 `session-closeout/SKILL.md`：）「自验」节的落点。**每次用完本 skill，至少给你能观察到的那几条各写一行**——这不是可选的仪式，它是这份 skill 唯一的实战反馈通道：指令文本的静态自洽已被跨模型评审确认，**它在真实压力下会不会被照做，只能靠这里累积**。
 
 格式：`- [V<n>] <日期> `<sha>` ｜视角：写方/接手方/旁观 —— 观察到什么（判据命中/未命中）｜结论：证实 / 证伪 / 数据不足`
 
@@ -146,3 +154,34 @@
 - **V8 正交视角** — ⚠️ 本轮沿用同一 merged-state reviewer 多轮复评，并未预设两个正交 closeout 视角，不计入 V8 分母。事实观察：该 reviewer 先后抓出 bundled timeout 违冻结不变量、real open block gate、Worker owning reset、per-model warning、DESIGN 漂移五类问题，整改后 0 blocker／0 major。｜结论：数据不足
 - **V9 鉴别力正控** — ⚠️ 新增的 real text/tool block-start gate、scalar/per-model bounded-wait 告警与 Worker reset race 均先见目标红再恢复绿；Chat H3 配置顺序依赖亦稳定复现后连续 10 轮通过。因本轮编辑该 log，只记观察。｜结论：数据不足
 - **V14 活跃写入权收口（旧标题“ 双事实源收口”已 superseded）** — ✅ 陈旧 project memory 当时缩成指向 `DESIGN.md`／implementation report／spec 的 stub，并明确 feature 已合并、worktree/branch 已删除；这证明它不再独立维护活跃实施进度。该历史动作不表示 memory 只能留裸指针：按新规则，memory 可完整保留读者所需语境，但须引用权威来源且不继续作为状态写入点。因本轮编辑该 log，不投证实票。｜结论：数据不足
+
+## 2026-08-08 · History Worker Batch 1b 主线收口（核验基线 `775b5fb5`）
+
+- **V1 触发链** — ⚠️ 客观事实是用户明确发出“已合并，收尾”后，本会话才调用本 skill；此前虽已完成代码、门禁、评审与主线 fast-forward，但没有主动走完六步。不过 V1 只断言“上下文快满、任务没完”时的触发链，本轮属于普通完成收口，不在其适用域，故不计 V1 分母。｜结论：数据不足
+- **V12 每 commit 更新** — ❌ 按 progress frontmatter 的 `base=90e777bc…` 用正文规定的 `--first-parent` 口径审计 15 个提交，发现 5 个含实现／状态改动但未同时更新 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`：`cca342ff`、`df0c7bf4`、`94205e89`、`0415646e`、`d3b4ac77`。缺口集中在评审整改、floor 校准与最终文档／合并点，说明后半程退化成一次性收口更新。最终进度内容已完整回填，但不改变该过程判据失败。｜结论：证伪
+- **V14 活跃写入权收口** — ⚠️ `542007c9` 把 progress frontmatter 改为 `batch-1b-integrated-master-d3b4ac77-superseded-by-plan`，正文明确“已完成并停止更新”，八项待办全为 `[x]`；正式计划 Batch 1b 状态行成为活跃写入点。原文档 reviewer 逐条核验 C1～C6 后判 0 blocker／major。因本轮追加本日志，只记事实。｜结论：数据不足
+- **V7 闭环提交时点** — ⚠️ `git diff-tree --no-commit-id --name-only -r 542007c9` 精确列出正式 plan、Batch 1b progress、评审处置三路径；三个文件内的 `d3b4ac77` 状态锚点均由 `git show 542007c9:<path> | rg` 命中。`775b5fb5` 只更新 kickoff，把执行入口推进到 Task 2a；独立指令 reviewer 已判 kickoff 可合、0 blocker／major。记录形成时本轮收尾提交尚待 fast-forward 合入共享 `master`，最终落地由 Git ancestry 外部裁决，不据本条投证实票。｜结论：数据不足
+- **V6 权威引用＋语境复述** — ⚠️ progress 明确引用正式 plan 的 Batch 1b 状态行并停止更新；kickoff 以 `REVIEWED_PLAN_COMMIT=542007c9…`绑定同一 plan blob，同时完整复述 Task 2a 的启动门、首个 red test、crash windows 与证明边界。独立指令 reviewer 逐条核验 K1～K6 后判 kickoff 可合、0 blocker／major；本轮追加该日志，故仍不投票。｜结论：数据不足
+
+## 2026-08-08 · History Worker Batch 1b 收尾证据终审（核验基线 `43ffac97`，`master@d1011fe7`）
+
+> **本节所有条目一律不投证实票**：本会话已多次编辑 `.claude/skills/session-closeout/`（`2ad229ed`、`044170e1`、`794abd4e`，本节亦是新编辑），命中第 11 行判据。起草时我一度写了三张 ✅ 证实票，随后自查规则撤回——这正是该规则要防的自评污染。
+
+- **V8 正交视角带来增量覆盖** — ⚠️ 强观测，不投票。两个视角的 major **零重叠，且各自都改变了我的动作**。「接手方第一人称走查」视角产出 H1／H2（禁止在 Batch 1b 分支继续 Task 2a、安装位置步骤缺可执行命令与提交-确认闭环），全部落在「接手方会照着做出什么错误动作」；「事实证伪」视角（另派**未卷入**实例、跨模型）产出 D1／D2（冻结判据只要求说明字节来源守不住不变量、Git 顺序门约束不了 harness job cleanup），全部落在不变量与门的鉴别力。**若不派第二个视角会漏掉的具体东西**：D1 的 false-green 反例（`history-worker-batch-1b-wip.patch` 同路径被覆写为含未提交修复 → 新判据放行 → job cleanup 删掉唯一副本）与 D2 的执行接缝缺失，两者都不在接手视角主责范围内，却直接决定未提交工作会不会丢。反向亦成立：事实视角没提出 H1，而 H1 防的是下个会话在错误分支上开工。｜结论：数据不足
+- **V7 闭环提交时点** — ⚠️ ①**起草前的机械检查这次真跑了，原样输出如下**（本表历史上在此假绿过一次，教训是「粘不出输出就等于没跑」）：
+  - `git ls-files --error-unmatch -- <4 份接收者>` → 四行全部列出（`...closeout-review-final.md`、`...review-dispositions.md`、`...progress-impl-1b.md`、`tests/infra/entry-test-discovery-baseline.json`），无 `did not match` 报错。
+  - `git status --porcelain -uall -- <同 4 份>` → 仅 ` M docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md` 一行（reviewer 刚追加的复审节，随后即提交），其余三份为空。
+  - `git check-ignore -v -- <同 4 份>` → 无输出、`exit=1`，四份均未被 ignore（本表两次抓到过 `exp/` 被 `.gitignore` 静默覆盖的假绿形态，本轮不适用）。
+  ②评审放行后：`43ffac97` 的 `git diff-tree --no-commit-id --name-only -r` 精确为三份收尾产物，reviewer 报告本身作为 durable receiver 一并落盘。｜结论：数据不足
+- **新增负样本（不在自验表内，建议入表；按第 93 行先例处理）** — **「把不可控的平台生命周期事件写成受控 Git 门」**。**这不是对 V7 的证伪**——V7 断言的两个提交时点本轮都做到了；它命中的是 V7 **覆盖不到**的一层：V7 盯「产物有没有进提交」，盯不到「我给清理设的前置条件在物理上能不能被执行」。本轮该错误还被**逐行复述了 56 遍**（清单每行「清理前置」列），单看任一行都像已有 disposition，正是「判据之间留缝」而非「某条判据写错」。可执行改法：凡写下「X 必须晚于 Y」，**先声明它是哪一型**，再按该型判——**状态门**：每个 X 入口的放行都控制依赖于该 Y 谓词（只读不判的旁路 observer 不算）、谓词在放行点仍有效、Y 读不到时阻断（fail-closed）、以原子 check-and-act／lease／锁或 Y 单调性消除竞态；其中**「权威」按可验证的一致性契约定义、不按物理载体**——线性一致读副本、lease 保护的 materialized state、带 generation 且放行时校验的快照都合格，拒绝的是未经验证、可能滞后的副本。**因果／capability 门**：permit／event 只可能由 Y 成立而产生、不可伪造或旁路取得、**每个 X 入口都必须消费它**——此型**不要求**放行时再读 Y 的真相源。两型共同验收**必须隔离目标门**（X 往往有多个前置，**不能假定 Y 是 X 的充分条件**）：负控＝固定其他前置、只翻转 Y，X 被阻断**且阻断 provenance 命中目标门**（否则兄弟门代咬，连不读 Y 的假门都能通过）；正控＝其他前置全满足时**该 Y 门不再阻断 X**（不是「X 一定发生」，否则误杀合法多前置门）；再加**入口全集**与**只破坏目标 gate／permit** 的失效对照（须变红且失败位置命中目标机制）。两型都不成立就消门（让 X 提前发生也无害）。**这条判据被独立 reviewer 连打四轮、方向各不相同**（收在直接执行者上→误杀因果门；放松成「有谁读过 Y」→放行旁路日志与 fail-open；四条全局合取→又误杀 capability 门；共同双控未隔离目标门→兄弟门代咬），根因是想用一条判据管两类形状不同的门；**判据反复朝相反方向被打回时，先去分型，别继续调措辞**。已立记忆 [[methodology-ordering-gate-needs-a-trigger-that-reads-it]]。｜结论：新形态，待独立评审后决定是否入表
+- **V10 与冻结上游文档对账会被触发** — ⚠️ 触发有效，不投票。本轮抓到实质冲突：kickoff 的 `REVIEWED_PLAN_COMMIT` blob 门与「每批回填 plan 状态」构成两阶段时序，回填后旧 anchor 必然失效。处置是保持门 fail-closed、复审新 plan 提交、再由单独提交 `64e40640` 更新 anchor，而非放宽或移除门。｜结论：数据不足
+- **V9 新判据写鉴别力正控** — ⚠️ 本轮新增的 initialize 四字段判据有明确目标变异且**已实测**：旧 protocol 缺 `maxBackoffMs` 时 15 pass／1 fail，补第一项后缺 `maxTotalMs` 仍 15 pass／1 fail，完整 validator 落地后 68 pass／0 fail；终审 reviewer 独立复核确认删除任一目标 validator 后对应 `toThrow` 会红、不会由旁路断言代咬（其实跑 16 pass／0 fail）。Task 2a 的 `maxBackoffMs` 真实 backend 消费 mutation 尚未实现，明确留成执行期 gate。｜结论：数据不足
+## 2026-08-08 · HTTP/2 header deadline 阶段 1 收尾（分支 tip `f0cb1f1e`，master 核验基线 `d1011fe7`）
+
+- **V1 触发链** — ❌ 负样本。用户说「完成了开始收尾」之后我才加载本 skill；在此之前我已用 `result:` 宣告过阶段 1 交付完成，却没先走六步。命中「用户点名」。｜结论：证伪
+- **V4 查-peer 配方** — ✅ 配方按路径口径跑通且给出了有判别力的答案：`git log --oneline HEAD..master -- src/lib/transport src/lib/fetch-utils.ts src/lib/models/timeout-resolver.ts docs/spec/2026-08-06-*.md` 零命中，而同期不限 path 的 `HEAD..master` 有 16 条（全是 History worker／skill 文档）。零命中在此是**正确结论**而非配方失灵——正因为它把无关的 16 条排除掉了。因本轮追加本 log，依第 11 行不投证实票。｜结论：数据不足
+- **V8 正交视角** — ✅ **计入分母**：派活前就写死两个视角与各自证据义务（判据证伪 / 接手方第一人称走查），不是先后替补。**各自都有独有且改变动作的发现**——判据视角独有：plan 注解 sha 口径错、KICKOFF 数字锚错树、记忆里的 `14475` 复现不出（实测 `14541`）；接手视角独有：**T1 的证伪方法根本不成立**（`package-boundaries.unit.test.ts` 三个检测器只匹配 import specifier，不检测同名类型复制），以及交接文档尚未进 master 导致「从 master 建树就找不到 HANDOVER」。若只派判据视角，那条 major 会漏——它只有靠「实地打开那个测试看它到底检测什么」才暴露。因本轮编辑该 log，只记客观观测。｜结论：数据不足（但分母 +1，独有发现双向成立）
+- **V9 鉴别力正控** — ⚠️ 初稿 T1–T3 写了「待执行期跑」的目标变异、T4 只写了验收判据的否命题（漏正控）。**证伪发生在评审中**：T1 那条不仅缺正控，其证伪方法本身不成立。整改后 T1 补了守卫真实边界说明、T4 补了三种具体 mutation（只等第一道 barrier／从 `errorSnapshot` 读 tag／logical terminal 当场 settle）。**教训：写「证伪方式」时必须去打开那个守卫确认它真的检测那件事，不能从测试文件名推断能力。**｜结论：数据不足
+- **V10 上游对账触发** — ✅ 触发并逐份 disposition：block-level buffered retry ADR（依据未被拆，无需重裁）、旧 `protect_streaming_generation`（用户已裁「不启用、未来删」，列为独立后续项）、2026-08-06 系列交接（其「CANCEL 主线未实施」表述已被阶段 1 部分推翻，写明以 spec 状态节为准）。检索词与范围已落盘在 HANDOVER 的对账节。｜结论：数据不足
+- **V16 property→acceptance 对账** — ⚠️ 本轮 HANDOVER 的 T1–T4 就是该表的实例：**抓到 1 处真漂移**——T4 的性质写「三条 settlement 路径都写入**最终**observation」而验收只写「三条路径都写了字段」，量词一致但**排除项不同**（没有排除「写了中间值」），三种 mutation 正落在这个缝里。证明该对账不是零命中的仪式。｜结论：数据不足
+- **V19 job tmp 逐文件 manifest** — ⚠️ 数据：枚举 **42 项**顶层条目，manifest 覆盖 42/42，判定须入项目 **12 项**（落 `exp/http2-cancel-provenance/`，commit `216a2187`），清理前复扫**新增 0 项**，清理后残留 **0 项**；其余 30 项判可清理。**枚举口径三个数字别混**：`-maxdepth 1 -mindepth 1` = **42**（顶层项，本文一律用它）；保留 `-mindepth 1` 只把 maxdepth 改成 2 = **48**；`-maxdepth 2` 且不带 `-mindepth` = **49**（多算了 tmp 目录自身）。照抄命令时只改 maxdepth 会得到 48 而不是 49。｜两项机械判定：① 枚举**发生在最终报告之前**；② 删除发生在载体已提交且可达之后。**❌ 但第二项的另一半不成立**：我最初把它记成「两份独立评审 0 blocker/major 之后」，实为**事实视角 0/0/3minor、指令视角 1 阻断级 + 1 Major**；整改后的复评只在会话内返回、**从未落盘**，所以当时并不存在支持该断言的持久证据（→ [[feedback-conclusions-must-land-in-docs-not-chat]]）。**这条错误同时被复制进 `docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md`，是同源双写**；两处均已更正，处置记录追加在指令评审文件末尾。｜正向价值仍成立：**manifest 确实抓出了未持久化产物**——12 个探针/变异件当时只存在于 tmp，不做这一步会随 job 删除一起消失，而 spec §6 的冻结约束正引用它们的结论。**并暴露 skill 自身一处坑**：`exp/` 被 `.gitignore` 忽略，`cp` 进去后 `git status` 仍干净，「已归档」差点被当成事实——V7 的三条谓词里正是 `check-ignore` 那条抓住它。**「exact path、无通配符」属不可事后核验的动作自述，不得当作已验证。**因本轮编辑该 log，只记客观观测。｜结论：数据不足（且本条自身含一次已更正的错误断言，不得用于 graduation）

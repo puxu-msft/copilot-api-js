@@ -32,10 +32,7 @@ function publishRecord(operationId: string, sessionId: string): void {
   })
   const record = recorder.commitTerminal({ outcome: "completed", metadata: { durationMs: 5 } })
   publishModelOperationTerminal(
-    createModelOperationTerminalPublication(
-      record,
-      createRawOperationAttachmentOwner({ configRevision: 1, requested: false, maxObjectBytes: 1024 }),
-    ),
+    createModelOperationTerminalPublication(record, createRawOperationAttachmentOwner({ configRevision: 1, requested: false, maxObjectBytes: 1024 })),
   )
 }
 
@@ -64,12 +61,18 @@ describe("pending terminal overlay read surfaces", () => {
     publishRecord("overlay-pending", sessionId)
 
     const summaries = getHistorySummaries({ operationKind: "all" })
-    expect(summaries.entries.filter((entry) => entry.sessionId === sessionId).map((entry) => entry.id).sort()).toEqual([
-      "overlay-acknowledged",
-      "overlay-pending",
-    ])
+    expect(
+      summaries.entries
+        .filter((entry) => entry.sessionId === sessionId)
+        .map((entry) => entry.id)
+        .sort(),
+    ).toEqual(["overlay-acknowledged", "overlay-pending"])
     expect(getSessionSummaries().find((session) => session.sessionId === sessionId)?.requestCount).toBe(2)
-    expect(getSessionEntries(sessionId).entries.map((entry) => entry.id).sort()).toEqual(["overlay-acknowledged", "overlay-pending"])
+    expect(
+      getSessionEntries(sessionId)
+        .entries.map((entry) => entry.id)
+        .sort(),
+    ).toEqual(["overlay-acknowledged", "overlay-pending"])
 
     const response = await createFullTestApp().request("/api/status")
     const body = (await response.json()) as { memory: { historyEntryCount: number } }

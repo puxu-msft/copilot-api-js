@@ -45,8 +45,8 @@ sudo /usr/local/bin/copilot-api-deploy.sh
 1. 现场问 systemd `is-active` 判断当前活槽（`@a` 或 `@b`），零 app 状态文件参与判断。
 2. 启动另一色槽，阻塞到其 `READY=1`。
 3. 向旧槽发 `SIGUSR2`——旧槽立即停止 accept 新连接、开始 drain 在途请求。
-4. `systemctl stop` 旧槽（此时它多半已自行 drain 完退出，`stop` 只是收敛记账，幂等）。
-5. 翻转 `enable`/`disable`，让下次开机默认拉起新的活槽。
+4. 轮询旧槽直到其自行完成 drain 并退出；脚本**不调用 `systemctl stop`**，避免额外 SIGTERM 触发强退。默认最多等待 3600 秒；超时或旧槽进入 failed 时保留双槽与原 enablement，并以非零码停止换代。
+5. 仅在旧槽正常退出后翻转 `enable`/`disable`，让下次开机默认拉起新的活槽。
 
 全程 `:4141` 无停机——重叠窗口内两槽同时监听，内核把新连接全部投给新槽（旧槽 listen fd 已关）。
 
@@ -74,7 +74,7 @@ systemd 路径下 app **完全不写、不读 pidfile**——活槽发现（A1�
 
 ## 装之前必须先构建 native 产物
 
-sidecar 依赖原生 Tantivy `.node`（`native/history-search/copilot_history_search.node`）——它被 `.gitignore`（编译产物、非源码），依赖本机 Rust 工具链，`bun install` 不产出。**启动 systemd 单元前必须先 `bun run build:history-search`**（也已并入顶层 `bun run build`），否则 sidecar 起不来（`getNativeHistorySearch()` reject）。这与本仓库其它 native/编译产物的构建管线一致。
+sidecar 依赖原生 Tantivy `.node`（`native/history-search/copilot_history_search.node`）——它被 `.gitignore`（编译产物、非源码），依赖本机 Rust 工具链，`bun install` 与顶层 `bun run build` 都不产出。**启动 systemd 单元前必须显式运行 `bun run build:history-search`**，否则 sidecar 起不来（`getNativeHistorySearch()` reject）；`bun run test:ci` 会自行先构建该产物。
 
 ## 要点
 

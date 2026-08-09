@@ -6,7 +6,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
-- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — 收尾六步 + HANDOVER/KICKOFF 唯一归属
+- [收尾与跨会话交接](session-closeout-and-handover.md) → user-level skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF、进度文件、容量终态接力）— 项目 skill `session-closeout` 已于 2026-08-08 并入两者并删除
 - [审自己测试类型错配派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → `choosing-test-type`
 - [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` — §1 不变量 / §2 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）/ §3 [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱 + model key 成功失败分裂](pattern-extensible-telemetry-registry.md) → `telemetry-architecture` 一/二 — 成功=规范名·失败=别名，见 [key-split](reference-telemetry-model-key-split-success-vs-failure.md)
@@ -27,14 +27,20 @@
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
+- [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 指控「逐项绑定错位」时先逐项复核再采纳；对照若恰是它没指控的那几项就检验不了指控，先写下影响集合再从集合内取样，争议交未卷入第三方
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — 编辑脚本的 assert 在写盘之前→失败即全丢而 commit 照跑，提交信息描述了没发生的事（一天内两次）；`bash -n`／smoke 绿在未编辑文件上同样通过、区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
 - [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 一天四次同形翻车（agent id 尚不存在／目标函数是 private／pump 返回 `Promise<void>`／owner 够不到 AnchorState）；**动机都是「定死以消除歧义」而假指令比留白更坏**；写形状前先答三问（导出了吗·调用方返回什么·那一刻它存在吗），答不上就只冻结性质 + 调查 task + 停下回报硬门；候选方案也要过同一道检查；证据不同就不能合并同类项。**缝不只是代码缝**——另有角色边界／数据可得性／数据格式三型（2026-08-03），推广三问：执行者有这权限吗·是行为拿不到还是数据拿不到·落到具体字段是哪个
+- [输出过滤会伪造失败](methodology-output-filter-fakes-a-failure.md) — 加 `| rg`/`| grep`/`| tail` 减噪时，**退出码变成过滤器的**（`rg` 无匹配即 1 → 通过的测试报 failed）**且判据被吞**（`pass/fail` 汇总行被截掉），一次成功被伪装成失败而证据是你自己删的；本会话两次（`tail -8` 遮住 91 pass 而真码来自 bun `WriteFailed`；`| rg` 报 exit 1 空输出、去掉过滤即 115 pass/0 fail）。判读退出码前先问它来自被测命令还是过滤器；要判成败就别过滤，嫌长就**先落盘再筛**。**与 user-rule `63` 的 `batching-can-silently-remove-a-gate` 反方向**（那条是管道让门消失=false-green，本条是过滤器造假失败=false-red），两条都要防
+- [我写的门总在执行接缝上失效](methodology-gates-i-write-fail-at-the-execution-seam.md) — 写 skill/rule/验收条款时反复犯同一族错：**裁决点不可达**（挂在流程已越过的步骤）·**自证空结果**（0 候选就免评审，而漏项那轮恰好为空）·**评审无 oracle**（只送自述，reviewer 看不到事件源）·**判定了没有回路**·**按对象类型分叉**（回流只覆盖文件、漏掉非文件）·**不可逆动作 fail-open**·**顺序写反**（先删后发现）·**声明单源实际双判**（且非文件候选填不进文件专用 schema）·**无边界+入列前自评过滤**（作者在评审看到它之前就筛掉了）。九形态各配可观察修法；写完每条门问四问：谁在哪个尚未越过的时刻执行·判否后回到哪步且旧结论是否作废·执行者当时拿得到输入吗·动作可逆吗（不可逆必须 fail-closed）。**实证：「交事件源+双向对账」条款连咬作者两次**——首跑我只列 2 项，补成 10 项后再对账仍漏 2 格、且我自称「无新增」的两类被证否；**补全后必须再对一次，直到 diff 为空**
+- [`--ff-only` 被拒别按成因清单对号入座](methodology-ff-only-refusal-is-not-a-conflict.md) — **看 in-progress operation 状态 + `ls-files -u`，再按实际 stderr 分流**：`Not possible to fast-forward`=拓扑分叉，`would be overwritten`=**重叠**脏路径，可并存、解决一个要重跑。已知三种前置状态会拒（未解决 unmerged／已 add 未提交的 merge（`ls-files -u` 为 0、报 `MERGE_HEAD exists`）／rebase-cherry-pick 未收尾），**清单不保证完整**；⚠️**别把「工作区干净」当前置条件**——不重叠的 staged dirt 不妨碍快进，共享树永远有别人的 WIP，那是过严的门。共享树里的前置状态**只报告确认归属、不自行解决**。重复编辑用 exact reverse patch 清除、**绝不整文件 `checkout`**；附**`git ls-tree` 第二列是类型不是 OID**（误读产出 63 个假碰撞而「共享树很脏」恰好为它提供合理解释）。**本条被连打四轮，每次都是「用记得的清单替代读实际输出」**（三次枚举不全、一次反向过严）
+- [顺序前置先分型再判](methodology-ordering-gate-needs-a-trigger-that-reads-it.md) — 写「X 必须晚于 Y」前先声明它是哪型：**状态门**=每入口放行控制依赖于该谓词 + 读不到即阻断 + 原子/lease/锁或 Y 单调（**「权威」按可验证一致性契约定义、不按物理载体**——线性一致副本·lease 保护状态·带 version 校验的快照都合格，拒的是未经验证可能滞后的副本）；**因果·capability 门**=permit 只可能由 Y 产生·不可伪造·每入口都必须消费它（此型**不需要**再读 Y 真相源）。两型共同验收须**隔离目标门**：**不能假定 Y 是 X 的充分条件**，正控写成「其他前置全满足时该 Y 门不再挡」而非「X 一定发生」，负控固定其他前置只翻转 Y 并核对阻断 provenance 来自目标门（否则兄弟门代咬，假门也能通过），再加入口全集 + 只破坏目标 gate 的失效对照。都不成立就消门。**判据被连打四轮、方向各异，根因是想用一条判据管两类门**——反复朝相反方向被打回时先去分型，别调措辞
 - [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 判官与记录位置好补、**触发点最容易只写成一句陈述**（还要带 level + 说出来让用户可否决）；判据=未来会话在必经流程里会不会真走到；连打回**三轮**（①搬进 skill 只修好三分之二 ②指针不可达：字面只裁三条断言里的一条、且漏了 leaf 转交分支 ③触发点寄生在会被删除的宿主上）；**「永不闭合」不是安全的保守选项**。另含两条配套：**手工汇总+明细无对账门必漂**（指定明细为 SSOT、汇总降派生视图）·**写进文档的指纹要给可复跑命令别给裸值**
-- [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=skill `session-closeout`
+- [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=user-level skill `closing-a-development-session` 的 `verification-log.md`（投票规则唯一权威）
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制（对偶于核实他人断言）
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错
+- [收尾汇总的表述系统性强于其证据](methodology-closeout-summaries-overstate-their-evidence.md) — 六种形态全由评审而非自查抓到：数字无 selector（34/34）、汇总压掉真实计数（「四路 0/0」）、描述自己刚做的动作写反方向（3 处）、全称词没穷举范围（「无穷回归」）、判据里集合名词没定义（「本批」）、**按依赖图报状态只写自身缺口漏掉传播阻断**（Batch 1b stage 8/16/17，连打两轮）；定稿前对每个概括问六问、每问带失败动作。**本条第一版自己又犯了其中两条**（搬错计数、把三轮压成两轮）
 - [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的常在你配置那层之下(实为 undici headersTimeout ~300s)
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff
 - [诊断日志是会撒谎的权威声音 / 从日志断代码前先核实运行进程含修复 / 工具输出反常先疑代理链路别编叙事](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径恒打零；生产日志可能陈旧进程打，同类第二例先比 process 指纹，见 [stale-process](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md)；工具输出异常先怀疑单条代理转发链路损坏、用磁盘/独立 oracle 复核、引用命令前确认真实 tool_use/result，见 [no-fabrication](feedback-dont-fabricate-evidence-or-tool-distrust-narratives.md)
@@ -61,9 +67,11 @@
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片
 - [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 不用的大 BLOB 白读 + ORDER BY 末项不在索引→temp B-tree
+- [Tantivy 读路径：等值比 ordinal、字符串按段批量解析](methodology-fastfield-ordinal-not-per-doc-dictionary-lookup.md) — 逐文档 `ord_to_str` 让无过滤列表页慢 16 倍（`ord_to_term` 每次从 block 首序号重解码）；基线必须含无过滤场景否则劣化隐身
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 用 CODEX_HOME 隔离 / node_modules 存在≠锁文件事实](reference-codex-ephemeral-insufficient-use-codex-home.md) — `--ephemeral` 不够；后者可能是 prune orphan，见 [node_modules](reference-node-modules-presence-not-lockfile-truth.md)
 - [worktree 的隔离性没你以为的强（五向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④命令可能跑错树⑤不同基线 merge 会夹带无关祖先；树向 gate → skill `proving-where-a-command-ran`，集成单元/ancestry/恢复 → skill `git-preference:isolating-from-a-shared-git-worktree`
+- [隔离 worktree 会话合不了主线，只能交付到「可 fast-forward」](worktree-isolated-session-cannot-merge-shared-master.md) — master 被主检出占用 + 护栏拒 `-C` 共享树且无放行前缀；判据=`merge-base --is-ancestor master HEAD`，最后一条命令交用户
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
@@ -71,7 +79,7 @@
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
 - [阻断式 guard 的目的／false-red 成本／粒度未决时先确认](feedback-confirm-guard-purpose-before-hardening.md) — 加固前先确认 guard 守什么，不替用户把未决粒度定死
 - [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态** → skill `reshaping-a-bypassed-guard`；**第三例新增**：信号是「几次 witness 利用同一事实」非次数、推断型判据要**加独立 intent 输入**而非换一种推断、**轴的选择本身也要交未卷入方**；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」
-- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有两解=测试没咬住 vs mutation 根本没生效
+- [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有**三**解=测试没咬住 vs mutation 没生效 vs **fixture 造不出被测状态**（排除前两条后先写探针问「这状态真存在吗」，别改断言）
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；**事后归因同形**（diff 只证明结果、区分不了三种机制），分辨判据=我的解释能预测出别的可观测后果吗；编出来的根因会连带产出不防复发的修法
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
@@ -87,6 +95,8 @@
 - [穷尽 Record 全填≠活路径在读它](methodology-exhaustive-record-proves-table-not-that-live-path-reads-it.md) — 上一条的界限：formatError 无生产调用者时四张表全绿而 wire 照旧；消灭双份+从真实入口读字节+mutation 打在共享表上
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染
+- [随机 false-red 的另一半嫌疑：判据挂在进程全局量上](methodology-false-red-from-process-global-quantities-not-the-mechanism.md) — 「修完一条换一条」即信号；与污染并列查、可同时成立；全局 timer 集合当 retry oracle、wall-clock 预算当通过条件；换直接观测目标机制的 oracle 或按机制设文件级预算，别逐条打地鼠
+- [收尾文档在合并落地那一刻变陈旧](methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md) — 写「待合并/尚未/下一步是 X」时就登记为会过期断言（五个必填字段）；用户说「已合并」是收尾中段不是终点、且继承来的他人断言同样在范围内；扫描按语义载体走、零命中不等于完备；**描述本文档自身的无时间锚点合并状态改给判定命令**（理由是静态文本不适合当动态状态源，**不是**「无穷回归」——那个强表述已被评审证否，反例留在正文）
 - [并发 agent 不得共享 worktree 做 mutation](methodology-concurrent-agents-must-not-share-worktree-for-mutation.md) — 主会话调度责任
 - [transport-config 新字段：纯路由标志绝不进 change-detection](methodology-new-transport-config-field-routing-vs-connection-rebuild.md) — 任一追踪字段变化 fire 全体 listener(含 h2 session retire)
 - [append 日志 tail 游标两静默丢失陷阱](methodology-append-log-tail-cursor-silent-loss-traps.md) — 同毫秒 tie-break 永久丢行+per-row hydrate 抛错卡死
@@ -100,9 +110,10 @@
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；[amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) peer 在你 commit 与 amend 之间提交→你静默改写对方 commit，reflog 取回原 message 立刻还原(先验 tree 一致)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) rename/usages 跨提交
-- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
+- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；**边界：「两份都保」只对两侧纯新增成立**，一方改写了 base 已有内容时并列保留会把对方已完成的实施退回成待办，判别看 diff3 的 `|||||||` 段 + 断言 `ours[:len(base)]==base`；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
+- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 交叉验证只数叶节点、别按 suite 属性求和
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段盲
@@ -148,5 +159,5 @@
 
 ## 已删除记忆的话题去向
 
-通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
+通用工作原则 → user-rule + CLAUDE.md + user-level skill `closing-a-development-session` / `writing-handover-docs` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
 **两个从未存在的 memory 文件已改指正式归属**（2026-08-02，避免制造双源）：语言规则 `feedback-chinese-only-never-japanese` → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec/2026-07-14-unknown-endpoint-logging.md](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

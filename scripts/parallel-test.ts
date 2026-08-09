@@ -25,11 +25,24 @@
  * added; run `--update` occasionally to refresh.
  */
 import { Glob } from "bun"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import {
+  //
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { compareFileIdentities, parseJUnit } from "./parallel-test-artifacts"
+import {
+  //
+  compareFileIdentities,
+  parseJUnit,
+} from "./parallel-test-artifacts"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..")
 const TIMINGS_PATH = path.join(REPO_ROOT, "scripts/test-timings.json")
@@ -192,7 +205,7 @@ const identities = results.map((result) => {
   }
   return parseJUnit(readFileSync(result.junitPath, "utf8"), REPO_ROOT)
 })
-if (identities.some((identity) => identity === undefined)) process.exit(1)
+if (identities.includes(undefined)) process.exit(1)
 const parsedIdentities = identities as Array<NonNullable<(typeof identities)[number]>>
 
 const runtimeFiles = new Set(parsedIdentities.flatMap((identity) => identity.files))
@@ -229,8 +242,8 @@ for (const r of results) {
 }
 
 console.error(
-  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · ` +
-    `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
+  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · `
+    + `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
 )
 console.error(`[parallel-test] artifacts=${artifactDir}`)
 process.exit(failed.length > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)

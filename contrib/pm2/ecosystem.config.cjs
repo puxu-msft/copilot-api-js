@@ -16,6 +16,8 @@ const commonApp = {
   // pm2 只能配置有限 hard timeout，而 bundled request_deadline=0。该上限无法
   // 严格保证无损排空；生产换代应先确认旧槽 activeRequests=0，再执行 delete。
   kill_timeout: 1300000,
+  // clean handoff exit(0) 是期望的停止，不得被 PM2 autorestart 拉起旧槽。
+  stop_exit_codes: [0],
   // pm2 stop/restart 默认发 SIGINT → setupShutdownHandlers 接住并启动无损 drain。
 }
 

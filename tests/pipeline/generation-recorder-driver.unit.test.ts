@@ -14,13 +14,13 @@ import type {
 
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
-import { StreamClientAbortError } from "~/lib/stream"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
   resetUpstreamHook,
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import {
   //
@@ -105,7 +105,7 @@ describe("generation recorder v4 driver integration", () => {
         headers: new Headers(),
         frames: {
           async *[Symbol.asyncIterator]() {
-            throw new StreamClientAbortError()
+            yield await Promise.reject(new StreamClientAbortError())
           },
         },
       })),

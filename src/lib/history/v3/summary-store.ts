@@ -9,6 +9,7 @@ import type {
 import type { HistorySearchFreshnessTarget } from "~/lib/history/search/protocol"
 import type { Database } from "~/lib/history/sqlite/connection"
 
+import { lifecycleStatesForQuery } from "~/lib/history/lifecycle-state"
 import {
   //
   deleteMeta,
@@ -55,11 +56,12 @@ function compileSummaryWhere(options: QueryOptions): SummaryWhere {
     terms.push("endpoint=?")
     params.push(options.endpoint)
   }
-  if (options.state) {
-    terms.push("state=?")
-    params.push(options.state)
-  } else if (options.success !== undefined) {
-    terms.push(options.success ? "state='completed'" : "state='failed'")
+  const lifecycleStates = lifecycleStatesForQuery(options)
+  if (lifecycleStates?.length === 0) {
+    terms.push("0=1")
+  } else if (lifecycleStates !== undefined) {
+    terms.push(`state IN (${lifecycleStates.map(() => "?").join(",")})`)
+    params.push(...lifecycleStates)
   }
   if (options.from !== undefined) {
     terms.push("started_at>=?")

@@ -49,20 +49,25 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import consola from "consola"
 
+import type { StreamEvent } from "~/types/api/anthropic"
 import type {
   //
   ChatCompletionChunk,
   ChatCompletionUsage,
   FinishReason,
 } from "~/types/api/openai-chat-completions"
-import type { StreamEvent } from "~/types/api/anthropic"
 
 import {
+  //
   refusalCategoryForDiagnostics,
   type RefusalTranslationDegradationReporter,
 } from "~/lib/anthropic/refusal-detail"
 
-import { mapStopReason, mapUsage } from "./anthropic-to-cc"
+import {
+  //
+  mapStopReason,
+  mapUsage,
+} from "./anthropic-to-cc"
 
 /**
  * Terminal meta the owns-sink reverse pump reads OUT-OF-BAND (renderResponse returns only frames): the
@@ -98,10 +103,7 @@ export interface AnthropicToCcStreamTranslator {
 type BlockKind = "text" | "tool_use" | "drop"
 
 /** Build a per-request {@link AnthropicToCcStreamTranslator} (holds usage accumulation + block-index bookkeeping). */
-export function createAnthropicToCcStreamTranslator(
-  modelId: string,
-  onDegradation?: RefusalTranslationDegradationReporter,
-): AnthropicToCcStreamTranslator {
+export function createAnthropicToCcStreamTranslator(modelId: string, onDegradation?: RefusalTranslationDegradationReporter): AnthropicToCcStreamTranslator {
   let messageId = ""
   let model = modelId
   const created = Math.floor(Date.now() / 1000)
@@ -126,16 +128,16 @@ export function createAnthropicToCcStreamTranslator(
   let sawToolUse = false
 
   /** Wrap a CC chunk into an SSE frame (event:"message" — CC clients are not event-line strict, but keep it). */
-  const chunkFrame = (delta: Record<string, unknown> | undefined, opts?: { finishReason?: FinishReason; usage?: ChatCompletionUsage; emptyChoices?: boolean }): AnthropicToCcStreamStep => {
+  const chunkFrame = (
+    delta: Record<string, unknown> | undefined,
+    opts?: { finishReason?: FinishReason; usage?: ChatCompletionUsage; emptyChoices?: boolean },
+  ): AnthropicToCcStreamStep => {
     const chunk: ChatCompletionChunk = {
       id: messageId || `chatcmpl-${created}`,
       object: "chat.completion.chunk",
       created,
       model,
-      choices:
-        opts?.emptyChoices ?
-          []
-        : [{ index: 0, delta: delta ?? {}, finish_reason: opts?.finishReason ?? null, logprobs: null }],
+      choices: opts?.emptyChoices ? [] : [{ index: 0, delta: delta ?? {}, finish_reason: opts?.finishReason ?? null, logprobs: null }],
       ...(opts?.usage && { usage: opts.usage }),
     }
     return { frame: { data: JSON.stringify(chunk), event: "message" } }
@@ -186,10 +188,10 @@ export function createAnthropicToCcStreamTranslator(
           const msg = event.message
           if (msg.id && !messageId) messageId = msg.id
           if (msg.model) model = msg.model
-          inputTokens = msg.usage.input_tokens ?? 0
-          outputTokens = msg.usage.output_tokens ?? 0
-          if (msg.usage.cache_read_input_tokens != null) cacheReadTokens = msg.usage.cache_read_input_tokens
-          if (msg.usage.cache_creation_input_tokens != null) cacheCreationTokens = msg.usage.cache_creation_input_tokens
+          inputTokens = msg.usage.input_tokens
+          outputTokens = msg.usage.output_tokens
+          if (msg.usage.cache_read_input_tokens !== null) cacheReadTokens = msg.usage.cache_read_input_tokens
+          if (msg.usage.cache_creation_input_tokens !== null) cacheCreationTokens = msg.usage.cache_creation_input_tokens
           // No CC chunk — the role delta is emitted lazily on the first content/tool frame.
           break
         }
@@ -205,7 +207,9 @@ export function createAnthropicToCcStreamTranslator(
             toolIndexMap.set(index, ccToolIndex)
             sawToolUse = true
             ensureRoleChunk(out)
-            out.push(chunkFrame({ tool_calls: [{ index: ccToolIndex, id: block.id ?? "", type: "function", function: { name: block.name ?? "", arguments: "" } }] }))
+            out.push(
+              chunkFrame({ tool_calls: [{ index: ccToolIndex, id: block.id ?? "", type: "function", function: { name: block.name ?? "", arguments: "" } }] }),
+            )
           } else {
             // thinking / redacted_thinking / server_tool_use / *_tool_result / generic — no CC equivalent.
             blockKind.set(index, "drop")
@@ -223,15 +227,17 @@ export function createAnthropicToCcStreamTranslator(
               ensureRoleChunk(out)
               out.push(chunkFrame({ content: delta.text }))
             }
-          } else if (delta.type === "input_json_delta") {
-            // Only a tool_use block maps to a CC tool_call; a delta targeting a DROPPED block
+          } else if (
+            delta.type === "input_json_delta"  // Only a tool_use block maps to a CC tool_call; a delta targeting a DROPPED block
             // (server_tool_use / thinking / generic — the accumulator serves input_json_delta to
             // tool_use AND server_tool_use) is SWALLOWED (else a phantom CC tool_call / index clash).
-            if (kind === "tool_use" && typeof delta.partial_json === "string" && delta.partial_json.length > 0) {
-              const ccToolIndex = toolIndexMap.get(index)
-              if (ccToolIndex !== undefined) {
-                out.push(chunkFrame({ tool_calls: [{ index: ccToolIndex, function: { arguments: delta.partial_json } }] }))
-              }
+            && kind === "tool_use"
+            && typeof delta.partial_json === "string"
+            && delta.partial_json.length > 0
+          ) {
+            const ccToolIndex = toolIndexMap.get(index)
+            if (ccToolIndex !== undefined) {
+              out.push(chunkFrame({ tool_calls: [{ index: ccToolIndex, function: { arguments: delta.partial_json } }] }))
             }
           }
           // thinking_delta / signature_delta → swallowed (thinking channel; no CC equivalent).
@@ -245,13 +251,16 @@ export function createAnthropicToCcStreamTranslator(
 
         case "message_delta": {
           if (event.delta.stop_reason) stopReason = event.delta.stop_reason
-          const usage = event.usage as { input_tokens?: number | null; output_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | undefined
+          const usage = event.usage as
+            | { input_tokens?: number | null; output_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null }
+            | undefined
           if (usage) {
             // output is final here; input/cache MAY be restated (only override if present).
             if (usage.output_tokens !== undefined) outputTokens = usage.output_tokens
-            if (usage.input_tokens != null) inputTokens = usage.input_tokens
-            if (usage.cache_read_input_tokens != null) cacheReadTokens = usage.cache_read_input_tokens
-            if (usage.cache_creation_input_tokens != null) cacheCreationTokens = usage.cache_creation_input_tokens
+            if (usage.input_tokens !== null && usage.input_tokens !== undefined) inputTokens = usage.input_tokens
+            if (usage.cache_read_input_tokens !== null && usage.cache_read_input_tokens !== undefined) cacheReadTokens = usage.cache_read_input_tokens
+            if (usage.cache_creation_input_tokens !== null && usage.cache_creation_input_tokens !== undefined)
+              cacheCreationTokens = usage.cache_creation_input_tokens
           }
           // Map the stop_reason via the SHARED helper (tool_use→tool_calls, max_tokens→length, refusal→content_filter).
           finishReason = mapStopReason(stopReason ?? null, sawToolUse)
@@ -264,8 +273,18 @@ export function createAnthropicToCcStreamTranslator(
           }
           // INLINE finish + usage chunks (the CC leg needs no deferred flush). Role chunk first (empty stream case).
           ensureRoleChunk(out)
-          out.push(chunkFrame({}, { finishReason }))
-          out.push(chunkFrame(undefined, { emptyChoices: true, usage: mapUsage({ input_tokens: inputTokens, output_tokens: outputTokens, ...(cacheReadTokens !== undefined && { cache_read_input_tokens: cacheReadTokens }), ...(cacheCreationTokens !== undefined && { cache_creation_input_tokens: cacheCreationTokens }) }) }))
+          out.push(
+            chunkFrame({}, { finishReason }),
+            chunkFrame(undefined, {
+              emptyChoices: true,
+              usage: mapUsage({
+                input_tokens: inputTokens,
+                output_tokens: outputTokens,
+                ...(cacheReadTokens !== undefined && { cache_read_input_tokens: cacheReadTokens }),
+                ...(cacheCreationTokens !== undefined && { cache_creation_input_tokens: cacheCreationTokens }),
+              }),
+            }),
+          )
           break
         }
 
@@ -283,7 +302,9 @@ export function createAnthropicToCcStreamTranslator(
         case "error": {
           const err = (event as { error?: { type?: string; message?: string } }).error
           // Emit a CC error chunk (mirrors openAIStreamErrorFrame's shape); getMeta surfaces truncation to the handler.
-          out.push({ frame: { event: "error", data: JSON.stringify({ error: { message: err?.message ?? "Unknown stream error", type: err?.type ?? "api_error" } }) } })
+          out.push({
+            frame: { event: "error", data: JSON.stringify({ error: { message: err?.message ?? "Unknown stream error", type: err?.type ?? "api_error" } }) },
+          })
           break
         }
 

@@ -30,7 +30,7 @@ import type {
 
 import {
   //
-  createResponseHeaderTimeoutSignal,
+  createUpstreamFirstEventTimeoutSignal,
   getHeaderCaseInsensitive,
 } from "~/lib/fetch-utils"
 import { isWsResponsesSupported } from "~/lib/models/endpoint"
@@ -164,7 +164,7 @@ export async function attemptUpstreamResponsesWs(
     for (const [source, handler] of externalAbortSources) source.removeEventListener("abort", handler)
   }
 
-  const fetchSignal = createResponseHeaderTimeoutSignal(wire.model)
+  const fetchSignal = createUpstreamFirstEventTimeoutSignal(wire.model)
   const onFetchTimeout = () => {
     // Carry the watchdog's own TimeoutError: the boundaries only call something a
     // header/first-event timeout when they can see that identity.

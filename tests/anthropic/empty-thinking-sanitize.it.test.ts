@@ -278,8 +278,14 @@ describe("sanitizeAnthropicMessages — synthetic-reasoning sentinel strip (echo
       ]),
     )
     const blocks = payload.messages[1].content as Array<{ type: string }>
-    expect(blocks.some((b) => b.type === "thinking"), "sentinel thinking must be stripped").toBe(false)
-    expect(blocks.some((b) => b.type === "text"), "real text must survive").toBe(true)
+    expect(
+      blocks.some((b) => b.type === "thinking"),
+      "sentinel thinking must be stripped",
+    ).toBe(false)
+    expect(
+      blocks.some((b) => b.type === "text"),
+      "real text must survive",
+    ).toBe(true)
   })
 
   test("labeled-envelope signature (prefix + encrypted payload) is ALSO stripped unconditionally", () => {
@@ -294,7 +300,10 @@ describe("sanitizeAnthropicMessages — synthetic-reasoning sentinel strip (echo
       ]),
     )
     const blocks = payload.messages[1].content as Array<{ type: string }>
-    expect(blocks.some((b) => b.type === "thinking"), "labeled-envelope thinking must be stripped").toBe(false)
+    expect(
+      blocks.some((b) => b.type === "thinking"),
+      "labeled-envelope thinking must be stripped",
+    ).toBe(false)
   })
 
   test("a REAL signed thinking block (non-sentinel signature) is NOT stripped by the sentinel guard", () => {

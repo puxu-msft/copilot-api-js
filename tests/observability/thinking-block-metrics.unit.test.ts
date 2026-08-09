@@ -106,7 +106,7 @@ describe("thinking-block metrics: sink → telemetry → read-outs", () => {
     const detach = attachTelemetrySink(bus)
     const entry = makeEntry({ role: "assistant", content: [] })
     entry.state = "failed"
-    entry.attempts![0]!.dispatchVerdict = "committed"
+    entry.attempts![0].dispatchVerdict = "committed"
     bus.scope("request").publish({ kind: "request.failed", ctx: { ...makeCtx(), state: "failed" }, entry, error: "proxy-introduced refusal verdict" })
     detach()
 

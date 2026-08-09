@@ -1,0 +1,17 @@
+diff --git a/src/lib/transport/http2-client.ts b/src/lib/transport/http2-client.ts
+--- a/src/lib/transport/http2-client.ts
++++ b/src/lib/transport/http2-client.ts
+@@ -1054,6 +1054,5 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
+     // constraint #3). PATH 1 (the sole path once the stream exists).
+     req.once("close", () => {
+-      detachPostResponseAbort()
+       entry.activeStreamCount -= 1
+       maybeReclaimRetiringSession(entry)
+       if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
+@@ -1117,6 +1116,5 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
+           req.once("end", () => {
+             ended = true
+-            detachPostResponseAbort()
+             try {
+               controller.close()
+             } catch {
