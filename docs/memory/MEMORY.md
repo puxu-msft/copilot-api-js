@@ -109,7 +109,7 @@
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；[amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) peer 在你 commit 与 amend 之间提交→你静默改写对方 commit，reflog 取回原 message 立刻还原(先验 tree 一致)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) rename/usages 跨提交
-- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
+- [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；**边界：「两份都保」只对两侧纯新增成立**，一方改写了 base 已有内容时并列保留会把对方已完成的实施退回成待办，判别看 diff3 的 `|||||||` 段 + 断言 `ours[:len(base)]==base`；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
 - [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑重取（两侧数字都错）；JUnit 交叉验证只数叶节点、别按 suite 属性求和
