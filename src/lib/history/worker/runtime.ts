@@ -112,13 +112,15 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   }
 
   start(config: HistoryWorkerStartConfig): Promise<HistoryWorkerReady> {
-    if (this.transport) return Promise.reject(new Error("History Worker runtime is already started"))
-    // Terminal is IRREVERSIBLE (spec §7.2 step 1: refuse to create any further Worker).
-    // Guarding on `transport` alone is not enough now that fatal terminates the dead
-    // generation: with the transport gone, a second `start()` would sail past that check
-    // and `emptyStatus()` would quietly clear the sticky fatal flag.
+    // Order matters: terminal and stopped are reported first because they are the more
+    // fundamental (and more actionable) conditions — "already started" would be true of a
+    // terminally-failed runtime too, and saying so would hide why it can never come back.
     if (this.status.terminalFailed) return Promise.reject(new Error(`History Worker runtime is terminally failed: ${this.status.lastError ?? "unknown"}`))
     if (this.stopped) return Promise.reject(new Error("History Worker runtime has been shut down"))
+    // `startConfig` rather than `transport`: during a restart backoff there is no transport,
+    // so the transport alone answers "is a Worker running" when the question is "has this
+    // runtime already been started".
+    if (this.startConfig) return Promise.reject(new Error("History Worker runtime is already started"))
     this.startConfig = config
     this.status = { ...emptyStatus(this.generation + 1), latestDesiredRevision: config.configRevision }
     return new Promise<HistoryWorkerReady>((resolve, reject) => {
