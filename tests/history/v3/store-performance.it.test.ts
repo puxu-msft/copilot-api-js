@@ -244,7 +244,14 @@ describe("History V3 store performance", () => {
     console.log("HISTORY_V3_PERF cas-bytes", JSON.stringify({ operations: records.length, v2Bytes, pageDelta, liveBytes, physicalRatio, liveRatio }))
     expect(physicalRatio).toBeGreaterThanOrEqual(10)
     expect(liveRatio).toBeGreaterThanOrEqual(10)
-  }, 15_000)
+    // Generous on purpose, and NOT a latency bound — the oracle is the byte ratio above
+    // (measured 109x physical / 218x live against a 10x threshold), so wall clock only ever
+    // produces false reds here. It needs to be generous because the body is synchronous:
+    // bun cannot interrupt it, so an over-budget run still does all the work and prints its
+    // stats before being marked TimeoutError, which reads exactly like a passing run.
+    // Measured: ~9s isolated, 16.29s inside a 16-way sharded `test:backend` — the previous
+    // 15s budget lost to scheduling noise by 1.3s and turned the whole gate red.
+  }, 120_000)
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {
     const records = [
