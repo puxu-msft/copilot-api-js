@@ -31,8 +31,8 @@
 
 **测试门禁现状（核验于 2026-08-08）**：`typecheck` / `lint:all` / `test:backend` 均可正常跑。`test:backend` 的 `7279 executed / 30 skipped / 0 fail` **实测锚点是阶段 1 代码终点 `bea1dfa3`**（不是当时的 `master` `d1011fe7`——后者只是把 `bea1dfa3` 作祖先、另含无关 History worker 提交）。`test:backend` 是交付前必跑档位。依赖 native history-search 产物的测试**没有产物就显式 skip、不算红**。**复验触发器**：出现真实失败、矛盾证据、transport／test 基础设施路径变化、异常 merge 结果，或用户要求时才重验；仅仅 `master` 前进不触发。
 
-⚠️ **你现在跑会得到不同的数字，别当回归**：收尾时（`master` = `5720855929`）实测为 `7297 executed / 35 skipped`——executed 涨来自主线新增测试，skipped 30→35 的 5 条增量全是 `describe.skipIf(!NATIVE)`（+4 来自 `d38fcb9c`，+1 来自 `7a99a254` 且已登记）。**`0 fail` 不稳定**：`tests/history/store-performance.it.test.ts` 在全套件并行下会撞 15s timeout 而红、单跑即绿，撞到时先单跑判别。
+⚠️ **你现在跑会得到不同的数字，别当回归**：收尾时（`master` = `5720855929`）实测为 `7297 executed / 35 skipped`——executed 涨来自主线新增测试，skipped 30→35 的 5 条增量全是 `describe.skipIf(!NATIVE)`（+4 来自 `d38fcb9c`，+1 来自 `7a99a254` 且已登记）。**`0 fail` 不稳定**：`tests/history/v3/store-performance.it.test.ts` 在全套件并行下会撞 15s timeout 而红、单跑即绿，撞到时先 `bun test tests/history/v3/store-performance.it.test.ts` 单跑判别。
 
-⚠️ **`test:backend` 会读 `tests/infra/entry-test-discovery-baseline.json`**（`tests/infra/entry-evidence-schema.unit.test.ts` 精确断言其 `files` 集合）——**你新增或改名任何测试文件，都必须同步更新该 `files`，否则 backend 直接红，这归你**。它不比对 `allowed_skipped` 与运行时 skip（那是 `capture/validate-entry-evidence` 的事），所以当前 `allowed_skipped` 31 vs 实测 35 这条缺口**不归你修**。完整说明见 [HANDOVER.md](HANDOVER.md) 状态行的「收尾时刷新」段。
+⚠️ **`test:backend` 会读 `tests/infra/entry-test-discovery-baseline.json`**（`tests/infra/entry-evidence-schema.unit.test.ts:17` 读真实文件、`:25` 精确 `toEqual` 断言其 `files` 集合）——**你新增或改名 `tests/**` 下的 `*.unit.test.ts` / `*.it.test.ts` / `*.http.test.ts`，必须同步更新该 `files`，否则 backend 直接红，这归你**。⚠️ **限定别丢**：只有这三个后缀、且在 `tests/` 目录下的文件在该 glob 内；`.pty` / `.e2e` 后缀与 `tests/` 之外的路径**不在其中，加进去反而会让 `toEqual` 当场红**。它不比对 `allowed_skipped` 与运行时 skip（那是 `capture/validate-entry-evidence` 的事），所以当前 `allowed_skipped` 31 vs 实测 35 这条缺口**不归你修**。完整说明见 [HANDOVER.md](HANDOVER.md) 状态行的「收尾时刷新」段。
 
 **每个阶段做完就合并 `master`**（定向测试 + typecheck + 架构守卫 + `test:backend` + 独立 subagent review 全绿后），不要把阶段 2 和 3 攒成一次大合并。
