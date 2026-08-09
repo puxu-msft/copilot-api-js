@@ -334,3 +334,393 @@ unsalted  cold [4.85, 6.85, 14.82, 4.33, 3.96]  hot [2.86, 2.99, 3.74, 8.51, 3.5
 - **[建议] `store-performance.it.test.ts` 的 fixture 尺寸** —— 按上表把 `highBranchFixture` 放大到 commit 落在 ~30ms 量级，让 `cold×5` 重新压过地板。**预期影响**：判据回到比值形态、绝对余量 161ms、稳定性不降；代价是该用例多花数秒（文件预算 60s，当前用约 6s）。**推荐做法**：在 `(40,16_384)` 与 `(80,65_536)` 之间二分取一档，跑 5 次隔离 + 1 次 16 分片确认 `commitBudgetMs` 由 `cold×5` 决定而非 60。
 - **[建议] `saltedSample` 的 docstring 补一句作用域** —— 它只 salt `arena.payloads` 中的纯对象节点；`largeSseFixture` / `longConversationFixture` 的 frame 内容不在其内。**预期影响**：避免将来把 `timedCommit` 复用到 frame 型 fixture 时去重悄悄回来。
 - **[建议] 记录 `:708` 与 `:724` 的自相矛盾** —— 前者说「5x 的语义一字未改」，后者说「分母低于 12ms 时判据完全脱离比值」。**预期影响**：读者按 `:708` 会以为比值仍在守。**推荐做法**：`:708` 改成「5x 的**意图**未改；实测 regime 下它由 60ms 地板决定，见下」。
+
+---
+
+# 复评（第三轮）
+
+> 对象：同分支，HEAD = `42275f3fa878d1f1bf2abd77a3c4ada806141875`。仓库仍只读（`git status` 只有本报告一个未追踪文件）；全部 mutation / 变体在 `/tmp/rev046d/clone`（已 `--force` 切到 `42275f3f`，实验后逐条 `--reverse` / `checkout --` 复原）。
+
+## 复评 verdict（第三轮）
+
+**可以合并。blocker 0；major 2** —— 一条是 R2 oracle 的边界少写了一整类语句（我给出了已验证的一行修法），一条是协调方「`executed` 含 skipped」的口径**与源码相反**、并已被写成给下一个人的警告。两条都不阻塞合并，但第二条会在下一次 gate 掉测试时**真的打掉 T0.0f**。
+
+**T0.0f 表态：可以直接跑 15 连跑。** 依据见文末。
+
+## R1 —— M1 回退与对我的方案的证否：**两半我都独立复跑，实施方全对，我上一轮的建议是错的**
+
+**回退本身**：`tests/history/v3/store-performance.it.test.ts` 已逐字回到 `expect(commitRatio).toBeLessThan(5)`，`COMMIT_BUDGET_FLOOR_MS` 删除，中位数与 salt 保留。**回退一次放宽不需要裁决**，这个判断正确。
+
+**对我方案的证否 —— 我在 `/tmp` 克隆里用它自己的冻结件 `/tmp/mut-r2-hot-only-history-dependence.patch` 复跑，结论成立：**
+
+| fixture | coldCommitMs | hotCommitMs | commitRatio | 对 `< 5` |
+|---|---|---|---|---|
+| `(10, 8_192)`（现状） | 3.27 | 31.04 | **9.48** | **红** ✓ |
+| `(80, 65_536)`（**我上一轮建议**） | 23.34 | 44.24 | **1.90** | **绿 —— 同一缺陷完全逃逸** |
+
+**我的建议是错的，撤回。** 补一条比「方向相反」更可复用的判据，也是这次的真正教训：
+
+> **比值判据对「加性」缺陷的灵敏度 ∝ 1/基线**（`ratio = 1 + Δ/baseline`）。把基线抬高来逃噪声，等于按同一比例交出灵敏度。M2 之所以能「放大即白拿余量」，是因为那里的缺陷是**乘性**的（实际时长 = 请求值 × 6），乘性缺陷在比值上是**尺度不变**的；本条的缺陷是加性的（多扫一遍表，Δ ≈ 21–28ms 与基线无关），于是尺度不变性不成立。
+> **可执行的自检**：套用「放大被测量」之前，先问这个缺陷在被测量里是 `×k` 还是 `+Δ`；是 `+Δ` 就不能放大基线。
+
+实施方记的 0.94/0.81 与我测的 1.90 有量级差异（同向、都远低于阈值），可能来自 salt 后冷端样本自身也被缺陷拖慢的程度不同；**不影响结论**，但如果要把这张表当长期依据，建议注明两次读数不一致。
+
+## R3 —— `http2-generation-reconcile` 的根因修法与两处「良性」判定
+
+**根因修法成立。** row 1 是四行里唯一不 await 响应的，`sleep(30)` 顶替缺失的就绪信号；`sleep(30)→sleep(0)` 必然复现，这是**内蕴的正样本对照**（零固定等待下改前红、改后绿），比「跑 N 次都绿」强得多。抽出的 `waitUntil(predicate, label, 2_000)` 带 label 也解决了「超时看起来像断言真的失败」这个分类难题——这一点是这次修复里最有长期价值的部分。
+
+**两处「良性」判定我逐条查了，都成立；其中一处我做了主动证伪并失败：**
+
+- **`:182`（原 `:163`）—— 成立，且我试图证伪未果。** 我的假设是：它不只是「被测刺激」，那 30ms 同时是「reconcile 必须在此窗口内被调用」的墙钟预算，而 `waitUntil` 的 5ms 轮询在争用下只需 6x 放大就会错过窗口 → `expect(connectCount).toBeGreaterThanOrEqual(2)`（`:203`）假红。**用它自己那招证伪：把 `sleep(30)` 改成 `sleep(0)`（最大收缩），该用例仍 1 pass / 0 fail。** 说明真正的竞态窗口是**真实 TCP 握手**、由 `await` 的顺序保证，不由那 30ms 的时长保证；而争用只会让注入的 sleep 更长（单侧安全）。**「良性」判定比它自己给的理由还更站得住。**
+- **`:259`（原 `:260`）—— 成立，措辞也准确。** 它只声称 false-red 方向（「若 ping 真被取消，再多争用也变不出一个 ping」），这是对的；另一方向（争用下 45ms 窗口里恰好没有旧节拍 tick → 假绿）它没有声称，而且实际也不成立——15ms interval 的回调与 `sleep(45)` 在同一事件循环里排队，先排的先跑。**没有过强表述。**
+
+## R4 —— identity 唯一性校验「已存在」：**证否成立，我上一轮的建议基于错误前提**
+
+`scripts/entry-evidence-schema.ts:85-89` 的 `skipSortKey` 由 `(kind, file, classname, name, ordinal)` 或 `(kind, file, suite_name)` 组成，**`reason` 不在键里**；`:110-111` 的 `new Set(keys).size !== keys.length || keys.some(...compareStrings(...) >= 0)` 同时校验唯一与 bytewise 升序，失败即 `fail("allowed_skipped are not unique bytewise sorted")`。因此「两条 identity 相同、只差 `reason`」在**解析期**就被拒——正是我上一轮说「未必能拦住」的那个形态。
+
+**我错了，撤回该建议。** 我上一轮的推理错在把 `validate-entry-evidence.ts:748` 剥离 `reason` 的那一步，当成了「唯一性检查也不看 reason，所以拦不住」——实际两处剥离的目的相反：那一处是为了和实跑的 identity 对齐，这一处（`skipSortKey`）恰恰因为不含 `reason` 而**更严**。**这是我这三轮里第二次把否定性结论说早了**（第一次是「baseline 可能有重复」，这次是同一条）。
+
+## R2 —— 查询计划 oracle 与 perf 档
+
+### ③ `whole-suite-skip` 名实相符：**成立**
+
+`scripts/entry-evidence-schema.ts:1` 的 `SkipReason` 枚举含 `whole-suite-skip`，`:32` 对 `testcase` 与 `suite` 两种 kind 都允许它；`docs/rfc/2026-08-03-.../cutover-plan.md:529` 是该枚举的权威说明。baseline 里它**已被用过 8 次**（`postcommit-truncation-shaping.it.test.ts` 的 GATED 套件），本次是第 9 次，形态完全一致：`describe.skipIf(...)` 整套件 gate、Bun 按 testcase 逐条汇报。**不是为本次新造的语义。** 另外 identity 取自真实 JUnit 输出（classname 里有 `&gt;` 这类 XML 转义，手写必错）——这一步做对了。
+
+### ② gate 的形状：**计时断言不是死代码，但它现在没有任何触发点**
+
+- **不是死代码**：`describe.skipIf(!PERF_TIER)`，`PERF_TIER = process.env.RUN_PERF_TESTS === "1"`，`package.json:67` 的 `test:perf` 设置它；实施方实跑 4 pass 且计时行真打印。文件保留 `.it.test.ts` 后缀因而仍在 discovery baseline 的 `files` 里，后端档中表现为一条**显式 allow-listed skip** 而不是凭空消失——这个设计是对的，它让「被 gate 掉」这件事本身可审计。
+- **但**：`package.json:57` 的 `test:ci` = `build:history-search && test:backend && test:pty && test:e2e`，**不含 `test:perf`**；全仓 `grep test:perf\|RUN_PERF_TESTS` 只命中 `package.json`、该测试文件、处置记录三处——**CLAUDE.md 的「测试分档」节（档位 SSOT）与 `docs/coding-conventions.md` 都没有它**。也就是说这条不变量现在只存在于一个**没有任何自动触发器、也没有出现在任何常读文档里**的档位中。用户的裁决是「保留计时于独立档」，「独立」已做到，「保留」只做到了一半：没人会想起来跑它。
+- **建议（不阻塞合并）**：二选一并写进 CLAUDE.md 测试分档节 ——（a）在某个必经节点挂上它（如交付前 checklist 或 `test:ci` 末尾，它只有 4 条用例、秒级）；（b）明确写成「按需人工档，触发条件是改动 History V3 写路径时」。**只要不写进档位 SSOT，下一个会话就不知道它存在。**
+- **另记一个陷阱**：`RUN_PERF_TESTS` 会改变 skip 多重集。若有人在设置了该环境变量的 shell 里跑 T0.0f 采集，这条 skip 会消失 → `validate-entry-evidence.ts:749-757` 的多重集相等检查失败，报错文本是「skipped identity multiset mismatch」，指不到根因。建议在 `capture-entry-evidence.ts` 起子进程时显式清掉它，或在 `test:perf` 旁注明。
+
+### ① [major] oracle 的边界**写得很诚实，但漏掉了一整类语句**——写语句（`DELETE`/`UPDATE`）根本没被检查
+
+先说做对的：oracle 包 `db.prepare` 观察**生产实际发出**的语句而不是在测试里重写 SQL（`:184-196`），反空洞断言 `expect(reads.length).toBeGreaterThan(0)`（`:200`）也确实是必需的一层；注释里把「计划保持索引」**窄于**「成本不增长」写死，并列出四类看不见的东西（N+1 点查、JS 侧的 per-operation 工作、本次未执行的代码路径、行**尺寸**增长）。这份边界声明的方向是对的。
+
+**但过滤器是 `/^\s*SELECT/i`，写语句全部落在检查之外。** 我在 `/tmp` 克隆里把该 commit 实际发出的全部语句打印出来（29 条）：
+
+```
+22 条被检查（v3_meta / sqlite_schema / 1×v3_operations 存在性 / 20×SELECT canonical_gz FROM v3_objects WHERE hash=?）
+5 条命中 history-sized 表却被过滤掉：
+  INSERT OR REPLACE INTO v3_journal(...)
+  INSERT INTO v3_operations(...)
+  INSERT INTO v3_tracks(...)
+  INSERT INTO v3_timeline_chunks(...)
+  DELETE FROM v3_journal WHERE operation_id=? AND revision=?      ← 这条有 WHERE，计划可以退化成全表扫描
+```
+
+`DELETE ... WHERE` 正是「索引退化成扫描」能发生的形态，而它既不在检查内、也不在那四条边界声明里。读者按注释会以为「commit 路径上所有会扫表的地方都被盯住了」，实际只盯住了 `SELECT`。**这与本轮反复出现的「命题强于证据」是同一类**，只不过这次表现为边界列举不全。
+
+**修法已验证，一行**：把过滤器改成 `/^\s*(SELECT|DELETE|UPDATE)/i`。我在克隆里实测：`readsInspected` 22 → **23**（多出的正是那条 `DELETE`），`scans` 仍为 **0** —— **健康态不变红，覆盖面严格增大**。`INSERT ... VALUES` 无 WHERE、无扫描语义，排除掉是对的，不必纳入。若不采纳，至少要把「写语句不在检查内」补进边界列表。
+
+## 另外三件
+
+### 1. 未处置#7「升级而非撤下」：**恰当，且结论写得准**
+
+两者确实不是同一件事：oracle 抓的是「查询计划退化成扫描」，#7 记的是「比值判据的自归一化——缺陷同时拖慢冷热两端时比值吸收掉它」。后者在 oracle 存在之后**依然成立且依然无人守**（oracle 对不改变计划的成本增长是盲的，这一点注释自己写了）。所以撤下会丢东西，升级是对的。
+
+**协调方补的那句「计时判据移出后端档后，后端档对该性质零尝试，敞口在门上变大了」——我确认属实且值得单独强调**：后端档现在对「commit 成本随历史长度增长」这条不变量的覆盖，**完全等于** oracle 能看见的那一小块；oracle 自己列出的四类（现在应该是五类，见上）在后端档里**一条都没有**。这不是反对这次改动（原判据 1/5 假红，留着它才是把门废掉），而是要求这句话必须留在记录里，不能被「已用确定性 oracle 替代」这种简写盖过去。
+
+### 2. [major] 「`executed` 把 skipped 计在内」——**与源码相反，观测数据也不支持**
+
+源码是决定性的：`scripts/parallel-test-artifacts.ts:129` 对每个 testcase 的处理是「若被 skip 则记入 skipped 集合，**`} else executed += 1`**」——**`executed` 严格排除 skipped**。
+
+再看数据为什么会**看起来**像「含在内」：
+
+| | executed | skipped |
+|---|---|---|
+| `def7fdb7`（上一轮，我实跑） | 7297 | 35 |
+| `42275f3f`（本轮，我实跑 `0 fail · 63.63s`；与协调方读数一致） | 7297 | 36 |
+
+本次改动同时做了**两件**事：新增 1 条会执行的 oracle 用例（executed **+1**），gate 掉 1 条原本执行的计时用例（executed **−1**、skipped +1）。**净变化恰好为 0，是这两件事互相抵消，不是「skipped 计在 executed 里」。** 两个假说都预测 skipped=36，但「含在内」假说预测 executed=**7298**，实测 7297 —— **数据本身就证否了它**。
+
+**为什么这条必须改而不是留着**：它被写成了给下一个人的警告，而按它行事会踩坑——**下一次单独 gate 掉一条测试（不同时新增用例）时，`executed` 会真的下降到 7296**，触发 `scripts/validate-entry-evidence.ts:757` 的 `actualExecuted < baseline.minimum_executed` → T0.0f 直接 fail。**正确的规则是原来那条（协调方自称推理错的那条）：gate 掉测试就要同步下调 `minimum_executed`。** 本次之所以不必下调，纯粹是因为同时新增了一条用例。建议把记录里那段警告整段反转，并注明「本次 7297 不变是 +1/−1 抵消，不是口径特性」。
+
+### 3. 计数拆成两个维度：**成因消除了，判定成立**
+
+前两次数错都源于把「语法上还在不在」和「判别内容变没变」混在一个计数里。现在拆成「内容层面 4 处 = 1 删 + 3 降」与「移出后端档 1 / 新增判据 1」两个维度，两类不再互相污染，且每一处都能对上一个具体动作。我上一轮给的口径（改变判别内容 3 处 = 2 删 1 降）与现在的 4 处（1 删 3 降）差别只在 M1 那一条的最终归属——它先被替换、又被回退、最后被 gate 出后端档，归为「降」比归为「删」更准。**接受当前口径。**
+
+## T0.0f 表态：**可以直接跑 15 连跑，现在就跑**
+
+上一轮我给的是「再枚举 0 轮，先修那条已观测 flaky」。那条已修，条件已满足，**表态从「先修」变成「跑」**。依据分三层，从强到弱：
+
+1. **两条已观测的失败模式都是在机制层面被消除的，不是被「多跑几次绿」掩盖的**，而且各自带正样本对照：
+   - `commitRatio`：不再于后端档执行（`describe.skipIf(!PERF_TIER)`，baseline 里有对应 allow-listed skip）。它**不可能**再打掉 T0.0f——这是构造性的，不是概率性的。
+   - `http2-generation-reconcile:377`：固定等待归零、换条件轮询，`sleep(30)→sleep(0)` 是内蕴正控（改前必红、改后必绿）；我另外用同一手法主动证伪了同文件 `:182` 的「良性」判定，未能证伪。
+2. **合并态实测**：本评审在 `42275f3f` 实跑 `0 fail · 7297 executed · 36 skipped · 63.63s`，与协调方读数（85.13s）一致；加上上一轮 5 次枚举与实施方的验证跑，后 M1 至今**未再观测到任何失败**。
+3. **成本论据（这条决定了「现在跑」而不是「再攒证据」）**：要靠纯绿跑把单次失败率的 95% 上界压到 T0.0f 需要的 4.5% 以下，需 ~67 次（0 失败时 `3/n ≤ 0.045`），是门本身成本的 4.5 倍。**15 连跑就是这件事最便宜的采样器**；失败也不亏——它会点名一个新文件，而这三轮已经证明这类 flaky 都是可根因、可机制性消除的（两条都做到了）。
+
+**已知残余风险，点名如下（都不足以推迟开跑）**：
+
+- **未知 flaky**：任何 ≥10% 命中率的未知项都会大概率打掉 15 连跑（`0.9^15 = 20.6%`）。目前没有任何观测支持它存在，也没有更便宜的办法排除它。
+- **`RUN_PERF_TESTS` 污染**：若采集所在 shell 恰好设了该变量，skip 多重集会少一条而整个门 fail，报错指不到根因。**开跑前确认 `env | grep RUN_PERF_TESTS` 为空**——这是我唯一建议的开跑前动作。
+- 本轮两条 major 与 T0.0f 无关：oracle 边界那条只影响未来的鉴别力，`executed` 口径那条影响的是**下一次** gate 测试时的操作，不影响本次采集（当前 7297 与 baseline 恰好相等）。
+
+## 第三轮的边界（未做的）
+
+- 未独立复跑 oracle 的 mutation（`insertObject` 点查退化为全表扫描 → 21/22 变 `SCAN v3_objects`）。我做的是**统计语句总体**（29 条，见上），从而发现了边界缺口；mutation 结论本身按记录接受并标注为未二次证实。
+- 未跑 T0.0f 的 15 连跑本身（不在评审范围）。
+- ~~未验证 `test:perf`~~ —— 补跑了：`bun run test:perf` 下 `HISTORY_V3_PERF history-length` 与 `HISTORY_V3_PLAN` **两行都真的打印**（cold 1.90 / hot 1.61 / ratio 0.848），计时用例确实执行，**不是死代码**。
+
+---
+
+# 复评（第四轮 · 只审 P1/P2/P3 增量）
+
+> HEAD = `33b51ab4df3dbcecdce69638fee6bb14c6cad6ab`（增量两提交：`2995df8b` P2+P3、`33b51ab4` P1）。仓库只读（`git status` 只有本报告一个文件被修改）；mutation 全在 `/tmp/rev046d/clone`（已切 `33b51ab4`，实验后 `checkout --` 复原、`status` 干净）。
+> 本轮合并态实测：`bun run test:backend` → **`0 fail · 7297 executed · 36 skipped · 67.28s`**。
+
+## 第四轮 verdict
+
+**可以合并。blocker 0；major 2**，两条都在 P1 的**文档层**：撤回没有覆盖到第二处复述（错误规则仍活着），以及撤回段里有一句与它自己上一行的表格直接矛盾、并且把教训提炼偏了。P2、P3 的**代码与脚本层**没有发现问题。
+
+**T0.0f：维持「现在就跑」不变**，且多了一条可机械化的开跑前动作（见 P3-b）。
+
+## P1 · `executed` 撤回
+
+### ② 当前 `minimum_executed = 7297` 这个值本身：**对**
+
+本轮实跑 `7297 executed / 36 skipped`，与 baseline `minimum_executed = 7297` 相等。增量两提交只改了过滤器表达式、脚本与文档，**没有增删用例**，所以数值不应变、实测也没变。✓
+
+### ① 改正后的表述：主体准确，但有**两处**必须修
+
+**准确的部分**：`:1018-1025` 引 `scripts/parallel-test-artifacts.ts:129` 的 `} else executed += 1`，结论「skipped 被严格排除、单独 gate 一条会掉 1、可能撞 `validate-entry-evidence.ts:757` 的下限」——与源码逐字相符；`:1040` 把 7297 的**理由**换成「本轮净变化恰为 0」也正确。
+
+**[major] `:1226` 未处置#6 里那句错误复述还活着。** 原文：
+
+> 6. …… **另注意 `executed` 计入 skipped**，见上文「多一条 skip ≠ 少一条 executed」。
+
+这正是被撤回的那条断言，一字未改，而且它位于**面向未来的未处置清单**里——是最可能被下一个人直接照做的地方。缓解因素只有一个：它指向的小节标题现在读作「⚠️ 已撤回的错误结论……**是错的**」，顺着指针走的人会撞见更正。但**这句话本身仍在断言错误内容**，撞不撞见取决于读者会不会点进去。
+这恰好是本文档 `:268` 自己记下的那条教训——「**改了内容不改指向它的东西，正是这类修复最常见的漏法**」——在同一份文件里复发。**修法**：把该句改成「另注意 `executed` **不含** skipped（见上文撤回小节）：gate 掉用例会让 `executed` 下降，须同步核对下限」。
+
+**[major] `:1036` 有一句与它上一行的表格直接矛盾，而 `:1038` 的判据是从这句错话推出来的。**
+
+`:1031-1034` 的表格写得很清楚：两个假说对同一次观测的预测是 **7298 vs 7297**，实测 7297 —— 也就是说**这次观测是有鉴别力的，而且它当场就证否了错误假说**。但紧接着 `:1036` 写：
+
+> **一次同时改变两个变量的观测，区分不了两个假说**
+
+这与上一行的表格**互相拆台**：预测不同就是能区分。真实的失败不是「观测没有鉴别力」，而是**根本没算过任何一个假说的预测**，于是把「数字没变」当成了确认。
+
+### ③ 提炼的判据：**方向对、作为通则成立，但与本案不匹配，需要一般化**
+
+`:1038` 写的是：「写下『实测证明了 X』之前，先问与 X 竞争的假说对这次观测的预测是什么——**如果两者预测相同**，这次观测就没有鉴别力。」
+
+- 作为**通则**：成立。这是「似然比 ≈ 1 即无证据」的正确表述，值得留。
+- 作为**本案的教训**：不成立。本案两个预测**不同**（7298 ≠ 7297），所以「预测相同→无鉴别力」这一条**拦不住本案**——下一次同样的人做同样的事，仍会算出「预测不同」然后照样不去对比，因为他压根没算。
+- **建议改成能覆盖两种失败的形式**：「**先把每个候选假说对这次观测的预测分别写下来**，再看实测落在哪一侧。预测相同 → 该观测无鉴别力，换一个观测；预测不同 → 必须逐个对照，**不得用『数字没变／和上次一样』这类印象代替对照**。」后半句才是本案真正缺的那一步。
+
+（顺带确认它自己的归类是对的：`:1038` 说这与「分类被推翻」那节同源、一个是**范围**写宽、一个是**鉴别力**没检验——这个区分本身准确。）
+
+## P2 · 过滤器加宽
+
+### 那条我没要求的对照：**成立，我逐格复现了**
+
+在 `/tmp/rev046d/clone`（`33b51ab4`）注入 DELETE mutation（`src/lib/history/v3/store.ts:737` 的 `WHERE operation_id=?` → `WHERE +operation_id=?`，`+` 前缀禁用该列索引），两种过滤器对跑：
+
+| 过滤器 | `HISTORY_V3_PLAN` | 结果 |
+|---|---|---|
+| **新**（`SELECT\|DELETE\|UPDATE`） | `{"statementsSeen":29,"planInspected":23,"scans":1}` | **红**，diff 指出 `"SCAN v3_journal"` |
+| **旧**（SELECT-only）× 同一 mutation | `{"statementsSeen":29,"planInspected":22,"scans":0}` | **绿** |
+
+**「加宽买到了真覆盖」这条正面证据成立**——旧过滤器对该缺陷确实是假绿。同时确认了「覆盖面变了就必须重做正控」这个动作是必要的，不是仪式。
+
+### 边界声明是否**恰好**匹配实现：**是，且我核过统计口径**
+
+- 覆盖侧：`planInspected = 23`，即 29 条语句里对 history 量级表发出的 `SELECT`/`DELETE`/`UPDATE`。剩下 6 条中，命中 history 表的全是 `INSERT ... VALUES` / `INSERT OR REPLACE`（无 WHERE，没有可退化的检索计划），排除它们是对的，**不算漏**。
+- 不覆盖侧新增的「走了索引但选择性很差的计划」——这一条正是 `EXPLAIN QUERY PLAN` 只报 `SEARCH/SCAN` 而不报行估算所导致的真实盲区，补得准确。
+- 变量与日志字段从 `reads`/`readsInspected` 改名为 `planned`/`planInspected`，并加了 `statementsSeen` —— **名实相符了**（旧名 `reads` 在包含 DELETE 之后就是撒谎的名字），而且 `statementsSeen` 让「总体 vs 被检查」的比例可审计，这一步做得比我要求的多。
+- 反空洞断言 `expect(planned.length).toBeGreaterThan(0)` 仍在。**nit（不构成发现）**：加宽之后它稍微弱了一点点——即使所有 `SELECT` 都消失、只剩那条 `DELETE`，它也仍为真。若要更强可断言 `planInspected >= 20`，但那会引入一个需要维护的魔数，**我不建议改**。
+
+## P3 · `test:perf` 接进 `test:ci` 与 CLAUDE.md（指令文本）
+
+### a) 与既有条款是否互相拆台：**主要那条已被主动化解；剩一处未收口**
+
+- **「后缀=真相域、绝不按速度命名」——不冲突，而且是被显式化解的**：新文写「**被 gate 掉的用例仍留在 `.it.test.ts` 里**（后缀=真相域，不因档位而改）」，正面回答了读者会问的那个问题。配套事实我核过：`tests/infra/test-discovery-matrix.unit.test.ts:12` 的 `VALID_SUFFIXES` 只认五个后缀，新增 `.perf` 会当场判红——所以「不新增后缀」不是偷懒而是被守卫钉死的。✓
+- **[minor，但请修] 「tier=脚本按后缀组合」这半句没跟着更新。** 同一条 bullet 里这句仍是无条件的，而 `test:perf` 恰恰**不是**按后缀组合的——它是「env gate + 写死的单个文件路径」。只读 CLAUDE.md 的人要新建一个类似档位时，会照这句去加第六个后缀，然后撞上 `test-discovery-matrix` 判红，而 CLAUDE.md 里没有任何一句提示他别这么做（那句提示只存在于处置记录里，不是常读文档）。**建议改为**：「tier=脚本按后缀组合（唯一例外 `test:perf`：按 `RUN_PERF_TESTS` gate + 显式文件定义，**因为被 gate 的用例必须保留 `.it` 后缀**，新增第六个后缀会被 `test-discovery-matrix` 判红）」。
+
+### b) [可被合理化绕过的措辞] ⚠️ 那条前置检查是**人肉自评闸门**，而它可以变成机械不变量
+
+新文写「跑 entry evidence / T0.0f 前确认环境里 `RUN_PERF_TESTS` 为空」。这条**判官与被判者是同一方、条件全靠自评**，正是 `downgrade-self-adjudicated-gates` 说的结构；实际执行时最容易被一句「我这个 shell 应该没设」绕过，而失败形态又极难归因。
+
+**它不必是一条指令——可以是一行代码。** `scripts/capture-entry-evidence.ts:283-292` 起子进程时构造的 env 是 `{ ...process.env, OUT, RUNS, MIN_RUNS, MIN_TESTS, EVIDENCE_TIMING, REQUIRE_TEST_ARTIFACTS, ALLOW_DIRTY }` —— **`...process.env` 会把 `RUN_PERF_TESTS` 原样带进去**。在这里加一个 `RUN_PERF_TESTS: undefined`（或起跑前显式校验并 fail-fast，报错文本直接点名该变量），这条前置条件就从「人记得看」变成「结构上不可能」。**强烈建议做**；做完之后 CLAUDE.md 那句 ⚠️ 可以保留为说明，但不再是唯一防线。
+
+### c) `test:perf` 写死单文件：**算缺陷，但不该改成 glob；正确形状是补一条守卫**
+
+**算缺陷，理由不是猜测的**：`test-discovery-matrix.unit.test.ts:9-11` 的注释把自己的存在理由写成「**此守卫从结构上杜绝『已分档但无脚本运行』的孤儿盲区**」。而 `test:perf = RUN_PERF_TESTS=1 bun test tests/history/v3/store-performance.it.test.ts` 恰好开了**同一类盲区的一个新入口**：将来第二个 `describe.skipIf(!PERF_TIER)` 套件，文件后缀合法（守卫绿）、在后端档里表现为一条 allow-listed skip（看起来被管着）、**但没有任何脚本会跑它**。它比原来的孤儿更隐蔽，因为 baseline 里还有一条条目在，看上去是「被登记过的」。
+
+**不建议改成 glob**：`RUN_PERF_TESTS=1 bun test .it.test` 会把整个 it 档拖进 `test:ci` 再跑一遍（分钟级），代价远大于收益；而按后缀分档又被 (a) 里那条守卫堵死。
+
+**建议的形状**（与本仓既有做法同族、约十行）：在 `test-discovery-matrix.unit.test.ts` 里加一条——**扫描 `tests/` 中出现 `RUN_PERF_TESTS` 的文件集合，断言它恰好等于 `package.json` 的 `test:perf` 脚本里列出的文件集合**，不等就红并打印差集。这样「加了第二个 perf 用例却忘了收录」在**加的当下**就红，而不是半年后被发现从未执行过。**现在就做**：成本极低，而它防的正是这条链路上唯一还剩的静默失效。
+
+## 第四轮 T0.0f 表态：**维持「现在就跑」**
+
+上一轮的三层依据未被本轮增量削弱，并有两处加强：
+1. 后端档的失败面没有变化——本轮实测 `0 fail · 7297 executed · 36 skipped · 67.28s`，与上一轮一致。
+2. P2 的加宽**只增加鉴别力、不增加 false-red 风险**（健康态 scans 恒 0，且它读的是查询计划、不读时钟，与负载无关）——我复现过健康与两个 mutation 三种状态。
+3. P3 把 `test:perf` 接进 `test:ci`，**不影响 T0.0f**（T0.0f 跑的是 `bun scripts/parallel-test.ts unit it http`，不经 `test:ci`）。
+
+**开跑前动作，从一条变成两条（第二条是新增的、可机械化）**：
+- 确认 `env | grep RUN_PERF_TESTS` 为空；
+- **更好的做法是先落地 P3-b 那一行**（`capture-entry-evidence.ts` 清掉该变量），把这条检查变成结构性的，之后就不用每次记得。
+
+本轮两条 major 都是文档层，**与 T0.0f 无关**，不必等它们修完再开跑。
+
+---
+
+# 复评（第五轮 · 收口 · 只审 Q1–Q4 增量 + CLAUDE.md + 下限裁决）
+
+> HEAD = `c918cc725776a2aced299fc3a9fd6c7f7121d9ae`（增量两提交：`94e182e4` Q3+Q4+CLAUDE.md、`c918cc72` Q1+Q2+口径记录）。仓库只读（`git status` 只有本报告一个文件被修改）；探针全在 `/tmp/rev046d/`。
+> 采纳协调方提供的最终合并态读数：`16 shards · 0 fail · 7299 executed · 36 skipped · 65.53s`，`diff-skips` 双空。
+
+## Q1 · 我自己 grep 了，**确认无第三处**
+
+不采信「已经 grep 过了」。全仓 `rg -n "计入 skipped|含 skipped|skip ≠ 少一条|executed 不含|严格排除 skipped" --glob '!node_modules'` 的全部命中：
+
+| 位置 | 判定 |
+|---|---|
+| `dispositions.md:1024` 小节标题「⚠️ 已撤回的错误结论……**是错的**」 | 更正本身 ✓ |
+| `dispositions.md:1249`（未处置#6） | **已改**为「注意 `executed` **严格排除** skipped（`parallel-test-artifacts.ts:129` 的 `} else executed += 1`）……单独 gate 一条会让它掉 1」✓ |
+| 本报告 `:346` / `:426` / `:490` | 我自己的发现正文与**引文**，语境正确 ✓ |
+
+另外查了一处**看似冲突、实则不同字段**的旧文：`docs/tmp/2026-08-04-cutover-plan-review-criteria.md:227` 写「Bun JUnit 的 `<testsuites tests=N>` **包含** skipped／todo；`parallel-test.ts` 把最终 `tests` 定义为 `passSum + failSum`」——它讲的是 `tests` 字段，不是 `executed`，与本轮结论**不矛盾**，无需改。
+
+**Q1 结论：撤回已覆盖全部复述点，无第三处。**
+
+## Q2 · 判据本身**对本案与通则都成立**；但被它取代的那句错话**还留在上面 4 行**
+
+`:1054-1058` 的定稿判据：
+
+> 先把每个假说对这次观测的预测分别写下来，再看实测落在哪一侧。预测相同 → 换观测；预测不同 → **必须逐个对照**，不得用「数字没变／数字符合预期」代替对照。
+
+- **通则**：成立。它同时覆盖「似然比≈1」与「压根没算预测」两种失败，比第一版严格更强。
+- **本案**：成立且贴合。`:1050` 明确点出「上表自己写着两个预测是 7298 vs 7297，**不同**，这次观测**有**鉴别力」，`:1058` 再补一句「『数字没变』从来不是一个对照」——正是本案缺的那一步。✓
+
+**[minor] 但 `:1046` 那句原话没删**：
+
+> **一次同时改变两个变量的观测，区分不了两个假说**
+
+它与 4 行之后的 `:1050` **直接相反**（那里说这次观测有鉴别力）。顺序读下来的人先撞见错的那句。这是本文档「**只补更正、不改原句**」的第三次复发——Q1 修的是「结论」的复述，这里漏的是「论证过程」里的一句。**修法**：把 `:1046` 那半句改成「而当时**没有算过任何一个预测**，于是把巧合的 +1/−1 抵消读成了实测背书」。
+**机械化建议**：撤回时不要只 grep 被撤回的**结论**，还要 grep 支撑它的**论证措辞**（本例是「区分不了」「同时改变两个变量」）。
+
+## Q3 · Bun 的 env `undefined` 语义：**我独立复现，是删键，修复前提成立**
+
+探针 `/tmp/rev046d/env-probe.ts`（与生产同形：`Bun.spawnSync(..., { env: { ...process.env, PROBE_VAR: undefined } })`，父进程带 `PROBE_VAR=1`），子进程打印 `raw / typeof / "PROBE_VAR" in process.env`：
+
+```
+WITH_SCRUB   : {"typeofIt":"undefined","present":false}      ← 键被删除，不是 "undefined" 字符串
+WITHOUT_SCRUB: {"raw":"1","typeofIt":"string","present":true}
+```
+
+**`present:false` 是关键**——它排除了「字符串化成 `"undefined"`」这个会让修复看着对、实则失效的形态。`scripts/capture-entry-evidence.ts:289` 的 `RUN_PERF_TESTS: undefined` 因此**真的**把变量从子进程环境里摘掉了。✓
+
+**一处精度更正（不是缺陷，但按本轮标准要说）**：commit message 说若 Bun 字符串化「would have left a truthy value behind」，暗示修复会静默失效。对**本条链路**并非如此——唯一消费者是 `tests/history/v3/store-performance.it.test.ts:227` 的 `process.env.RUN_PERF_TESTS === "1"`，`"undefined" !== "1"`，那条用例照样会 skip，门也照样通过。这个隐患对**真值型**消费者（bash 的 `[ -n "$X" ]`、JS 的 `if (process.env.X)`）才成立；我 `rg` 过全仓 `RUN_PERF_TESTS` 的五处引用，**目前没有真值型消费者**。所以：**去查这件事是对的**（下一个消费者可能就是真值型），**但「不查就会失效」这句比证据强一档**。建议把注释改成「顺带确认了 Bun 是删键——若是字符串化，对真值型消费者会静默失效」。
+
+**Q3 附带的口径变更（协调方要我核的那条）：写得够不够显眼——够，但建议再挪一处。**
+`scripts/` 现在确实相对 `c672dda8` 有差异（`capture-entry-evidence.ts` 5 行），所以我前几轮那句「相对 master 生产代码逐字节相同」此后**只对 `src/`/`packages/`/`native/` 成立**。`dispositions.md` 已记该口径变更。**但本报告第一、二轮的原句仍在**（`:141` 一带），读者若只读报告会拿到过期口径——我在此**就地更正**：自 `94e182e4` 起，「零生产差异」的正确写法是 `git diff c672dda8..HEAD -- src packages native` 为空，**`scripts/` 不再包含在内**。
+
+## Q4 · 新守卫：反方向**被断言覆盖**（但不是被那两条正控覆盖），另有一条真实副作用
+
+### 反方向「脚本里多列了一个不存在的文件」——**抓得到**
+
+`expect(gated).toEqual(scriptFiles)` 是两个**已排序数组的相等**，相等是对称的：脚本多列一个（无论该文件是否存在、是否 gated），`scriptFiles` 就多一个元素 → 不等 → 红。**所以反方向由断言本身覆盖，而不是由那两条正控覆盖**——这个区分值得写进注释，否则下一个人会以为正控数量等于覆盖方向数量。
+
+我把可能的**静默通过**路径逐条列了一遍，确认没有漏网的：
+
+| 情形 | 结果 |
+|---|---|
+| 脚本多列一个（含已重命名的陈旧路径） | `scriptFiles` 多一项 → 不等 → **红** |
+| 脚本漏列一个新 gated 文件 | `gated` 多一项 → 不等 → **红** |
+| 脚本改成 glob / shell 变量，正则匹配不到 | `scriptFiles = []`，`gated` 非空 → 不等 → **红** |
+| perf gate 被整体移除（两侧同时变空） | `toEqual` 通过，但 `expect(gated.length).toBeGreaterThan(0)` → **红** |
+| 同一文件在脚本里列两次 | `scriptFiles` 长度 2 vs `gated` 1 → **红** |
+
+**结论：两条正控 + 对称断言合起来没有静默通过路径**，反方向不需要第三条正控。
+
+### 但有一条**真正的边界**必须写进守卫注释：它只认字面量 `RUN_PERF_TESTS`
+
+`PERF_ENV = "RUN_PERF_TESTS"`。若将来有人用**另一个环境变量名**开新的 gate（`RUN_SLOW_TESTS` 之类），扫描两侧都看不见它，**两边一致、守卫全绿，而新的孤儿完全不可见**。这不是本次实现的错（没有便宜的通用解），但它是这条守卫**唯一**的静默失效面，应当在注释里点名：「本守卫只覆盖 `RUN_PERF_TESTS` 这一个 gate 变量；新增别的 env gate 时必须同步扩这里。」
+
+### [major] 正控把一个真实文件**写进仓库的 `tests/` 目录**，与本项目自己的纪律冲突，且爆炸半径正落在 T0.0f 上
+
+`tests/infra/test-discovery-matrix.unit.test.ts` 的第二条正控做的是：`Bun.write("${REPO_ROOT}/tests/infra/perf-scan-control.unit.test.ts", ...)` → 跑全量扫描 → `finally` 里 `rm -f`。
+
+三个具体问题：
+
+1. **它违反本项目明写的纪律**：CLAUDE.md 战例库里的 `feedback_tests_never_touch_real_env`（「测试绝不碰真实环境」，配套做法是 DI 临时目录 + bunfig preload 沙箱）。这里写的不是临时目录，是**仓库自己的测试树**。
+2. **窗口不短，而且不是理论值**：我实测该用例耗时 **184ms**（`--reporter=junit` 读数；同文件另一条新守卫 174ms），因为它要读遍 `tests/` 下每个文件的全文。也就是**每跑一次 `test:backend`，`tests/infra/` 里就有约 0.18 秒存在一个多出来的测试文件**。
+3. **爆炸半径正好落在这次要跑的门上**：`scripts/capture-entry-evidence.ts:232` 用 `compareSets(baselineFiles, junitFiles)`、`:265` 用 `compareSets(baseline.files, discover(tree))`，baseline `files` 是**冻结的 714 条**。任何在这 184ms 窗口内**启动**的独立全量运行（本仓明确存在并发 agent 会话），其文件集合会变成 715 → 门以「discovery baseline differs from entry tree」失败，而那条报错**指向一个已经不存在的文件**，排查成本极高。
+   **说清楚概率**：同一次 T0.0f 采集**不会自己毒到自己**——`parallel-test.ts` 在 spawn 分片**之前**就算好了文件清单，而植入发生在分片执行期间。真正的暴露是「**并发的另一个全量运行恰好在窗口内启动**」（15 次 × 0.18s / (15 × ~70s) ≈ **0.26%**），以及「**进程被硬杀时 `finally` 不执行、文件留在树里**」——后者概率更低但后果更持久（留下未追踪文件，在共享工作树里还可能被 peer 的全量暂存操作带进提交）。
+
+**修法（约 5 行，不损失任何覆盖）**：把 `scan()` / `perfGatedFiles()` 的根目录参数化，正控在 **`/tmp` 下的一次性目录**里造一棵含标记文件的小树，断言扫描函数在那棵树上找得到它。这样既保留「证明扫得到」的正控语义，又不碰真实仓库。**建议合并前改**，因为它的代价是 5 行，而它的失效形态会伪装成 T0.0f 的门故障。
+
+**判为 major 而非 blocker**：它不影响本次合并的正确性，实测概率也低；但它是本轮**新引入**的、与项目纪律直接冲突的副作用，且不修就会一直挂在最热的那条门旁边。
+
+## CLAUDE.md（指令文本）· 合并后效果
+
+**改对了的那处**：「后缀=真相域**绝不按速度命名**、tier **通常**=脚本按后缀组合，**但 `test:perf` 是例外：它是按环境变量 gate 的横切档，不新增后缀**（`VALID_SUFFIXES` 只认那五个，加第六个会被 `test-discovery-matrix` 当场判红）——需要新档位时优先考虑 env-gate + 显式脚本，别去动后缀集」。
+
+这一处我逐项核过，**没有互相拆台**：
+
+- 「后缀=真相域、绝不按速度命名」与新档位**不冲突**——`test:perf` 恰恰**不加**后缀，被 gate 的用例仍是 `.it.test.ts`，前文那句「被 gate 掉的用例仍留在 `.it.test.ts` 里（后缀=真相域，不因档位而改）」正面接上了。
+- 「tier 通常=脚本按后缀组合」加了 `通常` + 显式例外 + **后果**（加第六个后缀会被判红）+ **正向指引**（下次优先 env-gate）。**给出后果与替代路径**这一步是关键：只说「是例外」会让人以为可以随便新增例外，说清「加后缀会红、该走 env-gate」才是可执行的。
+- 我核了它引用的硬事实：`tests/infra/test-discovery-matrix.unit.test.ts:12` 的 `VALID_SUFFIXES` 确为五项，所以「加第六个当场判红」属实、不是吓唬。
+
+**[minor] 但同一条 bullet 里那句 ⚠️ 现在**与 Q3 落地的机制**不同步**：
+
+> ⚠️ **跑 entry evidence / T0.0f 前确认环境里 `RUN_PERF_TESTS` 为空**：它会改变 skip 多重集，令门以 `multiset mismatch` 失败且指不到根因。
+
+Q3 已经把这件事做成了结构性不变量（`capture-entry-evidence.ts:289` 在 spawn 时删键，我独立复现过），所以：**经 `capture-entry-evidence` 的采集已经不需要人工自查**；而这句话既没提到机制存在，也没区分哪条路径受保护。两个后果：①读者不知道有机制，继续把「记得检查」当唯一防线（正是 `downgrade-self-adjudicated-gates` 要消灭的形态）；②真正仍暴露的路径（**手工直接跑 `bun scripts/parallel-test.ts` 采集**）反而没被点名。
+**修法（一句话）**：「⚠️ `RUN_PERF_TESTS` 会改变 skip 多重集 → 门报 `multiset mismatch` 且指不到根因。经 `capture-entry-evidence` 的采集已在 spawn 时清除它（`capture-entry-evidence.ts:289`），**手工直接跑 `parallel-test.ts` 采集时仍需自查**。」
+
+**可被合理化绕过的措辞**：本轮新增的三段里，除上面那条 ⚠️（改完即不再是自评闸门）之外，没有发现「看起来是规则、实则可自行判定豁免」的措辞。新增内容全部挂在可机械验证的事实上（脚本名、`VALID_SUFFIXES`、守卫文件名），这是好的形状。
+
+## 裁决：`minimum_executed` 7297 → 7299 该不该重锚 —— **该，而且这不属于我会拦的那类改动**
+
+### 先把数字锚死（三方独立读数一致）
+
+| 来源 | 读数 |
+|---|---|
+| 实施方（`94e182e4` commit message） | `0 fail, 7299 executed, 36 skipped` |
+| 协调方 | `16 shards · 0 fail · 7299 executed · 36 skipped · 65.53s`，`diff-skips` 双空 |
+| **本评审自跑**（`c918cc72`，`bun run test:backend`） | `16 shards · 6269 tests · 6269 pass · 0 fail · **7299 executed** · 36 skipped · 64.44s` |
+
+三方一致，`7299` 可作为交付数字引用（口径：`bun scripts/parallel-test.ts unit it http`，HEAD `c918cc72`，本工作树、未构建 native 产物、`RUN_PERF_TESTS` 未设）。
+
+### 该不该重锚：**该**。协调方给的两条理由都成立，我再补一条决定性的
+
+协调方的理由（下限的作用就是探测「套件被静默收窄」；低 2 = 白送 2 个用例的容忍度）——成立。补充：**这个 slack 会单调增长**。下限不会自己跟着套件长，套件每加 n 条用例，容忍度就变成 `n + 2`。不重锚的代价不是恒定的 2，是随时间发散的。
+
+**我补的那条（这是真正决定能不能安全收紧的判据）：必须确认当前测得的 7299 是「合法环境里的最小值」，否则重锚就会在别的机器上 false-red。** 我逐条查了后端档（unit/it/http）里所有条件性 skip：
+
+| 形态 | 条件 | 当前是否 skip | 在别的合法环境里会怎样 |
+|---|---|---|---|
+| `describe.skipIf(!NATIVE)` × 8 处（`tests/history/search/*`） | `isNativeHistorySearchAvailable()` | **skip**（本树未构建 native 产物） | 构建了就**执行** → executed **变大** |
+| `describe.skipIf(!PERF_TIER)`（`store-performance.it.test.ts:229`） | `RUN_PERF_TESTS === "1"` | **skip** | 设了就**执行** → executed **变大** |
+| `describe.skip`（`postcommit-truncation-shaping.it.test.ts:92`） | 无条件 | skip | 恒定 |
+| `test.todo`（`cc-to-anthropic-stream.unit.test.ts:339`） | 无条件 | skip | 恒定 |
+| `skipIf(!GATED)` / `getE2EMode()` 各处 | env | — | **都在 `.e2e.test.ts` 里，不属后端档**，与本下限无关 |
+
+**结论：当前配置就是后端档的「最大 skip 配置」**——两个环境相关的 gate 都处在 skip 侧，任何其它合法环境只会执行**更多**。下限只在 `actualExecuted < minimum_executed` 时判红，所以 **7299 是合法环境下的下确界，重锚到它引入零 false-red 风险**。这一条我认为是本次裁决的关键，它把「收紧」从一次感觉判断变成了可验证的判断。
+
+### 这属不属于「我会拦的那类改动」：**不属于**
+
+- `red-tests-may-be-guarding-something` 的触发词是「**删除或放宽**既有 guard」。**收紧不在触发面内**——那条规则防的是覆盖被悄悄削掉，而抬高下限是往相反方向走。实施方登记为「收紧既有 guard，交裁决」是谨慎的、没有坏处，但**分类上略微过度适用了该规则**；正确的类比是本仓已有的 `circular-deps-ratchet`：降环之后跑 `update-circular-deps-baseline.ts` 重新冻结，属**例行维护**，不是需要裁决的 guard 变更。
+- 唯一需要外部把关的部分是「7299 是不是安全的下确界」，而那是**可机械验证**的（上表），不是自评。既然可验证且已验证，就不构成 `downgrade-self-adjudicated-gates` 说的那种结构。
+
+### 重锚时请带上两个附加动作
+
+1. **数字带口径**：把 commit + 命令写在 baseline 旁或提交信息里（`every-number-carries-scope`），否则下一个人无法判断 7299 是在哪种配置下测的——尤其是「未构建 native 产物」这一条，它正是让本次读数成为下确界的前提。
+2. **把「增删用例后同步重锚」写成明文步骤**（放在 `dispositions.md` 未处置区或 CLAUDE.md 测试分档节都可以）。否则本轮修好的 slack 会在下一次加用例时原样长回来——这正是它这次变成 2 的原因。
+
+## 第五轮 verdict（收口）
+
+**可以合并。blocker 0；major 1**（Q4 正控把真实文件写进 `tests/` 树），外加 minor 2（`:1046` 那句被自己 4 行后推翻的原话；CLAUDE.md 的 ⚠️ 与 Q3 已落地的机制不同步）。
+
+Q1 我自己 grep 过、无第三处；Q2 的定稿判据对本案与通则都成立；Q3 的 Bun env 语义我独立复现（**删键，`present:false`**），修复前提成立；Q4 的反方向由对称断言覆盖、无静默通过路径；CLAUDE.md 那处收口改对了，并且给出了后果与替代路径。
+
+**下限：同意重锚到 7299**，理由与前置检查见上节；这不是我会拦的改动。
+
+## T0.0f：**维持「现在就跑」**
+
+三方读数一致的 `0 fail · 7299 executed · 36 skipped`、`diff-skips` 双空；Q3 把 `RUN_PERF_TESTS` 从人肉前置检查升成结构性不变量，**上一轮我提的那条开跑前动作现在可以取消**（经 `capture-entry-evidence` 的采集已被机制保护；只有手工直跑 `parallel-test.ts` 采集才需自查）。
+
+**唯一与 T0.0f 相关的建议**：Q4 那条 major 值得在开跑**前**花五行修掉——不是因为它会红（实测暴露概率约 0.26%），而是因为它一旦命中，表现形式是「discovery baseline differs from entry tree」并指向一个已不存在的文件，**会被误判成门本身坏了**，而这次采集要连跑 15 轮、任何一轮误红都得重来。
