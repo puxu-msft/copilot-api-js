@@ -56,7 +56,10 @@ const upstreamFetchMock = mock((url: string) => {
 const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
-describe("I9 probe — H2 (raw upstream event:error) on the L2 buffered path", () => {
+// Parameterised over `errorShapingEnabled` because that setting decides whether the canonical rewrite hands the adapter a body carrying a top-level `type`.
+// With it off — a byte-identical passthrough the config explicitly supports — the only thing identifying the frame is the SSE `event` line, so this is the control for the adapter recognising it from the wire.
+// It discriminates here and NOT in the committed-block sibling: with no content committed yet, the retry gate is still open, so a misclassification is visible as a retry.
+describe.each([true, false])("I9 probe — H2 (raw upstream event:error) on the L2 buffered path (errorShapingEnabled=%s)", (errorShapingEnabled) => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -71,6 +74,7 @@ describe("I9 probe — H2 (raw upstream event:error) on the L2 buffered path", (
       staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
+      errorShapingEnabled,
       bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
       bufferedRetryContinuationShared: { enabled: false, message: "network issue. please continue" },
     })
@@ -81,7 +85,7 @@ describe("I9 probe — H2 (raw upstream event:error) on the L2 buffered path", (
   test("a raw event:error frame (no message_stop) commits + surfaces the error — NOT retried as a truncation", async () => {
     const res = await app.request("/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-session-id": "i9-probe-h2" },
+      headers: { "Content-Type": "application/json", "x-session-id": `i9-probe-h2-${String(errorShapingEnabled)}` },
       body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 64, stream: true }),
     })
     expect(res.status).toBe(200)
@@ -92,7 +96,7 @@ describe("I9 probe — H2 (raw upstream event:error) on the L2 buffered path", (
     expect(types).toContain("error")
     expect(upstreamCalls).toBe(1)
 
-    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "i9-probe-h2", limit: 5 }).entries[0]
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: `i9-probe-h2-${String(errorShapingEnabled)}`, limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
   })
 })

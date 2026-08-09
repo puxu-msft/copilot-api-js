@@ -1,11 +1,11 @@
 /**
  * Companion to `i9-h2-buffered-probe.http.test.ts` (Task 37 seam re-review).
  *
- * What this pins: content already committed by an earlier boundary survives a terminal upstream error, the error reaches the client, and nothing is retried — across BOTH settings of `errorShapingEnabled`, because with shaping off the `error` frame arrives as `event: error` with no canonical `type` in its body and the adapter has to recognise it from the event line alone.
+ * What this pins: content already committed by an earlier boundary survives a terminal upstream error, the error still reaches the client, and nothing is retried. It runs under both `errorShapingEnabled` settings so the property is pinned for both wire shapes of the error frame.
  *
- * What this does NOT pin, stated because a reviewer measured it: it is not a control for "the error frame is itself a commit boundary". Deleting the adapter's `error` case leaves this test green — the preceding `content_block_stop` has already flushed the block, and once bytes are committed the retry gate refuses to retry regardless of how the error is classified. The shape is structurally incapable of discriminating that mechanism.
+ * What this does NOT pin, both measured rather than assumed: it is not a control for "the error frame is itself a commit boundary", and it is not a control for the adapter recognising that frame from the SSE event line. Deleting the adapter's `error` case, or removing its event-line fallback, both leave this test green. The reason is structural — the preceding `content_block_stop` has already flushed the block, and once bytes are committed the retry gate refuses to retry however the error is classified, so `upstreamCalls` stays 1 either way. No amount of parameterising fixes that; the shape itself cannot discriminate.
  *
- * The mechanism controls live elsewhere: `i9-h2-buffered-probe` (error with no prior content — discriminates the retry decision) and `i9-followup-midblock-error` (error mid-block — discriminates the grammar's failed-terminal branch).
+ * The mechanism controls live in the siblings, where no content is committed yet and the retry gate is still open: `i9-h2-buffered-probe` (error with no prior content, parameterised over `errorShapingEnabled`) and `i9-followup-midblock-error` (error mid-block, discriminating the grammar's failed-terminal branch).
  */
 import {
   //
