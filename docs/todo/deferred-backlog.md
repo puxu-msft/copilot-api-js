@@ -1271,3 +1271,22 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
 - **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
 - **发现方**：Task 9 独立验收评审的收口复评（`docs/tmp/2026-08-08-task9-review-acceptance.md` R2-4）。
+
+## `initHistory()` 重入只协调 summary backfill，未协调 terminal persistence lifecycle（2026-08-09，合并态评审定位；**master 既有，非合并引入**）
+
+- **归属先说清楚**：这不是本次合并的回归。`git show 57208559:src/lib/history/state.ts`（`57208559` 即被合并的 master tip）显示 master 上的 `initHistory` 本来就是 `clearInFlight()` + `clearRecentModelOperationTerminalsForTests()` 打头、随后 `openDatabase` / `replaceTerminalSink` / 换 subscriber，**同样没有** `pause()` / `waitForQuiescence()` / `drainModelOperationTerminalSubscribers()` / `drainV3Writer()`。合并相对 master **只增加**了 `stopV3SummaryBackfill()` + `await drainV3SummaryBackfill()`（多覆盖了 backfill 这一条），没有削弱任何既有协调。评审最初把根因归给合并，经上述命令证伪后已接受更正。
+- **根因 / 现状**：重入协议只覆盖 backfill。`src/lib/history/state.ts:100-108` 停并 drain summary backfill 后立即 `clearInFlight()` 与 `clearRecentModelOperationTerminalsForTests()`；`:124-143` 依次 `openDatabase()` → migration/recovery → `startV3SummaryBackfill()` → `admission.replaceTerminalSink()` → unsubscribe → subscribe，整段不阻止新的 History reservation／terminal publication，也不等待旧 subscriber 与 V3 writer 排空。**「backfill 已停止」不等于「旧 History lifecycle 已静止」。**
+- **可观察错误行为**：若 publication P 已进入 recent-terminal pending overlay、其旧 subscriber/write 尚未完成，此时重入 `initHistory(true)`，P 会先从 overlay 消失；旧异步工作随后即使完成，`settleTerminalDurability()` 也因 identity guard 而直接返回（`src/lib/history/recent-terminal.ts:29`：`if (pending.get(operationId) !== publication) return`），durability 结算被静默丢弃。表现为 History 项在持久化窗口内无故消失、durability pending/failed 状态缺失。若 DB path 在重入中变化，旧 writer 还可能与 singleton DB 的 close/reopen 交错。**边界**：已绑定但尚未 publish 的 reservation 不会被 `clearRecent...` 删除——本条不声称「所有 reservation 都丢失」。
+- **修复原料已存在（不必新造 gate）**：`src/lib/history/worker/admission.ts:182-197` 的 `pause()` / `waitForQuiescence()`、`src/lib/history/v3/terminal-bus.ts:71-74` 的 `drainModelOperationTerminalSubscribers()`、以及 `shutdownHistory()` 已在用的 `drainV3Writer()`（`state.ts:217-220`）。**均已逐个打开核实存在。**
+- **理想架构 / 若做需改什么**：把 `initHistory()` 的重入改成完整 lifecycle transition——`pause()` 阻止新 admission → `waitForQuiescence()` 等已保留工作到明确切换点 → unsubscribe → `drainModelOperationTerminalSubscribers()` + `drainV3Writer()` → 停/drain backfill 并切换 DB/sink → 重新 subscribe → `resume()`。顺序必须同时保证「允许已获 reservation 完成」与「禁止 publication 落入无 subscriber 窗口」，**不能只机械加一个 pause**。
+- **为何暂缓**：master 既有缺陷，不在本次合并的因果链上；修它需要重排一段生命周期临界区并配确定性 IT，塞进合并线会让合并的因果链变糊。**触发条件（值得做）**：① 出现 History 项在持久化窗口内消失的实际报告；② 有人再动 `initHistory` 的重入路径或 admission/terminal-bus 生命周期；③ config reload 频率上升。
+- **回归测试建议**：确定性 IT——让 terminal publication 停在 subscriber/write 未完成处，执行 `initHistory(true)` 重入，再释放写入；断言记录不丢、不双写、overlay durability 最终结算、admission 最终 quiescent。正控证明无重入时同一 publication 正常落盘；负控让旧实现稳定复现 transient disappearance。**现有 `tests/history/v3/migrations-wiring.it.test.ts:117-128` 只把 backfill 横跨 `initHistory(false)`，没有把已发布未持久化的 terminal 横跨 `initHistory(true)`，所以它的绿不覆盖本窗口。**
+- **发现方**：合并态接缝评审（`gpt-souls:reviewer`，2026-08-09），报告 `docs/tmp/2026-08-09-merge-state-review-seams.md`；归属由主会话用 `git show` 证伪后评审接受更正。
+
+## `test-timings.json` 给 `store-performance.it.test.ts` 的缓存值比实测少 3.7s，差额未归因（2026-08-09）
+
+- **根因 / 现状**：**未归因。** `scripts/test-timings.json` 记该文件 5.818s，而实测逐用例之和为 9.51s；本轮新增用例只占 0.088s，**补不平 3.7s 的差额**。已知的不是什么：不是新增用例导致的。
+- **当前行为**：`parallel-test.ts` 的 LPT 分片按 5.8s 估这个文件的重量，实为 9.5s ⇒ 该 shard 系统性偏长。这正是把 CAS 那条用例推过原 15s 预算的**调度噪声来源之一**（超时已按实测放宽到 120s，所以今天不再表现为红）。
+- **理想架构 / 若做需改什么**：先确认 `bun run test:timings` 的采集口径——它记的是文件级 wall 还是用例之和？是否在并发下采集（那样会系统性偏高而非偏低）？口径查清前不要「顺手刷新缓存」，那只会把一个没被理解的偏差重新写一遍。
+- **为何暂缓**：今天无红；且它只影响分片均衡度，不影响判据正确性。**触发条件（值得做）**：① 再次出现「隔离下通过、分片下超时」的用例；② 有人要依赖 timings 做容量估算；③ 顺手改 `parallel-test.ts` 的分片逻辑时。
+- **发现方**：C3 裁决期间的邻域实测（`reviewer`，2026-08-09），报告 `docs/tmp/2026-08-09-merge-state-review-claims.md`。**评审明确标注为「未核实归因」，本条沿用该标注，不补第三个解释。**
