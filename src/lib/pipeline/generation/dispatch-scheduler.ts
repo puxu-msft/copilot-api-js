@@ -205,7 +205,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         let response: PhysicalTransportResponse
         const dispatchedAtMonotonic = monotonicNow()
         try {
-          const options: TransportDispatchOptions = { signal, ...(forceHttp && { forceHttp: true }) }
+          const options: TransportDispatchOptions = { dispatch, signal, ...(forceHttp && { forceHttp: true }) }
           response = await input.open(wire, current, options)
         } catch (error) {
           dispatchBudget?.release()

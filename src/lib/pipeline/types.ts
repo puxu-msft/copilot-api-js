@@ -11,7 +11,11 @@
  * `~/lib/request/retry-types` and enter the driver through the payload adapter.
  */
 
-import type { OperationKind } from "~/lib/context/model-operation-record"
+import type {
+  //
+  DispatchHandle,
+  OperationKind,
+} from "~/lib/context/model-operation-record"
 import type {
   //
   EffectiveRequest,
@@ -120,8 +124,17 @@ export interface PreparedRequest {
   stream: boolean
 }
 
-/** Scheduler-owned controls for ONE physical transport dispatch. */
+/**
+ * Scheduler-owned controls for ONE physical transport dispatch.
+ *
+ * `dispatch` is the canonical ownership link: every transport-level observation is attributed to THIS handle, never to whatever attempt happens to be "current" on the request context.
+ * Ambient attribution is wrong the moment two dispatches overlap — hedged candidates and buffered retry both do exactly that — and the failure is silent, because a misattributed diagnostic still lands on a real attempt.
+ *
+ * It is required, and so is the options bag itself, so that a new dispatch site cannot compile without deciding whose dispatch it is.
+ */
 export interface TransportDispatchOptions {
+  /** Canonical owner of this dispatch; every diagnostic recorded below is attributed here. */
+  dispatch: DispatchHandle
   /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
   forceHttp?: boolean
   /** Candidate/dispatch-local cancellation, independent from request-level lifecycle signals. */
@@ -136,7 +149,7 @@ export interface TransportDispatchOptions {
  * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<UpstreamStream>
 }
 
 export type PhysicalTransportResponse =
@@ -147,7 +160,7 @@ export type PhysicalTransportResponse =
 
 /** Mandatory physical ownership contract consumed by the generation dispatch scheduler. */
 export interface PhysicalTransport {
-  open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
+  open(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
 
 // ============================================================================

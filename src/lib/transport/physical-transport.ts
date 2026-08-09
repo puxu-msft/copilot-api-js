@@ -29,7 +29,7 @@ function settledLifecycle(): UpstreamDispatchLifecycle {
  */
 export function physicalTransportFromSend(send: Transport["send"]): PhysicalTransport {
   return {
-    async open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse> {
+    async open(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<PhysicalTransportResponse> {
       try {
         const upstream = await send(wire, env, options)
         const lifecycle = upstream.lifecycle

@@ -902,7 +902,7 @@ async function openPhysicalDispatch(
   deps: DriverDeps,
   wire: PreparedRequest,
   env: RequestEnvelope,
-  options?: TransportDispatchOptions,
+  options: TransportDispatchOptions,
 ): Promise<PhysicalTransportResponse> {
   const exchange = getUpstreamHook()?.exchange
   if (!exchange && deps.transport.open) return (deps.transport as PhysicalTransport).open(wire, env, options)
