@@ -132,9 +132,9 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // "Already installed" is deliberately THREE conditions, not one. The path answers "same artifact?"; `peekHistoryPersistenceRuntime()` answers "is the thing I started still the registry's runtime?"; `peekHistoryReadDatabase()` answers "is my readonly handle still published?". Each of the latter two can be taken away independently — a runtime is single-use, so releasing the singleton (a `historyDbPath` switch, `shutdownHistory`, the per-test injector reset that keeps a mocked runtime from leaking) leaves this thread believing it is up while its writer is gone, and a test that publishes its own handle through `openInMemoryDatabase()` detaches ours. Reading the registries instead of trusting our own flag makes re-init self-healing rather than dependent on the caller's teardown order.
   const alreadyInstalled = startedDbPath === dbPath && peekHistoryPersistenceRuntime() !== undefined && peekHistoryReadDatabase() !== undefined
   if (!alreadyInstalled) {
-    // Release whatever a previous bring-up left behind before installing again: a readonly handle on the old artifact, and a runtime that is either pointed at the old path or already dead.
+    // Release what a previous bring-up of OURS left behind — a readonly handle on the old artifact, and a runtime pointed at the old path or already dead. Scoped to `startedRuntime()` on purpose: a runtime that exists without our having started it belongs to whoever installed it (a test's injected double, most often), and shutting that down would both destroy an object we do not own and quietly replace it with a real Worker on the next line.
     closeHistoryReadDatabase()
-    await releaseHistoryPersistenceRuntime()
+    if (startedRuntime()) await releaseHistoryPersistenceRuntime()
     startedDbPath = undefined
     // CUTOVER (Batch 2b): the Worker now owns the semantic WRITE connection exclusively.
     // Everything the main thread used to do here — open, schema reconcile, forward
