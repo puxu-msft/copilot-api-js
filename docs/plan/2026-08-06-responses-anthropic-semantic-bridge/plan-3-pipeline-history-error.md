@@ -18,29 +18,32 @@
 
 > **为什么 open collector 不进 `RequestState`**（机械理由，别写成「违反 request-lifecycle-stable 契约」——那个说法与代码不符：`RequestState` 本来就收纳共享**可变**句柄，见 `request-state.ts` 的 `betaProbe`／`reverseMapperHolder`／`responsesFallbackScratch`）：真正的机械理由是 **fork 语义**。`candidate-state.ts` 的 `validateOpaqueFactories` 要求凡是进 `RequestState` 的 opaque 可变句柄**必须注册 per-candidate 工厂**，于是它会按 candidate 分裂——而 request-level diagnostics 要的恰恰是**全 request 单份记录**。所以 open collector 留在 S2-local `RequestTranslationRuntime`，只有 frozen 结果进 `RequestState`。
 
-- [ ] 写 fork tests：多 candidate 引用同一 frozen值（**断引用相等 `toBe`，不是深相等**）；mutation attempt不可 append；没有 diagnostics 不改变现状。
-- [ ] 在 `snapshotStableState` 里**按 `sourceToolNameMapper` 的形状追加一行按引用共享的 spread**——`sourceToolNameMapper` 那行明确注释 “share by reference across candidates”、**不走 `cloneAndFreeze`**。**切勿套用同函数里其余字段的 `cloneAndFreeze`**：它内部是 `structuredClone`，每个 candidate 会拿到**不同对象**，上一条的引用相等断言立刻红。freeze 只在 S2 `finally` 做一次。
+- [ ] 写 fork tests：多 candidate 引用同一 frozen值（**断引用相等 `toBe`，不是深相等**）；mutation attempt不可 append（**断 `toThrow`**，见下条对深冻的要求）；没有 diagnostics 不改变现状。
+- [ ] 在 `snapshotStableState` 里**按 `sourceToolNameMapper` 的形状追加一行按引用共享的 spread**——`sourceToolNameMapper` 那行明确注释 “share by reference across candidates”、**不走 `cloneAndFreeze`**。**切勿套用同函数里其余字段的 `cloneAndFreeze`**：它内部是 `structuredClone`，每个 candidate 会拿到**不同对象**，上一条的引用相等断言立刻红。**S2 `finally` 里那一次 freeze 必须是深冻（含 `records` 数组本身）**：`snapshotStableState` 用的是浅 `Object.freeze`，只冻外层 `RequestState`；by-reference spread 也不会顺带冻住 diagnostics。若 S2 只做浅冻，`records.push(...)` 照样成功，上一条的「不可 append」就变成又一条恒绿判据。
 - [ ] mutation：把 open collector放进 RequestState 或每 candidate复制 records 后红。**注意**：若上一步误用 `cloneAndFreeze`，最省事的「修法」是把引用相等放宽成深相等——那会**永久落地 per-candidate 副本**，使本行的 mutation 从此不可实现。遇到红灯时改实现，不要改这条断言。
 - [ ] Commit: `feat(pipeline): carry frozen request bridge diagnostics`
 
 ### Task 3.2: Candidate-local response collector 先于 renderer 创建
 
 **Files:**
-- Modify: `src/lib/pipeline/generation/candidate-state.ts`（**复用既有的 per-candidate 槽 `CandidateState.responseState` + `supplies.createResponseState`，别新造一套 supply**——该槽已存在但目前**零生产消费者**：`driver.ts` 的 `forkEnv` 只把 `requestState` 挂回 env、丢弃 `responseState`。本 Task 顺手了结这个死槽）
 - Modify: `src/lib/pipeline/generation/candidate-response-session.ts`
-- Modify: `src/lib/pipeline/driver.ts`（`createDriverCoordinator` 内的 `createProcessor`——当前 renderer 先于 session 创建，本 Task 要在两者之前插入 collector；另需让 `forkEnv` 真正传递 `responseState`）
+- Modify: `src/lib/pipeline/driver.ts`（`createDriverCoordinator` 内的 `createProcessor`——**collector 就在这里按 candidate 创建**，位置在 renderer 之前；`candidate.ts` 保证 `createProcessor` 每 candidate 只调用一次）
 - Modify: `src/lib/pipeline/types.ts`（`FormatCodec.createCandidateRenderer(env, bridgeDiagnostics)`）
 - Modify: `src/lib/codec/anthropic/codec.ts`
 - Modify: `src/lib/codec/openai-responses/codec.ts`
 - 另两个 `createCandidateRenderer` 实现（`src/lib/codec/gemini/codec.ts`、`src/lib/codec/openai-cc/codec.ts`）**不在 Responses↔Anthropic 对内**；第二参数可选故不破编译，但签名变更时需确认这两处仍成立，别以为只有两个实现。
-- Test: `tests/pipeline/candidate-state.unit.test.ts`
 - Test: `tests/pipeline/candidate-response-session.unit.test.ts`
+- Test: `tests/pipeline/candidate-processor-collector.unit.test.ts`（新建——创建顺序与 per-candidate 隔离都发生在 `createProcessor` 里，属 driver/coordinator 层；**不要**把这些断言塞进 `tests/pipeline/candidate-state.unit.test.ts`，那份归 Task 3.1 的 `snapshotStableState`，本 Task 已不再改 `candidate-state.ts`）
+
+> **不要让 collector 走 `RequestEnvelope`**（这条是硬约束，第三轮评审推翻了原先「复用 `CandidateState.responseState` + 让 `forkEnv` 传递它」的写法）：`RequestEnvelope` 今天没有 `responseState` 字段，且 `with()` 的 patch 类型是被**刻意收窄**的四键 `Pick<..., "body" | "targetEndpoint" | "prepareHints" | "requestState">`（`envelope.ts`，紧邻注释说明了为什么窄）。更关键的是 **`with()` 不是 `{...base, ...patch}`**——它在**四个 codec 里各自逐字段重建**（各自的 `makeEnvelope`）。走 envelope 就得改 `envelope.ts` + 四处 `makeEnvelope`，**漏改任何一处，该格式路径上下一次 `with()`（S3 rewrite、S4 都会调）就把字段静默抹掉**，字段可选、无编译错误，renderer 于是自建 collector——正好是本 Task 要防的那个缺陷；而本 Task 的测试用 mock codec，碰不到真实 `makeEnvelope`，抓不到它。
+>
+> 因此：collector 在 `createProcessor` 里按 candidate 创建并直接传给 renderer 与 session，`forkEnv` 与 `with()` 契约**一律不动**。既有死槽 `CandidateState.responseState`（存在但零生产消费者，`forkEnv` 丢弃它）**本 Task 不处置**，另行记入 backlog，别顺手扩大范围。
 
 **Produces:** 每candidate一个append-only response collector；candidate runtime在renderer之前创建同一实例，将它同时传给`createCandidateRenderer`和`createCandidateResponseSession`，snapshot冻结其records；loser／failed／cancelled都保留。
 
 - [ ] **Step 1: 写创建顺序红灯。** Mock codec的`createCandidateRenderer`必须收到collector；renderer append后session snapshot看到同一record；两个candidate实例不相等。
-- [ ] **Step 2: 跑红灯。** Run: `bun test tests/pipeline/candidate-state.unit.test.ts tests/pipeline/candidate-response-session.unit.test.ts`。Expected: FAIL，renderer无collector参数。
-- [ ] **Step 3: 重排producer。** Candidate state supply先创建collector；driver `createProcessor`先取得collector，再创建renderer，最后创建session；禁止renderer／session各自new collector。
+- [ ] **Step 2: 跑红灯。** Run: `bun test tests/pipeline/candidate-processor-collector.unit.test.ts tests/pipeline/candidate-response-session.unit.test.ts`。Expected: FAIL，renderer无collector参数。
+- [ ] **Step 3: 重排producer。** 在 `createProcessor` 内部**按 candidate 新建 collector**（不经 `CandidateState` supply、不经 envelope，见上方硬约束），再创建renderer并把同一实例传进去，最后创建session；禁止renderer／session各自new collector。
 - [ ] **Step 4: snapshot与settle。** Session terminal snapshot freeze；loser／failed／cancelled在dispatch diagnostics保留完整records。
 - [ ] **Step 5: mutation。** 恢复renderer先创建、共享collector或request-global单槽后目标测试红。
 - [ ] **Step 6: commit。** Commit: `feat(pipeline): isolate candidate bridge diagnostics`
@@ -92,8 +95,11 @@ PipelineInfo.bridgeDispositions?: BridgeDispositionRecord[]
 - [ ] **Step 1: 写 dispatcher 红灯。** 空集合只调 legacy；已迁 kind只调 semantic；semantic throw不回退legacy；同kind双调用计数必须失败。
 - [ ] **Step 2: 跑红灯。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts`。Expected: FAIL，模块不存在。
 - [ ] **Step 3: 建S2-local supply。** `hub-translate.ts`导出`resolveRequestTranslationRuntime(env, profileOverride?)`，只在non-identity且有migrated kind／fixture override时返回`{collector,context,profile}`。**在 `runRequest` 里**于route decision后、`outboundTranslateOut`前调用一次，并以显式参数传给`CellAssembly.translateOut(env,runtime)`；两个outbound cell继续传给`translateRequestVia`。**不要把该调用塞进 `outboundTranslateOut` 内部**——它同时服务 `inspectRequest`，那样会让 dry-run 路径也创建 open collector（见 Step 5）。Open collector不进入`RequestState`。空production集合且无override时resolver返回undefined、dispatcher不append、不改变body。
-- [ ] **Step 4: Driver S2 finally。** Success／compatibility reject／unexpected throw都freeze同一runtime collector；成功时`env.with({requestState:{...stableState,requestBridgeDiagnostics:frozen}})`，reject／throw时直接`ctx.publishRequestBridgeDiagnostics(frozen)`供失败History。Candidate fork只见frozen diagnostics，永不接触open collector。
-- [ ] **Step 5: inspector共路，但不产生诊断。** `inspectRequest(stopAfter=translate)` 调同一S2 helper、不复制bridge runner，但它是 **dry-run 探针路径**（`routes/debug/dry-run-pipeline.ts` 走这条），**没有 finally 收尾**：因此该路径**只解析、不 freeze、不 publish、不计入 dispatch 计数**，且不得留下永不关闭的 open collector。断言：跑一次 `inspectRequest` 后 `ctx` 上没有任何 bridge diagnostics 被 publish、dispatch 计数不变。
+- [ ] **Step 4: Driver S2 finally。** Success／compatibility reject／unexpected throw都freeze同一runtime collector（**深冻，含 `records` 数组**）；成功时`env.with({requestState:{...env.requestState, requestBridgeDiagnostics: frozen}})`——注意在 driver 上下文里就写 `env.requestState`，**别照抄 `stableState`**，那是 `candidate-state.ts` 内部的局部名，在这里找不到该标识符。reject／throw时直接`ctx.publishRequestBridgeDiagnostics(frozen)`供失败History。Candidate fork只见frozen diagnostics，永不接触open collector。
+- [ ] **Step 5: inspector共路，但不产生诊断。** `inspectRequest(stopAfter=translate)` 调同一S2 helper、不复制bridge runner，但它是 **dry-run 探针路径**（`routes/debug/dry-run-pipeline.ts` 走这条），**没有 finally 收尾**：因此该路径**只解析、不 freeze、不 publish、不计入 dispatch 计数**，且不得留下永不关闭的 open collector。
+  **断言必须直接观测目标机制**——注入 spy `CellAssembly`，断言 `inspectRequest` 走完后 `translateOut` 收到的第二参数 `runtime === undefined`（或给 `resolveRequestTranslationRuntime` 加调用计数，断言 inspect 路径为 0）。
+  **⛔ 不要写成「跑完 inspectRequest 后 ctx 无 bridge diagnostics publish、dispatch 计数不变」**——那条**恒绿、零判别力**：publish 只发生在 Step 4 的 `runRequest` try/finally 里而 `inspectRequest` 根本没有那段；`stopAfter="translate"` 直接 return，物理 dispatch 在这条路径上任何情况下都到不了。它测的是「inspect 不 publish／不 dispatch」这个**结构上本来就成立**的事实，而不是「resolver 有没有在 inspect 路径上被调用」这个目标机制。
+  **并且这条负控必须在 fixture `profileOverride` 生效的配置下跑**：production dispatcher 集合为空时 resolver 两条路径都返回 `undefined`，正确与错误实现无差别，换了断言照样恒绿。
 - [ ] **Step 6: mutation。** Empty dispatcher创建diagnostic／改变body、semantic失败回legacy、reject绕过finally后目标测试红。
 - [ ] **Step 7: 运行与提交。** Run: `bun test tests/semantic-bridge/migration-dispatch.unit.test.ts tests/pipeline/hub-translate.unit.test.ts tests/pipeline/request-bridge-wiring.it.test.ts`。Expected: PASS。Commit: `feat(pipeline): add inert semantic bridge dispatcher`。
 

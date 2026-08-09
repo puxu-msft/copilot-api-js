@@ -1239,3 +1239,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：本轮任务是把这套生命周期合同写成 skill，不是改产品代码；且这两处是 **test seam**，误用后果落在测试可信度而非线上行为，与本轮已闭合的其他项不同档。改动虽小但要新增三条测试并选定失败策略，值得自己的一次验证链。
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
+
+## `CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09，语义桥计划第三轮评审的邻域发现）
+
+- **根因 / 现状**：`src/lib/pipeline/generation/candidate-state.ts:29` 声明了 `readonly responseState?: unknown`，`:85` 也按 `supplies.createResponseState &&` 条件填充它，但**没有任何生产读点**：`driver.ts` 的 `forkEnv` 只把 `requestState` 挂回 env、**丢弃 `responseState`**（`rg 'responseState' src/lib/pipeline/driver.ts` 零命中）。也就是说这个 per-candidate 槽被造出来之后从未被送到任何消费者手里。
+- **当前行为**：无功能缺陷——没人读它，填了也不影响任何路径。代价是**误导性**：它看起来像一条现成的 per-candidate supply，下一个需要「每 candidate 一份响应侧状态」的人会自然地想复用它，然后才发现整条运送管道不存在。语义桥计划第三轮评审里就差点发生：一版计划已写成「复用 `responseState` + 让 `forkEnv` 传递它」，评审指出该路径要穿过 `RequestEnvelope`，而 `envelope.ts` 的 `with()` patch 是被刻意收窄的四键 `Pick`，且 `with()` 在**四个 codec 的 `makeEnvelope` 里各自逐字段重建**——漏改一处，该格式路径上下一次 `with()` 就把字段静默抹掉，字段可选、无编译错误。计划因此改为不走 envelope（collector 在 `createProcessor` 里按 candidate 建），这个槽维持原状。
+- **理想架构 / 若做需改什么**：二选一，**别留在中间态**。① **删除**：移除 `CandidateState.responseState` 与 `supplies.createResponseState`，让「需要 per-candidate 响应侧状态」的人从零设计运送路径，不被半成品误导——当前无消费者，删除代价最小。② **接通**：`envelope.ts` 加字段并放宽 `with()` 的 patch 键集，四个 `makeEnvelope` 同步补上该字段的透传，再加一条守卫测试「`env.with({body})` 之后 `responseState` 仍在」——**四处必须一起改**，这正是 `with()` 逐字段重建这一形状的固有代价。倾向 ①：`with()` 的窄 patch 键集是有意为之（紧邻注释解释了原因），为一个无人使用的槽去放宽它不划算。
+- **为何暂缓**：本轮任务是定稿语义桥实施计划，不是清理 pipeline 死代码；且删除公共字段属破坏性改动，应有自己的判据与回归，不适合塞进一个正在评审收口的计划里。语义桥 P3 已明确绕开它，不受影响。
+- **触发条件（值得做）**：① 又有人打算复用这个槽（那说明误导已在发生）；② 因别的原因要动 `candidate-state.ts` 或 `envelope.ts` 的 `with()` 契约时顺手了结；③ 真出现第二个需要 per-candidate 响应侧状态的域——那时按 `fix-at-the-shared-base-not-where-you-noticed`，应先把运送路径一次做对，而不是各自绕开。
+- **发现方**：语义桥实施计划第三轮独立评审（管线接线视角 major 2，`docs/tmp/2026-08-07-responses-anthropic-semantic-bridge-plan-review.md`），主会话读 `envelope.ts:130` 与四处 `makeEnvelope` 复核确认。

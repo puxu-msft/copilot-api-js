@@ -1,12 +1,14 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：第二轮（复审）发现 3 MAJOR，均已核实并整改，待第三轮复评
+> **状态**：第三轮复评——管线接线视角判「不可定稿」（2 MAJOR，均已核实并整改，提交见下）；协议契约视角本轮结论待回。整改后需第四轮。
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
 > **首轮基线**：`0c6ad2d783a90c39044034cd427858527f925a64`
 >
 > **第二轮基线**：`90cccdb6`（代码基线 master `837fe522`）
+>
+> **第三轮基线**：`7c5ba2ed`（代码基线 master `837fe522`）
 
 ## 评审视角
 
@@ -111,9 +113,50 @@ Produces 要求「candidate fork 原样共享 records 值」，mutation 要求�
 ### 采纳的 minor
 
 - **纠正我自己写错的理由**（重要，非措辞）：我原先称 open collector 进 `RequestState` 会「违反 request-lifecycle-stable 契约」。reviewer 指出这与代码不符——`RequestState` 本就收纳 `betaProbe`／`reverseMapperHolder`／`responsesFallbackScratch` 等共享**可变**句柄。真正的机械理由是 **fork 语义**：`validateOpaqueFactories` 要求进入 `RequestState` 的 opaque 可变句柄注册 per-candidate 工厂，于是会按 candidate 分裂，破坏 request-level 单份记录。结论不变，理由已在 spec 与 plan 两处替换。**留此记录是因为错误的理由比错误的结论更隐蔽**：结论正确会让人以为整段都对，而后来者会照着错理由去推别的结论。
-- Task 3.2 改为**复用既有的 `CandidateState.responseState`** 槽（已存在但零生产消费者：`forkEnv` 只挂回 `requestState`、丢弃 `responseState`），避免实施者新造一套 supply，并顺手了结该死槽。
+- ~~Task 3.2 改为**复用既有的 `CandidateState.responseState`** 槽~~ —— **⛔ 已被第三轮 MAJOR B 推翻，不要照此实施**：该路径必须穿过 `RequestEnvelope`，而 `with()` 的 patch 键集被刻意收窄且在四个 codec 里逐字段重建，漏一处即静默丢字段。现行做法是 collector 在 `createProcessor` 里按 candidate 创建、不走 envelope；死槽另记 `docs/todo/deferred-backlog.md`。详见第三轮小节。
 - 点明 `createCandidateRenderer` 共有**四个**实现（另有 gemini、openai-cc，不在本对内），第二参数可选故不破编译，但清单不得让人误以为只有两个。
 
 ### 未采纳
 
 无。本轮 3 条 MAJOR 与 3 条 minor 全部采纳。
+
+## 第三轮（复评，基线 `7c5ba2ed`）
+
+只评第二轮**新写**的内容。新写的内容没有历史校验，是最容易出错的一档——本轮结果印证了这一点：**管线接线视角判 `不可定稿`，2 MAJOR 全部落在我第二轮新写的三处改写上**。
+
+### 管线接线视角
+
+| 命题 | 判定 |
+|---|---|
+| 1. Task 3.1 改写后四方自洽 | **成立**（并补验了一条我没写的前提：`createDriverCoordinator` 晚于 S2，故 by-reference spread 拿得到已 freeze 的值，不会恒为 `undefined`） |
+| 2. Task 3.4 的 inspect 断言咬得住 | **不成立 → MAJOR** |
+| 3. Task 3.2 走 `responseState` 路径可行 | **不成立 → MAJOR** |
+
+#### MAJOR A：Step 5 的断言恒绿，零判别力
+
+我写的「跑完 `inspectRequest` 后 ctx 无 bridge diagnostics publish、dispatch 计数不变」**在正确与错误两种实现下都不可能红**：publish 只发生在 `runRequest` 的 try/finally 里，而 `inspectRequest` 根本没有那段；`stopAfter="translate"` 直接 return，物理 dispatch 在这条路径上任何情况下都到不了。它测的是「inspect 不 publish／不 dispatch」这个**结构上本来就成立**的事实，而非「resolver 有没有在 inspect 路径上被调用」这个目标机制。
+
+**我方复核**：读 `driver.ts` 确认两处结构性事实，claim 成立。**这是我自己在派活时就点名「最没把握」的一条，reviewer 证实了担心**——说明「我不确定」的直觉值得写进派发件，它确实指向了真缺陷。
+
+**整改**：断言换成直接观测目标机制（spy `CellAssembly`，断 `translateOut` 第二参数 `runtime === undefined`；或给 resolver 加调用计数断 inspect 路径为 0），并**明文写下那条恒绿写法及其为何恒绿**，防止后来者退回去。另外采纳 reviewer 的第二半：**该负控必须在 fixture `profileOverride` 生效的配置下跑**——production 集合为空时 resolver 两条路径都返回 `undefined`，换了断言照样恒绿。
+
+#### MAJOR B：走 `responseState` 需穿过被刻意收窄的 `with()` 契约，且漏一处即静默丢字段
+
+`RequestEnvelope` 无 `responseState` 字段，`with()` 的 patch 是四键 `Pick`（`envelope.ts:130`，紧邻注释说明为何窄），且 **`with()` 不是 `{...base, ...patch}`——四个 codec 各自 `makeEnvelope` 逐字段重建**。漏改一处，该格式路径上下一次 `with()`（S3、S4 都会调）就把字段静默抹掉：字段可选、无编译错误、renderer 于是自建 collector，**正是本 Task 要防的缺陷**；而 Task 3.2 用 mock codec，碰不到真实 `makeEnvelope`。
+
+**我方复核**：读 `envelope.ts:130` 与 `anthropic/codec.ts:532-556` 确认逐字段重建，`rg makeEnvelope` 确认四处，claim 成立。
+
+**整改**：采纳 reviewer 倾向的方案 ②——**不走 envelope**。collector 在 `createProcessor` 里按 candidate 创建（`candidate.ts` 保证每 candidate 只调一次）并直接传给 renderer 与 session，`forkEnv` 与 `with()` 契约一律不动。这也撤回了我第二轮采纳的「复用 `CandidateState.responseState`」——**上一轮的 minor 建议被这一轮推翻**，死槽改为记入 `docs/todo/deferred-backlog.md` 单独处置，不在本计划扩大范围。
+
+### 采纳的 minor
+
+- Task 3.1 Step 2 补「**深冻**（含 `records` 数组）」：`snapshotStableState` 用的是浅 `Object.freeze`，by-reference spread 也不冻 diagnostics 本身；若 S2 只做浅冻，`records.push` 照样成功，「不可 append」又变成一条恒绿判据——**与 MAJOR A 同型**，同一轮里出现两次，说明「断言恒绿」是我当前最高发的缺陷形态。
+- Step 4 的 `stableState` 是 `candidate-state.ts` 的内部局部名，driver 上下文照抄会找不到标识符，改为 `env.requestState`。
+
+### 未采纳
+
+无。本轮 2 MAJOR + 2 minor 全部采纳。
+
+### 本轮的方法论收获
+
+**两条 MAJOR 与两条 minor 中有三条是同一形态：我写的断言在正确与错误实现下都不会红。** 判据自身的判别力，比判据覆盖了什么更容易出错，且**自审抓不到**——因为写断言时我脑子里只有「正确实现应该满足它」，从不检验「错误实现会不会也满足它」。可执行的防法：每写一条断言，当场问「把目标机制改坏，这条会红吗」，答不上来就现场构造那个坏实现。
