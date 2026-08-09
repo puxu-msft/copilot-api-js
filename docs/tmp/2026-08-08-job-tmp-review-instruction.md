@@ -58,12 +58,19 @@ git show 553985f4:.claude/skills/session-closeout/SKILL.md
 | 原引用 | 内容 | 现在在哪 |
 |---|---|---|
 | `SKILL.md:49` | 枚举 → disposition → 持久化 → 提交并验证载体 → 清单过独立评审 → 清理 → 重新枚举；清单须 0 blocker/major；复扫新文件使旧评审作废；禁通配 | **已泛化进全局 skill** `closing-a-development-session/SKILL.md`（`:137`／`:205`／`:209`），且比原版更完备（枚举扩到文件+符号链接、两个 temp 根取并集、事后复列） |
-| `SKILL.md:51` 前半 | 隔离 worktree 里**变量展开 + 管道**被工具判为 `too complex` 而拒绝执行 | ⚠️ **无归宿**：两个全局 skill 均零命中。见下方「未安置项」 |
+| `SKILL.md:51` 前半 | 隔离 worktree 里**变量展开 + 管道**被工具判为 `too complex` 而拒绝执行 | ✅ **已有归宿**（见下） |
 | `SKILL.md:51` 后半 | `-maxdepth 2` 与顶层项数不是同一个量 | V19 正文，随 log 迁入 `docs/archive/2026-08-08-session-closeout-verification-log.md`（写全了 42／48／49 三口径） |
 | `SKILL.md:205` | V19 行本身 | 同上，已迁入该 archive |
 | （§3 的 `exp/` gitignore 假绿） | `cp` 进 `exp/` 后 `git status` 仍干净 | 机械判据在全局 `writing-handover-docs/SKILL.md:227`（H10 三谓词）；本项目实例在 `docs/tmp/2026-08-08-header-deadline-job-tmp-reconciliation.md:19` |
 
-**未安置项（提请裁决，未自行处置）**：「隔离 worktree 会话里，`Bash` 对**变量展开 + 管道**的组合会拒绝执行并报 too complex；换字面绝对路径即可跑通，别误读成环境变量没设」——这是 harness 事实，本会话实测撞到两次。它的自然归属是 user-level skill `proving-where-a-command-ran`（该 skill owns Bash 工具在隔离树下的行为），但那是用户的全局配置且属指令文本，需评审，故**不自行写入**，在此登记。
+**未安置项 → 已消解（2026-08-08 23:06 更正）**：我一度记为「无归宿」的那条 harness 事实——「隔离 worktree 会话里，`Bash` 对**变量展开 + 管道**的组合会拒绝执行并报 too complex；换字面绝对路径即可跑通，别误读成环境变量没设」——**已经有归宿了**，是我查得太早：
+
+- 归宿：user-level skill `closing-a-development-session/SKILL.md:153`，与 `-maxdepth 2` 口径坑写在同一段「Enumerating the scratch directory: four traps measured in the field」，措辞几乎逐字相同，连 46/42 那个实例都在。
+- 落地提交：`~/.claude` 的 `7d4c09f skills: preserve the peer's job-tmp hardening before it is lost to a merge`——peer 在合并前特意把这份 job-tmp 加固捞了出来。
+- **我为什么先前判成零命中**：该段文字是在我 grep **之后**才被写进那个文件的。**证据要锚到不可变对象，别锚 mtime**——mtime 会随后续编辑变化，写作时我引用的 `22:47` 现在已经不是那个值了，那是个会自我失效的锚点。可复核的证据有两条：① `~/.claude` 的 commit `7d4c09f` 的 diff 显示该段是这次新增的（`git -C /home/xp/.claude show 7d4c09f -- skills/closing-a-development-session/SKILL.md`）；② 本会话 transcript 里那次 grep 返回空、以及此后复查命中的两次工具输出。
+  这是 `verified-by-a-wrong-query` 的一个变体：**查询正确、当时的结论也正确，但结论的有效期只到该对象下一次被写入为止**，而我把它当成了稳定事实报出去。教训——**对高频变动的共享对象下「不存在」结论时，要么带上观测时刻，要么在使用该结论前复查**。
+
+因此**不需要**再写进 `proving-where-a-command-ran`；若那么做反而会造出第二个源。
 
 | 发现 | 处置 | 此刻可核验的证据 |
 |---|---|---|

@@ -56,6 +56,6 @@ Y 的权威 owner 在完成后签发 permit／event，X 由消费该凭据触发
 - **一条判据若在复审中反复朝相反方向被打回，先怀疑它管了不止一类对象，去分型，别继续调措辞**（前三轮的根因）。
 - **双控必须隔离目标机制**：被测对象有多个前置时，「翻转 Y 后坏事没发生」既可能是目标门起了作用，也可能是兄弟门代咬；不固定其他前置、不核对 provenance，正负控都没有判别力（第四轮的根因，与本仓 [[methodology-verify-the-mutation-actually-applied]] 同源）。
 
-**How to apply:** 每写一条顺序前置，当场①**声明它是 A 型还是 B 型**（都不是就直接走消门）②按该型的条件逐条给出答案③对两型共同验收的四项各给出可判别结果。此形态已记入 skill `session-closeout` 的 `verification-log.md` 2026-08-08 节，标为「新增负样本、建议入表」，待独立评审决定是否升为正式自验条目——**未经评审不得自行改写 SKILL.md 正文**（instruction text 必评）。
+**How to apply:** 每写一条顺序前置，当场①**声明它是 A 型还是 B 型**（都不是就直接走消门）②按该型的条件逐条给出答案③对两型共同验收的四项各给出可判别结果。该形态最初记在项目 skill `session-closeout` 的自验日志（现归档于 `docs/archive/2026-08-08-session-closeout-verification-log.md`）；**其可执行条款已于 2026-08-08 采纳并迁入 user-level skill `closing-a-development-session` 的 `source.json`**——非文件候选发现独立成 `discover_nonfile_candidates` stage 且被 `review_temp_manifest` 依赖，删除放行改由 reviewer 的 positive receipt 把关。该 skill 是**生成产物**：只改 `source.json` 再 `render_skill.py`，直接编辑 `SKILL.md` 会被覆盖并撞守卫（instruction text 仍须评审）。
 
 **Related:** [[methodology-downgrading-a-gate-needs-a-reachable-trigger]]（同族：降级自评闸门时最容易只写成一句陈述、没有可达触发点）、[[feedback-pass-null-clean-not-self-validating]]（通过性结论不自证）。
