@@ -355,13 +355,27 @@ describe("History Worker terminal-failed state", () => {
 
     // `terminateTransport()` clears `this.transport`, so the "already started" guard no
     // longer catches this — and `emptyStatus()` would silently reset `terminalFailed`.
-    await expect(runtime.start(buildStartConfig("/tmp/never-opened-history.db"))).rejects.toThrow(/terminally failed/)
+    //
+    // Raced against a timer rather than asserted with `expect(...).rejects`: without the
+    // guard this `start()` launches a generation that never replies, and bun's per-test
+    // timeout does NOT interrupt a pending-promise assertion (measured — the file wedges and
+    // the run has to be killed). Racing turns "never settled" into a normal assertion
+    // failure, which is the difference between a usable red and a stalled suite.
+    const settled = await Promise.race([
+      runtime.start(buildStartConfig("/tmp/never-opened-history.db")).then(
+        () => "resolved",
+        (error: unknown) => `rejected: ${(error as Error).message}`,
+      ),
+      new Promise<string>((resolve) => {
+        const handle = setTimeout(() => resolve("never settled"), 1000)
+        handle.unref?.()
+      }),
+    ])
+
+    expect(settled).toMatch(/^rejected: .*terminally failed/)
     expect(runtime.snapshot().terminalFailed).toBe(true)
     expect(transports).toHaveLength(1)
-    // Explicit timeout: without the guard this `start()` launches a generation that never
-    // replies, so the failure mode is a HANG. An unbounded wait is not a usable red — it
-    // stalls the whole file and reads as "infrastructure is slow" rather than "guard gone".
-  }, 10_000)
+  })
 
   test("each reservation is released exactly once when the runtime goes terminal-failed", async () => {
     const { runtime, transports } = await started()
