@@ -2165,7 +2165,10 @@ export function createRequestContext(opts: {
                 "openai-chat-completions": "openai-cc",
                 "openai-responses": "openai-responses",
                 "gemini-generate-content": "gemini",
-              } as const
+                // `openai-embeddings` is deliberately absent: it has no codec cell, so there is no
+                // client format to report and `clientFormat` stays undefined rather than claiming a
+                // neighbouring generation format.
+              } as Partial<Record<EndpointType, string>>
             )[opts.endpoint],
           upstreamEndpoint: info.outboundEndpoint,
           metadata: info,
