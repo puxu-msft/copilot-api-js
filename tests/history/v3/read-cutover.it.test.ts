@@ -24,7 +24,6 @@ import {
 import {
   //
   closeDatabase,
-  getDatabase,
 } from "~/lib/history/sqlite/connection"
 import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
@@ -37,6 +36,7 @@ import {
 import { setStateForTests } from "~/lib/state"
 
 import { historyTestDbPath } from "../../helpers/test-bootstrap"
+import { historyTestWriteDatabase } from "../../helpers/history-v3-fixtures"
 
 function record(
   id: string,
@@ -76,7 +76,7 @@ beforeEach(async () => {
   await initHistory(true)
   resetV3WriterForTests()
   for (const item of [record("generation-1", "generation"), record("tokens-1", "count_tokens")]) {
-    commitPreparedOperation(getDatabase(), prepareModelOperation(item))
+    commitPreparedOperation(historyTestWriteDatabase(), prepareModelOperation(item))
   }
 })
 
@@ -125,7 +125,7 @@ describe("History V3 read cutover", () => {
       },
     })
     const operation = recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt })
-    commitPreparedOperation(getDatabase(), prepareModelOperation(operation))
+    commitPreparedOperation(historyTestWriteDatabase(), prepareModelOperation(operation))
 
     const stored = getV3StoredOperation("timed-generation")!
     const entry = recordToHistoryEntry(stored.record, stored)
@@ -144,11 +144,11 @@ describe("History V3 read cutover", () => {
 
   test("builds session summaries and chronological detail solely from V3 records", () => {
     commitPreparedOperation(
-      getDatabase(),
+      historyTestWriteDatabase(),
       prepareModelOperation(record("session-first", "generation", { createdAt: 10, sessionId: "session-v3", inputTokens: 3, outputTokens: 2 })),
     )
     commitPreparedOperation(
-      getDatabase(),
+      historyTestWriteDatabase(),
       prepareModelOperation(
         record("session-last", "generation", { createdAt: 20, sessionId: "session-v3", agentId: "agent-1", inputTokens: 5, outputTokens: 4 }),
       ),

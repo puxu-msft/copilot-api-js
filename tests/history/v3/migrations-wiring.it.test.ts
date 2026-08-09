@@ -30,7 +30,6 @@ import path from "node:path"
 import {
   //
   closeDatabase,
-  getDatabase,
   isDatabaseOpen,
 } from "~/lib/history/sqlite/connection"
 import {
@@ -50,9 +49,10 @@ import {
   shutdownHistory,
 } from "~/lib/history/state"
 import { setStateForTests } from "~/lib/state"
+import { historyTestWriteDatabase } from "../../helpers/history-v3-fixtures"
 
 function tableExists(name: string): boolean {
-  return Boolean(getDatabase().prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
+  return Boolean(historyTestWriteDatabase().prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
 }
 
 describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
@@ -75,8 +75,8 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     await initHistory(true)
     expect(tableExists("history_meta")).toBe(true)
     expect(tableExists("v3_operation_summaries")).toBe(true)
-    expect(Boolean(getDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection"])
+    expect(Boolean(historyTestWriteDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
+    expect(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection"])
   })
 
   test("a non-empty injected MIGRATIONS array runs REAL DDL against the initHistory-opened V3 db, ledgers it, and idempotently no-ops on rerun", async () => {
@@ -93,14 +93,14 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     // First application: real DDL against the SAME db initHistory opened
     // (not a fresh throwaway db) — proves the pipe is genuinely connected, not
     // just independently functional.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1)
     expect(tableExists("wiring_probe")).toBe(true)
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection", "001-wiring-probe"])
+    expect(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection", "001-wiring-probe"])
 
     // Idempotent rerun: Umzug's ledger (in the SAME history_meta table
     // initHistory's open path built) must skip an already-applied migration.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1) // NOT re-invoked
   })
 
@@ -119,9 +119,9 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
         },
       },
     ]
-    await expect(applyForwardMigrations(getDatabase(), failing)).rejects.toThrow("boom")
+    await expect(applyForwardMigrations(historyTestWriteDatabase(), failing)).rejects.toThrow("boom")
     // Failed migration must stay unlogged (pending) so it retries next start.
-    expect(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection"])
+    expect(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]")).toEqual(["001-operation-summary-projection"])
   })
 
   test("shutdownHistory + reopen: the ledgered migration is not re-applied across a real restart", async () => {
@@ -132,14 +132,14 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
         upCallCount++
       }),
     ]
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1)
 
     await shutdownHistory()
     await initHistory(true) // production open path sees the shipped migration in the ledger and skips it
 
     // Re-apply the SAME test migrations against the reopened db — ledger persisted on disk.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1) // still not re-invoked — ledger survived the restart
   })
 })

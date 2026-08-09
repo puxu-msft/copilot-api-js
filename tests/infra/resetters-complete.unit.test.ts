@@ -78,6 +78,7 @@ const EXEMPT: Record<string, string> = {
   setHistoryPersistenceRuntimeFactoryForTests: "process-wide runtime backend selection — must NOT run per-test, else the next construction spawns a real Worker",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
+  detachHistoryReadDatabaseForTests: "per-test opt-in, paired with openInMemoryDatabase — the handle it forgets is the write singleton the test itself closes",
   // Path/config injector setters: per-test opt-in, not a default reset. Their
   // effect is undone either by a paired reset already in the table or by the
   // floor (sandboxed PATHS default).

@@ -8,6 +8,8 @@ import {
   type SqliteDatabase,
 } from "~/lib/sqlite/driver"
 
+import { detachHistoryReadDatabaseForTests, installHistoryReadDatabase } from "./read-connection"
+
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
  * bun:sqlite on Bun, node:sqlite on Node — so callers see a single class.
@@ -314,7 +316,15 @@ export function closeDatabase(): void {
   openedPath = null
 }
 
-/** For tests: open an in-memory db. */
+/**
+ * For tests: open an in-memory db.
+ *
+ * Also publishes it as the process-wide READ handle. Since the Batch 2b cutover the app's query paths resolve `getHistoryReadDatabase()`, not this singleton, so a test that populates an in-memory database and then exercises a query would otherwise read through a handle that was never installed. The two handles are deliberately the same object here: an in-memory database belongs to exactly one connection, so there is no second one to open, and these tests are asserting SQL rather than the read/write split.
+ */
 export function openInMemoryDatabase(): Database {
-  return openDatabase(":memory:")
+  // The previously published handle is this same singleton, which `openDatabase` is about to close; detach rather than close, or the close below runs twice.
+  detachHistoryReadDatabaseForTests()
+  const database = openDatabase(":memory:")
+  installHistoryReadDatabase(database)
+  return database
 }

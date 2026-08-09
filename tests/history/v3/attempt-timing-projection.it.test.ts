@@ -7,7 +7,6 @@ import {
 import type { HistoryEntry } from "~/lib/history/types"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
-import { getDatabase } from "~/lib/history/sqlite/connection"
 import {
   //
   commitPreparedOperation,
@@ -16,6 +15,7 @@ import {
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { createFullTestApp } from "../../helpers/test-app"
+import { historyTestWriteDatabase } from "../../helpers/history-v3-fixtures"
 
 useIsolatedRuntime()
 
@@ -32,7 +32,7 @@ test("GET /history/api/entries/:id exposes all persisted upstream attempt timing
   recorder.setDispatchTiming(dispatch, "upstreamLastTokenAt", 1_040, "latest")
   recorder.settleAttempt(dispatch, { verdict: "committed" })
   const record = recorder.commitTerminal({ outcome: "completed", committedAttempt: dispatch })
-  commitPreparedOperation(getDatabase(), prepareModelOperation(record))
+  commitPreparedOperation(historyTestWriteDatabase(), prepareModelOperation(record))
 
   const response = await app.request("/history/api/entries/attempt-timing-rest")
   const entry = (await response.json()) as HistoryEntry

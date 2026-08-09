@@ -20,6 +20,7 @@ import {
   //
   closeHistoryReadDatabase,
   installHistoryReadDatabase,
+  peekHistoryReadDatabase,
 } from "./sqlite/read-connection"
 import { V3_MAINTENANCE_INTERVAL_MS } from "./v3/maintenance"
 import { getV3PersistRetryConfig } from "./v3/store"
@@ -117,8 +118,8 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   // Re-entry against the SAME artifact re-wires the subscriptions below but must NOT try to install the Worker or the readonly handle a second time — both reject that, and the old `openDatabase()` this replaced treated an unchanged path as a no-op reopen.
   //
-  // "Already installed" is deliberately TWO conditions, not one. The path answers "same artifact?"; `peekHistoryPersistenceRuntime()` answers "is the thing I started still the registry's runtime?". A runtime is single-use — once shut down it never comes back — so anything that releases the singleton (a `historyDbPath` switch, `shutdownHistory`, the per-test injector reset that keeps a mocked runtime from leaking) leaves this thread believing it is up while its writer is gone. Reading the registry instead of trusting our own flag makes re-init self-healing rather than dependent on the caller's teardown order.
-  const alreadyInstalled = startedDbPath === dbPath && peekHistoryPersistenceRuntime() !== undefined
+  // "Already installed" is deliberately THREE conditions, not one. The path answers "same artifact?"; `peekHistoryPersistenceRuntime()` answers "is the thing I started still the registry's runtime?"; `peekHistoryReadDatabase()` answers "is my readonly handle still published?". Each of the latter two can be taken away independently — a runtime is single-use, so releasing the singleton (a `historyDbPath` switch, `shutdownHistory`, the per-test injector reset that keeps a mocked runtime from leaking) leaves this thread believing it is up while its writer is gone, and a test that publishes its own handle through `openInMemoryDatabase()` detaches ours. Reading the registries instead of trusting our own flag makes re-init self-healing rather than dependent on the caller's teardown order.
+  const alreadyInstalled = startedDbPath === dbPath && peekHistoryPersistenceRuntime() !== undefined && peekHistoryReadDatabase() !== undefined
   if (!alreadyInstalled) {
     // Release whatever a previous bring-up left behind before installing again: a readonly handle on the old artifact, and a runtime that is either pointed at the old path or already dead.
     closeHistoryReadDatabase()

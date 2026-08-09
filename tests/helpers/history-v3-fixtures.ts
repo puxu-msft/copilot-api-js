@@ -30,6 +30,15 @@ function seedWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
   return db
 }
 
+/**
+ * The fixtures' WRITE handle on the artifact under test, for tests that assert or seed with direct SQL.
+ *
+ * Replaces `getDatabase()` in test bodies: the main thread stopped opening the write singleton at the Batch 2b cutover, so that accessor now throws. Reads could go through `getHistoryReadDatabase()` instead, but a test that also writes needs one handle for both, and mixing the two invites assertions that read a different connection than they wrote.
+ */
+export function historyTestWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
+  return seedWriteDatabase()
+}
+
 /** Wipe every V3 table on the artifact under test. Backs `clearHistory()`'s persisted half, which production can no longer perform itself (see `setHistoryStoreWipeForTests`). */
 export function clearHistoryStoreForTests(): void {
   clearV3Store(seedWriteDatabase())
