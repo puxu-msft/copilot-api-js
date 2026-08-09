@@ -29,27 +29,37 @@ A dedicated 50ms SDK negative control uses an abort-aware never-responding upstr
 
 ## Verification
 
-All numbers below are scoped to the `entry-preflight-fixes` worktree based on `14974488ef4a881a9fc2f15bb105f67e5f80e1bc`, commit `fc570601`, and the uncommitted six-file review-fix diff at measurement time:
+### Before merging master, at `fc570601`
+
+Scoped to the `entry-preflight-fixes` worktree based on `14974488ef4a881a9fc2f15bb105f67e5f80e1bc` plus the then-uncommitted review-fix diff:
 
 - `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 14 pass, 0 fail;
 - `bun test tests/pipeline/client-sink.unit.test.ts`: 29 pass, 0 fail;
 - `bun test tests/e2e-client/precontent-recovery.it.test.ts --rerun-each=10`: 70 pass, 0 fail;
 - `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail;
 - `bun run typecheck`: exit 0;
-- `bun run test:backend`: 16 shards, 6211 tests, 6208 pass, 3 fail, 7266 executed, 30 skipped;
-- `git diff --check`: exit 0.
+- `bun run test:backend`: 3 fail, all `TimeoutError` under 16 shards, all green in isolation.
 
-The `tests/pass` reporter count remains environment-sensitive and is not the population authority. T0.0f’s independent file identity, skipped multiset, and minimum executed floor remain the entry gate.
+Those three were never this fix's doing and never real assertion failures: the CAS byte-ratio test held a 15s budget and took 20.87s, and two validator tests held bun's 5000ms default and were killed at 5.37s and 6.16s. Master had already fixed both files while this branch sat on the old entry — `b9954a39` gave `store-performance` `setDefaultTimeout(60_000)` and `a6be256a` gave `validate-entry-evidence` `setDefaultTimeout(30_000)` — so the merge below resolved all three without a line from this branch.
 
-The three backend failures are not caused by this fix and are not real assertion failures. All three are `TimeoutError` from wall-clock budgets sized on an unloaded machine, and all three pass when their file is run alone:
+### After merging master
 
-| Test | Budget | Observed under 16 shards |
-| --- | --- | --- |
-| `tests/history/v3/store-performance.it.test.ts` — CAS live physical bytes | 15s explicit | 20.87s |
-| `tests/infra/validate-entry-evidence.unit.test.ts` — rejects every missing or modified runtime dependency | 5s default | 5.37s |
-| `tests/infra/validate-entry-evidence.unit.test.ts` — requires the bound SAX package graph | 5s default | 6.16s |
+`ebe4a292` merged master into this branch and `9403dc90` carries the follow-up fixes. Master had independently fixed the same summary-selector defect in `fe65adea`; the reconciliation keeps this branch's fully anchored grammar and drops master's fallback to the last runner-mentioning line, because behind a strict primary that fallback reinstates the artifacts-line selection the fix removed.
 
-Their oracles are byte ratios and process exit codes, never elapsed time, so the budgets are incidental. They belong to the same false-red class as the precontent SDK timing fix and are handled after this branch merges current master.
+The merged run then turned one more test red twice, and it is the one finding of this round that no one else had: `uds-transport.it` "a large multi-segment response reassembles correctly" was inheriting two separate 5s deadlines. Bun's default test budget killed it at 5.04s; raising that to 30s exposed the client's own `DEFAULT_QUERY_TIMEOUT_MS`, which fails silently because `query()` never throws — the blown deadline resolved to `[]` and the assertion read `expected 50, received 0`, which looks like a reassembly bug. Both are now named explicitly at the call site. `docs/todo/deferred-backlog.md` already lists this test under its "撞 5000ms 默认超时" category; the second, hidden deadline is new information for that entry.
+
+Measured at `9403dc90`:
+
+- `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 16 pass, 0 fail;
+- `bun test tests/pipeline/client-sink.unit.test.ts`: 29 pass, 0 fail;
+- `bun test tests/e2e-client/precontent-recovery.it.test.ts`: 7 pass, 0 fail;
+- `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail (measured at `ebe4a292`; `9403dc90` does not touch it, and the backend run below covers it);
+- `bun test tests/history/search/uds-transport.it.test.ts`: 24 pass, 0 fail;
+- `bun run typecheck`: exit 0;
+- `bunx eslint` over every file this branch changed: exit 0;
+- `bun run test:backend`: 16 shards, 5151 tests, 5151 pass, 0 fail, 7367 executed, 36 skipped, exit 0.
+
+The reporter's `tests` count is not the population authority and this round shows why: four backend runs reported 6211, 5502, 5693 and 5151 `tests` while `executed` held at 7266 before the merge and 7367 after it, across three runs of one tree. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
 
 ## Failed evidence disposition and mandatory next step
 
@@ -65,5 +75,5 @@ After `fc570601` and all follow-up review fixes are merged into master, the exec
 
 ## Structural smell disposition
 
-- `exp/inter-block-anchor-allocator/baseline-runs.sh:215`: text protocol parsing is a boundary smell, but the selected line is now a strict, fully anchored, tested producer grammar and the independent JUnit/runtime artifacts remain authoritative. Replacing the entire runner summary with another manifest would duplicate the existing artifact channel; no further mechanism is added in this fix.
+- `exp/inter-block-anchor-allocator/baseline-runs.sh:230`: text protocol parsing is a boundary smell, but the selected line is now a strict, fully anchored, tested producer grammar and the independent JUnit/runtime artifacts remain authoritative. Replacing the entire runner summary with another manifest would duplicate the existing artifact channel; no further mechanism is added in this fix.
 - `tests/e2e-client/precontent-recovery.it.test.ts`: the prior real-time sleep leaked scheduler load into a client-behavior oracle; the first fix over-corrected by globally freezing the third-party SDK deadline. Selective interception now keeps the real client boundary while controlling only proxy business timers.
