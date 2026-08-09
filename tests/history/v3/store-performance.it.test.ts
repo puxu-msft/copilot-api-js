@@ -110,16 +110,6 @@ function timedPrepare(record: ModelOperationRecord): number {
 
 /** Number of commit samples per measurement — matches `timedPrepare`. */
 const COMMIT_SAMPLES = 5
-/**
- * Absolute floor on the commit budget. The cold measurement is the divisor, and a commit of this
- * fixture lands in the low single-digit milliseconds, so an unusually quick cold median made the bar
- * arbitrarily strict: a merged-state run measured coldCommitMs 2.85 against hotCommitMs 23.61 and
- * reported a ratio of 8.295 for code that is not history-length dependent (isolated runs of the same
- * commit reported 0.62). Under the 16-shard runner a healthy hot commit has been observed at 23.6ms,
- * so anything under ~60ms is measuring scheduler noise rather than the invariant. Below this floor
- * the ratio is not signal, so the budget stops shrinking with it.
- */
-const COMMIT_BUDGET_FLOOR_MS = 60
 
 /**
  * Same shape, DIFFERENT content for every sample. This matters more than it looks:
@@ -178,15 +168,27 @@ describe("History V3 store performance", () => {
     const hotPrepareMs = timedPrepare(target)
     const hotCommitMs = timedCommit(target, "target-hot")
     const prepareRatio = hotPrepareMs / coldPrepareMs
-    const commitBudgetMs = Math.max(coldCommitMs * 5, COMMIT_BUDGET_FLOOR_MS)
     const commitRatio = hotCommitMs / coldCommitMs
 
-    console.log("HISTORY_V3_PERF history-length", JSON.stringify({ coldPrepareMs, hotPrepareMs, prepareRatio, coldCommitMs, hotCommitMs, commitRatio, commitBudgetMs }))
+    console.log("HISTORY_V3_PERF history-length", JSON.stringify({ coldPrepareMs, hotPrepareMs, prepareRatio, coldCommitMs, hotCommitMs, commitRatio }))
     expect(prepareRatio).toBeLessThan(3)
-    // Same 5x intent as before, but the divisor cannot fall below the floor. The invariant under
-    // test is "commit cost does not grow with prior history length", which a 5x budget expresses;
-    // what it must NOT express is "commit is faster than 5x an unusually lucky 2.8ms sample".
-    expect(hotCommitMs).toBeLessThan(commitBudgetMs)
+    // Criterion and threshold are the ORIGINAL ones. A previous revision replaced them with
+    // `hotCommitMs < Math.max(coldCommitMs * 5, 60)`, which was a PURE LOOSENING and is reverted
+    // here: cold is 2-4ms in this fixture, so the floor won every time and the budget was a constant
+    // 60ms. Measured under one injected O(prior operations) defect, the two forms disagree exactly as
+    // that predicts — ratio form red at 6.76, floor form green while itself reporting ratio 5.20.
+    //
+    // KNOWN LIMITATION, deliberately left in place rather than papered over: this ratio divides two
+    // ~2ms wall-clock measurements on a contended 16-core box, so it still false-reds — measured 1
+    // run in 5 in isolation (cold 2.07, hot 24.61, ratio 11.88), which is the same signature as the
+    // merged-state failure this was first raised for. Median-of-5 sampling below reduces that but
+    // does not remove it. Two alternatives were measured and both rejected: the floor (loosening,
+    // above) and enlarging the fixture to 80x64KB (cold 26-56ms makes the ratio participate, but the
+    // raised baseline dilutes history-dependent cost to invisibility — the same injected defect moved
+    // the ratio only to 0.94/0.81). A timing ratio at this scale cannot be both stable and sensitive;
+    // the way out is a deterministic oracle (e.g. asserting the hot-path statements keep an indexed
+    // plan rather than degrading to a scan), which is a redesign and is registered for adjudication.
+    expect(commitRatio).toBeLessThan(5)
   })
 
   test("CAS live physical bytes are at least 10x smaller than the real compressed V2 write shape", () => {

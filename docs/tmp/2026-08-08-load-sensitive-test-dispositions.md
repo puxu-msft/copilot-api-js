@@ -786,7 +786,52 @@ failures.push({ subscriber: "publishAndFlush", phase: "async-handler", eventKind
 
 **顺带发现（不在本轮范围，但会同样打掉 T0.0f）**：run 2 的那次 `1 fail` **不是** store-performance，而是 `tests/transport/http2-generation-reconcile.it.test.ts:377`「row 1 — pre-header req.error」，错误文本 `test setup: server stream/session missing`。同 HEAD 隔离单跑该文件 **11 pass / 0 fail**。本轮改动只碰了 `tests/history/v3/store-performance.it.test.ts` 一个文件（`git diff --stat HEAD` 可证），与它无关。**这是套件里的又一条同族 flaky**，登记进未处置第 8 条。
 
+### M1-R · 复评 major：M1 的新判据是纯放宽 —— **成立，已回退**
+
+**评审对，我错了。** `hotCommitMs < Math.max(coldCommitMs * 5, 60)` 的通过集恒为旧式 `commitRatio < 5` 的超集。用**我自己记录的数据**即可确认：本轮所有 cold 读数在 2.27–5.13ms，`cold * 5` = 11–26ms，**永远小于 60**，所以 `Math.max` 每次都选地板，预算是常数 60ms。后果正如评审所说——5 样本中位数与 `__sample` salt 全都作用在一个随后被丢弃的量上，而用例名声称的不变量已不由那条断言表达。
+
+**两方向 mutation（同一份缺陷，两种判据形态对跑）**
+
+注入「commit 成本随**既往 operation 数**增长」的缺陷（`/tmp/mut-r2-hot-only-history-dependence.patch`：`commitPreparedOperation` 开头扫描并解压 `v3_operations` 全表；冷端只有几条 operation，热端有 256 条 flood，因此**主要拖慢 hot**）：
+
+| 判据形态 | cold | hot | commitRatio | 判定 |
+|---|---|---|---|---|
+| **旧式 `commitRatio < 5`** | 5.19 | 35.04 | **6.76** | **红** |
+| **M1 的地板式** | 6.92 | 35.96 | **5.20** | **绿** —— 它自己算出的比值已经超阈值，却因 `35.96 < 60` 放行 |
+
+**这就是纯放宽的实测证明**：同一缺陷、同一台机器，比值形态红、地板形态绿，而且地板形态**自己打印出的 `commitRatio` 是 5.20**。
+
+**处置：回退到原判据 `commitRatio < 5`**（阈值与形态逐字恢复），保留 `timedCommit` 的 5 样本中位数与 `saltedSample`（它们不放宽任何东西）。**回退放宽永远是安全动作**，不需要裁决；把放宽留着才需要。
+
+### 评审建议的「放大 fixture」我复跑了，**不采纳**，理由是实测
+
+评审提议 `highBranchFixture(80, 65_536)`，实测确实让比值重新参与判定（我的读数 cold 26.47ms、budget 132.36ms、ratio 0.868，与评审的 32.3 / 161.5 / 0.855 同量级）。**但它把这条测试对目标缺陷的鉴别力毁掉了**：
+
+| fixture | 同一缺陷下的 commitRatio |
+|---|---|
+| 小（10 × 8KB，原尺寸） | **3.86**（1 样本时；5 样本 + 加强版缺陷可达 6.76 → 红） |
+| 大（80 × 64KB，评审建议） | **0.94**（5 样本） / **0.81**（1 样本） —— 缺陷完全不可见 |
+
+机制：放大 fixture 把**基线** commit 成本从 ~2ms 抬到 26–56ms，而历史依赖项是加性的，于是被基线稀释到检测不出。M2 的「放大被测量」之所以有效，是因为那里放大的是**被测量本身**（deadline）；这里放大的是**基线**，方向相反。
+
+### 剩余问题：这条测试的计时判据无法同时做到稳定与敏感（**升级交裁决**）
+
+回退后我连跑 5 次隔离，`commitRatio` = **11.88** / 0.52 / 1.77 / 1.24 / 0.13 —— **5 次里 1 次超过阈值 5**（cold 2.07、hot 24.61），与最初那次合并态 false-red signature 相同。也就是说：
+
+| 形态 | 稳定（不 false-red） | 敏感（抓得住历史依赖） |
+|---|---|---|
+| 原比值（已回退到此） | ✗ 实测 1/5 假红 | ✓ 6.76 红 |
+| 地板式（M1，已撤） | ✓ | ✗ 纯放宽 |
+| 放大 fixture（评审建议） | ✓ | ✗ 0.81–0.94，不可见 |
+
+**三种都不合格，而且不合格的方向各不相同。** 根因是它在拿两个 ~2ms 的墙钟读数相除，在 16 核争用机器上这个比值本质就是噪声——**任何建立在该量之上的阈值都逃不掉这个三难**。
+
+**因此这不是一个可以再猜第四次的调参问题，而是设计分叉，按 `red-tests-may-be-guarding-something` 交裁决。** 我的推荐方向（**未实施、未验证**）：换成**确定性 oracle**，例如断言 commit 热路径的 SQL 语句仍走索引（`EXPLAIN QUERY PLAN` 不出现全表 `SCAN`），它对「退化成扫描」这一缺陷类是确定性的、零计时、零噪声。这属于重设计，不由实施者自决。
+
+**当前仓库状态**：判据已回到原样（`commitRatio < 5`），即**放宽已撤销**，代价是这条测试恢复到它原有的已知不稳定——那是一个**已登记的既有问题**（未处置第 7 条），不是本轮新引入的。
+
 ### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
 
 **评审指出我的约束是假的，这一条我判它成立。** 我原先写的「放宽上界就失去覆盖」是**真的**，但它**只在把 `DEADLINE_MS` 钉死在 50 时成立**——而 50 本身不承重（fixture 的 deadline 取多少，与「deadline 被尊重」这条不变量无关）。上界的鉴别力挂在**相对形状 `DEADLINE_MS * 4`** 上，不挂在绝对毫秒上；把 fixture 按比例放大，鉴别力不变而绝对余量变宽。
 
