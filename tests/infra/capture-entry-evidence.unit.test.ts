@@ -321,7 +321,7 @@ describe("baseline-runs summary accounting", () => {
       const log = path.join(out, "run-01.log")
       // A wrapper that bailed before running (rc 2/3) leaves no log; surfacing its
       // stderr keeps that failure diagnosable instead of an ENOENT from the reader.
-      const seen = existsSync(log) ? (/^=== tests seen\s*:\s*(.+)$/m.exec(readFileSync(log, "utf8"))?.[1]?.trim() ?? "") : ""
+      const seen = existsSync(log) ? (/^=== tests seen\s*:\s*(\S.*)$/m.exec(readFileSync(log, "utf8"))?.[1]?.trim() ?? "") : ""
 
       return { exitCode: result.exitCode, seen, stderr }
     } finally {
