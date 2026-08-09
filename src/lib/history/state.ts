@@ -144,15 +144,22 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     // opened after `ready`, because the artifact and its owner marker are the Worker's to
     // create.
     const runtime = getHistoryPersistenceRuntime()
-    await runtime.start({
-      semanticDbPath: dbPath,
-      configRevision: 1,
-      // Raw capture stays on the main thread until Batch 3b. The Worker must NOT open the
-      // same raw artifact concurrently, so it starts with raw disabled.
-      rawConfig: { enabled: false, dbPath: "", maxObjectBytes: state.historyRawCaptureMaxObjectBytes },
-      persistRetry: getV3PersistRetryConfig(),
-      maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
-    })
+    try {
+      await runtime.start({
+        semanticDbPath: dbPath,
+        configRevision: 1,
+        // Raw capture stays on the main thread until Batch 3b. The Worker must NOT open the
+        // same raw artifact concurrently, so it starts with raw disabled.
+        rawConfig: { enabled: false, dbPath: "", maxObjectBytes: state.historyRawCaptureMaxObjectBytes },
+        persistRetry: getV3PersistRetryConfig(),
+        maintenanceIntervalMs: V3_MAINTENANCE_INTERVAL_MS,
+      })
+    } catch (error) {
+      // A failed start leaves a runtime that can never be started again (a permanent one — an unowned artifact, a corrupt payload — makes it terminal). Leaving it in the registry turns one caller's failure into every later caller's: the next `initHistory` fetches the same dead object and is told it is terminally failed, naming an artifact it never asked for. Release it, then let the original error out unchanged.
+      await releaseHistoryPersistenceRuntime()
+      enabled = false
+      throw error
+    }
     // §8.1 step 8: the main thread's own connection is READONLY from here on. Every query
     // path below reads through it; nothing on this thread may write the semantic DB again.
     installHistoryReadDatabase(openDatabaseReadonly(dbPath))
