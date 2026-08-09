@@ -358,7 +358,10 @@ describe("History Worker terminal-failed state", () => {
     await expect(runtime.start(buildStartConfig("/tmp/never-opened-history.db"))).rejects.toThrow(/terminally failed/)
     expect(runtime.snapshot().terminalFailed).toBe(true)
     expect(transports).toHaveLength(1)
-  })
+    // Explicit timeout: without the guard this `start()` launches a generation that never
+    // replies, so the failure mode is a HANG. An unbounded wait is not a usable red — it
+    // stalls the whole file and reads as "infrastructure is slow" rather than "guard gone".
+  }, 10_000)
 
   test("each reservation is released exactly once when the runtime goes terminal-failed", async () => {
     const { runtime, transports } = await started()
