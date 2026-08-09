@@ -61,14 +61,18 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 
 ### 真实成本高的测试要给**显式时间预算**
 
-bun 的 5s 默认超时对两类测试都偏紧，而它们的判据从来不是耗时：
+> 负载敏感假红的**权威分类与预算取值规则**在 [docs/tmp/2026-08-08-load-sensitive-test-dispositions.md](tmp/2026-08-08-load-sensitive-test-dispositions.md)，在册实例清单在 [docs/todo/deferred-backlog.md](todo/deferred-backlog.md)。本节只讲写测试时该怎么做，判据以那两份为准。
+
+**先分型，再谈预算。** 加预算只对「机制有效、被 wall-clock 预算饿死」的那一类有用（权威文档的 B 类）。断言主体本身就是时间窗口（A 类）的，要换成因果/机制判据，加预算是白费；同一个文件里就有反例——`uds-transport.it.test.ts` 那条 spawn 子进程的 under-load 用例，超时从 5s 提到 30s 照样在 30012ms 红，根因是 16 路并行下的 spawn 饥饿（[HANDOVER:417-421](plan/2026-07-28-state-to-foundation/HANDOVER.md)）。
+
+分完型确属 B 类的，bun 的 5s 默认超时对下面两种都偏紧，而它们的 oracle 从来不是耗时：
 
 - **遍历全仓的结构守卫**（包边界、包面、环 ratchet 之类）解析全部生产源文件，本就逼近默认超时，仓库多几个文件就会假红。
 - **做真实 I/O / 子进程 / 大负载的 `it` 测试**（真 socket 传大 payload、逐个构建 git fixture 跑真实脚本、CAS 字节比对），单跑够快，但 `scripts/parallel-test.ts` 把 16 个分片压在同一台机器上时会翻倍甚至更多。
 
-两类都给**显式预算**——单条用 `}, 30_000)`（对齐 `circular-deps-ratchet`），整份文件都重就在文件头 `setDefaultTimeout(30_000)`（对齐 `store-performance` / `validate-entry-evidence`）。**不要为了压进默认超时去缩小扫描面或削减负载**——那正是这类测试的价值所在。判据是「这条测试的 oracle 是不是耗时」：不是，超时就只是预算，调它不削弱任何断言。
+**取值别拍脑袋**，按权威文档冻结的两条下界取大者、向上取整到 30/60 秒档：≥10× 该文件最慢用例的隔离实测，且 ≥3× 该用例在真实分片下**已观测**的最坏耗时。**同一文件多条都重就用文件级** `setDefaultTimeout(...)`（已实测确认它是文件作用域、不泄漏给同分片的兄弟文件），单条特例才用 `}, 30_000)`。**不要为了压进默认超时去缩小扫描面或削减负载**——那正是这类测试的价值所在。
 
-**测试挂钟预算不止 bun 那一个**：被测客户端自己也可能带默认 deadline，而 never-throw 的客户端（如 `uds-client` 的 `query()`，超时即 resolve `[]`）会把过期**伪装成空结果**——症状是 `expected 50, received 0`，读起来像重组坏了。凡是测真实传输的用例，**把被测方的 deadline 也显式传进去**，别继承生产默认值。
+**测试挂钟预算不止 bun 那一个**：被测方自己也可能带生产默认 deadline，继承它就等于把生产取舍当成了测试判据。两种形态都踩过——`uds-client` 的 `query()` never-throw、超时即 resolve `[]`，把过期**伪装成空结果**（症状 `expected 50, received 0`，读起来像重组坏了）；`pingHistorySearchUdsClient` 的 300ms 默认是为 `/api/status` 快返「未安装」设计的，正向断言继承它就成了「sidecar 没应答」。凡是测真实传输的用例，**把被测方的 deadline 也显式传进去**；并注意**嵌套次序**——被测方的 deadline 必须小于 harness 预算，反过来会被 harness 先杀掉、丢失诊断。反向的用例（测的就是快速失败）则应保留生产默认值。
 
 ## 实现前门禁
 

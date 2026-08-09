@@ -28,6 +28,7 @@ import {
   beforeAll,
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import fs from "node:fs"
@@ -57,6 +58,20 @@ import { primeUdsConnectForBunTest } from "../../helpers/prime-uds-for-bun-test"
 // is coincidental, not a guarantee; make the requirement explicit instead of
 // relying on it.
 beforeAll(primeUdsConnectForBunTest)
+
+// File-level budget, per the B-class rule frozen in
+// docs/tmp/2026-08-08-load-sensitive-test-dispositions.md: take the larger of 10x this file's
+// slowest isolated case (0.85s -> 8.5s) and 3x its worst observed sharded time (5.21s -> 15.6s),
+// then round up to the 30/60s tier. It is file-level rather than per-case because the budget has
+// to sit OUTSIDE every client deadline the cases pass in; a 20s client timeout under a 5s test
+// timeout would be killed by the harness before the client could report anything. That doc also
+// verified setDefaultTimeout does not leak to sibling files sharing the shard's process.
+//
+// This does not rescue the A-class case at "missing sidecar queried from INSIDE a Bun.serve
+// request handler under load": docs/plan/2026-07-28-state-to-foundation/HANDOVER.md:417-421
+// measured that one still timing out at 30012ms, because it starves on spawn under 16-way
+// parallelism rather than merely running long. More time is not its fix.
+setDefaultTimeout(30_000)
 
 const tmpDirs: Array<string> = []
 function freshSocketPath(): string {
@@ -441,9 +456,9 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
   // this past both bun's 5s default test budget AND the client's 5s
   // DEFAULT_QUERY_TIMEOUT_MS -- and the second one fails silently, because query()
   // never throws: it resolved to [] and the assertion reported "expected 50,
-  // received 0", which reads like a reassembly bug rather than a deadline. Both
-  // budgets are named explicitly here. Do not shrink the payload instead; the
-  // multi-segment size is the thing under test.
+  // received 0", which reads like a reassembly bug rather than a deadline. The
+  // harness budget is the file-level one above; the client deadline is named here.
+  // Do not shrink the payload instead; the multi-segment size is the thing under test.
   test("a large multi-segment response reassembles correctly", async () => {
     const socketPath = freshSocketPath()
     const bigContent = "y".repeat(300_000)
@@ -457,7 +472,7 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)
     expect(rows[49]?.operationId).toBe(`${bigContent}-49`)
-  }, 30_000)
+  })
 })
 
 // `DEFAULT_PING_TIMEOUT_MS` is 300ms because `/api/status` wants a fast answer
