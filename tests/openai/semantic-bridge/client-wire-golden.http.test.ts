@@ -59,6 +59,27 @@ const CLIENT_WIRE_DIGESTS = {
 
 type ClientWireDigestKey = keyof typeof CLIENT_WIRE_DIGESTS
 
+const EXPECTED_GOLDEN_CASE_KEYS = [
+  "A→R:stream:no-retry",
+  "A→R:stream:retry",
+  "A→R:stream-thinking:no-retry",
+  "A→R:stream-tool:no-retry",
+  "A→R:non-stream-thinking:no-retry",
+  "A→R:error:no-retry",
+  "A→R:non-stream:no-retry",
+  "A→R:non-stream:retry",
+  "R→A:stream:no-retry",
+  "R→A:stream:retry",
+  "R→A:stream-reasoning:no-retry",
+  "R→A:stream-tool:no-retry",
+  "R→A:non-stream-reasoning:no-retry",
+  "R→A:error:no-retry",
+  "R→A:non-stream:no-retry",
+  "R→A:non-stream:retry",
+] as const
+
+type GoldenCaseKey = (typeof EXPECTED_GOLDEN_CASE_KEYS)[number]
+
 interface ClientWireCapture {
   status: number
   headers: Array<readonly [string, string]>
@@ -73,7 +94,7 @@ interface GoldenCoverage {
   hasEncrypted: boolean
 }
 
-const goldenCoverage = new Map<ClientWireDigestKey, GoldenCoverage>()
+const goldenCoverage = new Map<GoldenCaseKey, GoldenCoverage>()
 
 function wireCoverage(direction: GoldenCoverage["direction"], capture: ClientWireCapture): GoldenCoverage {
   const wire = Buffer.from(capture.bodyHex, "hex").toString("utf8")
@@ -91,13 +112,13 @@ function containsDirectionalReasoningMarker(direction: GoldenCoverage["direction
   return direction === "A→R" ? coverage.hasThinking && coverage.hasSignature : coverage.hasReasoning && coverage.hasEncrypted
 }
 
-async function assertFixedClientWireDigest(key: ClientWireDigestKey, capture: ClientWireCapture): Promise<void> {
+async function assertFixedClientWireDigest(caseKey: GoldenCaseKey, digestKey: ClientWireDigestKey, capture: ClientWireCapture): Promise<void> {
   const bytes = Uint8Array.fromHex(capture.bodyHex)
   const actualHash = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex")
-  const expected = CLIENT_WIRE_DIGESTS[key]
+  const expected = CLIENT_WIRE_DIGESTS[digestKey]
   expect(bytes.byteLength).toBe(expected.byteLength)
   expect(actualHash).toBe(expected.sha256)
-  goldenCoverage.set(key, wireCoverage(key.startsWith("A→R:") ? "A→R" : "R→A", capture))
+  goldenCoverage.set(caseKey, wireCoverage(caseKey.startsWith("A→R:") ? "A→R" : "R→A", capture))
 }
 
 /**
@@ -462,7 +483,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     )
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("A→R:error", capture)
+    await assertFixedClientWireDigest("A→R:error:no-retry", "A→R:error", capture)
     return capture
   }
 
@@ -474,7 +495,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     )
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("R→A:error", capture)
+    await assertFixedClientWireDigest("R→A:error:no-retry", "R→A:error", capture)
     return capture
   }
 
@@ -487,7 +508,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(message.content.find((block) => block.type === "tool_use")).toMatchObject({ type: "tool_use", name: "lookup", input: { q: 42 } })
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("A→R:stream-tool", capture)
+    await assertFixedClientWireDigest("A→R:stream-tool:no-retry", "A→R:stream-tool", capture)
     return capture
   }
 
@@ -500,7 +521,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(argumentDelta).toBe('{"q":42}')
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("R→A:stream-tool", capture)
+    await assertFixedClientWireDigest("R→A:stream-tool:no-retry", "R→A:stream-tool", capture)
     return capture
   }
 
@@ -510,7 +531,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(message.content.find((block) => block.type === "thinking")).toMatchObject({ type: "thinking", thinking: "responses nonstream reasoning" })
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("A→R:non-stream-thinking", capture)
+    await assertFixedClientWireDigest("A→R:non-stream-thinking:no-retry", "A→R:non-stream-thinking", capture)
     return capture
   }
 
@@ -520,7 +541,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(response.output.find((item) => item.type === "reasoning")).toBeDefined()
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("R→A:non-stream-reasoning", capture)
+    await assertFixedClientWireDigest("R→A:non-stream-reasoning:no-retry", "R→A:non-stream-reasoning", capture)
     return capture
   }
 
@@ -536,7 +557,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(upstream.callCount()).toBe(1)
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("A→R:stream-thinking", capture)
+    await assertFixedClientWireDigest("A→R:stream-thinking:no-retry", "A→R:stream-thinking", capture)
     return capture
   }
 
@@ -551,7 +572,9 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(upstream.callCount()).toBe(args.retry ? 2 : 1)
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest(args.stream ? "A→R:stream" : "A→R:non-stream", capture)
+    const shape = args.stream ? "stream" : "non-stream"
+    const retry = args.retry ? "retry" : "no-retry"
+    await assertFixedClientWireDigest(`A→R:${shape}:${retry}`, args.stream ? "A→R:stream" : "A→R:non-stream", capture)
     return capture
   }
 
@@ -570,7 +593,7 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(upstream.callCount()).toBe(1)
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest("R→A:stream-reasoning", capture)
+    await assertFixedClientWireDigest("R→A:stream-reasoning:no-retry", "R→A:stream-reasoning", capture)
     return capture
   }
 
@@ -586,7 +609,9 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(upstream.callCount()).toBe(args.retry ? 2 : 1)
     expect(captures).toHaveLength(1)
     const capture = captures[0]
-    await assertFixedClientWireDigest(args.stream ? "R→A:stream" : "R→A:non-stream", capture)
+    const shape = args.stream ? "stream" : "non-stream"
+    const retry = args.retry ? "retry" : "no-retry"
+    await assertFixedClientWireDigest(`R→A:${shape}:${retry}`, args.stream ? "R→A:stream" : "R→A:non-stream", capture)
     return capture
   }
 
@@ -654,7 +679,12 @@ describe("semantic bridge C0.2 — client wire byte golden", () => {
     expect(await captureResponsesClientWire({ stream: false, retry: true })).toMatchSnapshot()
   })
 
-  test("coverage guard：已执行 golden 集合中 A→R 与 R→A 各有方向对应的 thinking／reasoning marker", () => {
+  test("coverage guard：已执行 golden 用例键与冻结的 16 元集合精确相等，并覆盖双向 reasoning", () => {
+    const actual = [...goldenCoverage.keys()].sort()
+    const expected = [...EXPECTED_GOLDEN_CASE_KEYS].sort()
+    expect(actual, "本用例必须与整个文件一起跑；单独 -t 会因登记表不完整而红").toEqual(expected)
+    expect(expected.filter((key) => !goldenCoverage.has(key))).toEqual([])
+    expect(actual.filter((key) => !EXPECTED_GOLDEN_CASE_KEYS.includes(key))).toEqual([])
     const entries = [...goldenCoverage.values()]
     expect(entries.some((entry) => entry.direction === "A→R" && entry.hasThinking && entry.hasSignature)).toBe(true)
     expect(entries.some((entry) => entry.direction === "R→A" && entry.hasReasoning && entry.hasEncrypted)).toBe(true)

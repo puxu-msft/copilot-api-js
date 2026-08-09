@@ -14,7 +14,11 @@ import type {
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
 import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 
-/** KNOWN-LOSS fixtures captured by C0.2; each export names the migration commit that replaces its old behavior. */
+/**
+ * KNOWN-LOSS fixtures captured by C0.2. `expectedAfterMigration` names the C4–C8 slice that implements
+ * the target behavior in a new mapper/emitter; these legacy-translator assertions remain green until
+ * C9/C10 explicitly rewrite them during production cutover.
+ */
 export const expectedAfterMigration = {
   sdkLifecycle: "C8.1 emits the complete Responses item/content lifecycle accepted by the official SDK",
   orderedTurns: "C4 preserves source text/tool ordinals unless a named target-protocol rule requires a reorder",
