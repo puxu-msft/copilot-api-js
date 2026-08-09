@@ -187,3 +187,246 @@ git show master:docs/plan/2026-08-08-header-deadline-stage2-3/HANDOVER.md | grep
 ## 总判定
 
 **存在 blocker（1 条：H4 —— 判据当场为假 + 刷新未落 `master`，接手方读不到这次刷新）**；另有 MAJOR 3 条（H1 `0 fail` 不可复现、H3「`test:backend` 不读它」为假、H2 归因 commit 写错）、MINOR 3 条（H5×2、H6c）、PASS 2 条（H5 数字同步、H6a）。**修完 H4 与三条 MAJOR 后可交付**；其中 H4 的第 1 步（把 5 个 docs 提交 fast-forward 进 `master`）是其余修订能生效的前提。
+
+---
+
+# 复评（第二轮）
+
+**整改提交**：`a419c17f` + `5c350e59`。**冻结 HEAD 实测** `git rev-parse HEAD` = `5c350e59`（与派活一致）。
+**方法**：只对整改后的正文做接手方第一人称走查 + 机械核对；不复跑 `test:backend`。
+
+## R-A — 整改**新引入**的两处事实错误（重点证伪 1）
+
+**判定：MINOR ×2（都是可执行指令层面的错，不是措辞）**
+
+### R-A1 — flaky 测试的路径写错了
+
+新增文本：「独立评审两次实测都有 `tests/history/store-performance.it.test.ts` …撞 15s timeout…**撞到时先单跑该文件**判别是真回归还是机器负载」。
+
+```
+$ ls tests/history/store-performance.it.test.ts
+ls: cannot access 'tests/history/store-performance.it.test.ts': No such file or directory
+$ ls tests/history/v3/store-performance.it.test.ts
+tests/history/v3/store-performance.it.test.ts
+```
+
+**漏了 `v3/` 一层。** 我上一轮报告里写的是带 `v3/` 的全路径，整改时被截短了。
+
+**接手方会因此做出什么错误动作**：他照文档跑 `bun test tests/history/store-performance.it.test.ts`，bun 会因为找不到匹配文件而**不报错地跑出 0 个测试**（或报 no test files），他据此得到「单跑是绿的」——而实际上他根本没跑到那个文件。文档给的正是**判别真回归 vs 负载**的那一步，这一步空转会让他把一次真回归误判成 flaky。**这是本轮唯一一处「判据看似执行了、其实没触达目标」的形态**，因此虽然只错一个路径段，危害高于普通笔误。修法：补成 `tests/history/v3/store-performance.it.test.ts`。
+
+### R-A2 — `entry-evidence-schema.unit.test.ts:13,19` 的 `19` 指错了行
+
+实测该文件（`sed -n '10,26p'`）：`:13` = `BASELINE_PATH` 常量（对）；**`readFileSync` 在 `:17`**（`const baseline = parseDiscoveryBaseline(readFileSync(BASELINE_PATH, "utf8"))`）；`:19` 是 `for (const suffix of [...])`，与 `readFileSync` 无关；`:25` = `expect(baseline.files).toEqual(files)`（对）。
+
+即文档写「`:13,19` 用 `readFileSync` 读的就是真实文件」，其中 `19` 应为 `17`。属 `file:line` 漂移类，**接手方打开 `:19` 看到 glob 循环、会怀疑整段结论**（因为这段正是上一轮被证伪过一次的地方，可信度本就在被重新建立中）。
+
+### R-A3（反向核，PASS）
+
+新增的「exact multiset 比对只在 `scripts/capture-entry-evidence.ts` / `scripts/validate-entry-evidence.ts`」**经核成立且比我上一轮的说法更准**：`validate-entry-evidence.ts:748` 取 `baseline.allowed_skipped`、`:755` 与运行时 identities 做 multiset 比较、`:759` `fail(8, "skipped identity multiset mismatch")`。我上一轮只点了 `capture`，整改方补全了 `validate` 这一侧——采纳。
+`capture-entry-evidence.ts:265` 的 `fail(4)` 排在 multiset 门之前，也经核属实（该行即 `runner_git_blob !== runnerBlob || !compareSets(baseline.files, discover(tree))` 的判断）。
+
+## R-B — H2 新归因是否准确（重点证伪 2，identity 级复核）
+
+**判定：PASS（`d38fcb9c` +4 与 `7a99a254` +1 均在 identity 级坐实）**
+
+我没有只看「它改了那个文件」，而是对**每一条 identity 名**做了「父提交无、本提交有」的双向核：
+
+```
+git grep -c "pairs each batched-resolved operation id with its own document"        d38fcb9c^ -- tests/history/search/daemon.it.test.ts → 无命中(rc=1)
+git grep -c "pairs each batched-resolved operation id with its own document"        d38fcb9c  -- 同上 → 1
+git grep -c "evaluates filters over fields absent from every document in the segment" d38fcb9c^ → 无命中 ; d38fcb9c → 1
+git grep -c "returns only the surviving version of a re-indexed operation"           d38fcb9c^ → 无命中 ; d38fcb9c → 1
+git grep -c "selects the same set whether a filter is answered by the index or per document" d38fcb9c^ → 无命中 ; d38fcb9c → 1
+```
+
+四条**全部**是 `d38fcb9c` 引入的，与我上一轮从运行时 `skipped-multiset.json` 与 baseline 做名字集合 diff 得到的「多出 4 条」**逐条同名**——两种不同原理的方法（运行时产物集合 diff / git 历史 identity 溯源）交叉一致。
+
++1 一侧同样成立：`git grep -c "a cursor that outlived its index cannot certify the rebuilt one" 7a99a254^ -- <file>` 无命中、`7a99a254` 命中 1；该 identity 现已在 baseline 里（由本分支 `7af27044` 补入）。而那 4 条至今**不在** baseline：`git grep -c "pairs each batched-resolved operation id with its own document" HEAD -- tests/infra/entry-test-discovery-baseline.json` 无命中（rc=1）。
+
+**归因描述的准确性**：文档写「`d38fcb9c`（+4，给 `tests/history/search/daemon.it.test.ts` 加了 191 行）」——`git show --stat d38fcb9c` 确为该文件 `191 +++...`，数字对。**错因自述也对**：`git log -S '<字符串>'` 找的是该字符串**出现次数发生变化**的提交，用它定位「谁新增了这些测试」在字符串早已存在（如 describe 名被复用）时会指向错误提交——这条自述值得保留，它是可复用的方法论。
+
+**唯一保留意见（不构成发现）**：文档把 5 条增量分成「4 条不归你修 / 1 条已登记」，但没写**补法**。上一轮我建议过写明 `7af27044` 的做法（按 canonical 序精确插入 identity、`reason=native-unavailable`、不改成数量比较、不硬编码总数）。整改未采纳也未记录不采纳理由；接手方真要补那 4 条时会重新发明一遍补法，且很可能选「放宽成数量比较」这条更省事的错路。建议补一句指向 `7af27044`。
+
+## R-C — H3 的推论是否过强（重点证伪 3）
+
+**判定：PASS（文档正文的限定是准确的）+ 一条完整性 nit**
+
+派活消息里把它转述成「**新增／改名任何测试文件**都会红」——那个说法**确实过强**。但文档正文写的是限定形式：「你只要新增／改名任何一个 `tests/**/*.{unit,it,http}.test.ts`，`test:backend` 就会红在这条」。逐项核这个限定：
+
+| 我试图构造的例外 | 结论 |
+|---|---|
+| 新增 `tests/` **之外**的测试（`packages/*/`、`ui-v4/`、`src/` 旁） | 不会红。glob 的 `cwd` 固定为 `path.join(REPO_ROOT, "tests")`（`entry-evidence-schema.unit.test.ts:20`），**已被文档的 `tests/**` 限定排除** |
+| 新增 `.pty.test.ts` / `.e2e.test.ts` | 不会红。suffix 只枚举 `["unit", "it", "http"]`（`:19`），**已被文档的 `{unit,it,http}` 限定排除** |
+| 新增 `tests/` **根目录**下的文件（`**/` 是否要求至少一层子目录） | **会红，无例外**。实测 baseline 里就有 `tests/gemini-stream-cache-write.unit.test.ts`、`tests/ghc-usage.unit.test.ts` 等根级条目（`grep -o '"tests/[^/"]*\.test\.ts"'`），说明 `**/*` 匹配零层深度 |
+| 该守卫本身是否可能被 skip 掉（那样就不会红） | 否。`describe("entry evidence discovery baseline v1")` 无 `skipIf`，不依赖 native 产物 |
+
+即：**在文档写下的限定范围内，我构造不出例外**。推论不过强。
+
+**nit（完整性，非错误）**：判据是集合**相等**（`expect(baseline.files).toEqual(files)`，`:25`），所以**删除**一个 backend 测试文件同样会红，而文档只写了「新增／改名」。阶段 2 若把某个 `.it` 测试合并进别的文件或删掉旧夹具，会撞上同一条而文档没有预告。建议改成「新增／改名／删除」。
+
+## R-D — H4 新写法在「未 ff」状态下是否误导（重点证伪 1）
+
+**判定：结构 PASS，一处 MINOR（数字 `5` 已漂到 `7`）；blocker 本身仍未闭合——但那是待用户执行，不是文档缺陷**
+
+### 先复核当前实测（不是判断 ff 做没做，而是判断新写法在这个状态下读起来对不对）
+
+```
+git merge-base --is-ancestor worktree-nghttp2-header-deadline master → 1
+git rev-list --count master..worktree-nghttp2-header-deadline        → 7
+git diff --name-only master...worktree-nghttp2-header-deadline | grep -v '^docs/' → 无输出（全部改动都在 docs/ 下）
+```
+
+### 逐条证伪「有没有让读者以为删除已执行 / 以为可以跳过 ff」
+
+| 我试图找的误读 | 新文本是否给了空子 | 依据 |
+|---|---|---|
+| 以为删除已执行 | **否** | 三步写成祈使式「① 先…② 确认…③ 再删」，全段无一处完成时；末句显式「**不要相信本行的时态**」，并把判官交给 `git branch --list` 与 `merge-base` 两条可跑命令 |
+| 以为可以跳过 ff 直接删 | **否** | 「**顺序不能颠倒**」+ 给出跳过的后果（`-d` 会拒、`-D` 会孤立提交），是**后果**而非**禁令**，比禁令更难绕过 |
+| 以为 `-d` 失败就该上 `-D` | **否** | 明写 `-D` 的代价是孤立那些提交，且另给了检出态删不掉的物理前提与两条出路（`git checkout --detach` 或移除 worktree） |
+| 以为 ff 已经发生（因为写的是「**写作时**并不在 master 上」） | **弱空子，但被兜住** | 「写作时」这个时间限定单独看确实容许「现在也许已经合了」的推测，但紧接着的「正确顺序 ① 先 ff」把 ff 明确列为**尚待执行的第一步**，且末句要求以实测判据为准。**不构成误导** |
+
+结论：**新写法在未 ff 的状态下也不误导**，重点证伪 1 的问题回答为「否」。
+
+### MINOR — 「5 条」已漂成 7 条
+
+文本两处写「有 **5** 条」「`-D` 会把这 **5** 条 docs 提交打成孤立提交」，实测现为 **7** 条（本轮又叠了 `ffc0c824`/`a419c17f`/`5c350e59` 等）。这是典型的**易变数字未锚定**：段首把它写成「实测判据」的一部分，读者会当作现值。**接手方/执行者的错误动作**：ff 前照文本核对，看到 7 条而文档说 5 条，无法判断多出来的两条是不是别人塞进来的、要不要一起合——在一个刚刚因为「假断言」被返工过的段落里，这种对不上会直接摧毁对整段的信任。
+修法（沿用本仓 `anchor-numbers-to-commits`）：把裸值换成命令，例如「未合入提交数以 `git rev-list --count master..worktree-nghttp2-header-deadline` 为准（写作时为 5，只增不减，全部在 `docs/` 下）」。附带一个好消息可以写进去：`git diff --name-only master...<branch> | grep -v '^docs/'` 无输出，**这些提交至今仍是纯 docs**，孤立它们不会丢代码——这条比数字稳定得多。
+
+### blocker 状态
+
+`master` 上的 HANDOVER 仍无刷新段（上一轮 `git show master:<file> | grep -c 收尾时刷新` = 0，本轮 `is-ancestor` 仍为 1，未 ff 故不可能改变）。**文档侧已修完，剩下的是主树的 ff 动作，需用户执行**——按派活约定我不做 merge。因此 blocker 记为「文档修复已到位、待 ff 后自动闭合」，不再计为文档缺陷。
+
+## R-E — HANDOVER ↔ KICKOFF 是否仍逐项同步（重点证伪 4）
+
+**判定：MAJOR ×1（KICKOFF 的限定被削掉，且照它做会主动制造红）+ 其余同步 PASS**
+
+### 同步的部分（PASS）
+
+`master = 5720855929`、`7297 executed / 35 skipped`、`5 条增量全是 skipIf(!NATIVE)`、`+4 来自 d38fcb9c / +1 来自 7a99a254 已登记`、`allowed_skipped 31 vs 35 不归你修`、`exact multiset 在 capture/validate-entry-evidence`、`0 fail 不稳定` —— **七项逐字一致**，KICKOFF 两处仍指回 HANDOVER 为权威。上一轮 MINOR-2（`git -C <主树>` 被护栏拒）已在 HANDOVER 加警告；MINOR「`minimum_executed` 是地板非等式」已在 HANDOVER 写明（当前 7279、实测 7297 满足），与 `KICKOFF:19`「合并主线后重取 `minimum_executed`」不再打架（地板只升不降，重取是合理动作）。
+
+顺带核实一条我上一轮没查的新增断言——HANDOVER 说该守卫还校验「canonical 形态（键序、字节序排序、唯一性，含 `allowed_skipped` 自身结构）」，**属实**：`scripts/entry-evidence-schema.ts:99` 查顶层键序、`:106` `files are not unique bytewise sorted`、`:111` `allowed_skipped are not unique bytewise sorted`、`:119` 原始字节 canonical 比较，而这些都由 `entry-evidence-schema.unit.test.ts:17` 作用在**真实 baseline** 上。
+
+### MAJOR — KICKOFF 把 HANDOVER 的限定削没了，而这条削减会**反向**制造红
+
+- HANDOVER（正确）：「你只要新增／改名任何一个 **`tests/**/*.{unit,it,http}.test.ts`**，`test:backend` 就会红在这条」。
+- KICKOFF（削减后）：「**你新增或改名任何测试文件，都必须同步更新该 `files`**，否则 backend 直接红，这归你」。
+
+KICKOFF 版本丢掉了**两条**限定：目录必须在 `tests/` 下（glob 的 `cwd` 固定为 `REPO_ROOT/tests`），后缀必须是 `{unit,it,http}`（`entry-evidence-schema.unit.test.ts:19` 只枚举这三个）。
+
+**接手方会因此做出什么错误动作**：阶段 3 之类工作里他新增一个 `tests/**/*.e2e.test.ts`，或在 `packages/foundation/` 旁边加测试，照 KICKOFF 的字面「任何测试文件都必须同步更新 `files`」把该路径**加进 baseline 的 `files`**——于是 `baseline.files` 多出一个 glob 里根本不存在的条目，`expect(baseline.files).toEqual(files)` **当场变红**，而这条红是**他照文档做才产生的**。他手里没有别的判据可用来意识到「这类文件本来就不该进 `files`」，最可能的下一步是继续调 baseline（越调越偏），或者判定这条守卫「坏了」而绕过它。
+
+**这不是措辞松紧问题**：同一条指令在 HANDOVER 里是安全的、在 KICKOFF 里会造成 false-red，而 KICKOFF 是"复制成新会话第一条消息"的那一份，**接手方最可能只读它**。修法：把 KICKOFF 的那句补回限定——「新增／改名／删除任何 `tests/**/*.{unit,it,http}.test.ts`」（顺带按 R-C 的 nit 加上「删除」）。
+
+## R-F — KICKOFF 压缩后的 flaky 说明是否仍够用（重点证伪 5）
+
+**判定：信息结构 PASS，但被 R-A1 的路径错**废掉了关键一步**（合并计为 MINOR，不重复计数）**
+
+压缩后的一句：「**`0 fail` 不稳定**：`tests/history/store-performance.it.test.ts` 在全套件并行下会撞 15s timeout 而红、单跑即绿，撞到时先单跑判别。」
+
+接手方第一步所需的四个要素**都在**：① 哪条测试；② 触发条件（全套件并行，非代码相关）；③ 症状（15s timeout 而红，不是断言失败）；④ **判别动作**（单跑；绿则是负载，红则是真回归）。相比 HANDOVER 版只少了「别当成你的改动引入」这句安抚，不影响动作，压缩是称职的。
+
+**但第 ④ 步——整段唯一的可执行动作——因为路径少了 `v3/` 而落空**（见 R-A1）。压缩本身没问题，问题是压缩时把路径也一起截短了。KICKOFF 与 HANDOVER **两份都错同一处**，所以交叉比对发现不了，只有实地 `ls` 才撞得到。
+
+补充一条**可选增强**（不算发现）：两份都没写「单跑也红时该怎么办」。按项目 `empirical-verification` 的取证顺序，建议加半句「单跑仍红 = 真回归，按 `root-cause-over-patch` 查，别改测试超时阈值」——因为 15s timeout 最诱人的"修法"恰恰是调大 `setDefaultTimeout`，那会把一条真的性能回归永久掩盖掉。
+
+---
+
+## 复评总判定
+
+**未发现阻断性缺陷（0 blocker）**。上轮的 1 blocker + 3 major + 3 minor **全部经复核已闭合**：H4 的假断言已删并改成「实测判据 + 先 ff 后删 + 检出态删不掉」的可执行顺序（R-D 证伪未通过 = 新写法在未 ff 状态下**不**误导）；H2 归因经 identity 级双向溯源坐实（R-B）；H3 后果已补且限定准确（R-C）；H1 已点名 flaky；三条 MINOR 均已落文。**blocker 的物理闭合仍待主树执行 ff**，属用户动作，不计为文档缺陷。
+
+本轮**新增发现 1 major + 3 minor**（均为整改过程中引入或残留）：
+
+| 编号 | 级别 | 位置 | 一句话 |
+|---|---|---|---|
+| R-E | **MAJOR** | `KICKOFF.md` 新增第 2 段 | 「任何测试文件都必须同步更新 `files`」丢了 `tests/**` 与 `{unit,it,http}` 两条限定；照它做会把 glob 外的路径加进 `files`，**主动制造 false-red**，而 KICKOFF 正是接手方唯一必读的那份 |
+| R-A1 | MINOR | HANDOVER + KICKOFF | flaky 测试路径漏了 `v3/`（实为 `tests/history/v3/store-performance.it.test.ts`），使「先单跑判别」这一步空转，可能把真回归误判成负载 |
+| R-A2 | MINOR | `HANDOVER.md` | `entry-evidence-schema.unit.test.ts:13,19` 的 `19` 应为 `17`（`readFileSync` 所在行） |
+| R-D | MINOR | `HANDOVER.md` 分支状态段 | 「5 条」已漂成 7 条；建议换成 `git rev-list --count master..<branch>` 命令，并写上「至今仍是纯 docs」（实测 `git diff --name-only master...<branch>` 无 `docs/` 之外的路径）这条更稳的事实 |
+
+另有两条**建议**（非缺陷）：R-B 建议补一句指向 `7af27044` 的补法，避免接手方把那 4 条用「放宽成数量比较」补掉；R-C 建议把「新增／改名」写全为「新增／改名／删除」（判据是集合相等）。
+
+**结论：修复 R-E 后可交付**；R-A1 建议一并修（它废掉的是唯一一条判别动作）。
+
+---
+
+# 复评（第三轮）
+
+**整改提交** `9c1f44b4`；`git rev-parse HEAD` 实测 = `9c1f44b4`（与派活一致）。不复跑 `test:backend`。
+
+## R3-A — 补回的限定是否准确且不过窄（问题 1）
+
+**判定：PASS，未发现反方向的 false-red**
+
+新文本（两份同义）：「glob 只覆盖 `tests/` 目录下这三个后缀；`.pty` / `.e2e` 与 `tests/` 之外的路径**不在其中，误加进去会让 `toEqual` 当场红**」。逐项对源码核：
+
+- **目录**：`tests/infra/entry-evidence-schema.unit.test.ts:20` 的 `scanSync({ cwd: path.join(REPO_ROOT, "tests"), onlyFiles: true })` —— cwd 固定在 `tests/`，限定准确。
+- **后缀**：同文件 `:19` 的 `for (const suffix of ["unit", "it", "http"])` —— 三个，限定准确。
+- **是否过窄（会不会把本该入 `files` 的合法路径排除掉）**：我从两个方向找例外：
+  - **深度**：`**/*` 是否要求至少一层子目录？否——baseline 里就有 `tests/gemini-stream-cache-write.unit.test.ts` 等根级条目（上一轮实测），根级文件**在**范围内，而新文本写的是「`tests/` 目录下」，涵盖根级，不过窄。
+  - **扩展名**：glob 模式是 `**/*.${suffix}.test.ts`，只认 `.ts`。若仓库里存在 `.tsx`/`.mts` 的 backend 测试，「三个后缀」的说法就会漏掉它们。**实测不存在**：`fd -e tsx -e mts -e cts . tests/` 与 `fd 'test\.(tsx|mts|js)$' tests/` **均无输出**。故当前不过窄。
+- **反方向危害的表述准确性**：「误加进去会让 `toEqual` 当场红」成立——判据是集合**相等**（`:25`），多一条与少一条同样红。这正是我上一轮指出的那个反向 false-red，已被正面写出。
+
+## R3-B — 引用审计：路径 / 行号 / 命令（问题 4，重点扫「两份同错」）
+
+**判定：PASS（本轮未再发现同错一处的引用）**
+
+方法：不做交叉比对（那正是上轮漏掉 `v3/` 的原因），而是把两份文档里所有仓库路径**机械抽出后逐个 `ls`**。
+
+`rg -oN '\`[^\`]*\`' <两份文档> | grep -oE '(tests|scripts|src|packages|docs|exp)/[A-Za-z0-9_./*-]+' | sort -u` 抽出 19 个候选，逐个存在性核验：
+
+- **全部存在**：`docs/{DESIGN.md,todo/deferred-backlog.md,spec/2026-08-06-...md,plan/2026-08-06-...md,decisions/2026-07-11-block-level-buffered-retry.md,plan/2026-08-06-nghttp2-cancel-series/HANDOVER.md}`、`packages/foundation`、`scripts/{capture,validate}-entry-evidence.ts`、`tests/architecture/{package-boundaries,response-header-timeout-scope}.unit.test.ts`、`tests/history/search/daemon.it.test.ts`、**`tests/history/v3/store-performance.it.test.ts`（上轮缺陷已修，两份都带 `v3/`）**、`tests/infra/{entry-evidence-schema.unit.test.ts,entry-test-discovery-baseline.json}`、`tests/transport/{http-transport.it,http2-client.it,upstream-fetch.unit}.test.ts`。
+- Markdown 相对链接目标（`../../spec/…`、`../…`、`../../DESIGN.md`、`../../decisions/…`、`../2026-08-06-nghttp2-cancel-series/HANDOVER.md`）从 `docs/plan/2026-08-08-header-deadline-stage2-3/` 解析后**均落在已存在的文件上**。
+- **行号逐条复验**（按最终文件重新打开，不按上一轮记忆）：
+  - `entry-evidence-schema.unit.test.ts:13` = `BASELINE_PATH` 常量 ✓；**`:17` = `readFileSync`** ✓（上轮的 `19` 已改对）；`:25` = `expect(baseline.files).toEqual(files)` ✓。
+  - `capture-entry-evidence.ts:265` = `if (baseline.runner_git_blob !== runnerBlob || !compareSets(...)) fail(4, "discovery baseline differs from entry tree")` ✓，确在 multiset 门之前。
+- **命令可执行性**：`bun test tests/history/v3/store-performance.it.test.ts` 的目标文件存在（上一轮我实跑过该文件，`3 pass / 0 fail`）。`git merge-base --is-ancestor …`、`git rev-list --count master..…`、`git diff --name-only master...…`、`git branch --list …` 四条本轮均由我实际执行过，在**隔离 worktree 会话内可跑**（不带 `-C`，不触发护栏）。
+
+## R3-C — 两份是否仍逐项同步（问题 2）
+
+**判定：PASS（本轮改动的同一批句子两边等价）+ 一条**两边同缺**的遗漏**
+
+逐句比对本轮改动的三处：
+
+| 内容 | HANDOVER | KICKOFF | 一致 |
+|---|---|---|---|
+| flaky 路径与判别命令 | `tests/history/v3/store-performance.it.test.ts` + `bun test <同路径>` | 同 | ✓ |
+| 守卫行号 | `:13,17` 读文件、`:25` 精确 `toEqual` | `:17` 读真实文件、`:25` 精确 `toEqual` | ✓（KICKOFF 省掉 `:13` 常量行，不影响动作） |
+| 限定 | 「glob 只覆盖 `tests/` 目录下这三个后缀；`.pty`/`.e2e` 与 `tests/` 之外**不在其中，误加进去会让 `toEqual` 当场红**」 | 「只有这三个后缀、且在 `tests/` 目录下的文件在该 glob 内；`.pty`/`.e2e` 与 `tests/` 之外**不在其中，加进去反而会让 `toEqual` 当场红**」 | ✓ 语义等价 |
+
+**MINOR — 两边都仍写「新增或改名」，漏了「删除」**：判据是集合**相等**（`entry-evidence-schema.unit.test.ts:25` 的 `toEqual`），所以**删除**一个 backend 测试文件同样会红（`baseline.files` 变成真集合的超集）。这是我上一轮以 nit 提出、本轮**未采纳也未按 `record-not-adopted` 记录理由**的一条。阶段 2/3 完全可能把某个 `.it` 夹具合并或删除（T4 就涉及重组 settlement 路径的测试）——**接手方的错误动作**：删掉一个旧测试文件后 `test:backend` 红在这条，而文档只预告了「新增／改名」两种触发，他会误以为撞上了文档没覆盖的新问题。修法：把两处的「新增／改名」写成「新增／改名／删除」。
+
+## R3-D — 换成命令后是否还有残留的字面易腐值（问题 3）
+
+**判定：MINOR ×2**
+
+分支状态段本身已彻底命令化（`merge-base --is-ancestor` / `rev-list --count` / `diff --name-only` / `branch --list`），并补了那条不随提交数变化的稳定事实——**这一段我找不到残留易腐值**，改得干净。但同一状态块的**邻近**位置还留着两处：
+
+1. **`allowed_skipped` 目前是 31 条而实测 35 条**（HANDOVER 与 KICKOFF 两份都有，且用「目前」自称现值，无锚点、无重取命令）。这个数**随时会腐**：peer 只要把那 4 条补进 baseline，就变成 35 vs 35，而文档仍宣称有 4 条缺口。**接手方的错误动作**：producer 没报 `skipped identity multiset mismatch`，他却按文档以为「缺口还在、只是没撞上」，把一个已经闭合的问题继续当成已知风险带着走；反过来若 peer 又加了 native-gated 测试，缺口变成 6 条而文档说 4 条，他会以为多出来的两条是自己引入的。**修法**：给一条重取命令（例如 `grep -c '"kind"' tests/infra/entry-test-discovery-baseline.json` 对比运行时 `skipped-multiset.json`），并把「4 条」改成「若干条，以命令为准」。
+2. **`minimum_executed`（当前 7279）**：这个已明确标「当前」且说明它是**地板**（只需 `实测 ≥ 它`），腐化后果轻——但同一句里既有「当前 7279」又有「实测 7297 满足它」，两个都是快照。属可接受，记为提示不作要求。
+
+**另一处同类残留（问题 4 的延伸）**：上一轮的「`git -C <主树>` 在隔离会话会被护栏拒绝」只在 `HANDOVER.md:15`（未提交 WIP 那条）加了警告，而 **`HANDOVER.md:5`「核验基线」里的同一形态命令 `git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master` 没加**（`rg -n 'git -C'` 实测两处命中，只有一处带警告）。这正是「修了一处、兄弟位置照旧」的形态：接手方读到的第一条可执行命令就是 `:5` 那条，跑出来被拒，而警告在十行之后。**修法**：`:5` 的复现命令直接改成隔离会话也能跑的 `git rev-parse refs/heads/master`（worktree 共享 refs，本轮实测同值），或就地补同样的警告。
+
+## R3-E — commit 引用审计（问题 4 的第三个维度）
+
+**判定：PASS**
+
+两份文档里出现的每个 commit 引用都逐个 `git rev-parse --verify -q <hash>^{commit}` 解析成功，无悬空引用：`5720855929…`（收尾时 master）、`bea1dfa3`（阶段 1 代码终点）、`d1011fe7`（核验基线 master）、`d47492a6`（spec 状态提交）、`f4efacfe`（合并态实测点）、`08046d5c`／`d38fcb9c`／`7a99a254`／`7af27044`（skip 归因链，本轮 R-B 已在 identity 级复核）、`f0cb1f1e`（T1 守卫边界实测点）。语义正确性此前已核的不再重复；本轮只补了存在性这一维。
+
+---
+
+## 第三轮总判定（问题 5）
+
+**未发现阻断性缺陷（0 blocker / 0 major）**。上轮 1 major + 3 minor **全部闭合且经实测复核**：KICKOFF 限定已补回并与 HANDOVER 语义等价（R3-A/R3-C）、`v3/` 路径两份都已修且命令可直接复制（R3-B）、行号 `19→17` 已改对（R3-B）、提交数已命令化并采纳了「只有 `docs/` 路径」这条稳定事实（R3-D）。
+
+**本轮新增／残留 3 条 MINOR**（都不阻断，均可一次性修完）：
+
+| 编号 | 位置 | 一句话 |
+|---|---|---|
+| R3-C | 两份文档的守卫段 | 只写「新增／改名」，漏了「**删除**」——判据是集合相等，删测试文件同样红（上轮 nit，未采纳也未记不采纳理由） |
+| R3-D-1 | 两份文档 | `allowed_skipped` 「目前 31 vs 实测 35」是无锚点的现值断言，peer 补完就腐；建议给重取命令、把「4 条」改成「以命令为准」 |
+| R3-D-2 | `HANDOVER.md:5` | 「`git -C <主树>` 在隔离会话被拒」的警告只加在 `:15`，`:5` 的同形态复现命令没加——**修了一处、兄弟位置照旧**；而 `:5` 恰是接手方读到的第一条可执行命令 |
+
+**可否交付**：**文档内容可以交付**——剩余三条都是「读者会短暂困惑」级别，没有一条会导致错误的代码动作或数据损失。
+
+**但交付的物理前提仍未满足**：`git merge-base --is-ancestor worktree-nghttp2-header-deadline master` 本轮仍退出 1，`master` 上的 HANDOVER 仍是没有任何刷新段的旧版。**在主树完成 `git merge --ff-only` 之前，接手方从 `master` 开树读到的仍然是被证伪过的那一版**——这三轮修的东西对他一个字都不可见。建议按文档自己写的顺序：先 ff（顺带把这三条 MINOR 一并修进同一次提交），再谈删分支。
