@@ -1,7 +1,9 @@
 # History Worker Batch 1b 终态报告
 
-> 状态：**Batch 1b 实现与全部收尾证据已集成主线**（实现于 `master@d3b4ac77`，收尾经五次 fast-forward 落地，合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中）。
-> ⚠️ **本报告自身的合并状态不写死数字**——它每次被修订都会重新领先 `master`。判定命令：`git -C <repo> merge-base --is-ancestor <本文件最后一次修订的 commit> master`；成立即全部落地。写下本行时最后一笔为 `a5ee292b`，尚待一次 fast-forward。
+> 状态：**交付内容已集成主线；收尾流程尚未闭环**（草稿·待复审）。
+> - 交付内容：Batch 1b 实现于 `master@d3b4ac77`，收尾证据经五次 fast-forward 落地，合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中。
+> - 收尾流程：契约 17 stage 中 `review_temp_manifest`／`review_closeout_final`／`report_terminal` **未达成**，逐项见「收尾纪律执行情况」表与「尚待动作」节。**在第 16 项复审闭环前，本文件不是终态交付件。**
+> ⚠️ **本报告自身的合并状态不写死数字**——它每次被修订都会重新领先 `master`。判定命令：`git -C <repo> merge-base --is-ancestor <本文件最后一次修订的 commit> master`；成立即全部落地。
 > 核验基线：`4c30e6eb`（在 `master@58f4c45d` 祖先中）；日期 2026-08-08。
 > 分支／worktree：`worktree-history-worker-batch-1b-resume`，`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`。
 
@@ -70,12 +72,24 @@
 
 ## 尚待动作
 
-**无（交付内容部分）。** 本报告自身的最后一笔修订仍需一次 fast-forward，判定命令见状态行。
+**分开两个层面说，别混成一句「无」**——这两句此前互相打架，本轮统一如下：
+
+- **交付内容（Batch 1b 实现、plan、kickoff、测试）：已全部集成主线，无尚待动作。** 权威判据是 `git merge-base --is-ancestor 4c30e6eb master`。
+- **收尾流程本身：未闭环，尚有三项。** 契约 17 个 stage 中第 8／16／17 项未达成（见下表），因此**本报告目前不是终态交付件**：
+  1. `review_temp_manifest` —— 清单在上一轮评审后又被修订，须重审。
+  2. `review_closeout_final` —— 本轮四条 major 整改后必须复审。
+  3. 本报告与清单、终审报告的最后一笔修订需由用户执行一次 fast-forward（判定命令见状态行）。
+
+⚠️ **「尚待动作：无」曾是本报告最危险的一句话**：它与同一文档里的阶段表、终审处置、复验清单第 6 条同时存在且互相否定，读者按哪一句行动都有理有据。教训已记在 `docs/memory/methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md` 的射程内。
 
 ## 分支与 worktree 归宿（`resolve_branch`）
 
-- **分支 `worktree-history-worker-batch-1b-resume`：裁决＝保留（keep），不删。** 依据：其独有提交在**本报告最后一次修订合入前**是收尾证据的唯一持久来源；`finishing-a-development-branch` 的三选一里，merge 已完成、discard 需用户显式授权且会丢这些提交，故取 keep。
-- **worktree `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`：裁决＝保留。** 三条移除前置里**「HEAD 可从持久 ref 到达」当前不成立**——`a5ee292b` 尚未进入 `master`，此刻删除会丢掉收尾提交。待其 fast-forward 后三条齐备（clean／reachable／owned），才可由用户决定清理。
+- **分支 `worktree-history-worker-batch-1b-resume`：裁决＝保留（keep），不删。** 依据：收尾产物的最后修订提交尚未进入 `master`（判定命令见状态行），该分支是它们唯一的持久来源；`finishing-a-development-branch` 三选一里 merge 对交付内容已完成、discard 需用户显式授权且会丢这些提交，故取 keep。
+- **worktree `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`：三条移除前置已具备，是否移除由用户决定。**
+  - `worktree_clean`：本轮各次提交后 `git status --short` 为空（评审报告落盘等新增文件另行提交）。
+  - `head_reachable`：**成立**——`git branch --contains 9a6226b6` 输出 `worktree-history-worker-batch-1b-resume`，HEAD 可由持久 branch ref 到达；**删除 worktree 不会删除该 branch，也不会丢 `9a6226b6`**。
+  - `worktree_owned`：本会话创建并独占。
+  - ⚠️ **此处我此前判错并已改正**：初版写成「`a5ee292b` 未进 `master`，此刻删 worktree 会丢提交」，把**分支的集成状态**当成了**worktree 的可达性前置**。`master` ancestry 是「可宣告集成完成、可删 branch」的门，**不是** `head_reachable` 的唯一实现——branch ref 本身就是持久 ref。保留 worktree 现在是可选，不是安全必需。
 - **未推送、未创建 PR、未发布任何 ref 或 artifact**；取证范围限于本仓库与 GitHub 可观测表面。
 - ⚠️ **共享主树状态本会话无法自查**：worktree 隔离护栏拒绝 `git -C <共享检出>` 与切目录的 git 调用，因此「共享主树是否干净、是否仍有那三处无关 WIP」**未由本会话核实**，不得据本报告认为已核。需要时请在共享检出直接跑 `git --no-optional-locks status --short`。
 
@@ -83,17 +97,27 @@
 
 按 `closing-a-development-session` 的 stage 列表逐项对照，**本轮有跳步，据实登记**：
 
-| stage | 状态 | 说明 |
-| --- | --- | --- |
-| `freeze_truth` | ⚠️ 部分 | 只冻结了本 worktree 与 `master`；**共享主树因护栏未查**（见上） |
-| `inventory_job_tmp` | ✅ | 56 项／6,568,699 bytes，`find` 与 `fd -H -I` 两法交叉一致 |
-| `persist_evidence` / `verify_persisted_evidence` | ✅ | 四份接收者以 `git cat-file -e master:<path>` 逐一验证可达 |
-| `archive_docs` / `reconcile_live_docs` | ✅ | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
-| `discover_nonfile_candidates` | ✅ | 本轮新增候选 1 条（输出过滤伪造失败），已落 memory |
-| `review_temp_manifest` | ❌ **本轮未做** | 我修改了清单头部 → **按本 skill 自己的规则，先前评审结论已作废**，须重审 |
-| `clean_temp` | ✅（空操作） | **零删除**，56 项全留交 harness 回收；无删除即无需 receipt |
-| `resolve_branch` | ✅（本节补做） | 此前遗漏，现已显式裁决 keep／keep |
-| `review_closeout_draft` / `_final` | ❌ **本轮未做** | 报告在最后一次合并后又有实质修订，未重新送审 |
+**契约共 17 个 stage，下表逐个列出，不省略。**
+
+| # | stage | 状态 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `freeze_truth` | ⚠️ 部分 | 只冻结了本 worktree 与 `master`；**共享主树因护栏未查**（见上） |
+| 2 | `inventory_job_tmp` | ✅ | 56 项／6,568,699 bytes，`find` 与 `fd -H -I` 两法交叉一致 |
+| 3 | `persist_evidence` | ✅ | 长期价值逐项落进已提交接收者，见「临时证据」节逐类审计 |
+| 4 | `verify_persisted_evidence` | ✅ | 四份接收者以 `git cat-file -e master:<path>` 逐一验证可达 |
+| 5 | `archive_docs` | ✅ | 本轮无待归档 plan／实验产物；已删项目 skill 的自验日志由 peer 归档至 `docs/archive/` |
+| 6 | `reconcile_live_docs` | ✅ | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
+| 7 | `discover_nonfile_candidates` | ✅ | 首轮列 2 条，reviewer 独立枚举补出整批；三轮双向对账后 diff 为空，共 12 条，全部已落 memory 或本报告 |
+| 8 | `review_temp_manifest` | ❌ **待重审** | 清单在评审后又被修订（行 73 字节数 431277→431517）→ **按本 skill 自己的规则先前结论作废**，须重审 |
+| 9 | `clean_temp` | ✅（空操作） | **零删除**，56 项全留交 harness 回收；无删除即无需 receipt |
+| 10 | `resolve_branch` | ✅（本节上方补做） | 此前遗漏，现已分开裁决：branch keep；worktree 三条前置齐备、去留交用户 |
+| 11 | `draft_terminal_report` | ✅ | 即本文件 |
+| 12 | `review_closeout_draft` | ✅ | 未卷入的跨模型 reviewer 在 `922b741b` 判 0 blocker／2 major，全额整改于 `43ffac97` |
+| 13 | `verify_installed_location` | ✅ | 从共享 checkout 实跑（`pwd -P` 已确认）：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail、13 条净路径无残留 |
+| 14 | `recommend_assets` | ✅ | 见「可复用资产」节五条，含 skill 条款迁移与两条新 memory |
+| 15 | `update_terminal_report` | ✅ | 本轮按终审四条 major 整改（清单行 73、resolve_branch 裁决、本表补全、终态断言统一） |
+| 16 | `review_closeout_final` | ❌ **待重审** | 已跑一轮（`docs/tmp/2026-08-08-batch-1b-closeout-final-review.md`，判 4 major），**整改后必须复审**才闭环 |
+| 17 | `report_terminal` | ❌ **未达成** | 契约 `requires: [review_closeout_final]`；第 16 项未闭环前本报告**不是**终态交付件 |
 
 **最终验证证据（每项标注新跑／复用，锚到 commit）**：
 
@@ -111,8 +135,8 @@
 2. ~~在共享checkout执行 `git merge --ff-only`~~ **已由用户完成**，`master@d1011fe7`。
 3. ~~从共享checkout复验安装位置~~ **已完成**，逐条结果见「Git、发布与工作树状态」：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail、13条净路径无残留、三处无关 WIP 保留。
 4. ~~重新冻结临时证据清单人口~~ **已完成**：fast-forward 后重枚举仍为 56 项路径、6,568,699 bytes，与冻结值一致，无漂移。
-5. ~~本报告与临时清单交独立reviewer终审~~ **已完成，两轮闭环**：未卷入的跨模型 reviewer 首轮在候选 `922b741b` 上判 **0 blocker／2 major**；两条均全额采纳整改后（`43ffac97`），同一 reviewer 复审判 **0 blocker／0 major、可定稿**，并独立复核了整改本身没有引入新缺陷（清单整改前后均 56 行、路径集合一致、每行 7 列、无静默删除；20 份提交消息 receiver 均精确命中 `master@d1011fe7` 祖先提交）。报告落盘于 `docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`（首轮 + 复审轮两节）。
-6. 提交整改后的报告、清单与终审报告，并 fast-forward 进 `master`。**这是「可宣告集成完成、可清理本 branch／worktree」的门，不是临时证据清理的门**——后者不可控且已被设计成何时发生都无害。
+5. 本报告与临时清单交独立reviewer终审——**已跑三轮，尚未闭环**。首轮在候选 `922b741b` 上判 **0 blocker／2 major**；两条全额采纳整改后（`43ffac97`），同一 reviewer 复审判 **0 blocker／0 major、可定稿**，并独立复核了整改本身没有引入新缺陷（清单整改前后均 56 行、路径集合一致、每行 7 列、无静默删除；20 份提交消息 receiver 均精确命中 `master@d1011fe7` 祖先提交）。**第三轮（收尾纪律终审）又判 4 条 major**——阶段表不完整、`resolve_branch` 裁决理由不成立、终态断言互相矛盾、清单行 73 字节数陈旧；四条已于本轮全额整改，**整改后必须再复审一次才闭环**。报告落盘：`docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`（前两轮）与 `docs/tmp/2026-08-08-batch-1b-closeout-final-review.md`（第三轮）。
+6. 提交整改后的报告、清单与终审报告，交复审闭环，再 fast-forward 进 `master`。**这是「可宣告集成完成、可清理本 branch／worktree」的门，不是临时证据清理的门**——后者不可控且已被设计成何时发生都无害。
 
 ## 终审处置
 
