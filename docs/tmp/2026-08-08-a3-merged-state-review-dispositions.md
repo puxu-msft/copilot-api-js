@@ -56,7 +56,26 @@
 - [x] 实施 8 条
 - [x] 全后端 `test:backend`（3609/3610，唯一失败为既有 flake，见上）
 - [x] round 2 复评：GPT 0 blocker/1 major、Claude 0 blocker/3 major（去重后 3 条），全部复核成立并修复
-- [ ] round 3 复评到 0 blocker / 0 major
+- [x] round 3 复评：GPT 0 blocker/1 major、Claude 0 blocker/2 major（去重后 3 条），全部复核成立并修复
+- [ ] round 4 复评到 0 blocker / 0 major
+
+## Round 3 复评（第三次「新缺陷长在上一轮修复上」）
+
+报告：`2026-08-08-a3-merged-state-review-gpt-round3.md`；Claude 侧转录进 `2026-08-08-a3-merged-state-review-claude-round3.md`。
+
+**两位再次独立收敛**：target 与 ownership 仍是两次独立的 live read。GPT 用「把 commit 精确放在两次读取之间」的注入探针实证（`{"injected":true,"ids":[],"total":0}`，行消失）；我在等待期间顺着 `durability` 也独立查到同一处。三方独立到达。
+
+| # | 发现 | 我的复核 | 处置 |
+|---|---|---|---|
+| S1 | `target` 与 ownership 分两次读 live DB，窗口内落盘的行既不在冻结 target（不计入 total）又被判 index-owned（移出 overlay）→ 静默消失 | **成立**。`freezeHistorySearchTarget` 读 `v3_operations`、`hasPersistedSummaryMatching` 读 `v3_operation_summaries`，两条独立语句无事务包裹 | 采纳（C）·`751bbd9c`：合成 `freezeHistorySearchOwnership`，单个 deferred transaction 内取一份快照并**一起返回**——调用方连「配错快照」这个动作都不存在 |
+| S2 | 我 round-2 写的注释「overlay 只会过度匹配、绝不反向」是假断言；ownership 改动使 overlay 成为未索引行的**唯一**显示路径，于是该方向的漏配变成用户可见的洞 | **成立**。探针实测语料 `please fix the hello-world bug in src/lib/foo.ts`：`hello world` → 索引命中、子串**不命中**；`src lib foo` 同形；反向 `orld` → 子串命中、索引不命中 | 采纳（C）·`751bbd9c`：多词 needle 按非字母数字切分、逐 term 匹配（对齐索引分词）；单 token 保留子串（该方向是早显示、不藏行），注释改成与代码一致 |
+| S3 | 新 ownership 的守卫只钉住「丢得太少」；把 `overlaySummaries` 恒定改成 `[]`（overlay 彻底失效）14 条测试全绿，而 overlay 在本轮后**只剩这一项职责** | **成立，我亲手做了该变异确认** | 采纳（C）·`38593892`：补对称正样本——未落盘 recent 行必须既出现在 `entries` 又计入 `total`，并覆盖多词查询；另补 S1 的注入式对照 |
+
+**Round 3 验证**：`typecheck` 绿、eslint 干净；`tests/history/` 585 pass/0 fail。
+
+**三条变异对照**（逐条实跑，非预测）：去掉事务 → 归属被后落盘的写夺走（红）；`overlaySummaries=[]` → 未索引行消失（红）；退回纯子串 → 多词查询漏结果（红）。
+
+**全后端**：四次运行里 executed 恒为 7331。其中一次真红**由我引起**——新增测试文件未登记进 L1 孤儿守卫基线（`entry-test-discovery-baseline.json`），已补（`e7acfddc`）。其余每次的唯一失败都是**计时型 perf 断言且每次换一条**（round 1 与 round 4 是 `store-performance` 的 CAS 用例、round 3 是 `summary-query-performance`），隔离复跑均绿（分别 9.31s vs 并发下 17.3s）；路径上也对不上——本轮改动只作用于带 `search` 的异步路径，而这些测试走无 search 的同步路径。判为既有的负载敏感 flake。
 
 ## Round 2 复评（两侧独立收敛到同一条）
 
