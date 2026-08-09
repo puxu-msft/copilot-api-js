@@ -72,6 +72,15 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 ## 已改动的既有守卫（`red-tests-may-be-guarding-something`，逐条落盘待评审裁决）
 
 1. **`tests/history/v3/db-health.it.test.ts` 的两个调用点补 DB 实参**（`startV3Maintenance(connection.getDatabase(), 3600)`、`runV3MaintenanceTick(connection.getDatabase())`）。该用例守的不变量是「tick 会调用 checkpointWal + incrementalVacuum + runOptimize 各一次」——**未改动**；变的只是句柄来源，外部 oracle 是新签名，属占位数据的机械更新。
+2. **`tests/history/v3/read-consumer-guard.unit.test.ts` 的两条正则收紧到路径段末尾**（`/sqlite\/(read|…)/` → `/sqlite\/(read|…)["']/`）。**假红**：它守的是已退役的 V2 模块 `sqlite/read.ts` 等（`ls src/lib/history/sqlite/` 确认只剩 `connection.ts`／`meta.ts`／`migrations`／`read-connection.ts`），而子串把新的 `sqlite/read-connection` 一并挡了。**双向对照已跑**：四个 V2 specifier 仍被抓、`read-connection` 放行。
+3. **`tests/history/v3/readonly-store.it.test.ts` 的「默认解析写单例（向后兼容）」改为「默认解析主线程只读句柄」。** 这条守的正是本批**有意退休**的契约——它的原注释写着「exactly as every existing production call site does today」，而 cutover 之后没有任何生产调用点还有写单例可解析。存活的不变量是「无显式句柄的读解析本线程发布的读连接」。**属删除/放宽既有 guard，须独立 reviewer 或用户裁决。**
+4. **`tests/history/history-api.it.test.ts` 与 `tests/history/v3/read-cutover.it.test.ts` 的 pin 断言改为断 503／抛 `HistoryPinUnavailableError`。** 依据用户 2026-08-09 裁决；**原契约逐条抄进 `docs/todo/deferred-backlog.md`**（含「未知 id 应为 404」及其当前被反转的优先级），Batch 6 照此恢复。
+5. **`tests/config/history-enabled-config.unit.test.ts` 的 `isDatabaseOpen()` 换成 `peekHistoryReadDatabase()`。** 不变量未变（`initHistory(true)` 必须真把 History 拉起来），换的是 oracle——主线程已不开写单例。**同时新增断言写单例保持关闭**，比原判据更严。
+6. **`tests/infra/management-routes.http.test.ts` 移除 `summaryProjectionReady` 断言。** Worker 的 `initialize` 以 fire-and-forget 方式启动 summary backfill，请求落地时是否跑完属调度而非路由性质——断 `true` 或 `false` 都是掷硬币。读代码确认 `startV3SummaryBackfill` 是未被 await 的 async 循环（`store.ts:1119`）。readiness 归属专门的 projection 测试；`pending`／`poisoned` 保留（空库两侧恒 0）。
+7. **`tests/history/state-shutdown.unit.test.ts` 的 `toMatch(/drainV3Writer\(\)/)` 换成 `toMatch(/runtime\.drain\(\)/)` + `not.toMatch(/drainV3Writer/)`。** 原断言是**假绿**：`state.ts` 里 `drainV3Writer()` 只剩在文档注释中，而该测试自己的注释正声明「doc comments MAY still mention the function names…this checks the actual code reference」。已同步清掉 `state.ts` 的陈旧注释，使新断言成立。
+8. **`tests/infra/resetters-complete.unit.test.ts`**：新增两条 EXEMPT（`setHistoryPersistenceRuntimeFactoryForTests`、`setHistoryStoreWipeForTests`，均为 bootstrap 一次性安装的进程级设施，逐条写明「per-test 清掉会怎样坏」）、一条 `NOT_FOR_TESTS_NAMED`（`releaseHistoryPersistenceRuntime` 已有生产消费者故去掉后缀），并**删除一条陈旧 EXEMPT**（`getV3PersistRetryConfig`，改名后不再被枚举）。
+9. **`tests/architecture/circular-deps-baseline.json` 重冻结。** 依据是 SCC **严格缩小**（43→37 环、50→43 文件、成员 +0 −7），符合项目「只减不增」纪律；差异中的「新环」是删边后枚举器给出的不同代表路径，非新依赖。
+
 
 ## 已作废的路线
 
