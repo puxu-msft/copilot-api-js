@@ -32,8 +32,17 @@ import type {
 } from "~/lib/history/worker/protocol"
 import type { HistoryPersistenceRuntime } from "~/lib/history/worker/runtime"
 
-import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
-import { peekHistoryReadDatabase } from "~/lib/history/sqlite/read-connection"
+import {
+  //
+  openDatabaseReadonly,
+  openOwnedHistoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import {
+  //
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+  peekHistoryReadDatabase,
+} from "~/lib/history/sqlite/read-connection"
 import {
   //
   initHistory,
@@ -115,8 +124,12 @@ class LifecycleRuntime implements HistoryPersistenceRuntime {
   shutdown(): Promise<void> {
     this.shutdownCalls++
     this.started = false
+    if (this.shutdownRejectsWith) return Promise.reject(this.shutdownRejectsWith)
     return Promise.resolve()
   }
+
+  /** When set, teardown fails — the real runtime awaits message/transport termination and can reject. */
+  shutdownRejectsWith: Error | undefined
 
   snapshot(): HistoryWorkerStatus {
     return {
@@ -177,6 +190,53 @@ describe("initHistory bring-up is a transaction", () => {
     expect(runtime.shutdownCalls).toBe(1)
     expect(peekHistoryPersistenceRuntime()).toBeUndefined()
     expect(peekHistoryReadDatabase()).toBeUndefined()
+  })
+
+  test("a cleanup that itself fails neither masks the original error nor keeps the runtime", async () => {
+    // The rollback's own failure mode. `shutdown()` on the real runtime waits for the Worker's message loop and transport to end, so it can reject — and when it does, the operator must still be told what actually went wrong first, and the registry must still be empty, because a runtime is single-use and a retained one is dead either way.
+    const runtime = new LifecycleRuntime({ createArtifact: false })
+    runtime.shutdownRejectsWith = new Error("worker refused to terminate")
+    setHistoryPersistenceRuntimeForTests(runtime)
+    setStateForTests({ historyDbPath: freshDbPath() })
+
+    const failure = await initHistory(true).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    // The bring-up's own cause, not the cleanup's.
+    expect((failure as Error).message).toMatch(/unable to open database file|refusing to open unowned or not-yet-initialized database readonly/)
+    expect((failure as Error).message).not.toMatch(/worker refused to terminate/)
+    expect(runtime.shutdownCalls).toBe(1)
+    expect(peekHistoryPersistenceRuntime()).toBeUndefined()
+    expect(peekHistoryReadDatabase()).toBeUndefined()
+  })
+
+  test("a readonly handle published by someone else during the bring-up is left alone, and ours is not leaked", async () => {
+    // `installHistoryReadDatabase` refuses to shadow a live handle, so the failure lands on the LAST step of the transaction. Whoever published that handle still owns it; rolling back must close only the one this call opened.
+    const dbPath = freshDbPath()
+    createOwnedArtifact(dbPath)
+    const runtime = new LifecycleRuntime({ createArtifact: true, gated: true })
+    setHistoryPersistenceRuntimeForTests(runtime)
+    setStateForTests({ historyDbPath: dbPath })
+
+    const bringUp = initHistory(true)
+    await runtime.startEntered
+    const competitor = openDatabaseReadonly(dbPath)
+    installHistoryReadDatabase(competitor)
+    runtime.releaseGate()
+
+    const failure = await bringUp.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect((failure as Error).message).toMatch(/a History read database is already installed/)
+    expect(peekHistoryPersistenceRuntime()).toBeUndefined()
+    // The competitor's handle survives — it was never ours to close.
+    expect(peekHistoryReadDatabase()).toBe(competitor)
+    detachHistoryReadDatabaseForTests()
+    competitor.close()
   })
 
   test("the rolled-back state lets a later bring-up succeed on its own runtime", async () => {

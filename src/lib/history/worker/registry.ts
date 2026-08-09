@@ -69,10 +69,15 @@ export function setHistoryPersistenceRuntimeFactoryForTests(factory: (() => Hist
   runtimeFactory = factory
 }
 
-/** Shut down the registry-owned runtime before releasing its singleton reference. */
+/** Shut down the registry-owned runtime, releasing its singleton reference once the shutdown settles — successfully or not. */
 export async function releaseHistoryPersistenceRuntime(): Promise<void> {
   const current = runtime
   if (!current) return
-  await current.shutdown()
-  if (runtime === current) runtime = undefined
+  try {
+    // The reference stays visible for the duration of the shutdown on purpose: clearing it first would let a concurrent `getHistoryPersistenceRuntime()` construct a REPLACEMENT while this one is still closing, and for a moment two runtimes would each believe they own the semantic write connection.
+    await current.shutdown()
+  } finally {
+    // But it is cleared however the shutdown ends. A runtime is single-use, so one that failed to shut down is no more usable than one that succeeded — keeping it would hand the next caller an object that is dead either way, which is this registry's one unrecoverable state. The shutdown error still propagates; it just no longer takes the registry with it.
+    if (runtime === current) runtime = undefined
+  }
 }

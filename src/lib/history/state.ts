@@ -1,3 +1,5 @@
+import consola from "consola"
+
 import type { ScopedPublisher } from "~/lib/observability"
 import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
@@ -188,15 +190,25 @@ async function bringHistoryTo(enable: boolean): Promise<void> {
       readDatabase = openDatabaseReadonly(dbPath)
       installHistoryReadDatabase(readDatabase)
     } catch (error) {
-      // Undo this bring-up, then let the original error out unchanged.
+      // Undo this bring-up, then let the ORIGINAL error out unchanged.
       //
-      // The readonly handle is closed through whichever end actually owns it: ours if it got published, the raw object if `installHistoryReadDatabase` rejected it (the published one then belongs to someone else and closing it would break them).
-      if (readDatabase) {
-        if (peekHistoryReadDatabase() === readDatabase) closeHistoryReadDatabase()
-        else readDatabase.close()
+      // Each cleanup step is isolated and its own failure is logged rather than thrown: whatever went wrong first is what an operator needs to see, and a rollback that also failed must not replace one problem with a different, more confusing one — nor may an exception in the first step skip the second.
+      try {
+        // The readonly handle is closed through whichever end actually owns it: ours if it got published, the raw object if `installHistoryReadDatabase` rejected it (the published one then belongs to someone else and closing it would break them).
+        if (readDatabase) {
+          if (peekHistoryReadDatabase() === readDatabase) closeHistoryReadDatabase()
+          else readDatabase.close()
+        }
+      } catch (cleanupError) {
+        consola.error("[history] failed to close the readonly handle while rolling back a failed bring-up:", cleanupError)
       }
-      // Compare-and-release, not an unconditional clear: the slot is only ours to empty while it still holds the instance THIS call started. A failed start leaves a runtime that can never be started again (a permanent cause — an unowned artifact, a corrupt payload — makes it terminal), so leaving it in the registry would turn one caller's failure into every later caller's; but clearing a slot that meanwhile came to hold someone else's runtime would destroy an object we never owned.
-      if (peekHistoryPersistenceRuntime() === runtime) await releaseHistoryPersistenceRuntime()
+      try {
+        // Compare-and-release, not an unconditional clear: the slot is only ours to empty while it still holds the instance THIS call started. A failed start leaves a runtime that can never be started again (a permanent cause — an unowned artifact, a corrupt payload — makes it terminal), so leaving it in the registry would turn one caller's failure into every later caller's; but clearing a slot that meanwhile came to hold someone else's runtime would destroy an object we never owned.
+        if (peekHistoryPersistenceRuntime() === runtime) await releaseHistoryPersistenceRuntime()
+      } catch (cleanupError) {
+        // The registry reference is dropped in `releaseHistoryPersistenceRuntime`'s `finally`, so a rejecting `shutdown()` still leaves the slot empty.
+        consola.error("[history] failed to shut the runtime down while rolling back a failed bring-up:", cleanupError)
+      }
       enabled = false
       throw error
     }
