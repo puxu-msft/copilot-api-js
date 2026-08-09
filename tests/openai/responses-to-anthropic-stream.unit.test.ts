@@ -32,6 +32,8 @@ import type { ResponsesOutputItem } from "~/types/api/openai-responses"
 
 import { createResponsesToAnthropicStreamTranslator } from "~/lib/openai/translate/responses-to-anthropic-stream"
 
+import { accumulateAnthropic, assertAnthropicEventLineInvariant } from "../helpers/protocol-oracles"
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /** A Responses SSE event frame (the shape upstream sends). */
@@ -60,98 +62,6 @@ function renderAllWithMeta(events: Array<ServerSentEventMessage>, modelId = "gpt
 /** Parse a frame's JSON data. */
 function data(frame: ServerSentEventMessage): Record<string, unknown> {
   return JSON.parse(frame.data ?? "{}") as Record<string, unknown>
-}
-
-/** The Anthropic stream event names the @anthropic-ai/sdk SSEDecoder dispatches on. */
-const SDK_STREAM_EVENTS = new Set([
-  "message_start",
-  "message_delta",
-  "message_stop",
-  "content_block_start",
-  "content_block_delta",
-  "content_block_stop",
-  "ping",
-  "error",
-])
-
-/** N1 invariant: EVERY synthesized frame carries an `event:` line equal to its JSON `type`, SDK-recognized. */
-function assertEventLineInvariant(frames: Array<ServerSentEventMessage>): void {
-  for (const f of frames) {
-    const type = (data(f) as { type?: string }).type
-    expect(f.event, `frame type=${type} must carry an event: line`).toBe(type)
-    expect(SDK_STREAM_EVENTS.has(f.event ?? ""), `event ${f.event} must be SDK-recognized`).toBe(true)
-  }
-}
-
-/** Serialize the translator's frames into the SSE wire bytes an Anthropic client would receive. */
-function toWire(frames: Array<ServerSentEventMessage>): string {
-  return frames.map((f) => `event: ${f.event}\ndata: ${f.data}\n\n`).join("")
-}
-
-/**
- * INDEPENDENT ORACLE: decode the synthesized wire through the REAL Anthropic SDK `Stream.fromSSEResponse`
- * — mirrors `cc-to-anthropic-stream.unit.test.ts`'s `sdkAccumulate` exactly (the accumulation logic is
- * copied verbatim — it is format-agnostic Anthropic-wire reconstruction, not this bridge's translation
- * logic, so sharing it is not R-NO-INTERNAL-ADAPT territory).
- */
-async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<import("@anthropic-ai/sdk/resources/messages").Message> {
-  const { Stream } = await import("@anthropic-ai/sdk/core/streaming")
-  const response = new Response(toWire(frames), { status: 200, headers: { "content-type": "text/event-stream" } })
-  type RawEvent = import("@anthropic-ai/sdk/resources/messages").RawMessageStreamEvent
-  const stream = Stream.fromSSEResponse<RawEvent>(response, new AbortController())
-
-  let message: import("@anthropic-ai/sdk/resources/messages").Message | undefined
-  const blocks: Array<Record<string, unknown>> = []
-  for await (const ev of stream) {
-    switch (ev.type) {
-      case "message_start": {
-        message = ev.message
-        break
-      }
-      case "content_block_start": {
-        blocks[ev.index] = { ...(ev.content_block as unknown as Record<string, unknown>) }
-        if (blocks[ev.index].type === "tool_use") blocks[ev.index]._json = ""
-        break
-      }
-      case "content_block_delta": {
-        const d = ev.delta as { type: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
-        const b = blocks[ev.index]
-        if (d.type === "text_delta") b.text = ((b.text as string | undefined) ?? "") + (d.text ?? "")
-        if (d.type === "input_json_delta") b._json = ((b._json as string | undefined) ?? "") + (d.partial_json ?? "")
-        if (d.type === "thinking_delta") b.thinking = ((b.thinking as string | undefined) ?? "") + (d.thinking ?? "")
-        if (d.type === "signature_delta") b.signature = ((b.signature as string | undefined) ?? "") + (d.signature ?? "")
-        break
-      }
-      case "message_delta": {
-        if (message) {
-          message.stop_reason = ev.delta.stop_reason ?? message.stop_reason
-          if (ev.usage) message.usage = { ...message.usage, ...ev.usage } as typeof message.usage
-        }
-        break
-      }
-      default: {
-        break
-      }
-    }
-  }
-  if (!message) throw new Error("SDK oracle: no message_start survived the decoder (N1 event-line drop)")
-  message.content = blocks.filter(Boolean).map((b) => {
-    if (b.type === "tool_use")
-      return {
-        type: "tool_use",
-        id: b.id,
-        name: b.name,
-        input: b._json ? JSON.parse(b._json as string) : {},
-      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
-    if (b.type === "thinking")
-      return {
-        type: "thinking",
-        thinking: b.thinking ?? "",
-        signature: b.signature ?? "",
-      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
-    return { type: "text", text: b.text ?? "", citations: null } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
-  })
-  return message
 }
 
 // ── the Responses SSE event shapes upstream emits ─────────────────────────────
@@ -218,7 +128,7 @@ describe("responses-to-anthropic-stream — text + tool_use block indices (nativ
       functionCallArgsDelta(1, '{"city":"SF"}'),
       completed({ input_tokens: 10, output_tokens: 5, total_tokens: 15 }),
     ])
-    assertEventLineInvariant(frames)
+    assertAnthropicEventLineInvariant(frames)
 
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => f.data && data(f).index)).toEqual([0, 1])
@@ -261,7 +171,7 @@ describe("responses-to-anthropic-stream — text + tool_use block indices (nativ
       functionCallArgsDelta(1, '{"y":2}'),
       completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }),
     ])
-    assertEventLineInvariant(frames)
+    assertAnthropicEventLineInvariant(frames)
     const jsonDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "input_json_delta")
     expect(jsonDeltas.length).toBe(2)
   })
@@ -370,7 +280,7 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
       textDelta("visible", 1),
       completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
     ])
-    assertEventLineInvariant(frames)
+    assertAnthropicEventLineInvariant(frames)
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => data(f).index)).toEqual([0, 1])
     expect(data(starts[0]).content_block).toMatchObject({ type: "thinking" })
@@ -459,8 +369,8 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
       textDelta("The weather is sunny.", 2),
       completed({ input_tokens: 20, output_tokens: 10, total_tokens: 30 }),
     ])
-    assertEventLineInvariant(frames)
-    const msg = await sdkAccumulate(frames)
+    assertAnthropicEventLineInvariant(frames)
+    const msg = await accumulateAnthropic(frames)
     expect(msg.content.map((b) => b.type)).toEqual(["thinking", "tool_use", "text"])
     const thinking = msg.content[0] as { type: "thinking"; thinking: string; signature: string }
     expect(thinking.thinking).toBe("Let me think. Done.")
