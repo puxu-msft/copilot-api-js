@@ -43,9 +43,12 @@ import { setStateForTests } from "~/lib/state"
 class NeverReadyRuntime implements HistoryPersistenceRuntime {
   consecutiveFailures = 4
   nextRetryAt = 1_754_000_000_000
+  /** When set, `start()` rejects immediately instead of hanging — the ordinary failure shape, as opposed to the stuck one. */
+  failStartWith: Error | undefined
   private abandonStart: ((error: Error) => void) | undefined
 
   start(): Promise<HistoryWorkerReady> {
+    if (this.failStartWith) return Promise.reject(this.failStartWith)
     return new Promise<HistoryWorkerReady>((_resolve, reject) => {
       // Intentionally never settles on its own: the retry loop is still going.
       this.abandonStart = reject
@@ -136,6 +139,21 @@ describe("History startup deadline", () => {
     expect(deadlineError.nextRetryAt).toBe(1_754_000_000_000)
     expect(deadlineError.message).toMatch(/startup deadline exceeded/)
     expect(deadlineError.message).toMatch(/25ms/)
+  })
+
+  test("a bring-up that fails on its own propagates that failure, not a deadline", async () => {
+    // The ordinary failure path: the Worker rejects long before the deadline. The caller must see the real cause — a deadline error here would send an operator looking for a locked database instead of reading the actual one.
+    const failing = new NeverReadyRuntime()
+    failing.failStartWith = new Error("database file is not a database")
+    setHistoryPersistenceRuntimeForTests(failing)
+
+    const failure = await initHistoryWithinStartupDeadline(true, 30_000).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(failure).not.toBeInstanceOf(HistoryStartupDeadlineError)
+    expect((failure as Error).message).toMatch(/database file is not a database/)
   })
 
   test("disabling History is never subject to the deadline", async () => {

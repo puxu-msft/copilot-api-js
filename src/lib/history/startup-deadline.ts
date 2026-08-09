@@ -9,6 +9,7 @@ export {
   //
   getHistoryStartupDeadlineMs,
   HISTORY_STARTUP_DEADLINE_MS,
+  MAX_HISTORY_STARTUP_DEADLINE_MS,
   setHistoryStartupDeadlineMs,
 } from "./startup-deadline-config"
 
@@ -53,14 +54,17 @@ export async function initHistoryWithinStartupDeadline(enable: boolean, deadline
   }
 
   const bringUp = initHistory(enable)
-  // The bring-up outlives a lost race. Without a handler here its eventual failure would surface as an unhandled rejection racing the caller's exit path, which reports the wrong error at the wrong layer.
+  let deadlineFired = false
+  // The bring-up outlives a LOST race, and its eventual failure would then surface as an unhandled rejection racing the caller's exit path — reporting the wrong error at the wrong layer. This handler exists for that case only: when the race was still open, `Promise.race` hands the very same rejection to the caller, and logging it here too would claim a deadline had been reported when none had.
   void bringUp.catch((error: unknown) => {
+    if (!deadlineFired) return
     consola.error("[history] bring-up failed after the startup deadline had already been reported:", error)
   })
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      deadlineFired = true
       const status = peekHistoryPersistenceRuntime()?.snapshot()
       reject(new HistoryStartupDeadlineError(deadlineMs, status?.consecutiveFailures ?? 0, status?.nextRetryAt))
     }, deadlineMs)

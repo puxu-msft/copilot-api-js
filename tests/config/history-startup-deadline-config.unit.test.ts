@@ -27,6 +27,7 @@ import { PATHS } from "~/lib/config/paths"
 import {
   //
   HISTORY_STARTUP_DEADLINE_MS,
+  MAX_HISTORY_STARTUP_DEADLINE_MS,
   getHistoryStartupDeadlineMs,
   setHistoryStartupDeadlineMs,
 } from "~/lib/history/startup-deadline"
@@ -86,6 +87,19 @@ describe("history.startup_deadline_ms config wiring", () => {
     await writeConfig("history:\n  enabled: true\n")
     await applyConfigToState()
     expect(getHistoryStartupDeadlineMs()).toBe(30_000)
+  })
+
+  test("a value past the JS timer ceiling never becomes an instant deadline", async () => {
+    // The inversion this guards: `setTimeout` cannot hold more than 2^31-1 ms — it wraps the duration to 1 and fires almost at once. So the most patient-looking config imaginable would make every healthy start report a deadline and exit 1. Whatever the config layer decides to do with the out-of-range value, the one outcome that must never happen is a near-zero wait.
+    await writeConfig(`history:\n  startup_deadline_ms: ${MAX_HISTORY_STARTUP_DEADLINE_MS + 1}\n`)
+    await applyConfigToState()
+    expect(getHistoryStartupDeadlineMs()).toBeGreaterThan(1000)
+  })
+
+  test("a programmatic caller past the ceiling is clamped to it, not inverted", async () => {
+    setHistoryStartupDeadlineMs(MAX_HISTORY_STARTUP_DEADLINE_MS + 5000)
+    expect(getHistoryStartupDeadlineMs()).toBe(MAX_HISTORY_STARTUP_DEADLINE_MS)
+    await Promise.resolve()
   })
 
   test("0 is honoured as an explicit opt-out (wait forever)", async () => {
