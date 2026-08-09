@@ -7,12 +7,15 @@ import path from "node:path"
 
 // Nearly every case here builds a temp git tree, commits into it once per control, and re-runs the
 // validator — work that lands on top of bun's 5000ms default rather than comfortably inside it.
-// Measured standalone on an unloaded machine, cases came in at 5055ms, 5071ms, 5151ms and 6036ms, and
-// one reached 8927ms when re-run isolated; under `test:fast` sharding they tip over regularly. The
-// timeout is set per file rather than per case because the pressure is a property of the fixture
+// Running this file on its own, with nothing else from the suite competing, cases came in at 5055ms,
+// 5071ms, 5151ms and 6036ms, and one reached 8927ms; under `test:fast` sharding they tip over
+// regularly. Scope those numbers honestly: the host carried heavy unrelated background load at the
+// time (load average around 40), so they say the default is too tight under realistic conditions,
+// not that the work is inherently 5s+. That is the condition worth designing for — CI hosts and
+// developer machines are rarely idle.
+// The timeout is set per file rather than per case because the pressure is a property of the fixture
 // strategy, not of any one case — fixing only the case you happened to watch fail leaves the rest.
-// Nothing here is slower than the work it does warrants; the default is simply too tight for it, and
-// a guard that reddens with machine load, in a file unrelated to whatever the reader was changing,
+// A guard that reddens with machine load, in a file unrelated to whatever the reader was changing,
 // gets deleted rather than diagnosed.
 setDefaultTimeout(120_000)
 
