@@ -383,7 +383,15 @@ describe("activeStreamCount exactly-once across every real stream-termination pa
     }
 
     const fetchPromise = http2Fetch(`${url}/matrix-pre-header-error`, {})
-    await sleep(30) // let the stream actually open server-side before we snapshot
+    // Wait for the CONDITION, not for a duration. This row is the only one of the four that never
+    // awaits a response — the handler deliberately never responds — so it has no natural readiness
+    // signal and used to substitute `await sleep(30)`. That is a load-dependent assumption: under
+    // the 16-shard runner it has been observed to expire before the server handler ran, surfacing as
+    // the "test setup" throw below. (Reproduced deterministically by shortening that sleep to 0.)
+    // Both conditions are needed: the server must hold the stream, AND the client-side entry must
+    // have appeared in the snapshot, which is published on its own cadence.
+    for (let i = 0; i < 400 && !(serverStream?.session && getH2SessionStatusSnapshot().length === 1); i++) await sleep(5)
+
     const before = getH2SessionStatusSnapshot()
     expect(before).toHaveLength(1)
     expect(before[0].activeStreamCount).toBe(1)

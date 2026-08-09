@@ -830,7 +830,40 @@ failures.push({ subscriber: "publishAndFlush", phase: "async-handler", eventKind
 
 **当前仓库状态**：判据已回到原样（`commitRatio < 5`），即**放宽已撤销**，代价是这条测试恢复到它原有的已知不稳定——那是一个**已登记的既有问题**（未处置第 7 条），不是本轮新引入的。
 
+### A · `http2-generation-reconcile.it.test.ts:377` 根因（**测试 fixture 竞态，已修**）
+
+**先判型再修**：症状是 `test setup: server stream/session missing`，形态上就指向「fixture 的就绪假设」，但这属于**否定性判断**（「不是生产代码的竞态」），不自证，所以做了复现。
+
+**根因**：row 1 是四行里**唯一不 await 响应**的一行——它的 handler 故意永不响应，为的是制造 pre-header 错误。于是它没有天然的就绪信号，改用 `await sleep(30)` 顶替：
+
+```ts
+const fetchPromise = http2Fetch(`${url}/matrix-pre-header-error`, {})
+await sleep(30) // let the stream actually open server-side before we snapshot
+...
+if (!serverStream?.session) throw new Error("test setup: server stream/session missing")
+```
+
+`serverStream` 只在服务端 handler 被调用时才被赋值。30ms 是一个**墙钟假设**，争用下不成立。row 2/3/4 都 `await http2Fetch(...)`（handler 必然已跑完），所以**只有 row 1 有这个缺口**。
+
+**确定性复现**：把 `sleep(30)` 改成 `sleep(0)` → **必然**抛 `test setup: server stream/session missing`（0 pass / 1 fail）。这证明它就是「等时间而不是等条件」，不是生产侧竞态。**没有升级报给协调方**，因为判型结论是 fixture 侧。
+
+**修复**：把固定等待换成**条件等待**，沿用本文件既有的轮询惯用法（`waitForReclaim` 就是这么写的）。两个条件都要等——服务端持有 stream，且客户端条目已出现在快照里（快照有自己的发布节拍）：
+
+```ts
+for (let i = 0; i < 400 && !(serverStream?.session && getH2SessionStatusSnapshot().length === 1); i++) await sleep(5)
+```
+
+**固定等待被彻底删除**，不是加长。
+
+**两方向证据**
+
+- **正样本对照内建**：固定等待已经**归零**（不再有任何 `sleep(30)`），所以它现在能过，只可能是因为那个条件轮询在起作用。修复前同样的零固定等待是**必红**的（上面的复现），修复后 11 pass —— 同一条件下的红/绿翻转就是这条修复的证明。
+- **争用下稳定**：64 spinner（loadavg 27→37）**11 pass / 0 fail，8.58s**；96 spinner（loadavg 39→46）**11 pass / 0 fail，8.10s**。隔离 0.82s。
+
+**未审计的同族候选（不在本轮范围，据实登记）**：本文件还有若干固定 `sleep()`（`:124`、`:163`、`:173`、`:215`、`:217`、`:237`）。它们多数跟在 `await http2Fetch(...)` 之后、就绪性已由 await 保证，**但我没有逐条审计**，不声称它们都安全。列在这里供后续判断。
+
 ### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
 
 
 **评审指出我的约束是假的，这一条我判它成立。** 我原先写的「放宽上界就失去覆盖」是**真的**，但它**只在把 `DEADLINE_MS` 钉死在 50 时成立**——而 50 本身不承重（fixture 的 deadline 取多少，与「deadline 被尊重」这条不变量无关）。上界的鉴别力挂在**相对形状 `DEADLINE_MS * 4`** 上，不挂在绝对毫秒上；把 fixture 按比例放大，鉴别力不变而绝对余量变宽。
