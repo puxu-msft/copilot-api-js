@@ -2,6 +2,17 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## orphan 清理不区分「尾随待执行 tool_use」与「中段真孤儿」（2026-08-09）
+
+- **根因 / 现状**：`processToolBlocks()` 的第二遍扫描（`src/lib/anthropic/sanitize/tool-blocks.ts:80` 的 `for (const msg of messages)`）对**所有位置**的 assistant 消息施加同一条规则——`:91-97` 只判 `!toolResultIds.has(block.id)`，命中即删。循环体内**没有** message index、`messages.at(-1)` 或任何「是否还有后续消息」的判断，因此「最后一条 assistant 消息里尚无 `tool_result` 的 `tool_use`」（agent loop 中合法的待执行状态）与「中段未配对的真孤儿」不可区分。`server_tool_use` 同条件（`:117-123`）。删空后整条 assistant 消息不进入结果（`:141-142`）。基线 commit `63869fa0`。
+- **当前行为**：作用面是**发往上游的 payload**——`sanitize-messages` 作为 always-on rewrite 经 `src/lib/anthropic/payload-rewrites.ts:111-126` → `src/lib/anthropic/sanitize/index.ts:140-142` 调用，挂在 driver 的 S3 request rewrite（`src/lib/pipeline/driver.ts:477-484`）。**History 的 `originalRequest` 快照不受影响**（快照在 `src/routes/messages/handler-v4.ts:651-654` 另行采集）。客户端若在后续请求里重放旧历史，这些消息会再次经过同一清理。
+- **它是不是缺陷，尚未判定**：`[hard]` **以上全部为代码静态推断，未打上游探针**。关键前提未证——**上游是否接受尾随的未配对 `tool_use`**。若上游会 400，当前的删除就是**修复**而非缺陷，保留它反而制造故障；只有在上游接受的前提下，删除才构成语义损失。这必须用真实上游取证（独立 oracle），不能靠读源码或读客户端代码认定。
+- **相邻但不覆盖它的已有裁决**：[docs/sync-ghc-api/messages-api.md:72-74](../sync-ghc-api/messages-api.md) 记「`sanitize.ts` 管道处理 orphaned tool blocks，不负责尾随 assistant 修复——客户端自行保证消息结构。P2，暂不实施」。**那条裁的是「要不要为尾随 assistant 追加 `Please continue.`」，并未裁决「尾随未配对 `tool_use` 该算待执行还是算孤儿」。** 重启此项时应先向用户确认是否属于该裁决射程。
+- **既有测试的覆盖状态**：没有任何测试断言「尾随合法待执行 `tool_use` 应保留」。`tests/anthropic/message-sanitizer.it.test.ts` 的相关用例均为中段删除。`tests/anthropic/assistant-block-layout-terminal-order.it.test.ts:19-30` 虽然其 fixture 恰是「唯一且最后一条 assistant 消息里的未配对 `tool_use` 被删」，但**它守的不变量是「de-stack 必须作为终末 sanitize pass 运行」**，孤儿删除只是它用来制造相邻 thinking 块的手法。若将来改变尾随处理，该测试要动的是 fixture（把孤儿挪到会话中段），属占位数据机械更新，**不构成推翻一条守卫**。
+- **理想架构 / 若做需改什么**：先打上游探针定性；若确为缺陷，修复点在 `processToolBlocks()` 的第二遍——引入位置感知（尾随 assistant 消息的未配对 `tool_use` 保留），并同步 `docs/sanitize-pipeline.md` 的契约描述；补一条正向测试（尾随保留）与一条反向测试（中段仍删）；调整上述 terminal-order 测试的 fixture。
+- **为何暂缓**：定性依赖上游探针，属独立取证；且改动的是 always-on 的请求 sanitize 契约，与本次 Anthropic↔Responses 语义桥 RFC 无关，不应夹带。**发现方**：语义桥 C0.2 的 G4 fixture 构造过程（2026-08-09）——初版 fixture 缺配对 `tool_result` 触发了该清理，才暴露出这个不区分。
+- **触发条件**：客户端出现「尾随未配对 `tool_use`」形态的请求并报告工具调用丢失，或需要支持 assistant prefill 续写含待执行工具调用的回合。
+
 ## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
 
 - **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
