@@ -1,8 +1,13 @@
 import type { HistoryEntry } from "~/lib/history/types"
 
-import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import { PATHS } from "~/lib/config/paths"
-import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import {
+  //
+  getDatabase,
+  isDatabaseOpen,
+  openOwnedHistoryDatabase,
+} from "~/lib/history/sqlite/connection"
 import {
   //
   clearV3Store,
@@ -20,7 +25,9 @@ let seedDb: { path: string, db: ReturnType<typeof openOwnedHistoryDatabase> } | 
  * Since the Batch 2b cutover the main thread has no write handle to borrow — `getDatabase()` throws, because the semantic write connection moved to the Worker. A seeding fixture is still legitimately a writer, so it opens its own connection to the same file; SQLite's WAL mode serializes it against the Worker's connection, and the main thread's readonly handle sees the rows on its next read. This is a test-only second connection, not a second production writer: nothing in `src/` may do this (see the architecture guard on `state.ts`).
  */
 function seedWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
-  // Same resolution `initHistory` uses, so the fixture always seeds the artifact the app under test actually opened — an empty `historyDbPath` means the sandboxed default, not "no database".
+  // A test that opened its OWN write singleton (`openInMemoryDatabase()`, or `openDatabase()` on its own artifact) is asserting against THAT database — it is also what the query layer reads, because `openInMemoryDatabase` publishes it as the read handle. Seeding anywhere else would write one database and read another, which looks exactly like "the rows vanished".
+  if (isDatabaseOpen()) return getDatabase()
+  // Otherwise seed the artifact the app under test opened. Same resolution `initHistory` uses, so an empty `historyDbPath` means the sandboxed default, not "no database".
   const path = state.historyDbPath || PATHS.HISTORY_V3_DB
   if (seedDb?.path === path) return seedDb.db
   seedDb?.db.close()

@@ -1259,3 +1259,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
 - **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
 - **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。
+
+## Pin/unpin 端点在 Batch 2b→6 窗口期不可用（2026-08-09，用户裁决）
+
+- **根因 / 现状**：`POST /api/entries/:id/{pin,unpin}` 写的是 `v3_operations.pinned`，是主线程**最后一条**生产写路径（`src/routes/history/handler.ts` `setEntryPinState` → `setPinned` → `setV3OperationPinned`）。Batch 2b 的 cutover 把 semantic 写连接搬进 Worker、主线程句柄变只读，这条路径随之失去写入口；而计划把 `set-pinned` 排在 **Batch 6** 的 query-RPC surface 里（`docs/plan/2026-08-07-history-persistence-worker.md` 的 Batch 6 「RPC surface」段落），2b 章节没有提到它。取证（2026-08-09 本会话实跑）：`rg -n 'setPinned' src/routes/` 只命中 `src/routes/history/handler.ts` 一处；`src/routes/negotiation/route.ts` 里的同名 `setPinned` 是 feature-negotiation 的不同函数，无关。同时确认 `clearHistory`（`clearV3Store` 的唯一调用方）**无 route 消费者**，其 test-only 定位属实，因此**不存在第二条主线程生产写路径**。
+- **当前行为**：端点返回 **503**，body 的 `error` 说明能力去了 Worker、RPC 在 Batch 6 落地（`HistoryPinUnavailableError`，定义在 `src/lib/history/entries.ts`）。选 503 而不是让 `getDatabase()` 抛 `database not initialized`，是为了让运维看到「这个能力暂时没有」而不是「数据库坏了」。条目本身照常读写，只有 pin 标志不能改。
+- **待恢复的契约（Batch 6 照此重建测试）**：`tests/history/history-api.it.test.ts` 的 `POST /api/entries/:id/pin and /unpin` 原有三条断言——① pin 返回 200、body 的 `pinned` 为 `true`，随后 `GET /api/entries/:id` 仍报告 `pinned: true`（**持久化**，不只是响应体）；② unpin 返回 200 且 `pinned` 变 `false`，随后 GET 也是 `false`；③ 未知 id 返回 **404** 且 `error` 含 `not found`。当前这三条已替换为断言 503 的版本，恢复时把上面三条写回去。**注意 ③ 的优先级现在是反的**：没有写入口时任何 id 都先撞 503，Batch 6 之后必须让 404 重新排在前面。
+- **理想架构 / 若做需改什么**：Batch 6 加 `set-pinned` 协议消息对（`protocol.ts` 的 main→worker / worker→main 两侧 + `parseBase` 的类型分支），走 `runtime.ts` 已有的相关请求通道 `request<T>()`（含 worker 重启后的 `reissue`），backend 侧调用现有的 `setV3OperationPinned(id, pinned, db)` 纯 primitive。`setPinned` 随之由同步 `boolean` 变 `Promise<boolean>`，route handler 需 `await`；届时删除 `HistoryPinUnavailableError` 与 handler 里的 503 分支。
+- **为何暂缓**：用户 2026-08-09 在「提前搬进 Worker／接受窗口期不可用／拆独立小批次」三个选项中裁决**接受窗口期不可用**，依据 CLAUDE.md 「无向后兼容负担：允许短期报错／功能不可用」。提前搬需要新增协议消息，会把 2b 的范围推出已评审边界，并预支 Batch 6 的 RPC 形状。
+- **触发条件（必做，不是可选）**：Batch 6 的 query-RPC cutover。验收 oracle：上面「待恢复的契约」三条全绿，且 `rg -n 'HistoryPinUnavailableError' src/` 为空。

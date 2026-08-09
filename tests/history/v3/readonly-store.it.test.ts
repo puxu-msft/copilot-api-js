@@ -34,6 +34,12 @@ import {
   openDatabase,
   openDatabaseReadonly,
 } from "~/lib/history/sqlite/connection"
+import {
+  //
+  closeHistoryReadDatabase,
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+} from "~/lib/history/sqlite/read-connection"
 import { projectSearchableText } from "~/lib/history/v3/projection"
 import {
   //
@@ -153,15 +159,20 @@ describe("readonly store read surface (Phase 0)", () => {
     expect(text).toContain("here is the searchable reply")
   })
 
-  test("openDatabase() still defaults db-param read functions to the module singleton (backward compatible)", () => {
+  test("db-param read functions default to the main thread's readonly handle", () => {
     const dbPath = freshDbPath()
     seedRealV3Db(dbPath, "singleton-op")
-    openDatabase(dbPath)
 
-    // No explicit db argument — must resolve against the process-wide singleton,
-    // exactly as every existing production call site does today.
-    const stored = getV3StoredOperation("singleton-op")
-    expect(stored?.record.identity.operationId).toBe("singleton-op")
+    // Until the Batch 2b cutover this asserted the opposite — that the default resolved the WRITE singleton opened by `openDatabase()`, "exactly as every existing production call site does today". That premise is what the cutover retired: the Worker owns the write connection, so no production call site has a write singleton to resolve any more, and a default pointing at one would throw on every read. The invariant that survives is the real one — a read with no explicit handle resolves whatever connection this thread publishes for reading.
+    detachHistoryReadDatabaseForTests()
+    const readonlyDb = openDatabaseReadonly(dbPath)
+    installHistoryReadDatabase(readonlyDb)
+    try {
+      const stored = getV3StoredOperation("singleton-op")
+      expect(stored?.record.identity.operationId).toBe("singleton-op")
+    } finally {
+      closeHistoryReadDatabase()
+    }
   })
 
   test("refuses to open a not-yet-initialized / unowned database readonly", () => {

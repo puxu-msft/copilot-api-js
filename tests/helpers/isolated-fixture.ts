@@ -284,7 +284,11 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // Drain any fire-and-forget async V3 terminal write (a request that settled during the test kicks one via `subscribeModelOperationTerminals`, see state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the in-flight write lands on a closed handle ("Cannot use a closed database") or leaks into the next test. Mirrors the production shutdown drain.
     //
     // Since the Batch 2b cutover this drains the RUNTIME, not an in-process writer queue: the writer is on the Worker side of the boundary, so awaiting a main-thread queue would prove nothing about what actually reached disk. `peek` rather than `get` because a test that shut History down must not resurrect a runtime here just to drain it.
-    await peekHistoryPersistenceRuntime()?.drain()
+    //
+    // Guarded by the snapshot because `drain()` on a runtime that was never started (or was shut down mid-test) throws rather than returning empty, and that is the right contract for it — draining implies a writer to drain. `ready` covers the normal case; `pendingEnvelopes` covers a generation that crashed with work still unacked, which is exactly when skipping the drain would leak a write into the next test.
+    const runtime = peekHistoryPersistenceRuntime()
+    const persistence = runtime?.snapshot()
+    if (runtime && persistence && (persistence.ready || persistence.pendingEnvelopes > 0)) await runtime.drain()
     restoreStateForTests(snapshot)
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget

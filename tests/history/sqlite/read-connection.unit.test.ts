@@ -1,6 +1,7 @@
 import {
   //
   afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -30,6 +31,11 @@ import {
  */
 const tempDirs: Array<string> = []
 const strayHandles: Array<Database> = []
+
+// Start from an empty registry. Bun runs several files per worker, so a predecessor that booted the test runtime leaves ITS readonly handle published, and this file's first `installHistoryReadDatabase` would hit the very "already installed" guard it is here to test — for the wrong reason. Closing rather than detaching keeps that handle from leaking; `initHistory` re-installs it on the next reset because its idempotency check reads the registry rather than trusting a flag.
+beforeEach(() => {
+  closeHistoryReadDatabase()
+})
 
 afterEach(() => {
   closeHistoryReadDatabase()
