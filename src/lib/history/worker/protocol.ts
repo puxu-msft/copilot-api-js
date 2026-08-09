@@ -67,6 +67,14 @@ export interface HistoryWorkerReady {
   readonly selectedDriver: HistorySqliteDriver
   readonly configRevision: number
   readonly rawTarget: RawTargetDescriptor
+  /**
+   * Journal rows this generation replayed at startup (spec §8.1 step 5).
+   *
+   * On the wire because a number the Worker computes and then drops is indistinguishable
+   * from never having run recovery at all — the whole startup step becomes unobservable,
+   * and no test can tell the two apart.
+   */
+  readonly recoveredJournalOperations: number
 }
 
 export interface HistoryDrainResult {
@@ -85,6 +93,8 @@ export interface HistoryWorkerStatus {
   readonly publishedRevision: number
   readonly restartsTotal: number
   readonly replaysTotal: number
+  /** Journal rows replayed by the CURRENT generation's startup recovery (spec §8.1 step 5). */
+  readonly recoveredJournalOperations: number
   /** Crashes since the last `ready`; reset to 0 the moment a generation becomes ready. */
   readonly consecutiveFailures: number
   /** Epoch ms of the scheduled restart, present only while a restart is pending. */
@@ -470,6 +480,7 @@ function assertHistoryWorkerReady(value: unknown, messageGeneration: number): as
     throw new HistoryWorkerProtocolError(`ready.ready.selectedDriver is invalid: ${String(value.selectedDriver)}`)
   }
   assertNonNegativeInteger(value.configRevision, "ready.ready.configRevision")
+  assertNonNegativeInteger(value.recoveredJournalOperations, "ready.ready.recoveredJournalOperations")
   assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
   if (value.rawTarget.configRevision !== value.configRevision) {
     throw new HistoryWorkerProtocolError("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")

@@ -3,6 +3,7 @@ import { threadId } from "node:worker_threads"
 
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type { Database } from "~/lib/history/sqlite/connection"
+import type { V3JournalRecoveryFailure } from "~/lib/history/v3/store"
 
 import { runHistoryWriteAsync } from "~/lib/history/persist-guard"
 import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
@@ -72,6 +73,30 @@ export interface HistoryWorkerBackend {
   close(): void
 }
 
+/**
+ * Journal rows survived a recovery pass without being committed.
+ *
+ * Spec §8.1 lists journal recovery among the startup hard gates: on failure the proxy must
+ * not listen, and must not silently degrade to running without History. `transient` is
+ * carried so the operator can tell "the database was locked, try again" apart from "this
+ * payload can never be replayed" — the latter is §7.2's permanently-failed recovery.
+ */
+export class HistoryJournalRecoveryError extends Error {
+  readonly failures: ReadonlyArray<V3JournalRecoveryFailure>
+
+  constructor(failures: ReadonlyArray<V3JournalRecoveryFailure>) {
+    const detail = failures.map((failure) => `${failure.operationId}@${failure.revision}: ${failure.error}`).join("; ")
+    super(`[history/worker] journal recovery left ${failures.length} uncommitted row(s): ${detail}`)
+    this.name = "HistoryJournalRecoveryError"
+    this.failures = failures
+  }
+
+  /** Every failure can succeed on a later attempt, so a restart is worth trying. */
+  get allTransient(): boolean {
+    return this.failures.every((failure) => failure.transient)
+  }
+}
+
 export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}): HistoryWorkerBackend {
   const open = deps.openSemanticDatabase ?? openOwnedHistoryDatabase
   let database: Database | undefined
@@ -87,7 +112,12 @@ export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}):
         // RETHROWS on failure: a half-applied schema migration must refuse to become
         // ready, so the runtime reports `fatal` and startup never listens (spec §8.1).
         await applyForwardMigrations(opened)
-        recoveredJournalOperations = recoverV3Journal(opened)
+        const recovery = recoverV3Journal(opened)
+        // Same gate, third step: a journal row that could not be replayed means a terminal
+        // operation is unrecoverable. Becoming ready anyway would be the silent degradation
+        // §8.1 forbids — the row's `error` column alone reaches nobody who can act on it.
+        if (recovery.failures.length > 0) throw new HistoryJournalRecoveryError(recovery.failures)
+        recoveredJournalOperations = recovery.recovered
       } catch (error) {
         opened.close()
         throw error
@@ -225,6 +255,7 @@ async function handleMessage(
           selectedDriver: ready.selectedDriver,
           configRevision: message.config.configRevision,
           rawTarget: ready.rawTarget,
+          recoveredJournalOperations: ready.recoveredJournalOperations,
         },
       })
       break
