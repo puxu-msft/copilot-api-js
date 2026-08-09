@@ -6,9 +6,19 @@ import {
   test,
 } from "bun:test"
 
+import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type { Database } from "~/lib/history/sqlite/connection"
 
-import { openDatabaseReadonly } from "~/lib/history/sqlite/connection"
+import {
+  //
+  openDatabaseReadonly,
+  openOwnedHistoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import {
+  //
+  ensureV3Schema,
+  prepareModelOperation,
+} from "~/lib/history/v3/store"
 import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
 
 import type { TempSemanticDb } from "./fixtures/semantic-envelope"
@@ -24,6 +34,8 @@ import {
 
 const workerUrl = new URL("../../../src/lib/history/worker/history-worker.ts", import.meta.url)
 const retryObserverWorkerUrl = new URL("./fixtures/retry-observer-worker.ts", import.meta.url)
+const permanentFailureWorkerUrl = new URL("./fixtures/permanent-failure-worker.ts", import.meta.url)
+const retryableStartupWorkerUrl = new URL("./fixtures/retryable-startup-worker.ts", import.meta.url)
 
 const openTempDbs: Array<TempSemanticDb> = []
 const openRuntimes: Array<HistoryPersistenceRuntimeImpl> = []
@@ -151,6 +163,119 @@ describe("semantic Worker backend", () => {
     expect(runtime.snapshot().terminalFailed).toBe(true)
   })
 
+  test("a permanent write failure reports failed and leaves no operation row", async () => {
+    const temp = tempDb("history-worker-2a-permanent-")
+    const runtime = runtimeFor(permanentFailureWorkerUrl)
+    await runtime.start(buildStartConfig(temp.dbPath))
+
+    const outcome = await new Promise<string>((resolve) => runtime.enqueue(buildEnvelope(buildTerminalRecord("op-failed-1")), resolve))
+    // `failed` is what spec §8.2 step 6 escalates into a failed shutdown. A backend that
+    // reported `persisted` here would release the reservation and exit 0 having lost the record.
+    expect(outcome).toBe("failed")
+
+    const read = readonlyHandle(temp.dbPath)
+    expect(count(read, "SELECT COUNT(*) AS n FROM v3_operations WHERE operation_id=?", "op-failed-1")).toBe(0)
+    // The journal row survives precisely so a later recovery pass can replay it.
+    expect(count(read, "SELECT COUNT(*) AS n FROM v3_journal WHERE operation_id=?", "op-failed-1")).toBe(1)
+  })
+
+  test("a same-id record with a different digest reports conflict and does not overwrite the stored row", async () => {
+    const temp = tempDb("history-worker-2a-conflict-")
+    const runtime = runtimeFor(workerUrl)
+    await runtime.start(buildStartConfig(temp.dbPath))
+
+    const firstRecord = buildTerminalRecord("op-conflict-1", { text: "first" })
+    const secondRecord = buildTerminalRecord("op-conflict-1", { text: "second" })
+    const firstDigest = prepareModelOperation(firstRecord).digest
+    const secondDigest = prepareModelOperation(secondRecord).digest
+    // Guard the guard: if the two records hashed the same, the Worker would legitimately
+    // report `idempotent` and this test would prove nothing about conflicts.
+    expect(firstDigest).not.toBe(secondDigest)
+
+    const first = await new Promise<string>((resolve) => runtime.enqueue(buildEnvelope(firstRecord), resolve))
+    const second = await new Promise<string>((resolve) => runtime.enqueue(buildEnvelope(secondRecord), resolve))
+    // A data-contract violation, never a persistence failure: it must be distinguishable
+    // from both `persisted` (which would claim the second write landed) and `failed`
+    // (which would escalate a programming error into a failed shutdown).
+    expect([first, second]).toEqual(["persisted", "conflict"])
+
+    const read = readonlyHandle(temp.dbPath)
+    expect(count(read, "SELECT COUNT(*) AS n FROM v3_operations WHERE operation_id=?", "op-conflict-1")).toBe(1)
+    const stored = read.prepare("SELECT digest FROM v3_operations WHERE operation_id=?").get("op-conflict-1") as { digest: string }
+    // The FIRST record still owns the row — a conflict must not overwrite what was stored.
+    expect(stored.digest).toBe(firstDigest)
+  })
+
+  test("startup recovery replays an orphan journal row with no envelope in flight", async () => {
+    const temp = tempDb("history-worker-2a-orphan-")
+    // Seeded from the main thread so the assertion is about RECOVERY only: no envelope is
+    // ever enqueued, so the runtime's crash-replay path cannot satisfy it. Without this
+    // separation, replay and recovery each hide the other's absence.
+    seedOrphanJournalRow(temp.dbPath, buildTerminalRecord("op-orphan-1"))
+
+    const before = readonlyHandle(temp.dbPath)
+    expect(count(before, "SELECT COUNT(*) AS n FROM v3_journal WHERE committed_at IS NULL")).toBe(1)
+    expect(count(before, "SELECT COUNT(*) AS n FROM v3_operations")).toBe(0)
+
+    const runtime = runtimeFor(workerUrl)
+    const ready = await runtime.start(buildStartConfig(temp.dbPath))
+    expect(ready.recoveredJournalOperations).toBe(1)
+    expect(runtime.snapshot().recoveredJournalOperations).toBe(1)
+
+    const read = readonlyHandle(temp.dbPath)
+    expect(count(read, "SELECT COUNT(*) AS n FROM v3_operations WHERE operation_id=?", "op-orphan-1")).toBe(1)
+    expect(count(read, "SELECT COUNT(*) AS n FROM v3_journal")).toBe(0)
+  })
+
+  test("an unrecoverable journal row fails startup instead of becoming ready without it", async () => {
+    const temp = tempDb("history-worker-2a-poison-")
+    seedPoisonJournalRow(temp.dbPath)
+
+    const runtime = runtimeFor(workerUrl)
+    // Spec §8.1: journal recovery is a startup hard gate. Becoming ready here would strand a
+    // terminal operation with nothing but an `error` column to show for it.
+    await expect(runtime.start(buildStartConfig(temp.dbPath))).rejects.toThrow(/journal recovery left 1 uncommitted row/)
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().ready).toBe(false)
+  })
+
+  test("the retry budget stops on maxTotalMs before exhausting maxAttempts", async () => {
+    const temp = tempDb("history-worker-2a-total-")
+    const observedDelaysPath = `${temp.dir}/observed-delays.json`
+    const runtime = runtimeFor(retryObserverWorkerUrl, { observedDelaysPath, transientFailures: 20, realSleep: true })
+    // 8 attempts are permitted, but the 250ms wall-clock budget is consumed first: this is
+    // the only assertion that can tell `maxTotalMs` from a field that is never forwarded.
+    await runtime.start(buildStartConfig(temp.dbPath, { persistRetry: { maxAttempts: 8, backoffMs: 100, maxBackoffMs: 100, maxTotalMs: 250 } }))
+
+    const outcome = await new Promise<string>((resolve) => runtime.enqueue(buildEnvelope(buildTerminalRecord("op-total-1")), resolve))
+    expect(outcome).toBe("failed")
+
+    const observed = JSON.parse(await Bun.file(observedDelaysPath).text()) as Array<number>
+    // Without the time cap the loop would wait maxAttempts-1 = 7 times.
+    expect(observed.length).toBeLessThan(7)
+    expect(observed.length).toBeGreaterThan(0)
+    expect(observed).toEqual(observed.map(() => 100))
+  }, 20_000)
+
+  test("a transient startup failure restarts and eventually becomes ready, instead of going terminal", async () => {
+    const temp = tempDb("history-worker-2a-retrystart-")
+    const attemptsPath = `${temp.dir}/startup-attempts.txt`
+    const runtime = new HistoryPersistenceRuntimeImpl({
+      workerUrl: retryableStartupWorkerUrl,
+      workerData: { attemptsPath, failures: 2 },
+      restart: { initialDelayMs: 1, maxDelayMs: 5 },
+    })
+    openRuntimes.push(runtime)
+
+    // Spec §7.1: a startup that failed on a condition which clears on its own is retryable.
+    // Reporting `fatal` here would take History down for the life of the process because a
+    // peer held the write lock for a moment.
+    const ready = await runtime.start(buildStartConfig(temp.dbPath))
+    expect(ready.configRevision).toBe(1)
+    expect(await Bun.file(attemptsPath).text()).toBe("3")
+    expect(runtime.snapshot()).toMatchObject({ ready: true, terminalFailed: false, restartsTotal: 2 })
+  }, 20_000)
+
   test("a startup owner-check failure reports fatal instead of silently degrading", async () => {
     const temp = tempDb("history-worker-2a-unowned-")
     await Bun.write(temp.dbPath, "")
@@ -172,5 +297,35 @@ function openDatabaseReadonlySafe(dbPath: string): Database | undefined {
     return handle
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Write a valid, uncommitted journal row and nothing else — the exact state a process leaves
+ * behind when it dies between the journal append and the operation transaction's COMMIT.
+ */
+function seedOrphanJournalRow(dbPath: string, record: ModelOperationRecord): void {
+  const db = openOwnedHistoryDatabase(dbPath)
+  try {
+    ensureV3Schema(db)
+    const prepared = prepareModelOperation(record)
+    db.prepare(
+      "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
+    ).run(prepared.id, prepared.revision, prepared.digest, "terminal", prepared.compressedJournalRecord, Date.now())
+  } finally {
+    db.close()
+  }
+}
+
+/** A journal row whose payload can never be decompressed — recovery cannot ever succeed for it. */
+function seedPoisonJournalRow(dbPath: string): void {
+  const db = openOwnedHistoryDatabase(dbPath)
+  try {
+    ensureV3Schema(db)
+    db.prepare(
+      "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
+    ).run("op-poison-1", 1, "0".repeat(64), "terminal", new Uint8Array([1, 2, 3]), Date.now())
+  } finally {
+    db.close()
   }
 }

@@ -25,6 +25,14 @@ import {
 interface RetryObserverFixture {
   readonly observedDelaysPath: string
   readonly transientFailures: number
+  /**
+   * Actually sleep for the requested backoff instead of resolving instantly.
+   *
+   * The `maxTotalMs` budget is measured against a real clock (`runWithTransientRetry`'s `now`
+   * seam, which the backend does not override), so an instant delay leaves elapsed time at
+   * ~0 and the time cap can never fire. A test for that cap has to let the clock move.
+   */
+  readonly realSleep?: boolean
 }
 
 if (!parentPort) throw new Error("retry-observer-worker fixture requires a parent port")
@@ -38,10 +46,10 @@ let remainingFailures = fixture.transientFailures
 let armed = false
 
 const backend = createHistoryWorkerBackend({
-  delay: (ms) => {
+  delay: async (ms) => {
     observedDelays.push(ms)
     fs.writeFileSync(fixture.observedDelaysPath, JSON.stringify(observedDelays))
-    return Promise.resolve()
+    if (fixture.realSleep) await new Promise<void>((resolve) => setTimeout(resolve, ms))
   },
   openSemanticDatabase: (dbPath) => withTransientCommitFailures(openOwnedHistoryDatabase(dbPath)),
 })

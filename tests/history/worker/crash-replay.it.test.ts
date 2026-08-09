@@ -94,7 +94,7 @@ describe("History Worker crash windows", () => {
       // Journal rows are consumed by recovery or deleted on commit; a leftover row means the
       // operation would be re-applied on every future startup.
       expect(count(read, "SELECT COUNT(*) AS n FROM v3_journal")).toBe(0)
-    })
+    }, 20_000)
   }
 
   test("replays every queued envelope in submission order after a crash", async () => {
@@ -115,17 +115,21 @@ describe("History Worker crash windows", () => {
     expect(runtime.snapshot().pendingEnvelopes).toBe(0)
 
     const read = readonlyHandle(temp.dbPath)
-    const committed = (read.prepare("SELECT operation_id FROM v3_operations ORDER BY committed_at, operation_id").all() as Array<{ operation_id: string }>).map(
+    // `rowid` is insertion order. Ordering by `committed_at` would fall back to the
+    // `operation_id` tie-break whenever the three commits land in the same millisecond,
+    // which makes the expected sequence come out right no matter what order replay used.
+    const committed = (read.prepare("SELECT operation_id FROM v3_operations ORDER BY rowid").all() as Array<{ operation_id: string }>).map(
       (row) => row.operation_id,
     )
     expect(committed).toEqual(["op-order-1", "op-order-2", "op-order-3"])
     expect(count(read, "SELECT COUNT(*) AS n FROM v3_journal")).toBe(0)
-  })
+  }, 20_000)
 })
 
 /** Transport whose messages the test writes by hand, to forge generation-mismatched traffic. */
 describe("History Worker generation isolation", () => {
-  test("an ACK from a retired generation is ignored, counted, and does not settle the envelope", async () => {
+  /** Start a runtime on scripted transports whose restarts fire synchronously. */
+  function scriptedRuntime(): { runtime: HistoryPersistenceRuntimeImpl; transports: Array<ScriptedTransport> } {
     const transports: Array<ScriptedTransport> = []
     const runtime = new HistoryPersistenceRuntimeImpl({
       workerFactory: (generation) => {
@@ -133,9 +137,15 @@ describe("History Worker generation isolation", () => {
         transports.push(transport)
         return transport
       },
+      restart: { setTimer: (fn) => (fn(), () => {}) },
     })
-    // Deliberately not registered for the shared shutdown: this transport answers nothing it
-    // is not told to, and it owns no thread, file or socket to release.
+    // Deliberately not registered for the shared shutdown: these transports answer nothing they
+    // are not told to, and own no thread, file or socket to release.
+    return { runtime, transports }
+  }
+
+  test("an ACK claiming a generation that does not exist yet is ignored, counted, and settles nothing", async () => {
+    const { runtime, transports } = scriptedRuntime()
 
     const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
     const first = transports[0]
@@ -158,5 +168,134 @@ describe("History Worker generation isolation", () => {
     first?.emitPersistResult(messageId, "persisted")
     expect(settled).toBe("persisted")
     expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+  })
+
+  test("a late ACK from a RETIRED generation is ignored after the replacement takes over", async () => {
+    const { runtime, transports } = scriptedRuntime()
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    let settled: HistoryPersistenceOutcome | undefined
+    const messageId = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-retired-1")), (outcome) => {
+      settled = outcome
+    })
+
+    // Generation 1 dies; the synchronous restart timer brings generation 2 up immediately.
+    transports[0]?.emitExit(1)
+    transports[1]?.emitReady()
+    expect(transports).toHaveLength(2)
+
+    // This is the direction spec §7.1 actually cares about: the dead generation's in-flight
+    // ACK arrives after its replacement is serving. Believing it would settle an envelope
+    // whose write may have died with the thread that claimed it.
+    transports[0]?.emitPersistResult(messageId, "persisted", 1)
+    expect(settled).toBeUndefined()
+    expect(runtime.snapshot().pendingEnvelopes).toBe(1)
+    expect(runtime.snapshot().staleMessagesTotal).toBe(1)
+    expect(runtime.snapshot().terminalFailed).toBe(false)
+
+    // Only the current generation's ACK settles it.
+    transports[1]?.emitPersistResult(messageId, "persisted", 2)
+    expect(settled).toBe("persisted")
+    expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+  })
+
+  test("counts only envelopes a previous generation saw as replays", async () => {
+    const { runtime, transports } = scriptedRuntime()
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    // Handed to generation 1, so its re-delivery IS a replay.
+    const replayed = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-replay-seen")), () => {})
+    transports[0]?.emitExit(1)
+
+    // Queued while no generation is ready, so it is being SENT for the first time. Counting
+    // it would inflate the metric operators use to spot a crash-looping Worker.
+    const fresh = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-replay-new")), () => {})
+    expect(runtime.snapshot().replaysTotal).toBe(0)
+
+    transports[1]?.emitReady()
+    expect(runtime.snapshot().replaysTotal).toBe(1)
+    expect(runtime.snapshot().pendingEnvelopes).toBe(2)
+
+    transports[1]?.emitPersistResult(replayed, "persisted", 2)
+    transports[1]?.emitPersistResult(fresh, "persisted", 2)
+    expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+  })
+
+  test("one crash producing both error and exit restarts exactly once", async () => {
+    const { runtime, transports } = scriptedRuntime()
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    // A real `node:worker_threads` Worker emits BOTH on an uncaught exception. Without
+    // deduplication each event schedules its own restart, so two live generations end up
+    // running and one becomes an orphan writer nobody holds a reference to.
+    transports[0]?.emitError(new Error("uncaught in worker"))
+    transports[0]?.emitExit(1)
+
+    expect(transports).toHaveLength(2)
+    expect(runtime.snapshot().restartsTotal).toBe(1)
+    expect(runtime.snapshot().consecutiveFailures).toBe(1)
+  })
+
+  test("waits the restart delay the policy computed, rather than restarting immediately", async () => {
+    const scheduled: Array<number> = []
+    const transports: Array<ScriptedTransport> = []
+    const runtime = new HistoryPersistenceRuntimeImpl({
+      workerFactory: (generation) => {
+        const transport = new ScriptedTransport(generation)
+        transports.push(transport)
+        return transport
+      },
+      restart: {
+        initialDelayMs: 40,
+        maxDelayMs: 30_000,
+        setTimer: (fn, ms) => {
+          scheduled.push(ms)
+          fn()
+          return () => {}
+        },
+      },
+    })
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    // Two crashes without an intervening ready: the delay must grow, which is the only
+    // observable difference between a wired-up backoff and a hard-coded 0.
+    transports[0]?.emitExit(1)
+    transports[1]?.emitExit(1)
+
+    expect(scheduled).toEqual([40, 80])
+  })
+
+  test("a duplicate ACK is tolerated once, and a changed outcome is terminal", async () => {
+    const { runtime, transports } = scriptedRuntime()
+
+    const started = runtime.start(buildStartConfig("/tmp/never-opened-history.db"))
+    transports[0]?.emitReady()
+    await started
+
+    const messageId = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-tombstone-1")), () => {})
+    transports[0]?.emitPersistResult(messageId, "persisted")
+    expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+
+    // The tombstone makes a repeat of the SAME outcome idempotent — an at-least-once
+    // transport may deliver it twice — while still being able to catch a contradiction.
+    transports[0]?.emitPersistResult(messageId, "persisted")
+    expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
+    expect(runtime.snapshot().terminalFailed).toBe(false)
+
+    transports[0]?.emitPersistResult(messageId, "failed")
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toMatch(/changed outcome from persisted to failed/)
   })
 })

@@ -189,6 +189,95 @@ describe("History Worker terminal-failed state", () => {
     ).rejects.toThrow(/config artifact is unowned/)
   })
 
+  test("re-issues a parked request only AFTER the replayed envelopes, so the drain barrier cannot lie", async () => {
+    const { runtime, transports, restartTimers } = await started()
+    const first = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-order-a")), () => {})
+    const second = runtime.enqueue(buildEnvelope(buildTerminalRecord("op-order-b")), () => {})
+    expect(second).toBeGreaterThan(first)
+
+    transports[0]?.emitExit(9)
+    const drain = runtime.drain()
+    for (const timer of restartTimers.splice(0)) timer.fn()
+    transports[1]?.emitReady()
+
+    const kinds = (transports[1]?.sent ?? []).filter((message) => message.type === "persist-operation" || message.type === "drain").map((message) => message.type)
+    // The Worker serializes what it receives, so a `drain` that arrives before the replayed
+    // envelopes would answer "everything received so far is settled" while those envelopes
+    // were still sitting in the main thread's queue (spec §8.2).
+    expect(kinds).toEqual(["persist-operation", "persist-operation", "drain"])
+    const replayedIds = (transports[1]?.sent ?? []).filter((message) => message.type === "persist-operation").map((message) => message.messageId)
+    expect(replayedIds).toEqual([first, second])
+
+    const drainRequest = (transports[1]?.sent ?? []).find((message) => message.type === "drain")
+    transports[1]?.emit({ type: "drained", protocolVersion: 1, workerGeneration: 2, requestId: drainRequest?.requestId, result: { outcomes: {} } })
+    expect(await drain).toEqual({ outcomes: {} })
+  })
+
+  test("a restart initializes with the latest desired revision AND that revision's config", async () => {
+    const { runtime, transports, restartTimers } = await started()
+    const desired = { rawConfig: { enabled: true, dbPath: "raw-b.db", maxObjectBytes: 4096 }, maintenanceIntervalMs: 222 }
+    void runtime.updateConfig(2, desired)
+
+    transports[0]?.emitExit(9)
+    for (const timer of restartTimers.splice(0)) timer.fn()
+
+    const initialize = transports[1]?.sent.find((message) => message.type === "initialize")
+    expect(initialize).toBeDefined()
+    // Revision and config must come from ONE snapshot. Bumping only the revision would make
+    // the replacement publish a descriptor labelled 2 that actually describes revision 1's
+    // artifact — and §5.3 publishes that descriptor as the active raw target.
+    expect(initialize?.config).toMatchObject({ configRevision: 2, rawConfig: desired.rawConfig, maintenanceIntervalMs: desired.maintenanceIntervalMs })
+
+    // A matching ready recovers rather than going terminal: the crash was self-healing.
+    transports[1]?.emitReady({ configRevision: 2, rawTarget: { configRevision: 2, requested: true, maxObjectBytes: 4096 } })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, ready: true, publishedRevision: 2 })
+  })
+
+  test("terminates the dead generation on fatal instead of leaving the thread alive", async () => {
+    const { runtime, transports } = await started()
+
+    transports[0]?.emitFatal("owner check failed")
+    await Promise.resolve()
+
+    // Terminal means no Worker may ever run again. A live thread nobody reads from keeps the
+    // process alive and stalls the graceful shutdown §7.2 step 5 hands off to.
+    expect(transports[0]?.terminated).toBe(true)
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+  })
+
+  test("shutdown inside the restart backoff settles un-ACKed envelopes instead of returning silently", async () => {
+    const { runtime, transports, restartTimers } = await started()
+    const settlements: Array<HistoryPersistenceOutcome> = []
+    runtime.enqueue(buildEnvelope(buildTerminalRecord("op-backoff-1")), (outcome) => settlements.push(outcome))
+    const drain = runtime.drain()
+
+    // Crash, then shut down before the restart timer fires: no Worker exists and, once
+    // stopped, none will be created — so the ACK that would settle this can never arrive.
+    transports[0]?.emitExit(9)
+    expect(restartTimers).toHaveLength(1)
+
+    let drainError: unknown
+    const drained = drain.then(
+      () => {
+        throw new Error("drain resolved even though its envelope never reached a Worker")
+      },
+      (error: unknown) => {
+        drainError = error
+      },
+    )
+
+    await runtime.shutdown()
+
+    expect(restartTimers).toHaveLength(0)
+    expect(transports).toHaveLength(1)
+    // `failed` is what §8.2 step 6 escalates into a failed shutdown and exit 1 — the correct
+    // report for data that never landed, and the opposite of returning a silent success.
+    expect(settlements).toEqual(["failed"])
+    expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+    await drained
+    expect((drainError as Error).message).toMatch(/shut down while no Worker generation was running/)
+  })
+
   test("each reservation is released exactly once when the runtime goes terminal-failed", async () => {
     const { runtime, transports } = await started()
     // Batch 2b installs this subscriber in production; here it stands in for that wiring so

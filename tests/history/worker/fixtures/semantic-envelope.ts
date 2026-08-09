@@ -23,7 +23,8 @@ import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
  * egress — because a bare `commitTerminal()` record produces zero `v3_tracks` rows, and a
  * persistence assertion that never looks at tracks cannot tell a real commit from a stub.
  */
-export function buildTerminalRecord(operationId = "op-semantic-1"): ModelOperationRecord {
+export function buildTerminalRecord(operationId = "op-semantic-1", options: { readonly text?: string } = {}): ModelOperationRecord {
+  const text = options.text ?? "ok"
   const recorder = createModelOperationRecorder({ identity: { operationId, kind: "generation", createdAt: 1000 } })
   const clientRequest = recorder.registerPayload({ model: "m", messages: [{ role: "user", content: "hi" }] }, { origin: { stage: "ingress", track: "client" } })
   recorder.recordIngress({
@@ -43,13 +44,13 @@ export function buildTerminalRecord(operationId = "op-semantic-1"): ModelOperati
     upstreamRequest: { payload: upstreamRequest },
   })
   const responseFrame = recorder.registerFrame(
-    { type: "content_block_delta", delta: { text: "ok" } },
+    { type: "content_block_delta", delta: { text } },
     { origin: { stage: "upstream-response", track: "upstream", candidate, dispatch } },
   )
   recorder.settleDispatch(dispatch, { verdict: "committed", upstreamResponse: { frames: [responseFrame], status: 200 } })
   recorder.settleCandidate(candidate, { verdict: "winner" })
 
-  const clientPayload = recorder.registerPayload({ role: "assistant", content: "ok" }, { origin: { stage: "egress", track: "client" } })
+  const clientPayload = recorder.registerPayload({ role: "assistant", content: text }, { origin: { stage: "egress", track: "client" } })
   recorder.recordEgress({ upstream: { frames: [responseFrame] }, client: { payload: clientPayload, status: 200 } })
 
   return recorder.commitTerminal({

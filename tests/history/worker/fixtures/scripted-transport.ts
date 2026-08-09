@@ -18,6 +18,8 @@ import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
 export class ScriptedTransport implements HistoryWorkerTransport {
   readonly sent: Array<Record<string, unknown>> = []
   readonly generation: WorkerGeneration
+  /** Whether the runtime asked this generation to die — the observable half of "no Worker leaks". */
+  terminated = false
   private readonly messageListeners = new Set<(value: unknown) => void>()
   private readonly errorListeners = new Set<(error: Error) => void>()
   private readonly exitListeners = new Set<(code: number) => void>()
@@ -41,6 +43,7 @@ export class ScriptedTransport implements HistoryWorkerTransport {
   }
 
   terminate(): Promise<number> {
+    this.terminated = true
     return Promise.resolve(0)
   }
 
