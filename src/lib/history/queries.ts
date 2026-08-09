@@ -278,7 +278,13 @@ function resolveSummaryCursor(
 
   const recent = getRecentModelOperationTerminal(cursor)
   if (recent) {
-    if (recordMatchesQuery(recent, { ...options, operationKind }) && recentMatchesSearch(recent, options.search)) return recentRecordToSummary(recent)
+    // A row the index already holds is the index's to judge whenever the persisted search is
+    // deferred to the sidecar. Applying the overlay's substring test to it rejects cursors the
+    // sidecar counts as matches — a 400 on a page request that is valid under the only semantics
+    // that will still apply once the overlay expires.
+    const indexOwned = deferPersistedSearch && Boolean(options.search) && hasPersistedSummaryMatching(getDatabase(), cursor, { ...options, operationKind })
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && (indexOwned || recentMatchesSearch(recent, options.search)))
+      return recentRecordToSummary(recent)
     throw new InvalidSummaryCursorError(cursor)
   }
 
@@ -417,17 +423,29 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
   }
   const target = freezeHistorySearchTarget(db)
-  // Freeze the overlay's persisted attribution in the SAME pre-await snapshot as the sidecar target.
-  // Reading it after the await instead let a row commit inside the window and fall through both
-  // counters: too late for the frozen target (so `persistedTotal` misses it) yet already persisted
-  // by the time it was classified (so `transientCount` skipped it too), leaving that row visible in
-  // `entries` while `total` did not count it — the `entries.length=1, total=0` shape this path
-  // exists to rule out.
-  const overlayPersistedAtFreeze = new Set(
+  /**
+   * Ids the overlay must NOT contribute, resolved in the SAME pre-await snapshot as the sidecar
+   * target: rows the index can already see are the index's to judge and to count.
+   *
+   * Two failures made this the criterion. Reading it AFTER the await let a row commit inside the
+   * window and fall through both counters — too late for the frozen target, so `persistedTotal`
+   * missed it, yet already persisted when classified, so `transientCount` skipped it as well.
+   * And deciding by "is it persisted?" alone was still wrong even when frozen, because the two
+   * sides do not agree on what matches: the overlay tests a lowercase substring while the index
+   * tokenizes, so searching `orld` against a `hello world` document matches here and not there.
+   * Such a row was shown while nothing counted it — the same `entries.length=1, total=0` shape,
+   * now reachable without any race at all.
+   *
+   * Handing those rows to the sidecar outright removes the disagreement instead of trying to
+   * reconcile it. The overlay keeps only what the index cannot see yet, which is the job it
+   * exists for; and a row's membership stops changing as it crosses the persistence boundary.
+   */
+  const indexOwnedOverlayIds = new Set(
     [...inFlightSummaries, ...recentSummaries]
       .filter((summary) => hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind }))
       .map((summary) => summary.id),
   )
+  const overlaySummaries = [...inFlightSummaries, ...recentSummaries].filter((summary) => !indexOwnedOverlayIds.has(summary.id))
   let persistedRows: Array<EntrySummary> = []
   let persistedTotal = 0
   let persistedHasOlder = false
@@ -457,10 +475,13 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
               startedAt: cursorSummary.startedAt,
               operationId: cursorSummary.id,
               direction,
-              requireMatch: !getInFlight(cursorSummary.id) && !getRecentModelOperationTerminal(cursorSummary.id),
+              // The sidecar must find the cursor unless the OVERLAY owns it. Asking the buses
+              // directly would exempt a recent row the index already holds, and that row is exactly
+              // the one whose match the sidecar has to decide.
+              requireMatch: !overlaySummaries.some((summary) => summary.id === cursorSummary.id),
             }
           : undefined,
-        limit: limit + inFlightSummaries.length + recentSummaries.length + 1,
+        limit: limit + overlaySummaries.length + 1,
         target,
       })
     } catch (error) {
@@ -495,16 +516,16 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
   }
 
   const merged = new Map<string, EntrySummary>()
-  for (const summary of [...inFlightSummaries, ...recentSummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
+  for (const summary of [...overlaySummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
   const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
   const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
   const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
-  // A summary is transient exactly when the frozen snapshot did not already count it: rows the
-  // sidecar returned are in the frozen target by construction, and every other visible row is
-  // classified by `overlayPersistedAtFreeze`, never by a post-await read of the live database.
-  // (The synchronous sibling below keeps its live read — it has no await, so there is no window.)
+  // Every visible row is now counted exactly once, by exactly one side. `persistedRows` came from
+  // the sidecar and are inside `persistedTotal`; everything else is an overlay row the index cannot
+  // see yet, so nothing else counts it. (The synchronous sibling below keeps its live read — it has
+  // no await, and no sidecar, so neither of the two failures above can arise there.)
   const persistedRowIds = new Set(persistedRows.map((summary) => summary.id))
-  const transientCount = visible.filter((summary) => !overlayPersistedAtFreeze.has(summary.id) && !persistedRowIds.has(summary.id)).length
+  const transientCount = visible.filter((summary) => !persistedRowIds.has(summary.id)).length
   const total = persistedTotal + transientCount
   const newest = entries.at(0)
   const oldest = entries.at(-1)
