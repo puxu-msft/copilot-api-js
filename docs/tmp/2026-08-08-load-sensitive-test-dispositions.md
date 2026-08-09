@@ -932,7 +932,77 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
 
 **当前口径：改变判别内容 4 处 = 1 删 + 3 降。** 此前记的「2 删 1 降」在两个方向上都错了：M1 那条已回退（不该再算删），而第 5、7 条的降级此前**漏记**。四处**全部**有替代覆盖（探针 / 因果判据），且每处都有 mutation 证据。
 
+### 用户裁决的落地 · 确定性 oracle + 计时移入独立档（已实施）
+
+**裁决**：后端档（T0.0f 实跑的那档）改用确定性判据；**原计时断言不删**，移到不进后端档的独立 perf 档。两个不变量都不丢，只把噪声移出门。
+
+**动手前先查了两个耦合点，结论是硬门未触发**：
+
+- **不需要新增第六个后缀。** 文件保持 `.it.test.ts`，因此仍在 discovery baseline 的 `files` 集合内。`tests/infra/test-discovery-matrix.unit.test.ts:12` 的 `VALID_SUFFIXES` 只认那五个，新增 `.perf` 会当场判红。
+- **不需要扩 schema 的 `reason` 枚举。** `entry-evidence-schema.ts:1` 的 `whole-suite-skip` 正是给「整个套件被跳过」用的，baseline 里现有 7 条都是 `[GATED — requires …]` 形态的 opt-in 套件，与 perf gate 同形。新增的 skip 用它，**语义不需要拉伸**。
+
+**实施形状**：`describe.skipIf(!PERF_TIER)` 包住计时用例（`RUN_PERF_TESTS=1` 开启），新增 `test:perf` 脚本；后端档里它变成一条**显式 allow-listed skip**，而不是凭空消失。baseline `allowed_skipped` 35 → 36，条目 identity **取自真实 JUnit 输出**（含 XML 转义，手写必错），插入后用 `parseDiscoveryBaseline` 复验。
+
+**确定性 oracle 的做法**：包住 `db.prepare` 跑一次真实 commit，收集**生产实际发出的**语句，再对其中读 history 量级表的 SELECT 逐条跑 `EXPLAIN QUERY PLAN`，断言没有 `SCAN`。**不在测试里重写 SQL**——那只能证明那份副本。
+
+| 方向 | 观测 |
+|---|---|
+| 健康 | `readsInspected 22, scans 0`；连跑三次**逐字相同**（零方差，与计时判据的 0.13–11.88 摆动形成对照） |
+| mutation：`insertObject` 点查 → 全表扫描 | 22 条里 **21 条**变成 `SCAN v3_objects`，失败并附计划明细 |
+| 反空洞 | 断言 `reads.length > 0`；否则「commit 不再读这些表」会让全部断言空真通过 |
+| 独立档实跑 | `bun run test:perf` → **4 pass / 0 fail**，`HISTORY_V3_PERF history-length` 真的打印（cold 1.96 / hot 1.76 / ratio 0.89），**不是死代码** |
+| 后端档 | **3 pass / 1 skip / 0 fail** |
+| 守卫 | schema + discovery-matrix + validate + 该文件共 **54 pass / 1 skip / 0 fail** |
+
+**边界（已写进测试注释，不止写在这里）**：「查询计划不退化」**窄于**「耗时不随历史增长」。它**看不见**：保持索引计划的 N+1 点查、JS 侧的 per-operation 工作、行**体积**增长、以及本次 commit 未走到的代码路径上的扫描。**这正是计时断言被 gate 而不是删除的理由。**
+
+### 未处置 #7 的重估：**不撤下，改写敞口**
+
+`#7` 记的是「**ratio 自归一化**吸收了缺陷」，oracle 抓的是「**查询计划退化**」——**两者不是同一件事**，不能因为「这一块整体改好了」就勾掉。逐项对照：
+
+| #7 里记的内容 | 现状 |
+|---|---|
+| 那次具体 mutation（点查 → 全表扫描 + 逐行解压） | **已被 oracle 覆盖**，且是确定性的（21/22 SCAN），比原计时判据强得多 |
+| 一般性结论「ratio 会把冷热同时变慢的缺陷吸收掉」 | **仍然成立**，ratio 的数学性质没变 |
+| 「保持索引计划、但成本随历史增长」的缺陷类 | **两者都不覆盖**——oracle 按定义看不见，而计时判据本就吸收它 |
+
+**而且这一轮之后，这块敞口在门上变大了**：计时断言虽未删除，但已移出后端档，所以**后端档不再对「非计划类的历史依赖」做任何尝试**。原先它至少还有一个（噪声很大、鉴别力弱的）尝试。
+
+**所以 #7 改写为**：「后端档对『保持索引计划的历史依赖成本增长』**零覆盖**；perf 档有一条计时判据，但已实测它对该缺陷类鉴别力弱（改前 3.37 / 改后 4.62，阈值 5，均不红）。**现在由谁守：没有人真正守住它**——oracle 守计划、perf 档的计时判据守不住，且不在门上。」这条**留在清单里**，并升级描述，不撤下。
+
+### 「改变判别内容」的条数在 oracle 改造后是否要改
+
+**内容层面仍是 4 处（1 删 + 3 降），计时断言不构成第五处「删/降」**——它的断言表达式 `expect(commitRatio).toBeLessThan(5)` **逐字未变**，阈值、形态、语义都没动，仍然会被执行。
+
+**但只写「4 处」会漏掉一件真实发生的事**，所以补一个**独立维度**，不要混进原表：
+
+| 维度 | 计数 | 说明 |
+|---|---|---|
+| **断言内容改变** | **4**（1 删 + 3 降） | 与之前一致，oracle 改造没有新增 |
+| **从后端档移出（内容不变）** | **1** | 计时用例被 `describe.skipIf` gate 到 perf 档 |
+| **新增判据** | **1** | 确定性 query-plan oracle（净增，不抵消上面任何一项） |
+
+**为什么要分开数**：「断言变弱了吗」与「门上还有它吗」是两个问题，合成一个数字必然误导——一条**内容一字未改**的断言，移出门之后对 T0.0f 的作用等于零。本轮这个数已经被数错两次，正是因为想用单一数字回答多个问题。
+
+### 反直觉口径：**「多一条 skip」≠「少一条 executed」**（已实测，别改 `minimum_executed`）
+
+把一条用例 gate 掉之后，很自然会担心 baseline 的 `minimum_executed: 7297` 这条**下限**会因为少跑一条而判红——而且这种红**只在 entry evidence 的 producer/validator 里现形，本地 `bun test` 完全看不出来**，属于最容易漏的那一类。协调方据此推理需要下调下限。
+
+**实测否掉了这个推理**（合并态全后端）：
+
+```
+16 shards · 6147 tests · 6147 pass · 0 fail · 7297 executed · 36 skipped · 85.13s
+```
+
+`executed` **仍是 7297**，与下限恰好相等；`diff-skips` 的 `unexpected` / `missing` 双空。**根因：JUnit 的 `executed` 把 skipped 用例一并计入**，所以 gate 掉一条只会让 `skipped` 35 → 36，不会让 `executed` 下降。
+
+**因此 `minimum_executed` 不动。** 记在这里是因为下一个 gate 掉用例的人极可能重复同一条推理、去「顺手」下调下限——**那会在没有任何缺陷的情况下放松一条真实的下限**，而且改完照样全绿、没有任何信号提示它错了。
+
+**顺带**：本次 `N tests` 报 **6147**，而 `executed` 恒 7297 —— 未处置 #6（`N tests` 字段不可信）再获一次印证。
+
+
 ### M2 · `bus.unit.test.ts` 的 `DEADLINE_MS` 与上界（已处置）
+
 
 
 
@@ -1113,8 +1183,8 @@ duplicate suite identity (sorted pos)    -> REJECTED: allowed_skipped are not un
    同族背景（**背景，不是本条的结论**）：`docs/memory/methodology-false-red-from-process-global-quantities-not-the-mechanism.md` 记的 `driver.unit.test.ts` 那一例断言的是集合**为空**、且被无关模块的定时器染红；这里有 `> 2_000` 的过滤，形态并不相同。
 4. **`docs/DESIGN.md:82` 对 `guardCallback` 的描述。** 它写「所有上游-WS lifecycle 回调……包 `guardCallback`……（子进程 fault-injection 证明）」——**该陈述本身不假**（`handleClose` 确实被包），但它引用的「子进程 fault-injection 证明」正是本轮第 3 条那个测试，而该测试实际先被 `notifyClosed` 自己的 try/catch 吸收。是否要在 DESIGN.md 补上「两层」这一笔，超出本轮范围，交裁决。
 5. ~~**`bus.unit.test.ts` 的 `expect(elapsed).toBeLessThan(DEADLINE_MS * 4)` 能否放宽。**~~ **已由 M2 关闭，不再需要裁决。** 原登记的前提（「要么保覆盖、要么降敏感，二选一」）是错的：那个二选一只在 `DEADLINE_MS` 钉死为 50 时成立。M2 保持上界的相对形状 `DEADLINE_MS * 4` 不变、把 fixture 的 deadline 放大到 500，鉴别力与绝对余量同时拿到（实测三行见 M2 节）。**不涉及放宽既有 guard。**
-6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后恒 35）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。
-7. **`store-performance.it.test.ts` 的「commit 成本不随历史长度增长」判据对该缺陷类鉴别力弱。** 实测：注入「按 hash 点查退化为全表扫描 + 逐行解压」后，**改前写法 ratio 3.37、改后写法 ratio 4.62，双双低于阈值 5，都不红**。根因是 ratio 的自归一化——该缺陷让冷热两端一起变慢。这是**既有局限**（改前改后同样存在，已用并跑对照钉死），不是 M1 引入的。收紧阈值或换判据形状都属于改既有 guard，须独立裁决。
+6. **`scripts/parallel-test.ts` 汇总行的 `N tests` 字段不稳定。** 同一份代码多次 `test:backend` 报 4856 / 5396 / 6394 / 4639 / 4900 / 6744 / 4849 / 4943 / 6147，而 `executed` 恒为 **7297**（`skipped` 在 baseline 刷新前恒 31、之后 35，perf gate 后 36）。成因未定位。影响面超出本轮：**任何引用该字段的历史数字都可能是错的**。建议单独派一次排查。**另注意 `executed` 计入 skipped**，见上文「多一条 skip ≠ 少一条 executed」。
+7. **`store-performance.it.test.ts` 对「保持索引计划的历史依赖成本增长」这一缺陷类零覆盖（本轮**扩大**了敞口，不是缩小）。** 原记的是「ratio 自归一化吸收缺陷」；确定性 oracle 落地后重估结论是**不撤下**：oracle 抓的是**查询计划退化**，与 ratio 的自归一化**不是同一件事**。三分：①#7 原引的那次 mutation（点查→全表扫描）**已被 oracle 确定性覆盖**；②「ratio 会吸收冷热同时变慢的缺陷」这条一般性结论**仍成立**；③「保持索引计划、成本却随历史增长」**两者都不覆盖**。且计时判据已移出后端档，故**后端档对该类零尝试**——现在**没有人真正守住它**。
 8. **`tests/transport/http2-generation-reconcile.it.test.ts:377` 是套件里的又一条 flaky。** 「row 1 — pre-header req.error」在一次合并态 `test:backend` 里报 `test setup: server stream/session missing`，同 HEAD 隔离单跑该文件 11 pass。与本轮改动无关（本轮只碰 `store-performance.it.test.ts`）。**它会和 M1 一样打掉 T0.0f 的 15 连跑**，建议单独派修。
 
 ## 本轮的分类判断被实测推翻过几次
