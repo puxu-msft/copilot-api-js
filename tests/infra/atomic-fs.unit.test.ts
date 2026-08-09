@@ -239,27 +239,40 @@ describe("createSerializedAsyncFn", () => {
     expect(parsed.n).toBe(49)
   })
 
-  test("without serialization, last-invoked write is NOT guaranteed to win (regression guard)", async () => {
-    // Documents the failure mode the helper exists to prevent. With raw
-    // atomicWriteJson and reverse-staggered delays (first call sleeps longest),
-    // the LAST-INVOKED call (n=2) is the FIRST to attempt the write, so an
-    // earlier-invoked but later-completing call's older snapshot can overwrite
-    // it. The key invariant is "last invocation is not guaranteed to win" —
-    // we deliberately don't pin which earlier value lands to keep the test
-    // resilient to CI scheduling jitter.
+  test("without serialization, an earlier-invoked write overwrites a later-invoked one (regression guard)", async () => {
+    // Documents the failure mode `createSerializedAsyncFn` exists to prevent: with raw
+    // `atomicWriteJson`, what lands on disk is decided by PHYSICAL write order, so the last
+    // invocation has no claim on the final state.
+    //
+    // This used to be expressed as reverse-staggered sleeps plus `expect(n).not.toBe(2)`, which is
+    // not a valid way to state it: "not guaranteed to win" means "sometimes loses", and a single
+    // sample cannot express "sometimes". Its own comment conceded the outcome was scheduler-decided
+    // ("Allows n=0 or n=1 depending on scheduler") while asserting it deterministically — so when
+    // the scheduler let n=2 land first, it went red on the 6th gate round with nothing broken.
+    //
+    // Restated as a deterministic construction with NO timers: the first-invoked call is held at a
+    // gate, the last-invoked call is awaited to completion, and only then is the first released.
+    // Physical order is fixed by construction, so the outcome is exact rather than "not 2".
     const target = path.join(workDir, "racing-raw.json")
-    const slowWrite = async (n: number, delayMs: number) => {
-      await new Promise((r) => setTimeout(r, delayMs))
-      await atomicWriteJson(target, { n })
-    }
+    let releaseFirst!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
 
-    await Promise.all([slowWrite(0, 30), slowWrite(1, 15), slowWrite(2, 0)])
+    const firstInvoked = (async () => {
+      await gate
+      await atomicWriteJson(target, { n: 0 })
+    })()
+    await atomicWriteJson(target, { n: 2 }) // invoked LAST, completes FIRST
 
-    const raw = await fs.readFile(target, "utf8")
-    const parsed = JSON.parse(raw) as { n: number }
-    // The slowest-scheduled call (n=0) finishes last and overwrites later-
-    // invoked calls. Loose assertion: not n=2 (which serialized version would
-    // guarantee). Allows n=0 or n=1 depending on scheduler.
-    expect(parsed.n).not.toBe(2)
+    // The later invocation really did land — without this, the final assertion could pass simply
+    // because n=2 was never written.
+    expect((JSON.parse(await fs.readFile(target, "utf8")) as { n: number }).n).toBe(2)
+
+    releaseFirst()
+    await firstInvoked
+
+    const parsed = JSON.parse(await fs.readFile(target, "utf8")) as { n: number }
+    expect(parsed.n).toBe(0)
   })
 })
