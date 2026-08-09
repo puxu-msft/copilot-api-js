@@ -129,7 +129,11 @@ function replaceOut(fixture: { tree: string; out: string; entrySha: string }, ou
 }
 
 describe("capture-entry-evidence", () => {
-  function runBaselineSummaryFixture(runnerExitCode: number, summary?: string): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
+  function runBaselineSummaryFixture(
+    runnerExitCode: number,
+    summary?: string,
+    options: { minTests?: string } = {},
+  ): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
     const tree = mkdtempSync(path.join(os.tmpdir(), "baseline-summary-"))
     const out = path.join(tree, "out")
     const scriptDir = path.join(tree, "exp/inter-block-anchor-allocator")
@@ -155,7 +159,7 @@ exit ${runnerExitCode}
     try {
       const result = Bun.spawnSync(["bash", path.join(scriptDir, "baseline-runs.sh"), "bash", fakeRunner], {
         cwd: tree,
-        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: "10" },
+        env: { ...process.env, OUT: out, RUNS: "1", MIN_RUNS: "1", MIN_TESTS: options.minTests ?? "10" },
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -195,8 +199,28 @@ exit ${runnerExitCode}
   ])("baseline runner rejects count-shaped non-summary lines: %s", (summary) => {
     const { result, log } = runBaselineSummaryFixture(0, summary)
     expect(result.exitCode).toBe(1)
-    expect(log).toContain("=== tests seen   : none")
-    expect(new TextDecoder().decode(result.stderr)).toContain("reported no tests")
+    expect(log).toContain("=== no summary  : the log has no [parallel-test] summary line")
+    expect(new TextDecoder().decode(result.stderr)).toContain("produced no recognizable [parallel-test] summary line")
+  })
+
+  // "No summary at all" must not be routed through the MIN_TESTS floor: that
+  // comparison is `0 -lt MIN_TESTS`, which is false when the caller's floor is 0,
+  // and the discovery-baseline schema accepts a 0 floor. Without its own gate this
+  // run would be graded green while the wrapper understood nothing about it.
+  test("baseline runner fails an unrecognizable summary even when MIN_TESTS is 0", () => {
+    const { result, log } = runBaselineSummaryFixture(0, "[parallel-test] something entirely different", { minTests: "0" })
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== no summary  : the log has no [parallel-test] summary line")
+    expect(new TextDecoder().decode(result.stderr)).toContain("produced no recognizable [parallel-test] summary line")
+  })
+
+  // The floor and the summary gate are different questions; a run whose summary
+  // parses fine but reports too few tests must still be graded by the floor.
+  test("baseline runner keeps reporting a real count against the floor", () => {
+    const { result, log } = runBaselineSummaryFixture(0, undefined, { minTests: "11" })
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== tests seen   : 10")
+    expect(new TextDecoder().decode(result.stderr)).toContain("MIN_TESTS=11")
   })
 
   test("rejects a lexical outside symlink parent whose missing child resolves inside TREE", () => {
