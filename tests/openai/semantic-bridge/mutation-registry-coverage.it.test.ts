@@ -93,7 +93,12 @@ function runtimeKnownLossNames(): Array<string> {
     // `test.skip` is precisely the evasion this registry documents under its own ACT-COVERAGE-SKIP-*
     // rows. Dropping them here rather than asserting separately makes the skipped name fall out of
     // the runtime set, so the join reports it as missing and names it.
-    return [...readFileSync(reportPath, "utf8").matchAll(/<testcase name="(KNOWN-LOSS：[^"]+)"[^>]*(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+    // `[^>]*?` must stay lazy. Greedy, it swallows the `/` of a self-closing tag, so the alternation
+    // takes the `>` branch and `[\s\S]*?` runs on to the *next* case's `</testcase>` — dragging that
+    // one's `<skipped` into this one's body and dropping a case that actually ran. The engine does
+    // not backtrack to try `/>` because the `>` branch already succeeded. Measured on three cases
+    // with only the middle one skipped: greedy yields ["gamma"], lazy yields ["alpha","gamma"].
+    return [...readFileSync(reportPath, "utf8").matchAll(/<testcase name="(KNOWN-LOSS：[^"]+)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
       .filter((match) => !(match[2] ?? "").includes("<skipped"))
       .map((match) => match[1].replaceAll("&quot;", '"').replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">"))
   } finally {
