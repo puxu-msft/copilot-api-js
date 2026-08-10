@@ -39,7 +39,7 @@ shutdown 不设置自己的排空 deadline，也不发布 request abort。请求
 
 registry 清零后，进程进入 `finalizing`：
 
-1. `RequestContextManager.drainModelOperationFinalizations()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。
+1. `RequestContextManager.drainLifecycleFailures()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。（该方法在 2026-08-09 由 lifecycle Task 4 从 `drainModelOperationFinalizations` 改名；`ShutdownDeps`／`FinalizeDeps` 上的同名**字段**尚未跟改，那是 Task 6 的活。）
 2. 释放 token runtime，随后关闭上游 WebSocket 与 h2 池。此时不存在会被 teardown 中断的 operation。
 3. `shutdownHistory()` 排空 terminal subscriber／V3 writer并关闭数据库。
 4. `shutdownRequestTelemetry()` 封闭 config 订阅与 timer producer，排空 pending delta 并关闭数据库。

@@ -191,7 +191,7 @@ Canonical finalizer reject 时：
 1. 状态变为 `failed`；
 2. manager 释放 tracked operation，避免永久内存驻留；
 3. 错误进入 `modelOperationFinalizationFailures`；
-4. `drainModelOperationFinalizations()` 抛 `AggregateError`；
+4. `drainModelOperationFinalizations()` 抛 `AggregateError`；（实现期该 manager 方法已改名为 `drainLifecycleFailures()`——本行保留冻结时的措辞，读代码时按新名找。）
 5. shutdown 最终进入 `failed` 并以失败退出，不能打印成功完成。
 
 资源 registry 收敛与 durability verdict 是两个独立不变量；前者不能靠永久保留对象表达后者。
