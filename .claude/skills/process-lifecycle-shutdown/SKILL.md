@@ -13,7 +13,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 |---|---|---|
 | `idle` | SIGINT／SIGTERM | 停止 ingress，无损 drain 已接纳 operation，再执行 durability finalization |
 | `idle` | SIGUSR2 | 启动同一无损 drain，并保留 `signal === "SIGUSR2"` 供 handoff-only flush／freeze 使用 |
-| `stopping`／`draining`（**仍在等请求**） | 此后**第一个** SIGINT／SIGTERM | 放弃等待 drain：用请求级原语（`reapInFlight()` + `fail()`）中止残余 operation，**随后照常走完 finalize**——持久化一个都不跳过。终态 attribution 打 `shutdown`／`operator-abandoned-drain` |
+| `stopping`／`draining`（**仍在等请求**） | 此后**第一个** SIGINT／SIGTERM | 放弃等待 drain：用请求级原语（`reapInFlight()` + `fail()`）中止残余 operation，**随后照常走完 finalize**——持久化一个都不跳过。终态 attribution 打 `shutdown`／`operator-abandoned-drain`。⚠️ `stopping` **还覆盖 drain 开始之前的等待**，那时本档够不到任何东西——见下方边界③ |
 | `stopping`／`draining` | 此后**第二个** SIGINT／SIGTERM | 立即 `process.exit(128+signal)`；SIGINT=130、SIGTERM=143 |
 | `finalizing`／`notifying`／`failed` | 下一个 SIGINT／SIGTERM | **立即**强退，不走放弃档——此处在等的就是 durability barrier 本身，而那正是逃生舱要逃离的东西 |
 | 非 `idle`、非 `stopped` | SIGUSR2 | 幂等返回已有 shutdown task，不强退、不重新执行 handoff-only 副作用，**不参与档位升级** |
@@ -21,7 +21,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain** 请求而非强退请求，第二个才强退；反过来，SIGINT／SIGTERM 启动 shutdown 后再收到 SIGUSR2，SIGUSR2 仍只是幂等交接。
 
-放弃档的两个已知边界：它够不到 lightweight operation（`LightweightInFlightOperation` 是只读描述符、无取消面），且若某 operation 已 logically failed 却仍占着 registry，`fail()` 会被去重、未必让它离开——两种情况下强退档仍是出路。裁决见 ADR `docs/decisions/2026-08-10-three-tier-shutdown-signal-contract.md`。
+放弃档的三个已知边界，**强退档是三者共同的出路**：① 够不到 lightweight operation（`LightweightInFlightOperation` 是只读描述符、无取消面）；② **已 settled 但仍在 finalizing 的 operation 被有意跳过**——`releaseTrackedOperationIfTerminal` 在 `blocker !== "none"` 时是有意 no-op，这类 ctx 会留在 registry 里，而对它调 `reapInFlight()` 会中止其 finalization 正在用的 lifecycle signal，等于毁掉本档要保的持久化，所以只计数、不触碰；③ `stopping` **还覆盖 drain 开始之前的等待**（`drainAdmissionHandoffs`、handoff freeze），那时 `activeDrainSource` 仍为 null，本档够不到任何东西，横幅会如实说「drain 尚未开始」而非谎报 flushing。裁决见 ADR `docs/decisions/2026-08-10-three-tier-shutdown-signal-contract.md`。
 
 `stopped` 只表示 generation 与 lightweight 两个 in-flight registry 均清零、History terminal、Telemetry outbox、Diagnostic WAL／sink、终态通知和资源 close 全部成功。持久化失败进入 `failed` 并 exit 1，不能 resolve 成功 latch。
 
@@ -87,7 +87,7 @@ SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain
 
 请求只由请求级机制结束：正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout、request lifecycle cancel 或真实上游错误。
 
-2026-08-08 起 bundled `request_deadline=0`、`stale_request_max_age=0`，避免仅凭 wall-clock 误杀无上界合法思考。运维显式设正值才启用。两者都为 0 时首信号可能无限等待真正泄漏的请求；操作者用 SIGINT／SIGTERM 显式强退，而不是在 shutdown 内另造隐式 deadline。
+2026-08-08 起 bundled `request_deadline=0`、`stale_request_max_age=0`，避免仅凭 wall-clock 误杀无上界合法思考。运维显式设正值才启用。两者都为 0 时首信号可能无限等待真正泄漏的请求；界由操作者按上表的档位显式划下——第二个终止信号放弃 drain 但仍 finalize，第三个才强退——而不是在 shutdown 内另造隐式 deadline。
 
 ## 持久化与后台维护分流
 
@@ -100,7 +100,7 @@ SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain
 
 - listener `close(false)` 的 best-effort 错误可记录后继续；不存在首信号 `close(true)`。
 - token／History／Telemetry／Diagnostic durability barrier reject 是 shutdown failure：状态 `failed`、exit 1，不能打印 success。
-- lifecycle 已进行时的 SIGINT／SIGTERM 是用户显式放弃请求与 durability：立即 130／143。
+- lifecycle 已进行时的 SIGINT／SIGTERM 按上表分档：仍在等请求时第一个放弃 drain 但**不**退出、第二个才 130／143；已越过请求排空则下一个立即 130／143。
 - `uncaughtException`／`unhandledRejection` 保持全局 fail-fast。
 
 ## 测试与实证 oracle
@@ -115,7 +115,7 @@ SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain
 - `model-operation-bypass.http`：真实 count_tokens／embeddings 入口在 terminal publish 前留在 lightweight in-flight registry，shutdown 不提前关闭 token／History／Telemetry／Diagnostic。
 - `shutdown-messages-lossless.http`：真实 `/v1/messages` 长流在 drain 中继续产帧并以 History `completed` 终态收口；已建 context 的 401 经真实 token-refresh strategy 在 drain 中完成 refresh 与第二次 exchange；pre-content clean EOF 在 drain 中发起 fresh recovery exchange。token runtime 与 durability 资源只在这些请求 terminal publish 后关闭。
 - `request-deadline.it`：显式正值能终止，0 不误杀。
-- `shutdown-sigusr2` 与 PTY：SIGUSR2 幂等、SIGINT／SIGTERM 强退、runtime PID 信号路由与 raw-mode 恢复。
+- `shutdown-sigusr2` 与 PTY：SIGUSR2 幂等、三档升级（第二个信号不退出、第三个才 130／143）、runtime PID 信号路由与 raw-mode 恢复。
 - controllable durability barriers：barrier 前 `waitForShutdown` 不 resolve。
 
 尚未由 shutdown 交叉测试直接证明：首信号后新建 upstream WS。已建 context 的 token refresh、新建 h2 与 pre-content recovery 均有直接证据；不得把 h2 证据扩大成所有 transport 实现均已覆盖。
@@ -124,7 +124,8 @@ SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain
 
 - fixture 输出 runtime `process.pid`，驱动向该 PID 发 SIGUSR2，确认 runtime／launcher 都仍存活且无 second-termination 日志。
 - 第一次 Ctrl+C 反馈“graceful shutdown started”，恢复 ICANON／ECHO。
-- 第二次 Ctrl+C 反馈“abandoning the drain wait”，且**进程必须仍然活着**（`tier2Alive`）——这是放弃档与强退档唯一的可观测差别，PTY 是唯一不经 mock 证明它的层。
+- 第二次 Ctrl+C 反馈“Second termination signal”，且**进程必须仍然活着**（`tier2Alive`）——「不退出」是放弃档与强退档唯一的可观测差别，PTY 是唯一不经 mock 证明它的层。
+- **别把这一层读成更多**：fixture 的 `gracefulShutdownFn` 是永不 resolve 的 promise，进程根本到不了 drain，所以它实跑打印的是「drain 尚未开始」那一支，**没有走过任何一次真实的 drain abandonment 或 flush**（它也因此顺带钉住了「无 drain 可弃时不得谎报 flushing」）。真实的中止 + finalize 由组件层证明——只有那一层能注入 drain source。**没有任何一层证明「第二档之后进程会自己干净 exit 0」**；要那个结论得先补一条能跑完真实 drain 的 fixture。
 - 第三次 Ctrl+C 在硬超时内 exit 130。
 - 连跑 8–25 次证时序确定性；waitpid 必须有硬 deadline，并保存中途已 reap 的 status。
 
@@ -158,4 +159,4 @@ SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain
 5. `git apply --reverse --check <patch>`，再 `git apply --reverse <patch>`。
 6. 重跑同一目标测试确认复绿，并 `git diff -- src/lib/shutdown.ts` 确认为空。
 
-①的 patch 未归档；需要它时按同一表格形态自行冻结（只删除 `if (!isTerminationSignal(signal)) return shutdownPromise` 一行，目标测试为组件与 PTY 门）。
+①的 patch 未归档；需要它时按同一表格形态自行冻结——变异内容是**删掉 `handleShutdownSignal` 里那条非终止信号的早返回**（用 `rg -n 'isTerminationSignal' src/lib/shutdown.ts` 定位，取函数体内那一行、不是 `:592` 的定义），目标测试为组件与 PTY 门。**别照抄任何一份文档里的那行字面量去 `git apply`**：它已经漂过一次（文档写的是 `return shutdownPromise`，源码实际是 `return shutdownPromise ?? undefined`），而 patch 匹配失败时的报错看起来像环境问题、不像文档过期。

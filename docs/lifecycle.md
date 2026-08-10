@@ -60,7 +60,7 @@ registry 清零后，进程进入 `finalizing`：
 
 第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时由 `EmergencyOutput` best-effort 写 stderr。它不经过 consola adapter、observability bus、StructuredFileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志走 canonical `system.diagnostic` 管线。finalize 聚合 History/Telemetry/diagnostic 三个 barrier：writer drop/error 是 sticky failure，发布 `system.shutdown_failed` 且不 resolve 成功 latch；只有全部 durability barrier 成功才发布唯一 finalized wire 终态并进入 stopped。
 
-纯 JavaScript 信号回调只能在事件循环获得调度时运行。主树 History finalize 已把 zstd 放到 libuv，并分片搜索索引，但大型 `JSON.stringify` 与短同步 SQLite transaction 仍可能造成有界延迟；第二信号一旦进入 JS handler，绝不再等待这些 barrier。若未来实测同步块重新增长，必须继续把 CPU prepare 移出主线程，而不是削弱两信号契约。
+纯 JavaScript 信号回调只能在事件循环获得调度时运行。主树 History finalize 已把 zstd 放到 libuv，并分片搜索索引，但大型 `JSON.stringify` 与短同步 SQLite transaction 仍可能造成有界延迟；**第三档**信号一旦进入 JS handler，绝不再等待这些 barrier（第二档相反——它就是要走完 barrier）。若未来实测同步块重新增长，必须继续把 CPU prepare 移出主线程，而不是削弱信号分档契约。
 
 `bun run dev` 使用 `bun --watch`。若 watch 父子进程把用户的一次 Ctrl+C 分别转发成两个 SIGINT，进程会按统一契约把第二个信号解释为强退；这是刻意保持“第二个进程信号永远是逃生舱”的结果，而不是再引入按时间猜测“重复信号”的特殊窗口。需要验证完整持久化关闭时，应使用 `bun run start`；watch 模式的首要目标是快速结束开发进程树。
 

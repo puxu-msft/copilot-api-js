@@ -6,7 +6,7 @@
  * - formatActiveRequestsSummary
  * - drainActiveRequests
  * - lossless orchestration (stop ingress → drain → finalize)
- * - two-signal contract (first starts graceful shutdown, second exits immediately)
+ * - three-tier signal contract (first starts graceful shutdown; the second abandons the drain but still finalizes; the third exits immediately)
  * - Middleware integration (503 rejection during shutdown)
  * - Error resilience (server.close failures)
  */
