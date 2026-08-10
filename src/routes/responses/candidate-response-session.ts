@@ -25,6 +25,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
@@ -76,7 +77,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
           state.diag.observe(raw)
           if (!raw.data || raw.data === "[DONE]") return
           try {
-            accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+            accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
           } catch (error) {
             consola.error("[Responses:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
           }

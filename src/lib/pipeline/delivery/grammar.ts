@@ -64,6 +64,12 @@ export function createDeliveryGrammar({ mode }: CreateDeliveryGrammarOptions): D
   const acceptTerminal = (terminal: Extract<DeliveryFrameClass, { kind: "response-terminal" }>["terminal"]): ReadonlyArray<DeliveryOutcome> => {
     if (mode === "unit" && openUnit) {
       const discard = discardOpen("response terminal arrived with an open unit")
+      // A failed terminal arriving mid-unit is NOT a protocol violation — upstream may die at any point, including halfway through a block — and classifying it as one is why an H2 error mid-block is retried as a truncation.
+      // Emitting the failed terminal here instead was tried and reverted: it makes `sawUpstreamError` true, and the buffered path's terminal-commit drain then flushes its whole buffer, including the frames of the block that never closed.
+      // Measured cost of that trade: the client received `content_block_start` + a delta with no `content_block_stop`, followed by two terminals (the upstream error and a synthesised truncation error). A malformed block is worse than a wasted retry.
+      // Fixing it properly needs the drain to drop frames past the last commit boundary, which requires block-level awareness the compatibility-era driver does not have — that is Task 4's owner cutover (`consume(outcome, adapter)`).
+      // Note what `discardOpen` below does and does not do: the `discard-open-unit` outcome it returns has no consumer anywhere in `src/`, so discarding here clears this grammar's own accumulation and nothing else. "Discarded by the grammar" is not "never sent to the client" — those are two different buffers until Task 4 joins them.
+      // Until then the mid-block shape stays defective, tracked in docs/todo/deferred-backlog.md.
       return enterError([
         ...(discard ? [discard] : []),
         error("terminal-with-open-unit", "response terminal arrived before the open unit closed", terminal.sourceFrame, undefined),
