@@ -30,8 +30,8 @@ import {
 } from "node:os"
 import { join } from "node:path"
 
-/** Unique high port. NEVER 4141 — that is the user's own server. */
-const PORT = 42731
+/** Unique high port per run. NEVER 4141 — that is the user's own server — and randomised because this repo routinely has concurrent agent sessions running tests, where a fixed port is a collision waiting to happen. */
+const PORT = 42000 + Math.floor(Math.random() * 2000)
 /** Long enough to outlive boot and prove the wait was real, short enough to run. */
 const DEADLINE_MS = 6000
 const V3_OWNER_MARKER = "copilot-api-history-v3"

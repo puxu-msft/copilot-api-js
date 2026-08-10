@@ -18,6 +18,8 @@ import {
 import { state } from "~/lib/state"
 
 let seedDb: { path: string, db: ReturnType<typeof openOwnedHistoryDatabase> } | undefined
+/** The seed handle outlives every individual test by design (reopening per test would be pure cost), so the close has to hang off process exit — the same shape `historyTestDbPath` uses for its temp dir. */
+let seedDbExitHookInstalled = false
 
 /**
  * A short-lived WRITE handle on the artifact under test, for seeding rows directly.
@@ -34,6 +36,10 @@ function seedWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
   const db = openOwnedHistoryDatabase(path)
   ensureV3Schema(db)
   seedDb = { path, db }
+  if (!seedDbExitHookInstalled) {
+    seedDbExitHookInstalled = true
+    process.on("exit", () => seedDb?.db.close())
+  }
   return db
 }
 

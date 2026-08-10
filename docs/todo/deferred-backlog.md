@@ -1273,3 +1273,20 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：Batch 6 加 `set-pinned` 协议消息对（`protocol.ts` 的 main→worker / worker→main 两侧 + `parseBase` 的类型分支），走 `runtime.ts` 已有的相关请求通道 `request<T>()`（含 worker 重启后的 `reissue`），backend 侧调用现有的 `setV3OperationPinned(id, pinned, db)` 纯 primitive。`setPinned` 随之由同步 `boolean` 变 `Promise<boolean>`，route handler 需 `await`；届时删除 `HistoryPinUnavailableError` 与 handler 里的 503 分支。
 - **为何暂缓**：用户 2026-08-09 在「提前搬进 Worker／接受窗口期不可用／拆独立小批次」三个选项中裁决**接受窗口期不可用**，依据 CLAUDE.md 「无向后兼容负担：允许短期报错／功能不可用」。提前搬需要新增协议消息，会把 2b 的范围推出已评审边界，并预支 Batch 6 的 RPC 形状。
 - **触发条件（必做，不是可选）**：Batch 6 的 query-RPC cutover。验收 oracle：上面「待恢复的契约」三条全绿，且 `rg -n 'HistoryPinUnavailableError' src/` 为空。
+
+## History persistence status 把已切换的后端仍报为 `legacy`（2026-08-09，Batch 2b 独立评审 minor）
+
+- **根因 / 现状**：`src/lib/history/worker/status.ts` 的 `getHistoryPersistenceStatus(backend = "legacy")` 有个**默认参数**，而两个生产消费者——`src/routes/status/route.ts` 与 `src/lib/metrics-exposition.ts`——都**不传参**。Batch 2b 之后 terminal 持久化实际全部经 Worker，但 `/api/status` 与 metrics 里的 `backend` 字段恒为 `"legacy"`。这是**面向运维的谎报字段**：它正是运维用来判断「持久化到底在哪条路径上」的那一个值。
+- **为什么不能顺手把默认值改成 `"worker"`**：`composeHistoryPersistenceStatus` 对 `backend === "worker"` 会额外断言 `admission.unacked === runtime.pendingEnvelopes`，**不等就抛**。这两个计数由 admission 与 Worker 在**不同时刻**更新，瞬时不等是可能的；一旦不等，`/api/status` 会 500——把一个「字段值不对」换成「端点挂掉」，比现状更糟。所以正确修法不是改默认值，而是**先决定那条一致性断言的归属**：它是「状态组装的不变量」还是「诊断用的告警」？若是后者，应改为在快照里带一个 `mismatch` 标志而不是抛；若是前者，则要证明两者在快照点必然一致（需要在同一临界区取两个计数）。
+- **理想架构 / 若做需改什么**：① 去掉 `backend` 的默认参数，让调用方**必须**显式说明（默认参数正是这次说谎的机制——它让「没人传」看起来像「传了 legacy」）；② cutover 之后 `"legacy"` 在生产已不可达，考虑整体删除该联合成员，让类型系统直接拒绝这个状态；③ 同时处理上面那条一致性断言的归属。
+- **为何暂缓**：`②` 会牵动既有测试的断言，`③` 是行为决策（抛 vs 报告），都超出「收尾顺手修」的范围，而错误值本身不影响持久化正确性。
+- **触发条件**：下一次动 `/api/status` 的 History 段、或 Batch 6 的 query-RPC cutover（那时 backend 语义还会再变一次），两者取先到者。
+- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/tmp/2026-08-09-batch2b-review-gpt.md`）。
+
+## semantic-write 架构守卫问的是拼写、不是能力（2026-08-09，Batch 2b 独立评审 minor）
+
+- **根因 / 现状**：`tests/architecture/history-worker-boundaries.unit.test.ts` 用 **直接 identifier 匹配 + 单文件扫描** 判定「主线程不再写 semantic DB」。它挡得住直白的写法，挡不住 namespace alias（`import * as c from ...; c.getDatabase()`）、import alias、`await import()` 动态导入、以及经 re-export／helper 间接调用。**当前代码边界事实成立**（第三轮评审逐条取证确认），弱的是**未来防回归的强度**。
+- **理想架构 / 若做需改什么**：换轴——不再枚举写法，而是按**模块能力**判定：用 resolver 判断 `state.ts`（及主线程模块图）能否**到达**写 opener／commit primitive，即做可达性分析而不是文本匹配。项目已有同类经验：见 skill `reshaping-a-bypassed-guard`（守卫被合法写法绕过时，应迁移不变量而不是继续补形态）。
+- **为何暂缓**：换轴是独立的一块工作，且当前边界已由另一条**计时**判据（`tests/history/worker/event-loop-isolation.it.test.ts`）从完全不同的原理侧面守住——两条一起被同一种绕过手法骗过的概率远低于任一条单独。
+- **触发条件**：守卫再次被一个合法写法绕过时（哪怕只是评审指出而非实际发生），直接换轴，不要再加一条 identifier 形态。
+- **发现方**：Batch 2b 第三轮独立评审 minor 2 与命题 7 裁决。
