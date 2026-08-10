@@ -6,6 +6,7 @@ import {
 } from "bun:test"
 import {
   //
+  cpSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -19,6 +20,7 @@ import path from "node:path"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
 const CAPTURE = path.join(REPO_ROOT, "scripts/capture-entry-evidence.ts")
+const BASELINE_RUNS = path.join(REPO_ROOT, "exp/inter-block-anchor-allocator/baseline-runs.sh")
 
 type SkipKind = "testcase" | "suite"
 
@@ -127,6 +129,113 @@ function replaceOut(fixture: { tree: string; out: string; entrySha: string }, ou
 }
 
 describe("capture-entry-evidence", () => {
+  function runBaselineSummaryFixture(
+    runnerExitCode: number,
+    summary?: string,
+    options: { minTests?: string } = {},
+  ): { result: ReturnType<typeof Bun.spawnSync>; log: string } {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "baseline-summary-"))
+    const out = path.join(tree, "out")
+    const scriptDir = path.join(tree, "exp/inter-block-anchor-allocator")
+    const fakeRunner = path.join(tree, "fake-runner.sh")
+    mkdirSync(scriptDir, { recursive: true })
+    cpSync(BASELINE_RUNS, path.join(scriptDir, "baseline-runs.sh"))
+    const failed = runnerExitCode === 0 ? 0 : 1
+    const passed = 10 - failed
+    const summaryLine = summary ?? `[parallel-test] 2 shards · 10 tests · ${passed} pass · ${failed} fail · 10 executed · 0 skipped · 1s`
+    writeFileSync(
+      fakeRunner,
+      `#!/usr/bin/env bash
+printf '%s\\n' '${summaryLine}'
+printf '[parallel-test] artifacts=/tmp/fake-artifacts\\n'
+exit ${runnerExitCode}
+`,
+    )
+    git(tree, ["init"])
+    git(tree, ["config", "user.email", "test@example.invalid"])
+    git(tree, ["config", "user.name", "Test"])
+    git(tree, ["add", "."])
+    git(tree, ["commit", "-m", "fixture"])
+    // This suite itself runs under the evidence producer, which exports
+    // REQUIRE_TEST_ARTIFACTS=1 and PARALLEL_TEST_ARTIFACT_DIR. Inheriting those sends the wrapper
+    // down the artifact-transfer branch and fails a run that has nothing to do with summary
+    // accounting -- observed as two reds in a backend run invoked the way T0.0f invokes it.
+    const environment = { ...process.env }
+    delete environment.PARALLEL_TEST_ARTIFACT_DIR
+    try {
+      const result = Bun.spawnSync(["bash", path.join(scriptDir, "baseline-runs.sh"), "bash", fakeRunner], {
+        cwd: tree,
+        env: {
+          ...environment,
+          OUT: out,
+          RUNS: "1",
+          MIN_RUNS: "1",
+          MIN_TESTS: options.minTests ?? "10",
+          REQUIRE_TEST_ARTIFACTS: "0",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      return { result, log: readFileSync(path.join(out, "run-01.log"), "utf8") }
+    } finally {
+      rmSync(tree, { recursive: true, force: true })
+    }
+  }
+
+  test("baseline runner reads the count summary rather than a later artifacts line", () => {
+    const { result, log } = runBaselineSummaryFixture(0)
+    expect(result.exitCode).toBe(0)
+    expect(log).toContain("=== tests seen   : 10")
+  })
+
+  test("baseline runner preserves a failing suite's count and exit-code diagnosis", () => {
+    const { result, log } = runBaselineSummaryFixture(7)
+    const stderr = new TextDecoder().decode(result.stderr)
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== tests seen   : 10")
+    expect(stderr).toContain("run 01 exited 7")
+    expect(stderr).not.toContain("reported no tests")
+  })
+
+  test("baseline runner accepts the producer's optional crash summary suffix", () => {
+    const { result, log } = runBaselineSummaryFixture(
+      0,
+      "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped · 1 shard(s) crashed (see isolated re-run above) · 1.25s",
+    )
+    expect(result.exitCode).toBe(0)
+    expect(log).toContain("=== tests seen   : 10")
+  })
+
+  test.each([
+    "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped · 1s artifacts=/tmp/forged",
+    "[parallel-test] 2 shards · 10 tests · 10 pass · 0 fail · 10 executed · 0 skipped",
+  ])("baseline runner rejects count-shaped non-summary lines: %s", (summary) => {
+    const { result, log } = runBaselineSummaryFixture(0, summary)
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== no summary  : the log has no [parallel-test] summary line")
+    expect(new TextDecoder().decode(result.stderr)).toContain("produced no recognizable [parallel-test] summary line")
+  })
+
+  // "No summary at all" must not be routed through the MIN_TESTS floor: that
+  // comparison is `0 -lt MIN_TESTS`, which is false when the caller's floor is 0,
+  // and the discovery-baseline schema accepts a 0 floor. Without its own gate this
+  // run would be graded green while the wrapper understood nothing about it.
+  test("baseline runner fails an unrecognizable summary even when MIN_TESTS is 0", () => {
+    const { result, log } = runBaselineSummaryFixture(0, "[parallel-test] something entirely different", { minTests: "0" })
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== no summary  : the log has no [parallel-test] summary line")
+    expect(new TextDecoder().decode(result.stderr)).toContain("produced no recognizable [parallel-test] summary line")
+  })
+
+  // The floor and the summary gate are different questions; a run whose summary
+  // parses fine but reports too few tests must still be graded by the floor.
+  test("baseline runner keeps reporting a real count against the floor", () => {
+    const { result, log } = runBaselineSummaryFixture(0, undefined, { minTests: "11" })
+    expect(result.exitCode).toBe(1)
+    expect(log).toContain("=== tests seen   : 10")
+    expect(new TextDecoder().decode(result.stderr)).toContain("MIN_TESTS=11")
+  })
+
   test("rejects a lexical outside symlink parent whose missing child resolves inside TREE", () => {
     const fixture = createFixture()
     const lexicalOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-link-"))

@@ -69,7 +69,8 @@ describe("shutdown ingress wiring (real createServer)", () => {
 
   test("an unregistered path is rejected the same way", async () => {
     // A second registration sample on a path with no route, showing the rule does not depend on the request matching one.
-    // It does NOT reach `notFound` or `onError`: while shutting down, observabilityMiddleware answers before `next()`, so routing never runs. The `onError` shape is covered in tests/shutdown/shutdown.unit.test.ts, where a stand-in for the config/token middleware throws ahead of the gate; `notFound` under shutdown is unreachable by construction and so has no test.
+    // It does NOT reach `notFound` or `onError`: this request is issued after shutdown has begun, so observabilityMiddleware answers before `next()` and routing never runs. The `onError` shape is covered in tests/shutdown/shutdown.unit.test.ts, where a stand-in for the config/token middleware throws ahead of the gate.
+    // `notFound` while shutting down has no test. Note it is NOT unreachable — a request that passed the gate while healthy and only then met the shutdown flag still routes, and would be tagged on the way out — it is simply not exercised here.
     const server = createServer()
     await gracefulShutdown("SIGINT", noopShutdownDeps())
 

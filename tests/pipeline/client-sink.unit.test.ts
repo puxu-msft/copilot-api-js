@@ -35,6 +35,52 @@ import {
 import { FakeClock } from "../helpers/fake-clock"
 import { decodeSseWrite } from "../helpers/sse-write-stream"
 
+describe("FakeClock selective interception", () => {
+  test("intercepts matching business timers while leaving unrelated deadlines on real time", async () => {
+    const clock = new FakeClock()
+    clock.install({ intercept: (ms) => ms === 1 })
+    let fakeFired = false
+    let realFired = false
+    try {
+      setTimeout(() => {
+        fakeFired = true
+      }, 1)
+      setTimeout(() => {
+        realFired = true
+      }, 30)
+      expect(clock.liveTimerDelaysMs).toEqual([1])
+      await clock.advance(1)
+      expect(fakeFired).toBe(true)
+      expect(realFired).toBe(false)
+      await new Promise((resolve) => clock.realSetTimeout(resolve, 50))
+      expect(realFired).toBe(true)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  // A second install() without an intervening restore() used to drop the set of real timers on the
+  // floor. Those are armed on the host, so they kept firing into whatever ran next, past a restore()
+  // that no longer knew about them. FakeClock is shared by ~40 test files; the next caller will not
+  // know that re-installing is only safe after restoring.
+  test("re-installing cancels real timers armed by the previous install", async () => {
+    const clock = new FakeClock()
+    let realFired = false
+    try {
+      clock.install({ intercept: (ms) => ms === 1 })
+      setTimeout(() => {
+        realFired = true
+      }, 30)
+      clock.install({ intercept: (ms) => ms === 1 })
+      clock.restore()
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      expect(realFired).toBe(false)
+    } finally {
+      clock.restore()
+    }
+  })
+})
+
 describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {
   // Root fix: writeSynthetic previously sampled the forwarded track with a hardcoded `undefined`
   // synthetic kind (unlike write(), which reads readSyntheticKind(frame)). A handler-tagged terminal

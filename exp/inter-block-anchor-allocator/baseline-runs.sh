@@ -220,8 +220,29 @@ for i in $(seq 1 "$RUNS"); do
   # `[parallel-test] artifacts=<dir>` AFTER the summary, so `tail -1` selected a
   # line carrying no counts at all and every run read as "no tests" -- a hard
   # false red on a suite that had just reported thousands of passing tests.
-  tail_line="$(grep -a 'parallel-test' "$log" | grep -aE '[0-9]+ (executed|tests)' | tail -1)"
-  if [ -z "$tail_line" ]; then tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"; fi
+  #
+  # The pattern is the runner's complete summary grammar rather than "any
+  # parallel-test line that carries a number", so a count-shaped suffix on some
+  # other runner line cannot be read as the summary. No fallback: if the runner's
+  # grammar ever drifts, an empty selection reads as "no tests" and fails the run
+  # closed, which is what an entry gate owes you. Falling back to the last
+  # runner-mentioning line would silently reinstate exactly the bug above.
+  tail_line="$(grep -aE '^\[parallel-test\] [0-9]+ shards · [0-9]+ tests · [0-9]+ pass · [0-9]+ fail · [0-9]+ executed · [0-9]+ skipped( · [0-9]+ shard\(s\) crashed \(see isolated re-run above\))? · [0-9]+(\.[0-9]+)?s$' "$log" | tail -1)"
+
+  # "No summary line at all" is its own failure, not a small population. It used
+  # to be reported through the MIN_TESTS floor below, and that conflation is what
+  # made the 2026-08-08 misdiagnosis possible: a healthy 7259-executed run was
+  # announced as "reported no tests". The floor also cannot carry this case --
+  # `${ntests:-0} -lt $MIN_TESTS` is false when MIN_TESTS is 0, so a missing
+  # summary would pass. MIN_TESTS=0 is documented above as smoke-test only, but
+  # the discovery-baseline schema accepts it, so do not make failing closed
+  # depend on the caller's floor.
+  if [ -z "$tail_line" ]; then
+    printf '=== no summary  : the log has no [parallel-test] summary line\n' >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d produced no recognizable [parallel-test] summary line; not counting it green.\n' "$i" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+  fi
 
   # A run that executed no tests is not a green run. Reported count is the
   # cheapest thing that distinguishes "the suite ran" from "something printed
