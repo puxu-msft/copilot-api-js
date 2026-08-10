@@ -90,6 +90,12 @@
 | **N25** | 6 探针 + 5 变异正控 | **首次真实 HTTP 端到端复现**（`upstreamCalls` 期望 1、实测 4）与随后的 **adapter `case "error"` 变异正控**（删除该分支 → 探针按目标变红） | JSONL 12861／13537 | `bun test tests/pipeline/i9-h2-buffered-probe.http.test.ts`；变异见 dispositions 的正控表 | `3a6439ea` 提交信息 + dispositions |
 | **N26** | 3 修正的作用域错误 | **被审对象在评审进行中被我撤回**——我在专审 grammar 改动的评审跑到一半时把那处改动 revert 了，它的结论会落在一个已不存在的状态上。我随即通知它改变范围、转为审「撤回本身」 | JSONL 13796 | 判据：派审后若要改动被审对象，必须先通知评审；否则它的证据基线失效 | 本表（自足） |
 | **N27** | 3 修正的作用域错误 | **全站点枚举漏五处**：我按拼写 grep 出 7 处并宣称完整，评审找出 5 处（三个 reverse accumulator 入口 + 两个 translator）。教训已收窄为「grep 枚举的是共享同一**拼写**的位置，不是共享同一**错误**的位置」 | JSONL 14458 | 按业务维度（腿／格式／端点／翻译方向）逐个点名，而非数符号引用 | `docs/memory/feedback-fix-all-comparison-sites.md`（本次补的第二实例） |
+| **N28** | 3 修正的作用域错误 | **环境条件性 skip 让门在「正确环境」里反而变红**：entry-evidence 的 skip 多重集要求逐条精确相等，而基线里 34 条是 `native-unavailable`——构建了产物（`test:ci` 就会）反而 mismatch。同一文件对 `RUN_PERF_TESTS` 有结构性中和、对 native 却没有 | JSONL 12420／12426／12451 | 在有产物的环境跑 `capture-entry-evidence.ts`，观察 `skipped identity multiset mismatch` | `docs/todo/deferred-backlog.md` 该条目 |
+| **N29** | 6 探针 | **adapter 自产帧的协议自洽探针**：把 Anthropic adapter 自己 `renderError()` 产出的帧喂回它自己的 `classify()`，得到 `unexpected-frame`——它认不出自己写出的错误帧 | JSONL 12644／12663 | `bun run exp/task37-anthropic-error-boundary/probe-roundtrip.ts` | `exp/task37-anthropic-error-boundary/`（已提交） |
+| **N30** | 3 修正的作用域错误 | **管道过滤伪造失败**：`cmd \| grep …` 让整条命令的退出码变成过滤器的，`grep` 无命中即 exit 1，我两次差点把它读成测试失败 | JSONL 12849／12906 | 判据：要判成败就别过滤；嫌长先落盘再筛 | 本表（自足）+ 既有记忆 `methodology-output-filter-fakes-a-failure` |
+| **N31** | 3 修正的作用域错误 | **`echo` 覆盖失败码**：`cmd > f 2>&1; echo "exit=$?"` 里 `echo` 自身成功，于是**整条 bash 调用的退出码是 0**，后台任务通知显示「completed exit 0」而实际 `cmd` 是 1。真值在 `f` 里 | JSONL 13001 | 把真实退出码写进输出文件或用独立变量，别让最后一条命令决定整体码 | 本表（自足） |
+| **N32** | 6 探针 + 3 修正 | **wall-clock flaky 的分型探针**：`summary-query-performance` 在全量档红、单跑绿、重跑绿 → 判为已登记的争用型 flaky 而非我的改动。**分型先于归因**是这里的判据 | JSONL 14373／14380／14401 | 单跑该文件 + 重跑全量；两者都绿才可判 flaky | `docs/todo/deferred-backlog.md` 的 wall-clock flaky 条目 |
+| **N33** | 3 修正的作用域错误 | **Git diff 范围问错**：`git diff --name-only HEAD..master` 列的是两边**所有**差异文件（含我自己新建的），我一度读成「master 改了这些」。正解是先取 `merge-base` 再分别 diff | JSONL 14766 | `git merge-base HEAD master` 后分别 `diff --name-only <base>..master` 与 `<base>..HEAD`，取交集 | 本表（自足） |
 
 **载体说明**：N8–N10、N18–N22 以**本文件自身**为仓库 carrier（已提交），不另建文档；评审确认该处置可接受。**原 N11–N17（Task 9 阶段的判据空跑、根因证伪、正控不可达、正则→冻结命中集、锚点标反、越权缩小冻结验收）已随范围缩窄移出本表**，归属该阶段自己那次收尾的产物。
 
