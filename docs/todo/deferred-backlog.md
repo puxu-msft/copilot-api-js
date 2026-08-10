@@ -1404,6 +1404,9 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：三选一，**需要裁决而不是顺手改**（放宽既有 guard 按纪律须交独立 reviewer 或用户）——① 基线给每条 skip 标注**它所依赖的环境前提**，比较时按当前环境筛选出应生效的子集；② 像 `RUN_PERF_TESTS` 那样在采集侧把环境**钉死到单一声明状态**（例如采集前强制构建产物，使 `native-unavailable` 恒为空）；③ 把 `minimum_executed` 之外的多重集比较**降级为按 reason 分组的计数**，牺牲一部分鉴别力换取环境无关性。①最正确、②最省事、③最弱。
 - **为何暂缓**：当前无红——`test:backend` 不调用该 validator，它只在收尾采集路径上跑，而那条路径迄今都在产物缺席的环境里执行。但这是**潜伏**而非不存在：一旦有人在构建过产物的机器上走收尾采集，就会拿到一条指不到根因的 `multiset mismatch`。**触发条件（值得做）**：① 任何人在有产物的环境跑 `capture-entry-evidence.ts`；② 上一条 backlog 的指纹修法落地（它会把 34 条 skip 变成条件性显式 skip，直接踩中本条）；③ 顺手改 `validate-entry-evidence.ts` 或该基线时。
 - **发现方**：Task 37 接缝复审期间自查本轮重建的基线（主会话，2026-08-09）。
+- **⚠️ 手工维护这份基线时必踩的两条（2026-08-09 实测，写在这里因为它们只有踩过才知道）**：
+    1. **`allowed_skipped` 必须按 `skipSortKey` 逐字节全序**（`scripts/entry-evidence-schema.ts` 的 `skipSortKey`：testcase 是 `kind\0file\0classname\0name\0ordinal`，suite 是 `kind\0file\0suite_name`，比较用 `Buffer.compare`）。**追加到数组末尾会失败**，报 `discovery baseline: allowed_skipped are not unique bytewise sorted`。**最坑的是报错位置**：变红的测试名是「tracks the current backend discovery population」——一条只比 `files` 的断言——而真正的 throw 来自它上游的 `parseDiscoveryBaseline`。照测试名去查 `files` 会一无所获（`files` 集合当时完全正确）。同理，`parseDiscoveryBaseline` 还校验 `raw === JSON.stringify(parsed, null, 2) + "\n"`，所以**手写的 JSON 必须是 canonical 形式**（2 空格缩进 + 尾换行）。
+    2. **一个被 `describe.skip` 的套件产出两条 skip identity，不是一条**：具名用例那条，加一条 `name: "(unnamed)"` 的套件级。只登记具名那条不会当场变红（`test:backend` 不跑该 validator），但会留下潜伏的多重集不匹配。**核对方法**：跑一次 `parallel-test` 后读它 artifacts 目录里的 `skipped-multiset.json`，把 `skipped_identities` 与基线的 `allowed_skipped` 做双向集合差——本次核到 11/11 全覆盖才收手。既有条目 `tests/routes/messages/postcommit-truncation-shaping.it.test.ts` 就是两条并存的先例。
 
 ## 上游终态错误发生在块中途时，仍被当截断重试四次；直接修会泄漏半块（2026-08-09，Task 37 接缝复审，一次被撤回的修复）
 
