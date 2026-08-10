@@ -70,16 +70,18 @@ function runTwoSignalHarness(fixture?: string, env: Record<string, string | unde
   })
 }
 
-test("real foreground SIGINT: first starts graceful shutdown, second exits immediately", () => {
+test("real foreground SIGINT: first drains, second abandons the drain without exiting, third escapes", () => {
   const proc = runTwoSignalHarness()
   const stderr = new TextDecoder().decode(proc.stderr)
   expect(proc.exitCode, stderr).toBe(0)
 
-  const result = JSON.parse(new TextDecoder().decode(proc.stdout)) as { firstAlive: boolean; exitCode: number; output: string }
+  const result = JSON.parse(new TextDecoder().decode(proc.stdout)) as { firstAlive: boolean; tier2Alive: boolean; exitCode: number; output: string }
   expect(result.firstAlive).toBe(true)
+  // The load-bearing new assertion, on a real process: the SECOND signal does not kill it. Only the third does.
+  expect(result.tier2Alive).toBe(true)
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("graceful shutdown started")
-  expect(result.output).toContain("Press Ctrl+C again to exit immediately")
+  expect(result.output).toContain("abandoning the drain wait")
 }, 14_000)
 
 test("two-signal PTY preserves READY observation through delayed child startup", () => {

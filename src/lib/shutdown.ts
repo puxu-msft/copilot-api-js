@@ -3,8 +3,11 @@
  *
  * SIGINT, SIGTERM, or SIGUSR2 received while idle stops ingress, losslessly
  * drains every accepted operation, and then closes runtime resources behind
- * durability barriers. Shutdown never cancels request work. While lifecycle is
- * active, SIGUSR2 is idempotent; SIGINT or SIGTERM is the immediate escape hatch.
+ * durability barriers. Shutdown never cancels request work on a timer of its own.
+ *
+ * While the lifecycle is active, SIGUSR2 stays idempotent and SIGINT/SIGTERM escalate in two tiers:
+ * the first such signal abandons the wait for REQUESTS (terminating them through request-level primitives) but still runs every durability barrier;
+ * the next one is the immediate escape hatch. Once past the request drain — in `finalizing`/`notifying`/`failed` — the very next signal exits immediately, because there the thing being awaited is the persistence barrier itself.
  */
 
 import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"

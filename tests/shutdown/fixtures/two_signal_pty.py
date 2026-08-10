@@ -69,6 +69,7 @@ try:
     wait_for_cooked_mode()
     cooked_before_second_signal = True
     middle_alive = None
+    tier2_alive = None
     status = None
     if middle_signal:
         match = re.search(rb"READY pid=(\d+)", output)
@@ -87,6 +88,12 @@ try:
         if waited == pid:
             status = middle_status
     if middle_alive is not False:
+        # Tier 2 — the operator stops waiting for the request drain.
+        # The process must NOT exit here: it still owes every durability barrier, and that is the whole difference between this tier and the escape hatch.
+        os.write(fd, b"\x03")
+        read_until(b"abandoning the drain wait")
+        tier2_alive = os.waitpid(pid, os.WNOHANG)[0] == 0
+        # Tier 3 — the escape hatch, which waits for nothing.
         os.write(fd, b"\x03")
     deadline = time.monotonic() + 2.0
     while status is None:
@@ -98,7 +105,7 @@ try:
             raise RuntimeError("child process did not exit within 2 seconds")
         time.sleep(0.01)
     lflag = termios.tcgetattr(fd)[3]
-    print(json.dumps({"firstAlive": first_alive, "middleAlive": middle_alive, "cookedBeforeSecondSignal": cooked_before_second_signal, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
+    print(json.dumps({"firstAlive": first_alive, "middleAlive": middle_alive, "tier2Alive": tier2_alive, "cookedBeforeSecondSignal": cooked_before_second_signal, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
 finally:
     try:
         os.kill(pid, signal.SIGKILL)
