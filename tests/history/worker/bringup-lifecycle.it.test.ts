@@ -233,8 +233,9 @@ describe("initHistory bring-up is a transaction", () => {
 
     expect((failure as Error).message).toMatch(/a History read database is already installed/)
     expect(peekHistoryPersistenceRuntime()).toBeUndefined()
-    // The competitor's handle survives — it was never ours to close.
+    // The competitor's handle survives — it was never ours to close. Identity alone would not show that: a rollback that CLOSED it would leave the same object published, and `toBe` cannot tell an open handle from a closed one. So the assertion is that it still works.
     expect(peekHistoryReadDatabase()).toBe(competitor)
+    expect(() => competitor.prepare("SELECT 1 AS ok").get()).not.toThrow()
     detachHistoryReadDatabaseForTests()
     competitor.close()
   })
