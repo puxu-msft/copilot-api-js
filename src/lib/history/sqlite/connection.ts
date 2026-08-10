@@ -8,7 +8,12 @@ import {
   type SqliteDatabase,
 } from "~/lib/sqlite/driver"
 
-import { detachHistoryReadDatabaseForTests, installHistoryReadDatabase } from "./read-connection"
+import {
+  //
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+  peekHistoryReadDatabase,
+} from "./read-connection"
 
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
@@ -307,6 +312,8 @@ export function isDatabaseOpen(): boolean {
 
 export function closeDatabase(): void {
   if (!db) return
+  // Symmetric counterpart to `openInMemoryDatabase`, which PUBLISHES this singleton as the process-wide read handle. Closing it without withdrawing that publication leaves a closed handle installed, and the next `getHistoryReadDatabase()` hands it to a query that dies with "Cannot use a closed database" — far from here, in code that did nothing wrong. Only withdraw OUR publication: a readonly handle opened by `initHistory` belongs to it, not to us.
+  if (peekHistoryReadDatabase() === db) detachHistoryReadDatabaseForTests()
   try {
     db.close()
   } catch (err: unknown) {
