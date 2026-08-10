@@ -41,7 +41,7 @@ registry 清零后，进程进入 `finalizing`：
 
 1. `RequestContextManager.drainLifecycleFailures()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。（该方法在 2026-08-09 由 lifecycle Task 4 从 `drainModelOperationFinalizations` 改名；`ShutdownDeps`／`FinalizeDeps` 上的同名**字段**尚未跟改，那是 Task 6 的活。）
 2. 释放 token runtime，随后关闭上游 WebSocket 与 h2 池。此时不存在会被 teardown 中断的 operation。
-3. `shutdownHistory()` 排空 terminal subscriber／V3 writer并关闭数据库。
+3. `shutdownHistory()` 排空 terminal subscriber、再 `runtime.drain()` 等 Worker 侧的未 ACK 持久化项到达终态，随后释放 runtime 并关闭主线程只读句柄。（Batch 2b 之前这一步排空的是主线程的 V3 writer；写连接迁入 Worker 后已无本地队列可等——详见 [history.md](history.md) 的 drain-before-close 节。）
 4. `shutdownRequestTelemetry()` 封闭 config 订阅与 timer producer，排空 pending delta 并关闭数据库。
 5. `shutdownStructuredFileSink()` 写 sealing marker，排空并 fsync Diagnostic。
 6. durability barrier 全部成功后向观察者发布 `finalized`，再关闭观察者 WS。
