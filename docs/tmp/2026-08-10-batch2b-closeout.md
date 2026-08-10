@@ -80,13 +80,17 @@ git log --oneline master -- docs/DESIGN.md docs/history.md docs/lifecycle.md \
 
 - **判据（这段唯一活得久的东西）**：`fd` 默认遵守 `.gitignore`，而这类 job tmp 目录里绝大多数是被忽略的测试日志——**照着「优先用 fd」的偏好而漏掉 `-I`，就会拿约三分之一的样本去做处置决定**，且漏掉的恰恰是没人复核过的那些行。枚举必须用 `find`，或 `fd -H -I`，并用第二种方法交叉核对总数。
 - **一次观测（测于 `cafa89a6` 那一刻，之后会漂）**：`find . \( -type f -o -type l \)` = 174，`fd -H -I` 交叉核对同为 174，而 `fd -H` 不带 `-I` 只报 64。
-- **清单**：`<job tmp>/manifest.md`，**175 条表格行**（文件 183 行，另含标题与说明）；表格里包含它自己那一行——`find` 在 shell 创建空输出文件之后才枚举。
+- **清单**：[2026-08-10-batch2b-closeout-tmp-manifest.md](2026-08-10-batch2b-closeout-tmp-manifest.md)（原件在 job tmp，已复制进仓库——job 目录会到期回收，留在那里的引用会悬空），**175 条表格行**（文件 183 行，另含标题与说明）；表格里包含它自己那一行——`find` 在 shell 创建空输出文件之后才枚举。
 - **零删除**：每一行的长期价值都已有**已提交的**载体，删除时机毁不掉唯一副本；目录留给 harness 到期回收。载体是逐个打开确认的，不是靠 `git status` 干净推断的。
 - 唯一需要长期保存的探针结论（只读连接上的 DDL 行为）已在进度文档正文，脚本本身可弃。
 
 ---
 
 ## 5. 独立评审结论
+
+评审报告原件（均已复制进仓库，job tmp 会到期回收）：
+- 非文件教训双向对账（三轮）→ [2026-08-10-batch2b-closeout-review-reconciliation.md](2026-08-10-batch2b-closeout-review-reconciliation.md)
+- 目录绑定 V4/V5 审计 → [2026-08-10-batch2b-closeout-review-cwd-audit.md](2026-08-10-batch2b-closeout-review-cwd-audit.md)
 
 | 评审 | 轮次 | 结论 |
 |---|---|---|
