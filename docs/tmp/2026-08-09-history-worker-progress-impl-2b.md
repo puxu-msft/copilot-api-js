@@ -87,6 +87,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 - **不让主线程与 Worker 同时持写句柄**：那正是本设计要消灭的双写者形态，也与 spec §8.1「Worker 打开 semantic DB」冲突。
 - **不在 2b 给 raw capture 也切 Worker**：3b 的事；提前切会让两个进程同时打开同一 raw artifact。
+- **不让共享 primitive `openDatabase()` 自己发布只读句柄**（合并期试过并撤回）。想让「开库」与「发布读句柄」一步到位，focused 跑两个文件时 31 pass 看着成立；**完整分片就抛错**——`initHistory` 活着时它已经装了自己的只读句柄，`installHistoryReadDatabase` 拒绝静默顶替。改成 test-only 的 `openTestDatabaseAsReadSource()`（`tests/helpers/history-v3-fixtures.ts`）后受影响文件 34 pass、合并态 0 fail。**教训**：发布进程级单例是**所有权**动作，不该藏进一个被生产与测试共用的 primitive 里。
 
 ## 第二轮：GPT 独立评审的处置（commit `25fe6880`…`454b03f8`）
 
@@ -140,4 +141,48 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 **顺带修掉的一个真缺陷（非评审指出，是修 blocker 时撞出来的）**：`openInMemoryDatabase()` 会把写单例**发布**为进程级读句柄，而 `closeDatabase()` 只关不撤销发布——读注册表里因此会留下一个**已关闭**的句柄，下一次 `getHistoryReadDatabase()` 把它交给某个查询，在离现场很远的地方炸成 `Cannot use a closed database`。已在配对处修死（commit `2e2dcc99`），它本身把 `test:it` 从 6 fail 降到 5 fail。
 
-**本轮合并结论**：GPT 评审的最终 verdict 是「无未闭合 blocker／major，可合并」；假绿评审的 blocker 落在**测试基座**、已按 `no-silently-cut-but-defer` 完整登记并保留可复现的修法。**是否在带着这条已登记缺陷的前提下合并 master，留给用户裁决**——它不影响生产代码正确性，但会让「发请求→断言 History 有记录」这类测试在 129 个文件里继续无法成立。
+**本轮合并结论**：GPT 评审的最终 verdict 是「无未闭合 blocker／major，可合并」；假绿评审的 blocker 落在**测试基座**、已按 `no-silently-cut-but-defer` 完整登记并保留可复现的修法。~~**是否在带着这条已登记缺陷的前提下合并 master，留给用户裁决**~~ —— **已解决，不再是待裁决项**：该 fixture teardown 缺陷本身已修复并落地（`3acc5b8b` → 一度误回退 `adb40c05` → 复测后恢复，详见上文「第四轮」的 **缺口 2** 那条），用户于 2026-08-10 指示合并，已 fast-forward 进 `master`。
+
+## 收尾对账补录：变异台账与非文件教训（2026-08-10）
+
+本节由收尾阶段的 `discover_nonfile_candidates` 独立对账补出——**独立 reviewer 从 transcript 独立枚举后，比作者的自查清单多找出 17 条**，且这些全是「git 记不下、下一个人会重做」的东西。作者自查清单里有一条（`erasableSyntaxOnly` 拒构造函数参数属性）在本会话事件源中**找不到出处**，按对账结论撤回，不留在记录里。
+
+### 变异台账（符号 → 测试 → 失败形状）
+
+上文各轮只写了「都能变红」，粒度不足以重建。逐条补齐：
+
+| 变异的符号 / 改动 | 打的测试 | 失败形状 |
+|---|---|---|
+| 删 `packages/cli/src/start.ts` deadline catch 的 `process.exit(1)` | `tests/e2e/history-startup-deadline.e2e.test.ts` | **第一版四断言全绿**——进程继续走到 Phase 4、因缺 token 非零退出，7206ms vs 7180ms 几乎同耗时。补「deadline 之后无任何 ERROR」判据后才红 |
+| `workerData.blockMs` 改 key（令其 undefined） | `tests/history/worker/event-loop-isolation.it.test.ts` | 原测试**仍 1 pass**：`Date.now()+undefined` 为 `NaN`、阻塞循环零次，相对断言反而更容易绿。补 Worker 侧 elapsed 正控 + finite 校验后 0 pass／1 fail |
+| 竞争 readonly handle 的处置 | bring-up 事务用例 | 只断 `toBe(competitor)` 时假绿——close 后 identity 仍可能相同。第一次变异清指针（身份断言先红，不精确），第二次「close 但保留发布」才由 usability 断言精确咬住 |
+| 删 `initHistoryWithinStartupDeadline` 的 `!enable` 短路 | `tests/history/worker/startup-deadline.it.test.ts` | 原「禁用不受 deadline 约束」是**空过**：快速 `initHistory(false)` 即使失去短路也可能赢过 1ms timer。构造 80ms shutdown 后 3 pass／1 fail |
+| `deadlineMs <= 0` → `< 0` | 同上 | 原先只有 getter 判据、两测试**仍绿**。补「120ms 后仍在 waiting」的行为判据后 10 pass／1 fail |
+| 删 start 失败后的 release | `tests/history/worker/registry.unit.test.ts` | 精确复现 terminally-failed runtime 污染：2 pass／1 fail；恢复后 6 pass／0 fail |
+| 绕过 `serializeHistoryLifecycle` | `tests/history/worker/bringup-lifecycle.it.test.ts` | 并发 bring-up 一条被 rejected、`shutdownCalls` 为 0，目标两测试红 |
+| 撤销 bring-up 的 rollback 事务 | 同上 | `shutdownCalls` 判据精确变红（滞留 runtime） |
+| fixture `afterEach` 的 rebuild／release 顺序 | `tests/history/worker/fixture-persistence-survives-teardown.it.test.ts` | 修前 1 pass／2 fail、修后 3 pass／0 fail。HEAD 探针：t1 persisted=1、t2 persisted=0／durability=failed；base `baef58b3` 同链 persisted=1 |
+
+### 被证伪的归因
+
+- **`Cannot use a closed database` 一度被归给「query 层缓存了旧句柄」——错。** 读源码确认查询每次重新 `get`；真因是 `openInMemoryDatabase()` **发布**读句柄而 `closeDatabase()` 只关不撤销发布（已在上一节记为顺带修掉的真缺陷）。**判据**：症状出现在离现场很远的地方时，先查「谁发布的、谁负责撤销」，别先怀疑缓存。
+- 「约 52 条测试建立在不落盘之上」的错判见**上文**第四轮那条（本节位于全文末尾），不重复。
+
+### 范围 / 解析错误（跑了命令、拿到输出，结论仍错）
+
+- **交付门禁跑在了错误的树上。** 移除一棵临时 worktree 之后 session cwd 仍停在主检出，`test:backend` 实际枚举的是主树：**7722 tests / 7708 pass / 14 fail / 9 skipped / exit 1**；显式绑定 `.worktrees/history-worker-batch-2a` 重跑为 **7382 pass / 0 fail / 36 skipped**。当时那 14 fail 差点被当成本分支的回归。**最强证据不是因果叙述，而是两次运行日志的首行 `pwd -P`**——独立审计据此判为 user-rule `root-each-bash-call` 的**泄漏方向**违规（前一条调用有意切到主检出并留下粘滞 cwd，后一条没在同一次调用里绑定目标根）。
+- **codemod 退出码 0 不代表产物可解析。** 本轮两次脚本化改 import 都「成功」却产出语法破损代码：一次插进既有多行 import 中间（typecheck TS1003/TS1005），一次产出 `import { commitV3HistoryEntry` 换行后直接跟 `openTestDatabaseAsReadSource,`（TS1005）。**判据**：脚本改语法结构后，紧接着跑一次 typecheck 再往下走。
+- **selector 与 runner 形态不可互相替代。** 同一批 History 测试：顺序 `bun test tests/history` = 0 fail；`--parallel` = 5 fail；`bun run test:it` 稳定 5 fail；LPT 分片的 `test:backend` = 0 fail。引用任何一个数都必须带上「哪个 selector、哪个 runner」，否则两个都对的数字会被拿来互相反驳。
+
+### 标定值（只是当次观测，不是跨机 SLA）
+
+- **线程隔离对照**：Worker 形态 stall 30ms vs in-process 1053ms；补 liveness 探测后 10ms vs 532ms，两侧 HTTP 均 200。机器为本轮的 Linux/Bun 环境、带并发负载。
+
+### 能力探针（跑过、且结论被用来支撑实现决策）
+
+- **对 semantic DB 持 `BEGIN EXCLUSIVE` 时，真实 Worker 持续拿到 *retryable* 的 `database is locked`**，约 6s 后撞 deadline 退出 1，**没有**误入 permanent owner failure 分支。**它不证明**所有 SQLite 阻塞点都归类为 retryable，只覆盖了这一个阻塞形态。
+- 只读连接上的 DDL 行为见本文「在途意图」节那条；Bun timer 上限见 `src/lib/history/startup-deadline-config.ts:16-21`（实测 `setTimeout(fn, 2147483648)` 约 7ms 触发，不是「更久」）。
+
+### 流程教训（本轮又踩了一次已登记的形态）
+
+评审 agent 被 API 错误打断时，我一度**派了个新 agent** 去接手——那违反 `never-reassign-failed-agent`，正确做法是 `SendMessage` 续跑原 agent（随后改回并成功）。这条已在记忆里登记过，本轮属复发，说明「中断」当下的第一反应仍不可靠。
