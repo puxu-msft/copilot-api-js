@@ -82,6 +82,11 @@ RUNS="${RUNS:-15}"
 MIN_RUNS="${MIN_RUNS:-15}"
 if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit it http); fi
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
+# The validator cross-checks each run log's canonical_command against the manifest's, so the
+# log has to carry it as a machine-readable field, not only inside the human `=== command` line.
+# Space-joined rather than %q-quoted: the manifest holds the plain command, and `%q` also leaves
+# a trailing space that would make an otherwise identical pair compare unequal.
+CMD_CANONICAL="${CMD[*]}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
 REQUIRE_TEST_ARTIFACTS="${REQUIRE_TEST_ARTIFACTS:-0}"
@@ -144,6 +149,7 @@ esac
 printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
 printf 'measured_sha=%s\n' "$head_sha"
 printf 'claims_current_head=true\n'
+printf 'canonical_command=%s\n' "$CMD_CANONICAL"
 printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
   "$RUNS" "$CMD_DISPLAY" "${head_sha:0:8}" "$([ -n "$dirty" ] && echo DIRTY || echo clean)"
 
@@ -162,6 +168,7 @@ for i in $(seq 1 "$RUNS"); do
     printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
     printf 'measured_sha=%s\n' "$head_sha"
     printf 'claims_current_head=true\n'
+    printf 'canonical_command=%s\n' "$CMD_CANONICAL"
     printf '=== run          : %d of %d\n' "$i" "$RUNS"
     printf '=== started      : %s\n' "$(date -Is)"
     printf '=== repo         : %s\n' "$REPO"
