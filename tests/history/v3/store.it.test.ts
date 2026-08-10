@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import { createHash } from "node:crypto"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
@@ -28,16 +29,30 @@ import {
   getV3StoreStatus,
   listV3Operations,
   prepareModelOperation,
+  prepareModelOperationWithTransportEvidence,
   recoverV3Journal,
   resetV3WriterForTests,
   startV3SummaryBackfill,
+  type TransportEvidenceInput,
+  validateAndMarkSummaryProjectionReady,
   V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
+import { SUMMARY_PROJECTION_READY_KEY } from "~/lib/history/v3/summary-store"
 import {
   //
   compressBytes,
   decompressBytes,
 } from "~/lib/sqlite/compression"
+
+function capturedEvidence(bytes: Uint8Array): TransportEvidenceInput {
+  const digest = createHash("sha256").update(bytes).digest("hex")
+  return {
+    dispatchIndex: 0,
+    sequence: 1,
+    capture: { availability: "captured", digest, byteLength: bytes.byteLength, encoding: "binary" },
+    bytes,
+  }
+}
 
 function terminalRecord(id: string, shared = "same prompt") {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: 100 } })
@@ -58,6 +73,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await drainV3Writer()
+  await drainV3SummaryBackfill()
   closeDatabase()
   resetV3WriterForTests()
 })
@@ -78,47 +94,42 @@ describe("History V3 semantic store", () => {
     })
   })
 
-  test("migrates legacy operation rows to an explicitly marked storage-commit upper bound", () => {
+  test("does not mutate a pre-current schema before forward migrations own the transition", () => {
     closeDatabase()
     openInMemoryDatabase()
     const db = getDatabase()
     db.exec(`
-      CREATE TABLE v3_operations (
-        operation_id TEXT PRIMARY KEY,
+      CREATE TABLE v3_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO v3_meta(key,value) VALUES('schema_version','5');
+      CREATE TABLE v3_journal (
+        operation_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
         digest TEXT NOT NULL,
-        kind TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        payload_gz BLOB NOT NULL,
         created_at INTEGER NOT NULL,
-        terminal_sequence INTEGER NOT NULL,
-        manifest_gz BLOB NOT NULL,
-        pinned INTEGER NOT NULL DEFAULT 0,
-        committed_at INTEGER NOT NULL
+        committed_at INTEGER,
+        error TEXT,
+        PRIMARY KEY(operation_id,revision)
       );
     `)
-    db.prepare("INSERT INTO v3_operations VALUES(?,?,?,?,?,?,?,?,?)").run("legacy", 1, "digest", "generation", 1_000, 4, new Uint8Array([1]), 0, 9_000)
 
     ensureV3Schema(db)
-    ensureV3Schema(db)
 
-    expect(db.prepare("SELECT ended_at,timing_source FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({
-      ended_at: 9_000,
-      timing_source: "storage-commit-upper-bound",
-    })
-    db.prepare("UPDATE v3_operations SET ended_at=NULL WHERE operation_id='legacy'").run()
-    ensureV3Schema(db)
-    expect(db.prepare("SELECT ended_at FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({ ended_at: null })
+    expect(db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "5" })
+    expect(db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_transport_evidence'").get()).toBeNull()
+    expect((db.prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name)).not.toContain("format_version")
   })
 
-  test("drops the embedded search projection without touching canonical operations", () => {
+  test("drops an embedded search projection only on the current schema", () => {
     const db = getDatabase()
-    db.exec(V3_SCHEMA_SQL)
+    ensureV3Schema(db)
     commitPreparedOperation(db, prepareModelOperation(terminalRecord("keep-canonical")))
     db.exec(`
       CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL);
       CREATE TABLE v3_search_membership(operation_id TEXT NOT NULL, object_hash TEXT NOT NULL, PRIMARY KEY(operation_id,object_hash));
       CREATE TABLE v3_search_backlog(operation_id TEXT PRIMARY KEY, reason TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     `)
-    db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version','4')").run()
     db.prepare("INSERT INTO v3_search_objects VALUES(?,?,?)").run("obsolete", new Uint8Array([1]), 2)
 
     ensureV3Schema(db)
@@ -128,10 +139,6 @@ describe("History V3 semantic store", () => {
     expect(tableExists("v3_search_membership")).toBe(false)
     expect(tableExists("v3_search_backlog")).toBe(false)
     expect(getV3Operation("keep-canonical")?.identity.operationId).toBe("keep-canonical")
-
-    db.exec("CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL)")
-    ensureV3Schema(db)
-    expect(tableExists("v3_search_objects")).toBe(false)
   })
 
   test("keeps newly imported records without canonical terminal time explicitly unavailable", () => {
@@ -205,9 +212,12 @@ describe("History V3 semantic store", () => {
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n).toBe(2)
   })
 
-  test("clears every V3 data table while retaining schema metadata", () => {
-    commitPreparedOperation(getDatabase(), prepareModelOperation(terminalRecord("op-clear")))
+  test("clears every V3 data table and readiness marker while retaining schema metadata", async () => {
     const db = getDatabase()
+    ensureV3Schema(db)
+    await applyForwardMigrations(db)
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("op-clear"), [capturedEvidence(new Uint8Array([31, 32]))])
+    commitPreparedOperation(db, prepared)
     db.prepare("INSERT INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run("summary-poison", "test", 100)
     db.prepare("INSERT INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at) VALUES(?,?,?,?,?,?)").run(
       "journal-only",
@@ -217,12 +227,36 @@ describe("History V3 semantic store", () => {
       new Uint8Array([1]),
       100,
     )
+    const evidence = prepared.transportEvidence[0]
+    db.prepare("INSERT INTO v3_journal_evidence_refs(operation_id,revision,dispatch_index,sequence,digest,byte_length,encoding) VALUES(?,?,?,?,?,?,?)").run(
+      "journal-only",
+      1,
+      evidence.dispatchIndex,
+      evidence.sequence,
+      evidence.capture.digest,
+      evidence.capture.byteLength,
+      evidence.capture.encoding,
+    )
+    expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
 
     clearV3Store(db)
 
-    for (const table of ["v3_summary_backlog", "v3_timeline_chunks", "v3_tracks", "v3_operations", "v3_sequence_nodes", "v3_objects", "v3_journal"]) {
+    for (const table of [
+      "v3_summary_backlog",
+      "v3_operation_summaries",
+      "v3_timeline_chunks",
+      "v3_tracks",
+      "v3_operations",
+      "v3_operation_evidence_refs",
+      "v3_sequence_nodes",
+      "v3_objects",
+      "v3_journal_evidence_refs",
+      "v3_journal",
+      "v3_transport_evidence",
+    ]) {
       expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, table).toBe(0)
     }
+    expect(db.prepare("SELECT value FROM history_meta WHERE key=?").get(SUMMARY_PROJECTION_READY_KEY)).toBeNull()
     expect((db.prepare("SELECT COUNT(*) AS n FROM v3_meta").get() as { n: number }).n).toBeGreaterThan(0)
   })
 

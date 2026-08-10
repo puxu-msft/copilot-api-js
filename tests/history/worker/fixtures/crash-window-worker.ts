@@ -77,9 +77,12 @@ function withCrashWindow(database: Database): Database {
       const inner = database.transaction(fn)
       return () => {
         const result = inner()
-        // The transaction function returns only after COMMIT, so this is the
-        // committed-but-unacknowledged window.
-        if (fixture.window === "after-commit") crashOnce()
+        // The committed-but-unacknowledged window is defined by WHAT is committed, not by which
+        // transaction returned: the writer commits evidence/journal in one transaction and the
+        // operation itself in another, so crashing on the first return lands in `after-journal`
+        // territory (journal 1 / operations 0) and silently retargets this window. Ask the
+        // database instead -- crash on the first COMMIT after which the operation row exists.
+        if (fixture.window === "after-commit" && countRows().operations > 0) crashOnce()
         return result
       }
     },

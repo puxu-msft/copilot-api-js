@@ -28,10 +28,36 @@ const originalHttpProxy = process.env.HTTP_PROXY
 const originalHttpsProxy = process.env.HTTPS_PROXY
 const originalNoProxy = process.env.NO_PROXY
 
+function restoreEnv(name: "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY", value: string | undefined): void {
+  if (value === undefined) Reflect.deleteProperty(process.env, name)
+  else process.env[name] = value
+}
+
+function restoreProxyState(): void {
+  restoreEnv("HTTP_PROXY", originalHttpProxy)
+  restoreEnv("HTTPS_PROXY", originalHttpsProxy)
+  restoreEnv("NO_PROXY", originalNoProxy)
+  initProxy({ fromEnv: false })
+}
+
 describe("proxy utilities", () => {
-  afterEach(() => {
-    process.env.HTTP_PROXY = originalHttpProxy
-    process.env.HTTPS_PROXY = originalHttpsProxy
+  afterEach(restoreProxyState)
+
+  test("restores absent proxy environment keys by deleting them", () => {
+    delete process.env.HTTP_PROXY
+    delete process.env.HTTPS_PROXY
+    delete process.env.NO_PROXY
+    process.env.HTTP_PROXY = "http://proxy.example:8080"
+    process.env.HTTPS_PROXY = "http://proxy.example:8080"
+    process.env.NO_PROXY = "localhost"
+
+    restoreEnv("HTTP_PROXY", undefined)
+    restoreEnv("HTTPS_PROXY", undefined)
+    restoreEnv("NO_PROXY", undefined)
+
+    expect(Object.hasOwn(process.env, "HTTP_PROXY")).toBe(false)
+    expect(Object.hasOwn(process.env, "HTTPS_PROXY")).toBe(false)
+    expect(Object.hasOwn(process.env, "NO_PROXY")).toBe(false)
   })
 
   test("formatProxyDisplay strips credentials from proxy URLs", () => {
@@ -96,13 +122,7 @@ describe("proxy utilities", () => {
 })
 
 describe("getProxyUrlForOrigin", () => {
-  afterEach(() => {
-    process.env.HTTP_PROXY = originalHttpProxy
-    process.env.HTTPS_PROXY = originalHttpsProxy
-    process.env.NO_PROXY = originalNoProxy
-    // Reset cachedProxyOptions to a no-proxy baseline so config doesn't leak between suites.
-    initProxy({ fromEnv: false })
-  })
+  afterEach(restoreProxyState)
 
   test("an explicit proxy URL applies to every origin", () => {
     initProxy({ url: "http://proxy.example:8080", fromEnv: false })
@@ -127,10 +147,7 @@ describe("getProxyUrlForOrigin", () => {
 })
 
 describe("getUpstreamDispatcher", () => {
-  afterEach(() => {
-    process.env.HTTP_PROXY = originalHttpProxy
-    process.env.HTTPS_PROXY = originalHttpsProxy
-  })
+  afterEach(restoreProxyState)
 
   test("returns a ProxyAgent after initProxy with an explicit HTTP proxy URL", () => {
     initProxy({ url: "http://proxy.example:8080", fromEnv: false })

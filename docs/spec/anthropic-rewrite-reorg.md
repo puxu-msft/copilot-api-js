@@ -87,7 +87,7 @@
 每个 commit 终态不半坏（[[methodology-commit-invariants]]）；纯 rename/move + import 更新，算法核零改；**所有脚本化 rename 用 `\b` word-boundary**（防子串误伤，见 §5）。
 
 - **Phase 0** — 本 RFC + 对抗 review（已 2 轮）+ 解 OQ。Invariant: 无代码改动。
-- **Phase 1** — 请求侧 rename/move（#1 #2 #3 #5请求半边）+ **同步改对应测试文件名/import**。每 commit `bun run typecheck` + Phase-1 oracle（§9）绿；`sanitize.ts→index.ts` **单 commit 原子**。Invariant: ① 等价（请求改写输出不变）② **`bun run test:backend` 收集用例数不减**（防测试静默不被收集，[[methodology-probe-harness-must-match-prod]]）。
+- **Phase 1** — 请求侧 rename/move（#1 #2 #3 #5请求半边）+ **同步改对应测试文件名/import**。每 commit `bun run typecheck` + Phase-1 oracle（§9）绿；`sanitize.ts→index.ts` **单 commit 原子**。Invariant: ① 等价（请求改写输出不变）② **测试不得静默地不被收集**（[[methodology-probe-harness-must-match-prod]]）。⚠️ **2026-08-09 收窄**：原文写的是「`bun run test:backend` 收集用例数不减」，**那个判据担不起这条不变量**——tally 是**已观察量**，一个在加载期抛错的文件既不写 JUnit 行也不进计数，减少根本不显现。当前可用的替代是**文件级**的：门 ② 会报 `⚠ INCOMPLETE`（请求的文件没出现在 artifact 里），配合 `tests/infra/test-discovery-matrix.unit.test.ts` 的孤儿守卫。**用例级的「不减」至今没有可靠判据**，见 `docs/coding-conventions.md`「并行执行」节的三层划分。
 - **Phase 2** — registry `BUILTIN_*` 改名 + 词汇钉入 coding-conventions（#4 #6）。可并入 Phase 1 尾。Invariant: 全格式 typecheck 绿。
 - **Phase 4** — config 重组（#7）。Invariant: **每键 compat 往返测试绿**（旧扁平 yaml → 新 state 值）+ hot-reload 矩阵完整性守卫绿 + 无跨 section 误并。
 - **收尾** — 同步 DESIGN 现状表 + 配置表 + coding-conventions + memory。

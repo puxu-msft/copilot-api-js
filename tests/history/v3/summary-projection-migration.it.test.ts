@@ -6,9 +6,11 @@ import {
   expect,
   test,
 } from "bun:test"
+import { createHash } from "node:crypto"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
   closeDatabase,
@@ -20,21 +22,45 @@ import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import {
   //
   clearV3Store,
+  commitPreparedOperation,
   drainV3SummaryBackfill,
   ensureV3Schema,
   getV3StoreStatus,
+  prepareModelOperation,
+  prepareModelOperationWithTransportEvidence,
   setV3OperationPinned,
   startV3SummaryBackfill,
+  type TransportEvidenceInput,
+  validateAndMarkSummaryProjectionReady,
 } from "~/lib/history/v3/store"
 import {
   //
   backfillExistingSummaryRows,
   explainSummaryBackfillPlan,
+  inspectSummaryProjectionReadiness,
   SUMMARY_PROJECTION_READY_KEY,
-  tryMarkSummaryProjectionReady,
 } from "~/lib/history/v3/summary-store"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
+
+function terminalRecord(id: string) {
+  const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: 100 } })
+  const request = recorder.registerPayload({ prompt: "strict readiness" }, { origin: { stage: "ingress", track: "client" } })
+  recorder.recordIngress({ request: { payload: request } })
+  const dispatch = recorder.beginAttempt({ effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
+  recorder.settleAttempt(dispatch, { verdict: "committed" })
+  return recorder.commitTerminal({ outcome: "completed", committedAttempt: dispatch })
+}
+
+function captured(bytes: Uint8Array): TransportEvidenceInput {
+  const digest = createHash("sha256").update(bytes).digest("hex")
+  return {
+    dispatchIndex: 0,
+    sequence: 1,
+    capture: { availability: "captured", digest, byteLength: bytes.byteLength, encoding: "binary" },
+    bytes,
+  }
+}
 
 function entry(id: string): HistoryEntry {
   return {
@@ -133,13 +159,17 @@ describe("History V3 summary projection migration", () => {
     expect(db.prepare("SELECT projection_status FROM v3_operation_summaries WHERE operation_id=?").get("historical-summary-op")).toEqual({
       projection_status: "ready",
     })
-    expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
     expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
     expect(getV3StoreStatus()).toMatchObject({ summaryProjectionReady: true, summaryProjectionPending: 0, summaryProjectionPoisoned: 0 })
 
     db.prepare("UPDATE v3_operation_summaries SET endpoint='drifted' WHERE operation_id=?").run("historical-summary-op")
-    expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 0 })
-    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+    expect(inspectSummaryProjectionReadiness(db)).toEqual({ ready: false, pending: 0, poisoned: 0 })
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+    expect(db.prepare("SELECT endpoint FROM v3_operation_summaries WHERE operation_id=?").get("historical-summary-op")).toEqual({
+      endpoint: "anthropic-messages",
+    })
   })
 
   test("checks whole-projection readiness only once after a multi-batch backfill drains", async () => {
@@ -150,7 +180,7 @@ describe("History V3 summary projection migration", () => {
     let checks = 0
     startV3SummaryBackfill(db, 1, (database) => {
       checks++
-      return tryMarkSummaryProjectionReady(database)
+      return validateAndMarkSummaryProjectionReady(database)
     })
     await drainV3SummaryBackfill()
 
@@ -186,24 +216,70 @@ describe("History V3 summary projection migration", () => {
     ).toBe(true)
   })
 
-  test("a typed projection mismatch blocks readiness even when the row is marked ready", async () => {
+  test("strict repair refuses a valid manifest whose embedded operation identity belongs to another row", async () => {
+    const db = getDatabase()
+    await applyForwardMigrations(db)
+    const first = prepareModelOperation(terminalRecord("strict-identity-first"))
+    const second = prepareModelOperation(terminalRecord("strict-identity-second"))
+    commitPreparedOperation(db, first)
+    commitPreparedOperation(db, second)
+    expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
+    db.prepare(
+      `UPDATE v3_operations
+       SET manifest_gz=(SELECT manifest_gz FROM v3_operations WHERE operation_id=?),
+           digest=(SELECT digest FROM v3_operations WHERE operation_id=?)
+       WHERE operation_id=?`,
+    ).run(second.id, second.id, first.id)
+
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 1 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+    expect(db.prepare("SELECT projection_status,projection_error FROM v3_operation_summaries WHERE operation_id=?").get(first.id)).toMatchObject({
+      projection_status: "poisoned",
+      projection_error: expect.stringContaining("manifest operation identity mismatch"),
+    })
+  })
+
+  test("strict repair refuses to publish readiness when normalized evidence refs diverge from the manifest", async () => {
+    const db = getDatabase()
+    await applyForwardMigrations(db)
+    const prepared = prepareModelOperationWithTransportEvidence(terminalRecord("strict-readiness-ref"), [
+      captured(new TextEncoder().encode("strict readiness evidence")),
+    ])
+    commitPreparedOperation(db, prepared)
+    db.prepare("UPDATE v3_operation_evidence_refs SET byte_length=byte_length+1 WHERE operation_id=?").run(prepared.id)
+
+    expect(inspectSummaryProjectionReadiness(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 1 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+    expect(db.prepare("SELECT projection_status,projection_error FROM v3_operation_summaries WHERE operation_id=?").get(prepared.id)).toMatchObject({
+      projection_status: "poisoned",
+      projection_error: expect.stringContaining("operation evidence refs mismatch"),
+    })
+  })
+
+  test("detects a typed projection mismatch before strict repair rebuilds it from canonical state", async () => {
     const db = getDatabase()
     await applyForwardMigrations(db)
     commitV3HistoryEntry(entry("typed-mismatch"))
     db.prepare("UPDATE v3_operation_summaries SET endpoint='wrong-endpoint' WHERE operation_id=?").run("typed-mismatch")
 
-    expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 0 })
-    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+    expect(inspectSummaryProjectionReadiness(db)).toEqual({ ready: false, pending: 0, poisoned: 0 })
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+    expect(db.prepare("SELECT endpoint FROM v3_operation_summaries WHERE operation_id=?").get("typed-mismatch")).toEqual({ endpoint: "anthropic-messages" })
   })
 
-  test("a non-ready status blocks the marker even when all projected values are otherwise correct", async () => {
+  test("detects a non-ready status before strict repair republishes the canonical projection", async () => {
     const db = getDatabase()
     await applyForwardMigrations(db)
     commitV3HistoryEntry(entry("status-only-pending"))
     db.prepare("UPDATE v3_operation_summaries SET projection_status='pending' WHERE operation_id=?").run("status-only-pending")
 
-    expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 1, poisoned: 0 })
-    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+    expect(inspectSummaryProjectionReadiness(db)).toEqual({ ready: false, pending: 1, poisoned: 0 })
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: true, pending: 0, poisoned: 0 })
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
   })
 
   test("an unhydratable historical manifest becomes a visible poison and blocks readiness", async () => {
@@ -221,7 +297,7 @@ describe("History V3 summary projection migration", () => {
     expect(projected.projection_status).toBe("poisoned")
     expect(projected.projection_error.length).toBeGreaterThan(0)
     expect(projected.pinned).toBe(0)
-    expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 1 })
+    expect(validateAndMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 1 })
     expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
     expect(getV3StoreStatus()).toMatchObject({ summaryProjectionReady: false, summaryProjectionPending: 0, summaryProjectionPoisoned: 1 })
   })

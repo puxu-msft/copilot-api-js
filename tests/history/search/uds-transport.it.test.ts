@@ -60,12 +60,17 @@ import { primeUdsConnectForBunTest } from "../../helpers/prime-uds-for-bun-test"
 beforeAll(primeUdsConnectForBunTest)
 
 // File-level budget, per the B-class rule frozen in
-// docs/tmp/2026-08-08-load-sensitive-test-dispositions.md: take the larger of 10x this file's
-// slowest isolated case (0.85s -> 8.5s) and 3x its worst observed sharded time (5.21s -> 15.6s),
-// then round up to the 30/60s tier. It is file-level rather than per-case because the budget has
-// to sit OUTSIDE every client deadline the cases pass in; a 20s client timeout under a 5s test
-// timeout would be killed by the harness before the client could report anything. That doc also
-// verified setDefaultTimeout does not leak to sibling files sharing the shard's process.
+// docs/tmp/2026-08-08-load-sensitive-test-dispositions.md: the larger of 10x this file's slowest
+// isolated case and 3x its worst observed sharded time, rounded up to the 30/60s tier. Two
+// independent sessions measured those -- 524ms and 849ms isolated, 5057.89ms and 5211ms sharded --
+// so 30s clears both bounds either way. That doc also verified setDefaultTimeout does not leak to
+// sibling files sharing the shard's process.
+//
+// Note the two budgets here do different jobs and are NOT nested. The client deadlines a case
+// passes in (see the fragmentation case) are set far above any plausible transfer time so a slow
+// but progressing transfer never silently returns [] -- query() never throws, so its own deadline
+// is indistinguishable from a wrong answer. This harness budget is the one that stops a wedged
+// test. Do not read the larger client number as the effective limit.
 //
 // This does not rescue the A-class case at "missing sidecar queried from INSIDE a Bun.serve
 // request handler under load": docs/plan/2026-07-28-state-to-foundation/HANDOVER.md:417-421
@@ -467,7 +472,14 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     cleanupServers.push(server)
     await server.listen()
 
-    const client = createHistorySearchUdsClient({ socketPath, queryTimeoutMs: 20_000 })
+    // Budget belongs to the CLIENT here, not to bun. `client.query` has a never-throw contract
+    // (uds-client.ts:155-158): any failure — including its own `queryTimeoutMs` — returns []. With
+    // the 5s default and a ~15MB payload (50 x 300KB), contention makes the client give up and this
+    // assertion then reads `Received length: 0`, NOT a timeout. Measured: raising only bun's
+    // per-test budget to 120s still failed exactly that way, so the per-test budget was never the
+    // binding constraint. Overriding the client timeouts here is a fixture parameter; production
+    // defaults are untouched.
+    const client = createHistorySearchUdsClient({ socketPath, connectTimeoutMs: 30_000, queryTimeoutMs: 120_000 })
     const rows = await client.query("q", undefined, 50)
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)

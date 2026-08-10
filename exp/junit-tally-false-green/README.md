@@ -1,0 +1,84 @@
+# 门禁的 tally 曾在一条真失败之上报绿（2026-08-09）
+
+## 它回答什么问题
+
+`scripts/parallel-test.ts` 的汇总行原本从各 shard 的 stdout 解析 `N pass` / `N fail`。本目录保存的是**促使它改为从 JUnit XML 取数的那次运行的机器生成产物**——因为该论断在提交信息（`e24de3a1`）里被当作事实引用，而产生它的运行日志与产物原本只在临时目录（`$CLAUDE_JOB_DIR/tmp`、`/tmp/parallel-test-*`），会随会话消失。
+
+> **本节的第一版只保存了人工转录的两行，并自称「原始证据」。** 独立评审指出：那样一来，仓库里能确认的只是「作者在多个载体重复了同一说法」，而不是可独立审计的 primary evidence——恰好重犯本目录要防的那个错误。现已收入原件（见下）。**注意范围**：能从本目录原件复算的只有 shard-06 那一份的计数与那条失败行；全量的 `7529 executed` 需要全部 16 份 XML，本目录**没有**，只能重跑。
+
+## 原件（机器生成，未经编辑）
+
+| 文件 | 是什么 | sha256 |
+|---|---|---|
+| `artifacts/run.log` | 那次 `bun run test:backend` 的完整 stdout+stderr（1330 行，含 ANSI） | `8cd82fae2ef5f5160920c9d587e7ebb73126da293effcf9904d8b94a82ac4773` |
+| `artifacts/shard-06.xml` | 同一次运行里 shard-06 的 JUnit 产物 | `101d99a32862ecb29cad62b608ac9c1cc46e0a36361987b3f825b2d609db7bdf` |
+
+采集环境：Linux 6.18 (WSL2)、16 CPU、bun 1.3.14 (0d9b296a)、仓库 HEAD 为合并后未提交状态（该次运行即用于判定合并能否成立）。**只保留了 shard-06 一份 XML**——它是唯一含失败行的那份；其余 15 份未收（共 2.5 MB）。因此本目录可复算 shard-06 的计数，但**不能**用它复算全量的 `7529 executed`，那个数需要全部 16 份。
+
+## 从原件读出什么
+
+`run.log` 末尾的汇总行：
+
+```
+[parallel-test] 16 shards · 3337 tests · 3337 pass · 0 fail · 7529 executed · 35 skipped · 1 shard(s) crashed (see isolated re-run above) · 132.19s
+```
+
+`shard-06.xml` 里的这一行：
+
+```xml
+<testcase name="CAS live physical bytes are at least 10x smaller than the real compressed V2 write shape"
+          classname="History V3 store performance" time="16.29342"
+          file="tests/history/v3/store-performance.it.test.ts" line="216" assertions="2">
+  <failure type="TimeoutError" />
+</testcase>
+```
+
+也就是说：**`0 fail` 与一条真实的 `TimeoutError` 同时为真**。成因是 shard 在打印 summary 的过程中死掉，`N fail` 那行永远没落盘，而失败的 testcase 行早已 flush 进 XML——按 stdout 统计的聚合器分不清「没有失败」和「没读到失败」。同一次还把总数少报了一半以上（3337 vs 7529 executed），因为异常终止的 shard 对 stdout tally 贡献 0。
+
+## 它**没有**证明什么
+
+- **没有**证明「stdout tally 历史上那些互不相同的数字（backlog 记的七个值）都由此产生」。这里只坐实了其中一个成因，且只在「有 shard 异常终止」的运行上成立。那个问题至今未定位——载体换了，不是被诊断出来了。
+- **没有**证明退出码曾经失效。退出码取自各 shard 自身，那次运行确实退出 1；坏的只是被交付报告摘走的那一行。
+- **没有**证明改用 JUnit 之后计数就完备了。它不完备：一个测试文件在**加载期抛错**时根本不产生任何 JUnit 行，而 bun 照样打印自己的 `N fail`，于是 crash 分支也不触发。**该论断已被两位独立评审各自实测确认**（bun 1.3.14：summary `1 pass / 1 fail / 1 error / Ran 2 tests across 2 files`，而 XML 根节点是 `tests="1" failures="0"` 且完全不含抛错的那个文件）。已在 `0144edcb` 用「tally 行自带 `⚠ INCOMPLETE` 标记」处理——**标记的是不完备，不是把它补全**；真正兜住退出码的仍是既有的 `compareFileIdentities`。
+- **没有**证明 `7529` 这个全量数——如上，仓库里只有 1/16 的 XML。要复现它需要重跑。
+
+## 复跑配方
+
+```bash
+bun run test:backend            # 产物目录打印在末行 artifacts=<dir>
+```
+
+用当前解析器对任意一批产物复算。**这里不数 shard 编号**——上一版数了，而且错了：编号「从 1 连续」检不出**缺末尾一份**（`01..15` 照样满足），实测缺 `shard-16` 时它退出 0 并输出 `6934`，把子集当成了完整批次。改用的办法是**把产物里出现的文件集合与仓库提交的发现基线对账**——缺哪份 shard，它承载的文件就不在集合里。
+
+⚠️ **两点别误读**（第八、九轮独立评审各证伪一次，此处留痕）：
+① **生产 runner 并不读这份 baseline**。它拿本次 `discover()` 的结果既做 `bun test` 的 argv、又做期望集，与本次 JUnit identities 对账（`scripts/parallel-test.ts:123,212-214`）。baseline 只在收尾取证（`capture-entry-evidence.ts`）与下面这个离线配方里用。
+② **这也不是「完整性 oracle」**。baseline 与 runner 的 discovery 共享同一个 checkout、同一套后缀集与同形 `Bun.Glob`，是**部分独立的绊线**（挡 baseline 随时间漂移），不是结构独立的枚举者。配方输出的是 **artifact 批次相对该 baseline 的 coverage**，不是「仓库应有的测试集合是完整的」。
+
+```bash
+bun -e '
+  import { readdirSync, readFileSync } from "node:fs"
+  import path from "node:path"
+  import { compareFileIdentities, parseJUnit } from "./scripts/parallel-test-artifacts"
+  const dir = process.argv[1]
+  const names = readdirSync(dir).filter((n) => /^shard-\d+\.xml$/.test(n)).sort()
+  if (names.length === 0) throw new Error(`no shard-*.xml under ${dir}`)
+  const seen = new Set(), root = process.cwd()
+  let executed = 0, failed = 0, skipped = 0
+  for (const name of names) {
+    const id = parseJUnit(readFileSync(path.join(dir, name), "utf8"), root)
+    executed += id.executed; failed += id.failed; skipped += id.skipped
+    for (const f of id.files) seen.add(f)
+    for (const f of id.failedIdentities) console.log("FAIL", f.file, "›", f.name, `(${f.type})`)
+  }
+  const baseline = JSON.parse(readFileSync("tests/infra/entry-test-discovery-baseline.json", "utf8"))
+  const cmp = compareFileIdentities(baseline.files, [...seen])
+  console.log({ shardFiles: names.length, executed, failed, pass: executed - failed, skipped })
+  if (cmp.missing.length > 0) console.log(`INCOMPLETE: ${cmp.missing.length} discovered file(s) absent from these artifacts — the counts above are a FLOOR, not a total. e.g. ${cmp.missing.slice(0, 3).join(", ")}`)
+  if (cmp.unexpected.length > 0) console.log(`OUT-OF-SCOPE: ${cmp.unexpected.length} file(s) not in the baseline reported rows`)
+  if (cmp.missing.length === 0 && cmp.unexpected.length === 0) console.log("artifact files match the committed baseline (coverage check — NOT proof the baseline itself is complete)")
+' <artifacts-dir>
+```
+
+**注意基线的口径**：`entry-test-discovery-baseline.json` 是 `unit`+`it`+`http` 三档的全集，也就是 `test:backend` 的口径。拿它去对 `test:fast` 的产物会报出大量 `missing`——那是**口径不同**，不是产物残缺。要对别的档位，请换用对应的发现集合。
+
+**对本目录保存的那一份复算，会打印 `INCOMPLETE` 并列出缺失文件**——它只有 `shard-06.xml`。这是设计如此：想单看那一份，直接读 `artifacts/shard-06.xml` 里的 `<failure type="TimeoutError" />` 行，**但不要把它的计数当作那次运行的总量**。

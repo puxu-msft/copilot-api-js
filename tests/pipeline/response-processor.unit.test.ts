@@ -92,6 +92,53 @@ describe("P2-T1 branch-local response processor", () => {
     expect(await collect(hedge, [input])).toEqual([{ event: "message", data: "frame:1" }])
   })
 
+  test("projects direct rich SSE to wire before exactly-once post-render classification", async () => {
+    let classifications = 0
+    const richUpstream = {
+      kind: "parsed-sse",
+      message: { event: "response.delta", data: "payload", id: "alpha" },
+      idField: { kind: "present", value: "alpha" },
+    } as unknown as UpstreamFrame
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        classifications++
+        expect("kind" in frame).toBeFalse()
+        return frame
+      },
+    })
+
+    expect(await collect(processor, [richUpstream])).toEqual([{ event: "response.delta", data: "payload", id: "alpha" }])
+    expect(classifications).toBe(1)
+  })
+
+  test("does not infer parser ID provenance from same-valued fresh rewrite output", async () => {
+    const richUpstream = {
+      kind: "parsed-sse",
+      message: { event: "message", data: "payload", id: "alpha" },
+      idField: { kind: "present", value: "alpha" },
+    } as unknown as UpstreamFrame
+    const freshSameValue: ResponseRewrite = {
+      name: "fresh-same-value",
+      order: 1,
+      appliesTo: () => true,
+      transform: (frame) => ({ kind: "emit", frames: [{ event: frame.event, data: frame.data }] }),
+    }
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [freshSameValue],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        expect("kind" in frame).toBeFalse()
+        return frame
+      },
+    })
+
+    expect(await collect(processor, [richUpstream])).toEqual([{ event: "message", data: "payload" }])
+  })
+
   test("is single-use so one processor cannot silently share state across dispatches", async () => {
     const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
     expect(await collect(processor, [{ data: "one" }])).toEqual([{ data: "one" }])
@@ -154,9 +201,53 @@ describe("P2-T1 branch-local response processor", () => {
     }
   })
 
-  test("does not run protocol finish after an upstream iterator error", async () => {
+  test("classifies and yields each finish frame exactly once before classifying the finish verdict", async () => {
+    const order: Array<string> = []
+    const yielded: Array<string> = []
+    const closingFrames = [{ data: "closing-1" }, { data: "closing-2" }]
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        order.push(`classify:${frame.data ?? ""}`)
+        return frame
+      },
+    })
+    const upstream = {
+      headers: new Headers(),
+      frames: {
+        // eslint-disable-next-line require-yield
+        async *[Symbol.asyncIterator]() {
+          return
+        },
+      },
+    }
+
+    for await (const frame of processor.stream(upstream, {
+      finishResponse: () => ({ kind: "complete", frames: closingFrames }),
+      onFinishResolved: () => order.push("finish"),
+    })) {
+      yielded.push(frame.data ?? "")
+    }
+
+    expect(order).toEqual(["classify:closing-1", "classify:closing-2", "finish"])
+    expect(yielded).toEqual(["closing-1", "closing-2"])
+  })
+
+  test("does not classify finish frames or verdict after an upstream iterator error", async () => {
     let finishCalls = 0
-    const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+    let frameClassifications = 0
+    let finishClassifications = 0
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        frameClassifications++
+        return frame
+      },
+    })
     const upstream = {
       headers: new Headers(),
       frames: {
@@ -167,12 +258,15 @@ describe("P2-T1 branch-local response processor", () => {
       },
     }
     const consume = async () => {
-      for await (const _frame of processor.stream(upstream, { finishResponse: () => (finishCalls++, { kind: "complete", frames: [] }) })) {
+      for await (const _frame of processor.stream(upstream, {
+        finishResponse: () => (finishCalls++, { kind: "complete", frames: [{ data: "closing" }] }),
+        onFinishResolved: () => finishClassifications++,
+      })) {
         // drain until the upstream throw
       }
     }
 
     await expect(consume()).rejects.toThrow("transport cut")
-    expect(finishCalls).toBe(0)
+    expect({ finishCalls, frameClassifications, finishClassifications }).toEqual({ finishCalls: 0, frameClassifications: 1, finishClassifications: 0 })
   })
 })
