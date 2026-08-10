@@ -1,0 +1,119 @@
+{
+  "runtime": {
+    "name": "node",
+    "version": "v24.16.0"
+  },
+  "backend": "node:sqlite.DatabaseSync",
+  "moduleOwnProperties": [
+    "DatabaseSync",
+    "Session",
+    "StatementSync",
+    "backup",
+    "constants"
+  ],
+  "databaseStaticOwnProperties": [
+    "arguments",
+    "caller",
+    "length",
+    "name",
+    "prototype"
+  ],
+  "databasePrototypeOwnProperties": [
+    "aggregate",
+    "applyChangeset",
+    "close",
+    "constructor",
+    "createSession",
+    "createTagStore",
+    "deserialize",
+    "enableDefensive",
+    "enableLoadExtension",
+    "exec",
+    "function",
+    "loadExtension",
+    "location",
+    "open",
+    "prepare",
+    "serialize",
+    "setAuthorizer"
+  ],
+  "databaseInstanceOwnProperties": [
+    "isOpen",
+    "isTransaction",
+    "limits"
+  ],
+  "candidateMethods": {
+    "function": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "scalar": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "aggregate": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "setAuthorizer": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "authorizer": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "updateHook": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "update_hook": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "preupdateHook": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "preupdate_hook": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    },
+    "loadExtension": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "serialize": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "deserialize": {
+      "inPrototype": true,
+      "typeofInstance": "function"
+    },
+    "transaction": {
+      "inPrototype": false,
+      "typeofInstance": "undefined"
+    }
+  },
+  "smoke": {
+    "memoryOpen": true,
+    "ddl": true,
+    "row": {
+      "id": 1,
+      "value": "node-ok"
+    },
+    "functionRow": {
+      "value": 42
+    },
+    "aggregateRow": {
+      "value": 5
+    },
+    "authorizerCalls": 7,
+    "serializedBytes": 8192,
+    "deserializeRow": {
+      "id": 1,
+      "value": "node-ok"
+    }
+  }
+}

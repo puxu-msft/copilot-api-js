@@ -35,6 +35,11 @@ import type { UpstreamFrame } from "~/lib/pipeline/types"
 import { buildCanonicalErrorFrameFromRaw } from "~/lib/anthropic/error-shaping"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+import {
+  //
+  freshFrames,
+  preserveFrame,
+} from "~/lib/pipeline/rewrite-registry"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
 
@@ -46,10 +51,10 @@ export const errorFrameCanonicalRewrite: ResponseRewrite = {
   // the golden lock — the frame is forwarded verbatim as today).
   appliesTo: (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES && state.errorShapingEnabled,
   transform: (frame: UpstreamFrame, _state: RewriteState): FrameAction => {
-    if (frame.event !== "error") return { kind: "emit", frames: [frame] }
+    if (frame.event !== "error") return preserveFrame(frame)
     // history/types.ts SyntheticOriginKind doc (Phase 3 wiring): this reshaped frame REPLACES the
     // upstream terminator on the FORWARDED track, so it must be tagged distinguishable from genuine
     // upstream traffic (richest-data-flow §3) — mirrors `recover-refusal.ts`'s error-mode frame tagging.
-    return { kind: "emit", frames: [tagFrameSynthetic(buildCanonicalErrorFrameFromRaw(frame), "error-shaping-canonical")] }
+    return freshFrames(tagFrameSynthetic(buildCanonicalErrorFrameFromRaw(frame), "error-shaping-canonical"))
   },
 }

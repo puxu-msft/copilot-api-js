@@ -52,6 +52,7 @@ import {
   isWireStatus,
   type HistorySearchListRequest,
   type HistorySearchListResponse,
+  type HistorySearchWireErrorCode,
   type HistorySearchWireResponse,
   type HistorySearchWireStatus,
 } from "./protocol"
@@ -93,9 +94,9 @@ export interface HistorySearchUdsClient {
  *  distinguish success from failure (status/diagnostic reporting needs that
  *  distinction; a real search query deliberately does not expose it). */
 export class HistorySearchUdsError extends Error {
-  readonly code?: "invalid-cursor"
+  readonly code?: HistorySearchWireErrorCode
 
-  constructor(message: string, code?: "invalid-cursor") {
+  constructor(message: string, code?: HistorySearchWireErrorCode) {
     super(message)
     this.name = "HistorySearchUdsError"
     this.code = code

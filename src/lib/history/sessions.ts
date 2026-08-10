@@ -22,16 +22,17 @@ import {
 } from "./v3/store"
 import {
   //
-  isSummaryProjectionReady,
   querySessionEntryPage,
   querySessionSummaries,
+  withValidatedSummarySnapshot,
 } from "./v3/summary-store"
 
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
   const db = getHistoryReadDatabase()
   const overlay = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId !== undefined)
-  if (isSummaryProjectionReady(db)) return querySessionSummaries(db, limit, overlay)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionSummaries(db, limit, overlay))
+  if (snapshot.ready) return snapshot.value
 
   const grouped = new Map<string, Array<EntrySummary>>()
   const seen = new Set(overlay.map((summary) => summary.id))
@@ -159,8 +160,9 @@ export function getSessionEntries(sessionId: string, options: { cursor?: string;
   const db = getHistoryReadDatabase()
   const overlayEntries = listHistoryOverlayEntries().filter((entry) => entry.operationKind === "generation" && entry.sessionId === sessionId)
   const overlaySummaries = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId === sessionId)
-  if (isSummaryProjectionReady(db)) {
-    const page = querySessionEntryPage(db, sessionId, cursor, limit, overlaySummaries)
+  const snapshot = withValidatedSummarySnapshot(db, () => querySessionEntryPage(db, sessionId, cursor, limit, overlaySummaries))
+  if (snapshot.ready) {
+    const page = snapshot.value
     const stored = getV3StoredOperations(page.operationIds, db)
     const byOverlayId = new Map(overlayEntries.map((entry) => [entry.id, entry]))
     const entries = page.operationIds.map((operationId) => {

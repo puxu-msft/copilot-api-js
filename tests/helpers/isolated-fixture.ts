@@ -53,7 +53,13 @@ import {
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
-import { resetV3WriterForTests } from "~/lib/history/v3/store"
+import {
+  //
+  drainV3SummaryBackfill,
+  resetV3WriterForTests,
+  setV3TransactionBFailureInjectorForTests,
+} from "~/lib/history/v3/store"
+import { setSummarySnapshotObserverForTests } from "~/lib/history/v3/summary-store"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import {
   //
@@ -132,6 +138,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "setCaptureWorkObserverForTests", reset: () => setCaptureWorkObserverForTests(undefined) },
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "setV3TransactionBFailureInjectorForTests", reset: () => setV3TransactionBFailureInjectorForTests(null) },
+  { name: "setSummarySnapshotObserverForTests", reset: () => setSummarySnapshotObserverForTests(undefined) },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
   { name: "setSummaryPreviewVisitObserverForTests", reset: () => setSummaryPreviewVisitObserverForTests(undefined) },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
@@ -290,6 +298,8 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     const runtime = peekHistoryPersistenceRuntime()
     const persistence = runtime?.snapshot()
     if (runtime && persistence && (persistence.ready || persistence.pendingEnvelopes > 0)) await runtime.drain()
+    // The in-process test backend runs on THIS thread, so unlike production its summary backfill is reachable from here — and it must be drained before the artifact is swapped.
+    await drainV3SummaryBackfill()
     restoreStateForTests(snapshot)
     // BEFORE the rebuild, not after. This releases whatever runtime THIS test left behind — an injected double, a real one it started — so nothing leaks into the next file; `resetTestRuntime()` then brings History back up and the runtime it creates is the one the next test uses.
     //

@@ -1,0 +1,17 @@
+diff --git a/src/lib/history/v3/store.ts b/src/lib/history/v3/store.ts
+index 6ae7efdd..bd99dd64 100644
+--- a/src/lib/history/v3/store.ts
++++ b/src/lib/history/v3/store.ts
+@@ -1364,10 +1364,8 @@ interface ManifestEnvelope {
+
+ function decodeManifestEnvelope(manifestBlob: Uint8Array): ManifestEnvelope {
+   const decoded = JSON.parse(decoder.decode(decompressBytes(manifestBlob))) as Record<string, unknown>
+-  const version = decoded.formatVersion
+-  if (!Number.isInteger(version) || (version !== 1 && version !== 2 && version !== 3)) {
+-    throw new Error(`[history/v3] unsupported manifest format version: ${String(version)}`)
+-  }
++  const version = decoded.formatVersion as number
++  if (version > 3) throw new Error(`[history/v3] unsupported manifest format version: ${String(version)}`)
+   if (!decoded.record || typeof decoded.record !== "object" || !decoded.objectHashes || typeof decoded.objectHashes !== "object") {
+     throw new Error("[history/v3] invalid manifest envelope")
+   }

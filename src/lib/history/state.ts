@@ -214,6 +214,12 @@ async function bringHistoryTo(enable: boolean): Promise<void> {
     }
     startedDbPath = dbPath
   }
+  // The summary-integrity worker used to be started HERE, on the main thread, so that every
+  // production lifecycle got a scrub/repair path without depending on `startHistoryBackfills()`.
+  // The cutover keeps that guarantee and moves it: the Worker's `initialize` starts it
+  // unconditionally (worker/backend.ts), on the thread that owns the write handle. Starting it
+  // again here would be worse than redundant — the main thread's module state is a different
+  // instance from the Worker's, so this call could neither drive nor stop the real one.
   const admission = getHistoryAdmissionController()
   // The registry singleton, not a local from the branch above: on an idempotent re-entry that branch never ran, and the sink must still point at the runtime that is actually installed.
   admission.replaceTerminalSink(getHistoryPersistenceRuntime())

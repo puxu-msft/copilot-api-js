@@ -1,0 +1,338 @@
+{
+  "scope": "Step A: public runtime/type/adapter API inventory only",
+  "worktree": "/home/xp/src/copilot-api-js/.worktree/agent-a0b5eee4b161ab9ab",
+  "headBeforeStep": "0514af09c89beed4d2b00c13119c18861bc6103e",
+  "commands": [
+    "bun exp/history-summary-write-authority/probe-bun.ts",
+    "node exp/history-summary-write-authority/probe-node.mjs",
+    "node exp/history-summary-write-authority/probe-driver-node.mjs",
+    "rg -n 'function|scalar|aggregate|authoriz|update|preupdate|loadExtension|serialize|deserialize|transaction' /home/xp/src/copilot-api-js/node_modules/bun-types/sqlite.d.ts",
+    "rg -n 'function|aggregate|Authorizer|authorizer|update|preupdate|loadExtension|serialize|deserialize|transaction' /home/xp/src/copilot-api-js/node_modules/@types/node/sqlite.d.ts"
+  ],
+  "bun": {
+    "runtime": {
+      "name": "bun",
+      "version": "1.3.14"
+    },
+    "moduleOwnProperties": [
+      "Database",
+      "SQLiteError",
+      "Statement",
+      "__esModule",
+      "constants",
+      "default"
+    ],
+    "databaseStaticOwnProperties": [
+      "MAX_QUERY_CACHE_SIZE",
+      "deserialize",
+      "length",
+      "name",
+      "open",
+      "prototype",
+      "setCustomSQLite"
+    ],
+    "databasePrototypeOwnProperties": [
+      "clearQueryCache",
+      "close",
+      "constructor",
+      "exec",
+      "fileControl",
+      "handle",
+      "inTransaction",
+      "loadExtension",
+      "prepare",
+      "query",
+      "run",
+      "serialize",
+      "transaction"
+    ],
+    "databaseInstanceOwnProperties": [
+      "filename"
+    ],
+    "candidateMethods": {
+      "function": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "scalar": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "aggregate": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "setAuthorizer": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "authorizer": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "updateHook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "update_hook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "preupdateHook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "preupdate_hook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "loadExtension": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "serialize": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "deserialize": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "transaction": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      }
+    },
+    "smoke": {
+      "memoryOpen": true,
+      "ddl": true,
+      "row": {
+        "id": 1,
+        "value": "bun-ok"
+      },
+      "serializedBytes": 8192,
+      "staticDeserializeRow": {
+        "id": 1,
+        "value": "bun-ok"
+      }
+    }
+  },
+  "node": {
+    "runtime": {
+      "name": "node",
+      "version": "v24.16.0"
+    },
+    "backend": "node:sqlite.DatabaseSync",
+    "moduleOwnProperties": [
+      "DatabaseSync",
+      "Session",
+      "StatementSync",
+      "backup",
+      "constants"
+    ],
+    "databaseStaticOwnProperties": [
+      "arguments",
+      "caller",
+      "length",
+      "name",
+      "prototype"
+    ],
+    "databasePrototypeOwnProperties": [
+      "aggregate",
+      "applyChangeset",
+      "close",
+      "constructor",
+      "createSession",
+      "createTagStore",
+      "deserialize",
+      "enableDefensive",
+      "enableLoadExtension",
+      "exec",
+      "function",
+      "loadExtension",
+      "location",
+      "open",
+      "prepare",
+      "serialize",
+      "setAuthorizer"
+    ],
+    "databaseInstanceOwnProperties": [
+      "isOpen",
+      "isTransaction",
+      "limits"
+    ],
+    "candidateMethods": {
+      "function": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "scalar": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "aggregate": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "setAuthorizer": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "authorizer": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "updateHook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "update_hook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "preupdateHook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "preupdate_hook": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      },
+      "loadExtension": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "serialize": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "deserialize": {
+        "inPrototype": true,
+        "typeofInstance": "function"
+      },
+      "transaction": {
+        "inPrototype": false,
+        "typeofInstance": "undefined"
+      }
+    },
+    "smoke": {
+      "memoryOpen": true,
+      "ddl": true,
+      "row": {
+        "id": 1,
+        "value": "node-ok"
+      },
+      "functionRow": {
+        "value": 42
+      },
+      "aggregateRow": {
+        "value": 5
+      },
+      "authorizerCalls": 7,
+      "serializedBytes": 8192,
+      "deserializeRow": {
+        "id": 1,
+        "value": "node-ok"
+      }
+    }
+  },
+  "installedTypeDeclarations": {
+    "bun": {
+      "package": "@types/bun 1.3.14 (resolves to bun-types/sqlite.d.ts)",
+      "file": "/home/xp/src/copilot-api-js/node_modules/bun-types/sqlite.d.ts",
+      "candidateDeclared": {
+        "function": false,
+        "scalar": false,
+        "aggregate": false,
+        "setAuthorizer": false,
+        "authorizer": false,
+        "updateHook": false,
+        "update_hook": false,
+        "preupdateHook": false,
+        "preupdate_hook": false,
+        "loadExtension": true,
+        "serialize": true,
+        "deserialize": true,
+        "transaction": true
+      },
+      "notes": [
+        "Bun deserialize is static Database.deserialize, not an instance method."
+      ]
+    },
+    "node": {
+      "package": "@types/node 24.6.2 bundled transitively; older than the installed Node v24.16.0 runtime API surface",
+      "file": "/home/xp/src/copilot-api-js/node_modules/@types/node/sqlite.d.ts",
+      "candidateDeclared": {
+        "function": true,
+        "scalar": false,
+        "aggregate": true,
+        "setAuthorizer": false,
+        "authorizer": false,
+        "updateHook": false,
+        "update_hook": false,
+        "preupdateHook": false,
+        "preupdate_hook": false,
+        "loadExtension": true,
+        "serialize": false,
+        "deserialize": false,
+        "transaction": false
+      },
+      "notes": [
+        "Node DatabaseSync.function is the scalar UDF registration API; there is no separate scalar method.",
+        "Installed @types/node 24.6.2 declares function/aggregate/loadExtension but does not yet declare runtime-present setAuthorizer/serialize/deserialize; runtime reflection and execution are authoritative for Node v24.16.0.",
+        "Node has no transaction callback helper."
+      ]
+    }
+  },
+  "projectBackend": {
+    "source": "packages/foundation/src/sqlite/driver.ts",
+    "bun": "bun:sqlite.Database selected when globalThis.Bun exists",
+    "node": "node:sqlite.DatabaseSync selected otherwise",
+    "nodeRealProcessSmoke": {
+      "runtime": "v24.16.0",
+      "importedModule": "../../packages/foundation/src/sqlite/driver.ts",
+      "memoryOpen": true,
+      "ddl": true,
+      "row": {
+        "x": "node-driver-ok"
+      }
+    },
+    "dependencies": "No third-party SQLite package is declared in root or foundation package manifests."
+  },
+  "unifiedDriverSurface": {
+    "database": [
+      "exec(sql)",
+      "prepare(sql)",
+      "close()",
+      "transaction(fn)"
+    ],
+    "statement": [
+      "all(...params)",
+      "get(...params)",
+      "run(...params)"
+    ],
+    "openOptions": [
+      "readonly"
+    ],
+    "missingComparedWithNodePublicSurface": [
+      "function",
+      "aggregate",
+      "setAuthorizer",
+      "loadExtension",
+      "serialize",
+      "deserialize"
+    ],
+    "missingComparedWithBunPublicSurface": [
+      "loadExtension",
+      "serialize",
+      "static Database.deserialize"
+    ],
+    "commonNativeRegistrationGap": "Bun 1.3.14 exposes no public scalar/function, aggregate, or authorizer registration API, while Node 24.16.0 does."
+  },
+  "notProven": [
+    "No trigger or controlled maintenance mode was implemented or exercised.",
+    "Absence from public prototype and installed declarations does not prove native internals cannot be reached by unsupported means.",
+    "loadExtension presence does not prove an extension can be built or loaded in both runtimes.",
+    "No update/preupdate hook behavior, second connection behavior, nested scope, reentrancy, or exception cleanup was tested."
+  ]
+}

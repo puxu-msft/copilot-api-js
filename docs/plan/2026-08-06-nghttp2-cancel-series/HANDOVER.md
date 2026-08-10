@@ -191,14 +191,24 @@ A1、A2、A3 的已实现部分均已落 `master@fa2bfd2d902af444517b2fed1a44428
 
 以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象提出；准确 file:line、反例与建议见 `review-core-a3.md`（该报告是时点记录，不随修复改写）。**六条现已全部处置**，逐条落点如下——其中第 4 条仍在分支上、尚未合并，合并前不得把它算作 master 状态。
 
-1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（`src/lib/history/queries.ts:46`、`:380`）。
+1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（定义 `src/lib/history/v3/summary-store.ts:102`，唯一调用点 `src/lib/history/queries.ts:380`）。
 2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。**已闭合**：同上，await 两侧不再各自取快照。
 3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。**已闭合**：`lifecycleStatesForQuery` 成为唯一判定源，冲突谓词返回空集而非放宽（`src/lib/history/lifecycle-state.ts`）。
 4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。**已实现，待合并**（分支 `nghttp2-cancel-a3-next`）：改为按 term ordinal 在列式 fast field 上过滤 + 每段一次批量解析 id；精确 `total`、tuple 顺序、keyset 四项语义均未变（遍历全部命中仍是精确计数的前提，被消除的是评分堆与 stored-doc 物化）。实测与「它没有证明什么」见 `exp/history-search-list-perf/README.md`，条目收口在 `docs/todo/deferred-backlog.md`。
 5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。**已闭合**：`rejectsInvalidListQuery`（`src/routes/history/handler.ts`），按用户 2026-08-08 裁决**只作用于 `/api/entries`**，`/api/search` 保持既有宽松降级契约。
 6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。**已闭合**：cursor 记录 `indexOpstamp`，与 `HistoryIndex.generation()` 比对，不匹配即弃用重新 tail（`src/lib/history/search/daemon.ts`）。
 
-A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。**未闭合的验收项**：六条各自带目标回归与 mutation 对照，但**尚未做过一次覆盖全部六条最终合并态的独立复评**（`0 blocker／0 major` 那道门）；第 4 条另有一处**实测证明当前不可达、因而无测试覆盖**的 `alive_bitset` 分支，保留理由写在代码与用例注释里。证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
+A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。
+
+**合并态复评已闭合（2026-08-09，分支 `nghttp2-cancel-a3-next`）**：六条 finding 的合并态经两位异模型 reviewer 独立复评**六轮**，逐轮 major 数 8 → 3 → 3 → 3 → 2 → 1，全部复核成立并修复，两位均已给出收口意见。处置表与逐轮报告在 `docs/tmp/2026-08-08-a3-merged-state-review-*.md`（`dispositions.md` 是入口）。
+
+两处需要后人知道的状态订正：
+- 原记「第 4 条的 `alive_bitset` 分支实测不可达、因而无测试覆盖」——**该结论是错的**。同一探针复跑六次有五次产生 tombstone；当初只跑了一次、恰好撞上被取代文档独占单文档 segment 而整段被丢弃的少数情形。现已有回归 `tests/history/search/daemon.it.test.ts`（先断言 `meta.json` 真的出现 tombstone 再断言过滤），变异去掉该检查会报 `total=220`（应 200）。
+- 复评过程中在 overlay 与 Tantivy 索引的匹配一致性上另修了七条缺陷（含 `entries.length=1,total=0` 的两种新形态、多词语义 AND/OR 反了、非拉丁文字漏配、短 term 与超长 token 两端过宽）。该不变量**已从注释迁移为机器判据**：`tests/history/search/overlay-index-agreement.it.test.ts` 以真实索引为 oracle，双向、双 lane。
+
+**遗留项均已记入 `docs/todo/deferred-backlog.md`**，其中两条是**用户裁决**：搜索的多词语义现为 OR（词越多结果越宽，与多数搜索框的 AND 直觉相反）；以及若干 perf 判据挂在 wall-clock 绝对值上、应交 perf 专项重定基线。
+
+证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
 
 ## A.3 文档／流程整改与后续 gate
 
@@ -258,7 +268,27 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 ### B.5.2 A4 canonical diagnostics
 
-**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口：** A4 尚未实施，现有 History 无法回答取消发起方或 session 关联。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
+**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口（2026-08-09 更新）：** A4 已开工、**尚未完成**；下述批次 1 已合并 master，批次 2–5 未实施，因此「现有 History 无法回答取消发起方、也无法回答 **H2 transport session**（H2 连接身份，即计划 §Transport event schema 要新增的 H2 session ref）关联」这一判断**仍然成立**。⚠️ **别把它读成「History 没有任何 session 概念」**：History 早已有客户端会话维度 `sessionId`（`EntrySummary.sessionId` 在 `src/lib/history/core-types.ts`、`HistoryEntry.sessionId` 在 `src/lib/history/types.ts`，由 `src/lib/history/v3/projection.ts` 从 `record.identity.sessionId` 投影），那是**另一个身份域**——客户端 conversation，不是 H2 连接。**绝不可拿 `sessionId` 承载 H2 connection identity**，两者碰撞会同时毁掉两边的可裁决性。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
+
+**批次划分与状态**（划分由执行会话所拟，不是正式计划的一部分；正式计划只给整体范围、未分批）。**状态核验于 `7f7a073003618f290bfe1881a7adcd310e165ff1`**；表里的「未开始」是那一刻的读数，**不要当作当前态直接引用**，按下方命令重取：
+
+| 批次 | 内容 | 状态（@ `7f7a0730`） |
+|---|---|---|
+| A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
+| A4-2 | `H2StreamDiagnostic` schema + `onTransportDiagnostic` 发射 + 经既有 `AttemptDiagnostic` 持久化 | 未开始 |
+| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | 未开始 |
+| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
+| A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
+
+**怎么重取这张表的状态**（三条都要跑，缺一会误判）：
+
+1. A4-1 是否仍在主线：`git merge-base --is-ancestor c9a115a5 master && echo landed`。
+2. 相关路径此后有无新提交：`git log --oneline 7f7a0730..master -- src/lib/transport src/lib/pipeline src/lib/context src/lib/history/v3/projection.ts`。
+3. 符号是否已出现：`git grep -nE 'H2StreamDiagnostic|H2SessionDiagnostic|onTransportDiagnostic|releaseStreamSlot|transportFailure' master -- src packages tests`。
+
+⚠️ **第 3 条为空不能单独证明「未开始」**——它只证明这几个**拼写**不存在，换个命名的等价实现照样为空。**只要第 2 条有输出，就必须去读那些提交的源码再下判断**，别拿空 grep 收工。（这正是本仓 `freeze-hit-set-not-zero-hits` 与「否定性结论不自证」那条教训的实例。）
+
+**A4-1 的验收证据**（测于 `7f7a0730`，命令可重跑）：`bun run typecheck` 绿；`bun run test:backend` 0 fail；判别性断言做过变异对照——把实现换成 sibling 的 `selectGenerationAttempt` + 写当前 attempt 的写法后，`records a diagnostic against the named dispatch without moving the ambient current attempt` 精确转红在「ambient 游标未被移动」那条断言上（**归属断言在变异下仍绿**，故它单独没有判别力）。**未做**：独立 reviewer／verifier 与 merged-state review——按下方验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批次一次。
 
 验收边界：最终持久 record 是 oracle；peer CANCEL 与 local abort 可机械区分；session 事件不误归 sibling；诊断不改变 transport 行为；目标缺陷 mutation 转红、正确样本保持绿；独立 reviewer／verifier 与 merged-state review 在同一最终 commit 上闭合。HTTP/2 注入按 Node 官方语义：对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`，本地 `req.close(NGHTTP2_CANCEL)` 注入 local abort，并核对两端 `rstCode`／事件序列；`stream.destroy(error)` 未预设 code 时属于 INTERNAL_ERROR／destruction 分支，不用于制造 peer CANCEL。
 

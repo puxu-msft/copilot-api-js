@@ -23,6 +23,7 @@ import {
   closeDatabase,
   openDatabase,
 } from "~/lib/history/sqlite/connection"
+import { recoverProjectedHistoryEntry } from "~/lib/history/v3/recovery"
 import { getV3StoredOperation } from "~/lib/history/v3/store"
 
 const tempRoots: Array<string> = []
@@ -77,4 +78,41 @@ describe("History V3 projection recovery script", () => {
     expect(stored).toMatchObject({ endedAt: 901_100, timingSource: "terminal-log-rounded" })
     expect(stored.record.extensions["history-v3.recovery"]).toMatchObject({ source: "projected-history-entry", capturedAt: 5_000 })
   })
+
+  test.each([
+    { state: "completed" as const, dispatchVerdict: "committed", candidateVerdict: "winner", hasWinner: true },
+    { state: "failed" as const, dispatchVerdict: "failed", candidateVerdict: "failed", hasWinner: false },
+    { state: "aborted" as const, dispatchVerdict: "failed", candidateVerdict: "failed", hasWinner: false },
+    { state: "interrupted" as const, dispatchVerdict: "failed", candidateVerdict: "failed", hasWinner: false },
+  ])(
+    "a $state entry recovers with candidate=$candidateVerdict and winner recorded only when a dispatch committed",
+    ({ state, dispatchVerdict, candidateVerdict, hasWinner }) => {
+      const entry: HistoryEntry = {
+        id: `recovery-terminal-${state}`,
+        operationKind: "generation",
+        startedAt: 1_000,
+        endpoint: "anthropic-messages",
+        state,
+        clientRequest: { body: { model: "m", messages: [] }, model: "m", messages: [] },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: state === "completed", status: state === "completed" ? 200 : 0 } }],
+      }
+
+      const record = recoverProjectedHistoryEntry(entry, 5_000)
+
+      // The terminal must never name a winner the candidates themselves disown:
+      // a recovered entry with no committed dispatch has a `failed` candidate, and
+      // claiming it won contradicts the record's own candidate list.
+      expect(record.dispatches.map(({ verdict }) => verdict)).toEqual([dispatchVerdict])
+      expect(record.candidates.map(({ verdict }) => verdict)).toEqual([candidateVerdict])
+      expect(record.terminal?.winnerCandidate === undefined).toBe(!hasWinner)
+      expect(record.terminal?.committedDispatch === undefined).toBe(!hasWinner)
+      if (hasWinner) expect(record.terminal?.winnerCandidate).toBe(record.candidates[0].handle)
+
+      // Ordering equivalence with the adapter this replaced: the candidate settles
+      // AFTER egress, so egress keeps the lower sequence.
+      const candidateSettled = record.candidates[0].settledSequence
+      expect(candidateSettled).toBeGreaterThan(record.egress?.sequence ?? 0)
+      expect(record.terminal?.sequence).toBeGreaterThan(candidateSettled ?? 0)
+    },
+  )
 })

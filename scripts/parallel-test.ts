@@ -40,12 +40,20 @@ import path from "node:path"
 
 import {
   //
+  parseDiscoveryBaseline,
+  skipIdentityKey,
+} from "./entry-evidence-schema"
+import {
+  //
   compareFileIdentities,
+  formatTallyLine,
   parseJUnit,
 } from "./parallel-test-artifacts"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..")
 const TIMINGS_PATH = path.join(REPO_ROOT, "scripts/test-timings.json")
+/** The tier the entry discovery baseline is frozen against; see the staleness warning below. */
+const BACKEND_SUFFIXES = ["unit", "it", "http"]
 
 const argv = process.argv.slice(2)
 const update = argv.includes("--update")
@@ -162,14 +170,14 @@ const procs = buckets.map((bucket, index) => {
 })
 const results = await Promise.all(
   procs.map(async ({ bucket, junitPath, temporaryJunitPath, process }) => {
-    const code = await process.exited
+    // Start draining both pipes BEFORE awaiting exit. Awaiting `exited` first
+    // leaves nobody reading, so a shard whose output exceeds the pipe buffer
+    // blocks in write() and its summary line can be lost or truncated — which
+    // silently under-counts a different subset of shards on every run while the
+    // aggregate still looks plausible enough to quote as evidence.
+    const [code, err, out] = await Promise.all([process.exited, new Response(process.stderr).text(), new Response(process.stdout).text()])
     if (existsSync(temporaryJunitPath)) renameSync(temporaryJunitPath, junitPath)
-    return {
-      bucket,
-      code,
-      junitPath,
-      err: (await new Response(process.stderr).text()) + (await new Response(process.stdout).text()),
-    }
+    return { bucket, code, junitPath, err: err + out }
   }),
 )
 const wall = ((performance.now() - start) / 1000).toFixed(2)
@@ -224,26 +232,80 @@ writeArtifactAtomically(
   `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`,
 )
 
-// Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
-// can never disagree with them (bun prints pass/fail on their own lines per shard).
-// Bun colors that summary EVEN WHEN ITS STDOUT IS A PIPE, so the line actually reads
-// `\x1b[0m\x1b[32m 26 pass\x1b[0m` — an anchored `^\s*` never matched it and every run
-// reported `0 tests · 0 pass · 0 fail` (the exit code stayed correct, since it comes from
-// the shards' own exit codes, but the tally line — the evidence a delivery report quotes —
-// was always zero). Strip the escapes before matching.
-// eslint-disable-next-line no-control-regex -- matching the ESC of an SGR sequence is exactly the point
-const stripAnsi = (s: string): string => s.replaceAll(/\[[0-9;]*m/g, "")
-let passSum = 0
-let failSum = 0
-for (const r of results) {
-  const plain = stripAnsi(r.err)
-  for (const m of plain.matchAll(/^\s*(\d+) pass\b/gm)) passSum += Number(m[1])
-  for (const m of plain.matchAll(/^\s*(\d+) fail\b/gm)) failSum += Number(m[1])
+// Warn the day the entry discovery baseline goes stale, not sixteen minutes into T0.0f.
+//
+// capture-entry-evidence.ts runs all fifteen invocations before it reconciles any of them
+// against the baseline, so a DETERMINISTIC drift -- someone adds a native-gated case and the
+// frozen allowed_skipped does not list it -- costs a full batch before anything says so. That
+// happened: seven such cases accumulated and only surfaced when the producer was invoked.
+//
+// Warning, never failing: this is a routine developer run, not the entry gate. The gate stays
+// where it is. Only the backend tier is comparable -- a narrower suffix set legitimately skips
+// less, so comparing it would cry wolf on every `test:fast`. The identity key and the parser
+// are the production ones, so this cannot drift away from what the gate will actually assert.
+// Only the skip multiset needs this. The baseline's other two bindings already fail fast:
+// file identity and runner_git_blob are checked in seconds, before the batch starts
+// (capture-entry-evidence.ts), and the executed floor stops the wrapper on run 01. The skip
+// multiset is the one binding whose mismatch costs all fifteen runs first.
+//
+// Set equality on the suffixes, not length plus includes: `unit unit unit` satisfies the latter
+// while running only one tier, and would print a screenful of phantom `missing`. A mechanism
+// whose whole value is being believed when it speaks cannot afford to cry wolf.
+if (new Set(suffixes).size === BACKEND_SUFFIXES.length && BACKEND_SUFFIXES.every((suffix) => suffixes.includes(suffix))) {
+  const baselinePath = path.join(REPO_ROOT, "tests/infra/entry-test-discovery-baseline.json")
+  if (existsSync(baselinePath)) {
+    // parseDiscoveryBaseline throws on anything non-canonical -- one stray newline is enough, and
+    // hand-refreezing allowed_skipped is exactly when that happens. Uncaught, it would land before
+    // the summary line below and turn a fully green run into "the tests blew up", losing the
+    // pass/fail tally to a diagnostic that was never allowed to fail anything.
+    try {
+      const allowed = parseDiscoveryBaseline(readFileSync(baselinePath, "utf8")).allowed_skipped
+      const expected = new Map(allowed.map((skip) => [skipIdentityKey(skip), skip.count]))
+      const actual = new Map(skippedIdentities.map((skip) => [skipIdentityKey(skip), skip.count]))
+      const drift = [
+        ...[...expected.keys()].filter((key) => !actual.has(key)).map((key) => `missing ${key}`),
+        ...[...actual.keys()].filter((key) => !expected.has(key)).map((key) => `unexpected ${key}`),
+        ...[...expected.entries()].flatMap(([key, count]) => (actual.has(key) && actual.get(key) !== count ? [`count ${key}`] : [])),
+      ]
+      if (drift.length > 0) {
+        console.error(`[parallel-test] entry discovery baseline is stale: ${drift.length} skip identities differ from this run.`)
+        console.error("[parallel-test] capture-entry-evidence.ts will exit 5 on this. Re-freeze allowed_skipped before taking entry evidence.")
+        for (const line of drift.slice(0, 10)) console.error(`[parallel-test]   ${line.split(String.fromCodePoint(0)).join(" :: ")}`)
+        if (drift.length > 10) console.error(`[parallel-test]   ... and ${drift.length - 10} more`)
+      }
+    } catch (error) {
+      console.error(
+        `[parallel-test] entry discovery baseline unreadable (${error instanceof Error ? error.message : String(error)}); skipping the staleness comparison`,
+      )
+    }
+  }
+}
+
+// Aggregate the pass/fail tallies from the JUnit artifacts, not from the shards' stdout.
+// Stdout parsing was the original source and it reports a green `0 fail` whenever a shard
+// dies while writing its summary: the `N fail` line never lands, but the failing testcase
+// row was already flushed to the XML. Observed on a merge gate — a timed-out test sat in
+// shard-06's XML while the tally line read `3337 tests · 3337 pass · 0 fail`.
+// `formatTallyLine` owns the line itself (and derives pass from executed − failed, so the
+// two can never disagree); it lives in the artifacts module so the incompleteness marker is
+// reachable by a test rather than only by running the whole suite.
+const failSum = parsedIdentities.reduce((sum, identity) => sum + identity.failed, 0)
+const failedIdentities = parsedIdentities.flatMap((identity) => identity.failedIdentities)
+for (const identity of failedIdentities) {
+  console.error(`[parallel-test] FAIL ${identity.file} › ${identity.classname} › ${identity.name} (${identity.type})`)
 }
 
 console.error(
-  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · `
-    + `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
+  `\n${formatTallyLine({
+    shards: buckets.length,
+    executed,
+    failed: failSum,
+    skipped,
+    crashedShards: crashed.length,
+    missingFiles: fileComparison.missing.length,
+    unexpectedFiles: fileComparison.unexpected.length,
+    wallSeconds: wall,
+  })}`,
 )
 console.error(`[parallel-test] artifacts=${artifactDir}`)
-process.exit(failed.length > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)
+process.exit(failed.length > 0 || failSum > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)

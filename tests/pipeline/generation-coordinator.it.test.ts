@@ -27,6 +27,7 @@ import type {
 import { createCandidateRuntime } from "~/lib/pipeline/generation/candidate"
 import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
 import { createDispatchScheduler } from "~/lib/pipeline/generation/dispatch-scheduler"
+import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
@@ -45,9 +46,10 @@ interface DispatchRow {
   retryNextStrategy?: string
 }
 
-function createRecording() {
+function createRecording(options?: { throwCandidateSettlementOnce?: unknown }) {
   let candidateSequence = 0
   let dispatchSequence = 0
+  let candidateSettlementThrowPending = options?.throwCandidateSettlementOnce !== undefined
   const candidates = new Map<CandidateHandle, CandidateRow>()
   const dispatches = new Map<DispatchHandle, DispatchRow>()
   const port: DispatchRecordingPort = {
@@ -57,6 +59,10 @@ function createRecording() {
       return handle
     },
     settleCandidate(handle, input) {
+      if (candidateSettlementThrowPending) {
+        candidateSettlementThrowPending = false
+        throw options?.throwCandidateSettlementOnce
+      }
       candidates.get(handle)!.verdict = input.verdict
     },
     beginDispatch(input) {
@@ -269,6 +275,7 @@ describe("P6-T2 generation coordinator", () => {
     const opens: Array<string> = []
     const processors: Array<symbol> = []
     const disposeError = new Error("unread parent dispose failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
     const coordinator = createGenerationCoordinator({
       env: envelope("primary"),
       createCandidate: ({ role, parentCandidate, env }) => {
@@ -307,24 +314,251 @@ describe("P6-T2 generation coordinator", () => {
           },
         })
       },
+      generationBudget: budget,
     })
     const primary = await coordinator.runPrimary()
 
-    await expect(coordinator.runRecovery(primary, "dispose-failed", envelope("recovery"), "precontent-recovery")).rejects.toThrow(
-      "Ready dispatch disposal failed",
+    const rejection = await coordinator.runRecovery(primary, "dispose-failed", envelope("recovery"), "precontent-recovery").then(
+      () => undefined,
+      (error: unknown) => error,
     )
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors).toContain(disposeError)
     expect(opens).toEqual(["primary"])
     expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
-      verdict: "discarded",
+      verdict: "failed",
       settlementReason: "dispose-failed",
       settlementError: disposeError,
       retryNextStrategy: "precontent-recovery",
     })
     expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
     await expect(coordinator.runRecovery(primary, "dispose-failed-again", envelope("recovery-again"), "precontent-recovery")).rejects.toThrow(
       "expected exactly one active ready dispatch, found 0",
     )
     expect(opens).toEqual(["primary"])
+  })
+
+  test.each([undefined, null, "recovery disposal failed", Number.NaN, new Error("recovery disposal failed")])(
+    "recovery rejects every cleanup failure value %# without opening a child",
+    async (disposalError) => {
+      const recording = createRecording()
+      const opens: Array<string> = []
+      const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+      const coordinator = createGenerationCoordinator({
+        env: envelope("primary"),
+        createCandidate: ({ role, parentCandidate, env }) => {
+          const handle = `${role}-${opens.length}` as CandidateHandle
+          const runtime: CandidateRuntime<{ identity: symbol }> = {
+            handle,
+            role,
+            async run() {
+              opens.push(role)
+              return {
+                candidate: handle,
+                dispatch: `${handle}-dispatch` as DispatchHandle,
+                env,
+                wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+                dispatchedAtMonotonic: 0,
+                upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
+                processor: { identity: Symbol(role) },
+                async settleDispatch() {},
+              }
+            },
+            async disposeReadyWithSettlement() {
+              // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+              throw disposalError
+            },
+            async cancel() {},
+            settle(input) {
+              recording.candidates.set(handle, { role, ...(parentCandidate && { parentCandidate }), verdict: input.verdict })
+            },
+            recovery(reason) {
+              return { role: "recovery", parentCandidate: handle, env, reason }
+            },
+          }
+          return runtime
+        },
+        generationBudget: budget,
+      })
+      const primary = await coordinator.runPrimary()
+
+      const outcome = await coordinator.runRecovery(primary, "dispose-failed", envelope("recovery")).then(
+        () => ({ state: "resolved" as const }),
+        (error: unknown) => ({ state: "rejected" as const, error }),
+      )
+
+      expect(outcome.state).toBe("rejected")
+      if (outcome.state !== "rejected") throw new Error("recovery unexpectedly resolved")
+      if (disposalError instanceof Error) expect(outcome.error).toBe(disposalError)
+      else expect(outcome.error).toMatchObject({ message: "Ready parent disposal failed", cause: disposalError })
+      expect(opens).toEqual(["primary"])
+      expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+      expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    },
+  )
+
+  test.each([undefined, null, "unconsumed disposal failed", Number.NaN, new Error("unconsumed disposal failed")])(
+    "unconsumed disposal rejects every cleanup failure value %# and releases ownership",
+    async (disposalError) => {
+      const recording = createRecording()
+      const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+      const coordinator = createGenerationCoordinator({
+        env: envelope("primary"),
+        createCandidate: ({ role, env }) => {
+          const handle = `${role}-0` as CandidateHandle
+          return {
+            handle,
+            role,
+            async run() {
+              return {
+                candidate: handle,
+                dispatch: `${handle}-dispatch` as DispatchHandle,
+                env,
+                wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+                dispatchedAtMonotonic: 0,
+                upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
+                processor: { identity: Symbol(role) },
+                async settleDispatch() {},
+              }
+            },
+            async disposeReadyWithSettlement() {
+              // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+              throw disposalError
+            },
+            async cancel() {},
+            settle(input) {
+              recording.candidates.set(handle, { role, verdict: input.verdict })
+            },
+            recovery(reason) {
+              return { role: "recovery", parentCandidate: handle, env, reason }
+            },
+          } as CandidateRuntime<{ identity: symbol }>
+        },
+        generationBudget: budget,
+      })
+      const primary = await coordinator.runPrimary()
+
+      const outcome = await coordinator.disposeUnconsumedReady(primary, { verdict: "discarded", reason: "unconsumed" }, "failed", "unconsumed-complete").then(
+        () => ({ state: "resolved" as const }),
+        (error: unknown) => ({ state: "rejected" as const, error }),
+      )
+
+      expect(outcome.state).toBe("rejected")
+      if (outcome.state !== "rejected") throw new Error("unconsumed disposal unexpectedly resolved")
+      if (disposalError instanceof Error) expect(outcome.error).toBe(disposalError)
+      else expect(outcome.error).toMatchObject({ message: "Unconsumed ready disposal failed", cause: disposalError })
+      expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+      expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    },
+  )
+
+  test("successful unconsumed disposal preserves the caller settlement", async () => {
+    const recording = createRecording()
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: ({ role, env }) => {
+        const handle = `${role}-0` as CandidateHandle
+        return {
+          handle,
+          role,
+          async run() {
+            return {
+              candidate: handle,
+              dispatch: `${handle}-dispatch` as DispatchHandle,
+              env,
+              wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+              dispatchedAtMonotonic: 0,
+              upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
+              processor: { identity: Symbol(role) },
+              async settleDispatch() {},
+            }
+          },
+          async disposeReadyWithSettlement() {},
+          async cancel() {},
+          settle(input) {
+            recording.candidates.set(handle, { role, verdict: input.verdict })
+          },
+          recovery(reason) {
+            return { role: "recovery", parentCandidate: handle, env, reason }
+          },
+        } as CandidateRuntime<{ identity: symbol }>
+      },
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+
+    await expect(
+      coordinator.disposeUnconsumedReady(primary, { verdict: "discarded", reason: "unconsumed" }, "failed", "caller-failed"),
+    ).resolves.toBeUndefined()
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("recovery propagates candidate recording failure after disposal and allows a public retry", async () => {
+    const recordingError = new Error("candidate recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+
+    await expect(coordinator.runRecovery(primary, "recording-failed", envelope("recovery"))).rejects.toBe(recordingError)
+    expect(opens).toEqual(["primary"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+  })
+
+  test("consumed and unconsumed settlement propagate candidate recording failures", async () => {
+    for (const mode of ["consumed", "unconsumed"] as const) {
+      const recordingError = new Error(`${mode} candidate recording failed`)
+      const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+      const opens: Array<string> = []
+      const processors: Array<symbol> = []
+      const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+      const coordinator = createGenerationCoordinator({
+        env: envelope("primary"),
+        createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+        generationBudget: budget,
+      })
+      const primary = await coordinator.runPrimary()
+      const task =
+        mode === "consumed" ?
+          coordinator.settleConsumedReady(primary, { verdict: "committed" }, "winner", "consumed")
+        : coordinator.disposeUnconsumedReady(primary, { verdict: "discarded", reason: "unconsumed" }, "failed", "unconsumed")
+      await expect(task).rejects.toBe(recordingError)
+      expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+      coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+      expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    }
+  })
+
+  test("completeCandidate releases ownership when candidate recording rejects once", async () => {
+    const recordingError = new Error("complete candidate recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 1, maxActiveDispatches: 1, maxTotalDispatches: 1 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+
+    expect(() => coordinator.completeCandidate(primary.candidate, "failed", "first")).toThrow(recordingError)
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBeUndefined()
+    coordinator.completeCandidate(primary.candidate, "failed", "second")
+    coordinator.completeCandidate(primary.candidate, "failed", "third")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
   })
 
   test("concurrent recovery calls atomically consume one ready parent", async () => {
@@ -393,10 +627,12 @@ describe("P6-T2 generation coordinator", () => {
     const opens: Array<string> = []
     const processors: Array<symbol> = []
     const deliveryIdentity = Symbol("delivery")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
     const coordinator = createGenerationCoordinator({
       env: envelope("primary"),
       deliveryIdentity,
       createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
     })
     const primary = await coordinator.runPrimary()
 
@@ -411,6 +647,67 @@ describe("P6-T2 generation coordinator", () => {
     expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("continued")
     expect(processors).toHaveLength(2)
     expect(processors[0]).not.toBe(processors[1])
+    expect(opens).toEqual(["primary", "continuation"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 1, activeDispatches: 0 })
+    coordinator.completeCandidate(continuation.candidate, "failed", "cleanup-continuation")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("continuation dispatch settlement failure fails parent without opening child", async () => {
+    const dispatchError = new Error("continuation dispatch failed")
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+    const failedParent = {
+      ...primary,
+      async settleDispatch() {
+        throw dispatchError
+      },
+    }
+
+    await expect(coordinator.runContinuation(failedParent, "dispatch-failed", envelope("continuation"))).rejects.toBe(dispatchError)
+    expect(opens).toEqual(["primary"])
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+  })
+
+  test("continuation aggregates dispatch and candidate recording failures before a retry", async () => {
+    const dispatchError = new Error("continuation dispatch failed")
+    const recordingError = new Error("continuation recording failed")
+    const recording = createRecording({ throwCandidateSettlementOnce: recordingError })
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const budget = createGenerationBudget({ maxActiveCandidates: 1, maxTotalCandidates: 2, maxActiveDispatches: 1, maxTotalDispatches: 2 })
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+      generationBudget: budget,
+    })
+    const primary = await coordinator.runPrimary()
+    const failedParent = {
+      ...primary,
+      async settleDispatch() {
+        throw dispatchError
+      },
+    }
+
+    const error = await coordinator.runContinuation(failedParent, "dispatch-failed", envelope("continuation")).then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    )
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([dispatchError, recordingError])
+    expect(opens).toEqual(["primary"])
+    expect(budget.snapshot()).toMatchObject({ activeCandidates: 0, activeDispatches: 0 })
+    coordinator.completeCandidate(primary.candidate, "failed", "retry-recording")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
   })
 
   test("chained buffered recovery advances the parent while preserving one delivery identity", async () => {

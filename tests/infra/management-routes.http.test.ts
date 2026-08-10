@@ -394,9 +394,9 @@ describe("management and history HTTP routes", () => {
         state: "completed",
       }),
     )
-    // Model a pre-trigger/corrupt historical artifact: the count path must only
-    // count operation rows, while the old list facade would try to parse this.
-    historyTestWriteDatabase().exec("DROP TRIGGER v3_operation_summaries_after_summary_update")
+    // Model a corrupt historical artifact: the canonical-protected-update trigger
+    // poisons the summary and revokes readiness, but the count path must still only
+    // count operation rows rather than parse this payload.
     historyTestWriteDatabase().prepare("UPDATE v3_operations SET summary_json='{broken' WHERE operation_id=?").run("status-count-corrupt-summary")
 
     const res = await app.request("/api/status")

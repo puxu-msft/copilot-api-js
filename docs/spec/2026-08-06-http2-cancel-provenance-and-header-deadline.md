@@ -23,7 +23,7 @@
 
 - `bun run typecheck`：通过。
 - `bun run lint:all`：通过；不属于 root tsconfig 的三个独立脚本/fixture 使用 typescript-eslint 官方 `disableTypeChecked`，仍保留普通语法与格式 lint。
-- `bun run test:backend`：`7279 executed / 30 skipped / 0 fail`；`tests/infra/entry-test-discovery-baseline.json` 冻结 `minimum_executed=7279`、712 个文件、30 条 allowed skips，16 个 shard JUnit 叶节点独立重算为 `7309 testcase − 30 skipped = 7279 executed`、0 failure/error。合并前分支单独口径为 `7244`，该数字已被合并态取代。
+- `bun run test:backend`：`7279 executed / 30 skipped / 0 fail`；`tests/infra/entry-test-discovery-baseline.json` 冻结 `minimum_executed=7279`、712 个文件、30 条 allowed skips，16 个 shard JUnit 叶节点重算为 `7309 testcase − 30 skipped = 7279 executed`、0 failure/error（⚠️ **2026-08-09 收窄**：原文称此为「独立重算」，**不准确**——它与 runner 的 tally 出自同一批 artifact、同一个 producer，只是换了个 parser，能抓 runner 的解析／聚合错误、**抓不到 producer 漏项**）。合并前分支单独口径为 `7244`，该数字已被合并态取代。
 - 定向 deadline、H2、cancel、WS、shutdown、count-tokens/History admission 与 translator 验收：独立 verifier 与独立 code reviewer 均对最终 tip 复评 PASS（0 blocker、0 major、0 minor）。
 - exact-patch mutation 双控：删除 deadline signal 接线、删除 resolve/reject disarm、只保留 deadline signal、跳过 timer clear、删除幂等门、删除 H2 natural-end/close detach、删除 shared-send 的真实 duration property，分别使其目标判据精确变红；每次均在 `git apply --reverse --check` 后反向恢复，恢复态全绿。
 

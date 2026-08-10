@@ -6,6 +6,7 @@ import {
   //
   getDatabase,
   isDatabaseOpen,
+  openDatabase,
   openOwnedHistoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import {
@@ -15,6 +16,11 @@ import {
   ensureV3Schema,
   prepareModelOperation,
 } from "~/lib/history/v3/store"
+import {
+  //
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+} from "~/lib/history/sqlite/read-connection"
 import { state } from "~/lib/state"
 
 let seedDb: { path: string, db: ReturnType<typeof openOwnedHistoryDatabase> } | undefined
@@ -181,4 +187,18 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
     metadata: { durationMs: entry.durationMs },
   })
   commitPreparedOperation(seedWriteDatabase(), prepareModelOperation(terminal))
+}
+
+/**
+ * Open an on-disk V3 artifact as the write singleton AND publish it as the process-wide read handle.
+ *
+ * A test that seeds a database and then exercises the query APIs needs both ends pointing at the same file. Before the Batch 2b cutover one call did that implicitly, because the read paths resolved the write singleton; now they resolve `getHistoryReadDatabase()`, so the publication has to be explicit. This is the on-disk sibling of `openInMemoryDatabase()`, which has always done exactly this.
+ *
+ * Detaching first rather than closing: whatever is published belongs to whoever installed it — a live `initHistory` owns its readonly handle and will close it on its next transition. `closeDatabase()` withdraws this publication again.
+ */
+export function openTestDatabaseAsReadSource(dbPath: string): ReturnType<typeof openDatabase> {
+  detachHistoryReadDatabaseForTests()
+  const database = openDatabase(dbPath)
+  installHistoryReadDatabase(database)
+  return database
 }
