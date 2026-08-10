@@ -182,7 +182,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 ### 合并期的两处非平凡取舍（正文，不只是指向合并提交）
 
 - **`queries.ts` 取 master 结构、重放自己的窄 delta。** master 在本分支在飞期间把 `queries.ts` 大改成 snapshot-ready 结构，而本分支的 delta 只是把默认 DB accessor 换成 `getHistoryReadDatabase()`。处置是**采用 master 的结构，再把那条窄 delta 重放上去**；否决了「用陈旧的特性分支结构覆盖 master」——后者会把 peer 的重写整体回退掉，而冲突标记不会告诉你这件事。
-- **同一个 `startV3SummaryBackfill`／`drainV3SummaryBackfill` 调用，生产要删、fixture 要留。** 生产 `state.ts` 里那对调用在 cutover 之后**跨线程够不到真实 Worker**（主线程的模块状态是另一个实例），所以删；而测试 fixture 的 in-process backend 与主线程**同一实例**，那对调用仍然有效、必须保留。**看起来完全对称的两处，处置相反**——判据是「这一侧的 backfill 到底跑在哪个线程上」，不是「两边保持一致」。
+- **`drainV3SummaryBackfill()` 生产要删、fixture 要留。** cutover 之后，生产 `state.ts` 里那对 summary-backfill 调用**跨线程够不到真实 Worker**（主线程的模块状态是另一个实例），故整对删除——现在 `rg -n 'V3SummaryBackfill' src/lib/history/state.ts` 无命中；而测试 fixture 的 in-process backend 与主线程**同一实例**，那条 drain 仍然有效、必须保留（`tests/helpers/isolated-fixture.ts:302`，且**只有 drain 被保留，没有 start**）。**看起来对称的两处，处置相反**——判据是「这一侧的 backfill 到底跑在哪个线程上」，不是「两边保持一致」。
 
 
 ### 被证伪的归因

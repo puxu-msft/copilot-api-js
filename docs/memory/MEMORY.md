@@ -86,7 +86,7 @@
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 无对应值→诚实退化+marker
 - [阻断式 guard 加固前先确认它守什么](feedback-confirm-guard-purpose-before-hardening.md) — 不替用户把未决粒度定死
 - [守卫被合法写法绕过就停止补形态](methodology-relocate-invariant-when-guard-cannot-keep-up.md) → skill `reshaping-a-bypassed-guard`；推断型判据要加独立 intent 输入；[新 oracle 失效主形态是「相邻」](methodology-new-oracle-discriminating-power-is-experimental.md)
-- [用例名集合 diff 必须运行时枚举](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 对参数化/模板名失明；[mutation 要自证改到了代码](methodology-verify-the-mutation-actually-applied.md)「没变红」有三解
+- [用例名集合 diff 必须运行时枚举](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 对参数化/模板名失明；[mutation 要自证改到了代码](methodology-verify-the-mutation-actually-applied.md)「没变红」有四解，第四解是变异拆掉了断言依赖的负载、反而更容易绿
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 注释与断言矛盾是最廉价探测器
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 判据=我的解释能预测出别的可观测后果吗
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
