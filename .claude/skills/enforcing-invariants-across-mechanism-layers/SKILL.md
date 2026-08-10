@@ -94,12 +94,17 @@ grep 仍然有用，但它的作用是**找到所有需要同步修订的复述*
 
 ## 与既有 always-on 规则的关系（互补，不复制）
 
-这些规则各自有正文，**本 skill 不复述它们，只说明分工**：
+这些规则各自有正文，**本 skill 不复述它们，只说明分工**。**四种关系各不相同，不要因为都带「反」字就当成同一类**——把它们混成一堆，正是 2026-08-09 一次分组翻车的直接原因：
 
-- user-rule `64-concurrency-and-refactor.md:14` `scoped-invariant-written-as-global` —— 讲「这条不变量其实只在某个作用域内成立」。**方向相反且互补**：那条问「它的适用范围是不是被写大了」，本 skill 问「它的落实范围是不是被写小了」。**两个方向都要过一遍。**
-- user-rule `63-engineering-practice.md:52` `fix-at-the-shared-base-not-where-you-noticed` —— 讲修复点该放在哪一层。本 skill 是它的前置：**先知道有哪些层，才谈得上选层。**
-- user-rule `63-engineering-practice.md:57` `check-dependency-contract-against-your-invariant` —— 讲被调用方的文档可能把你要禁止的事写成推荐做法。那是本 skill「文档 / 被调用方契约」这一维的展开。
-- user-rule `63-engineering-practice.md:50` `new-checks-must-not-alter-existing-contracts` 与 `:67` `packaging-can-void-another-invariant` —— 讲你新加的东西会碰坏别的不变量。**是本 skill 的反向**：那边问「我这次改动碰坏了谁」，这边问「谁能碰坏我这条」。
+- user-rule `64-concurrency-and-refactor.md` 的 `scoped-invariant-written-as-global` —— 关系是**同一条不变量的两个尺度**。那条查「它的**适用**范围是不是写大了」（这句话本身是不是就假的），本 skill 查「它的**落实**范围是不是写小了」（真的地方都堵上了吗）。**两个尺度都要过一遍。**
+- user-rule `63-engineering-practice.md` 的 `fix-at-the-shared-base-not-where-you-noticed` —— 关系是**下游**。本 skill 产出「有哪些层」，它据此**选层**；先有清单才谈得上选。
+- user-rule `63-engineering-practice.md` 的 `check-dependency-contract-against-your-invariant` —— 关系是**本 skill 某一维的展开**（「文档 / 被调用方契约」那一维）：被调用方的文档可能把你要禁的事写成推荐做法。
+- user-rule `63-engineering-practice.md` 的 `new-checks-must-not-alter-existing-contracts` 与 `packaging-can-void-another-invariant` —— 关系是**主客体倒置**。那边问「**我这次改动碰坏了谁**」，本 skill 问「**谁能碰坏我这条**」。这两条本身是同一个问题（`new-checks` 里「选落点」与「不得改动既有顺序契约」是同一决策的约束与目标，**不要拆半**——2026-08-09 第三方裁决）。
+
+> **不写行号是有意的**：这些条目的行号会随规则文件的任何一次编辑整体推移。2026-08-09 就发生过——上游一条规则被压缩后，本节四处行号同时失效而看起来完全正常。用 slug 检索：
+> ```bash
+> rg -n '^\s*- \*\*(scoped-invariant-written-as-global|fix-at-the-shared-base-not-where-you-noticed|check-dependency-contract-against-your-invariant|new-checks-must-not-alter-existing-contracts|packaging-can-void-another-invariant)\*\*' ~/.claude/rules/agents/
+> ```
 
 ## 历史实例（只作示范，状态以权威 docs 为准）
 
