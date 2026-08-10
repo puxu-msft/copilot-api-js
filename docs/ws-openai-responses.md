@@ -213,7 +213,7 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 
 1. **首信号（停止接受新请求）** → 只做两件与本模块相关的事：置 `_isShuttingDown`（新 ingress 收 503），以及客户端侧 `server.close(false)` 停止 accept（不 await——已升级的 WS 会无限挂住 HTTP server）。**对上游 WS manager 不做任何事**：spec 第 40 行明令首信号阶段不得调用 `stopNew()` / `closeAll()`，因为已接纳的在途请求仍可能需要**新建**上游连接才能无损完成。
 2. **排空** → in-flight 上游 WS 请求继续正常完成，不主动关闭、不注入 abort。
-3. **finalize（每条退出路径的汇合点）** → 待已接纳操作全部排空后，`peekUpstreamWsManager()?.closeAll()` 一次性关闭全部上游连接（`shutdown.ts` 内该调用**只有一处**），否则那些 socket 会挂到进程 GC、白占 GHC 侧连接配额。
+3. **finalize（正常 graceful 路径在已接纳操作排空后的汇合点——不是每条退出路径）** → `peekUpstreamWsManager()?.closeAll()` 一次性关闭全部上游连接（`shutdown.ts` 内该调用**只有一处**），否则那些 socket 会挂到进程 GC、白占 GHC 侧连接配额。注意 finalize 位于若干 await 之后且**没有外层 `finally` 兜底**，前序抛出的错误不会汇入这里；第二终止信号的强退路径同样不经过它。
 
 > 本节此前描述的是已被删除的四阶段模型（Phase 1 `stopNew()`、Phase 3 `shutdownSignal` 分层 abort、Phase 4 force-close + finalize 幂等兜底）。那套 process-global abort 基础设施随 lossless-drain spec 一并移除，五条里有四条与现码相反——改于 2026-08-09，依据是逐条对照 `shutdown.ts` 与该 spec。
 
