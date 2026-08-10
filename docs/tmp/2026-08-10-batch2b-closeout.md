@@ -67,7 +67,7 @@ git log --oneline master -- docs/DESIGN.md docs/history.md docs/lifecycle.md \
 - **未发布。** 全程没有 `git push`、没有建 PR、没有发布产物。`git status --short --branch` 显示本地 `master` 远超 `origin/master`（具体条数请自行跑该命令，不要引用快照）。
 - **分支**：`history-worker-batch-2a`、`docsync-batch2b` 是否已被 `master` 包含，**用命令判定而不是读这句话**——`git branch --merged master | rg 'history-worker-batch-2a|docsync-batch2b'`。（本报告初稿把「自身已合并」写成了既成事实，而写下的那一刻它还没合并；改成判定命令是为了不再复发。）
 - **worktree**：`.worktrees/history-worker-batch-2a`、`.worktrees/docsync-batch2b`。移除前提请自行核：`git -C <路径> status --short` 为空，且其 HEAD 可从 `master` 达。**是否移除留给用户**（见第 7 节）。
-- **同伴 WIP 未受影响**：主检出里有若干条属于并发会话的未提交改动，本次全部合并均为 fast-forward，逐次核对过它们没有被卷入。收尾期间 `master` 被同伴推进过多次，每次都用 rebase + `--ff-only` 重新对齐。**有一次合并被同伴对 `docs/memory/MEMORY.md` 的未提交改动挡住**——行级并不冲突（它改索引前段、本轮改 86 行区），但没有为自己的合并时机去回退同伴 WIP，而是等其落地后再合。
+- **同伴 WIP 未受影响**：主检出里有若干条属于并发会话的未提交改动，本次全部合并均为 fast-forward，逐次核对过它们没有被卷入。收尾期间 `master` 被同伴推进过多次，每次都用 rebase + `--ff-only` 重新对齐。**有一次合并被同伴对 `docs/memory/MEMORY.md` 的未提交改动挡住**——行级并不冲突（它改索引前段、本轮改 86 行区），但没有为自己的合并时机去回退同伴 WIP，而是等其落地后再合。**这一条是本会话的自述，仓库里没有留下可核对的产物**（未提交改动本就不会留痕）；终审能独立佐证的只有「某个时刻该文件为 `M`、之后变 clean」这一侧面，故按自述记录，不作已验证事实。
 
 ### `~/.claude`
 
@@ -137,6 +137,13 @@ git log --oneline master -- docs/DESIGN.md docs/history.md docs/lifecycle.md \
 
 **没有阻塞项。** 以下都是可选的：
 
-1. **两棵已合并的 worktree 是否移除** —— `.worktrees/history-worker-batch-2a`、`.worktrees/docsync-batch2b`。两者都干净、HEAD 都在 `master` 里，移除不会丢任何 git 救不回的东西。
+1. **两棵已合并的 worktree 是否移除** —— `.worktrees/history-worker-batch-2a`、`.worktrees/docsync-batch2b`。**移除前请自己跑这两条判定，别读本句的断言**（本文档第 3 节同理；写下时为真的状态声明会过期，而读到这里的人正要据它决定要不要删目录）：
+
+   ```
+   git -C <worktree 路径> status --short          # 必须为空
+   git branch --merged master | rg 'history-worker-batch-2a|docsync-batch2b'
+   ```
+
+   两条都满足时，移除不会丢任何 git 救不回的东西。
 2. **V4 的既定后果是否执行**（见第 6 节）。
 3. **已登记的暂缓项**（不属本批范围，都在 `docs/todo/deferred-backlog.md`）：`/api/status` 与 metrics 仍上报 `backend: "legacy"`；semantic-write 架构守卫按**拼写**而非能力匹配；`test:it` 的 5 条既有失败（`durability-overlay`、`history-api` ×3、`clearHistory`），已用只读基线 worktree 确认与本批无关。
