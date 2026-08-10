@@ -1,23 +1,27 @@
 ---
 name: process-lifecycle-shutdown
-description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT/SIGTERM、SIGUSR2 交接、首信号无损 drain、重复信号、第二终止信号强退、TUI raw/cooked 恢复、runtime PID 投递、waitForShutdown latch、History/Telemetry/Diagnostic finalization 或 shutdown 状态真值时使用。
+description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT/SIGTERM、SIGUSR2 交接、首信号无损 drain、重复终止信号的三档升级（放弃 drain 但仍 finalize vs 立即强退）、优雅重启时旧进程迟迟不退、TUI raw/cooked 恢复、runtime PID 投递、waitForShutdown latch、History/Telemetry/Diagnostic finalization 或 shutdown 状态真值时使用。
 ---
 
 # 进程生命周期与分类信号关闭
 
 ## 对外契约
 
-信号先按语义分类，再结合 lifecycle state 裁决；“已经收到一个信号”本身不是判据。
+信号先按语义分类，再结合 lifecycle state 与**操作者已经按了几次**共同裁决。终止信号分三档，界由人显式划——shutdown 自己仍不拥有任何时限。
 
 | 当前状态 | 收到信号 | 行为 |
 |---|---|---|
 | `idle` | SIGINT／SIGTERM | 停止 ingress，无损 drain 已接纳 operation，再执行 durability finalization |
 | `idle` | SIGUSR2 | 启动同一无损 drain，并保留 `signal === "SIGUSR2"` 供 handoff-only flush／freeze 使用 |
-| 非 `idle`、非 `stopped` | SIGINT／SIGTERM | 立即 `process.exit(128+signal)`；SIGINT=130、SIGTERM=143，不等待请求或 durability barrier |
-| 非 `idle`、非 `stopped` | SIGUSR2 | 幂等返回已有 shutdown task，不强退、不重新执行 handoff-only 副作用 |
+| `stopping`／`draining`（**仍在等请求**） | 此后**第一个** SIGINT／SIGTERM | 放弃等待 drain：用请求级原语（`reapInFlight()` + `fail()`）中止残余 operation，**随后照常走完 finalize**——持久化一个都不跳过。终态 attribution 打 `shutdown`／`operator-abandoned-drain` |
+| `stopping`／`draining` | 此后**第二个** SIGINT／SIGTERM | 立即 `process.exit(128+signal)`；SIGINT=130、SIGTERM=143 |
+| `finalizing`／`notifying`／`failed` | 下一个 SIGINT／SIGTERM | **立即**强退，不走放弃档——此处在等的就是 durability barrier 本身，而那正是逃生舱要逃离的东西 |
+| 非 `idle`、非 `stopped` | SIGUSR2 | 幂等返回已有 shutdown task，不强退、不重新执行 handoff-only 副作用，**不参与档位升级** |
 | `stopped` | 任意已注册关闭信号 | 忽略或返回已完成 latch |
 
-如果 shutdown 由 SIGUSR2 启动，随后第一个 SIGINT／SIGTERM 已经是强退请求；反过来，SIGINT／SIGTERM 启动 shutdown 后再收到 SIGUSR2，SIGUSR2 仍只是幂等交接。
+SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain** 请求而非强退请求，第二个才强退；反过来，SIGINT／SIGTERM 启动 shutdown 后再收到 SIGUSR2，SIGUSR2 仍只是幂等交接。
+
+放弃档的两个已知边界：它够不到 lightweight operation（`LightweightInFlightOperation` 是只读描述符、无取消面），且若某 operation 已 logically failed 却仍占着 registry，`fail()` 会被去重、未必让它离开——两种情况下强退档仍是出路。裁决见 ADR `docs/decisions/2026-08-10-three-tier-shutdown-signal-contract.md`。
 
 `stopped` 只表示 generation 与 lightweight 两个 in-flight registry 均清零、History terminal、Telemetry outbox、Diagnostic WAL／sink、终态通知和资源 close 全部成功。持久化失败进入 `failed` 并 exit 1，不能 resolve 成功 latch。
 
@@ -27,7 +31,7 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 第一次信号必须同步认领 lifecycle，再启动 async shutdown task；否则两个紧邻信号会落入 idle／stopping 竞态。进入非 idle 分支后先用窄类型守卫区分 `SIGINT | SIGTERM` 与 SIGUSR2；`forcedExitCode` 只接受终止信号，禁止把未来信号静默归成 SIGINT。
 
-重复信号判据只读 process state，不按当前 phase 做“升级一格”，也不按信号计数器裁决。SIGUSR2 返回现有 `shutdownPromise`；SIGINT／SIGTERM 才进入 emergency exit。关键反馈用 `terminal-coordinator.emergencyWrite` 的 never-throw wrapper，绕过 consola→observability→FileSink→History。
+重复信号判据结合 process phase 与**终止信号计数**两者裁决（`postClaimTerminationSignals`）——**这条 2026-08-10 反转过**：此前写的是「只读 process state，不按当前 phase 做『升级一格』，也不按信号计数器裁决」，那是两档契约下的说法，现已不成立。计数器只统计**认领 lifecycle 之后**收到的终止信号；SIGUSR2 返回现有 `shutdownPromise` 且**不计数**。计数器必须在 `_resetShutdownState()` 里重置，否则会在 bun 单进程跨文件共享 module-global 的环境下污染后续测试。关键反馈用 `terminal-coordinator.emergencyWrite` 的 never-throw wrapper，绕过 consola→observability→FileSink→History。
 
 `setupShutdownHandlers()` 注册必须幂等，测试 reset 必须成对 `removeListener`。Raw-mode TUI 吞掉 kernel SIGINT，所以第一次 Ctrl+C 由 `TerminalUi.onInput` 转发；收到 draining event 后同步 restore cooked mode，第二次 Ctrl+C 再成为真实 SIGINT。
 
@@ -120,7 +124,8 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 - fixture 输出 runtime `process.pid`，驱动向该 PID 发 SIGUSR2，确认 runtime／launcher 都仍存活且无 second-termination 日志。
 - 第一次 Ctrl+C 反馈“graceful shutdown started”，恢复 ICANON／ECHO。
-- 随后的 Ctrl+C 在硬超时内 exit 130。
+- 第二次 Ctrl+C 反馈“abandoning the drain wait”，且**进程必须仍然活着**（`tier2Alive`）——这是放弃档与强退档唯一的可观测差别，PTY 是唯一不经 mock 证明它的层。
+- 第三次 Ctrl+C 在硬超时内 exit 130。
 - 连跑 8–25 次证时序确定性；waitpid 必须有硬 deadline，并保存中途已 reap 的 status。
 
 活测试：`tests/shutdown/{shutdown.unit,rate-limiter-lossless-drain.it,shutdown-h2-pool-drain.it,shutdown-messages-lossless.http,shutdown-signals.pty}.test.ts`、`tests/history/model-operation-bypass.http.test.ts`、`tests/context/request-deadline.it.test.ts`、`tests/shutdown-sigusr2.unit.test.ts`、`tests/shutdown/fixtures/two_signal_pty.py`。
