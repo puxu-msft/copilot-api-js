@@ -67,11 +67,11 @@ registry 清零后，进程进入 `finalizing`：
 
 > ⚠️ **「零停机」只对新建连接成立，对 keep-alive 连接池不自动成立**（2026-08-09 实测事故，已修）。一次接管从 13:02:06Z 开始，客户端到 **13:09:24Z** 仍在收 `503 Server is shutting down`——七分钟后、新实例早已在服务。History 在 13:01:57.734Z–13:11:46.755Z 之间**零记录**，因为关机期的拒绝在建 `RequestContext` 之前就返回了，故障在我们自己的记录里**天然不可见**。
 > 两条机制都能把客户端钉死在垂死的旧进程上，事故证据**不足以区分是哪一条**，因此两条都堵：
-> - **(A) 客户端连接池复用旧 socket**——它根本不会向内核请求新连接，于是永远到不了新实例。堵法：关机期返回的任何**失败**响应都带 `Connection: close`，由最外层的 `shutdownConnectionCloseMiddleware` 统一负责（`src/lib/observability/middleware.ts`）。放在最外层是因为关机期的拒绝不止一条路径：config/token 中间件排在它之前且带 await，抛错直接进 `server.onError`；等在 History admission 上的请求被 `stopHistoryAdmission()` 中止后同样由 `onError` 塑形。
+> - **(A) 客户端连接池复用旧 socket**——它根本不会向内核请求新连接，于是永远到不了新实例。堵法：**经该中间件的响应中**，关机期最终 HTTP 状态为 4xx/5xx 者一律带 `Connection: close`，由最外层的 `shutdownConnectionCloseMiddleware` 统一负责（`src/lib/observability/middleware.ts`）。两类响应按设计不在其作用域内：`/health/liveness` 注册在它**之前**（`src/server.ts`），关机期仍恒 200 且不带头；Bun 在应用层之外直接产生的响应（畸形 HTTP 等）也不经过它——实测那类由 Bun 自己带上了 `Connection: close`。放在最外层是因为关机期的拒绝不止一条路径：config/token 中间件排在它之前且带 await，抛错直接进 `server.onError`；等在 History admission 上的请求被 `stopHistoryAdmission()` 中止后同样由 `onError` 塑形。**判据是最终状态码、不是「这次交互失败了没有」**，两者的差别见下面的残留条。
 > - **(B) 旧进程还没走到关 listener 那一步**——`gracefulShutdown` Step 1 曾把 `server.close(false)` 排在 `drainAdmissionHandoffs()` 与交接专属的 `freeze*` 落盘之后，二者都无上界；背着大量 History 写入积压时可以卡住数分钟，而这期间它**既拒绝、又继续 accept**。堵法：`server.close(false)` 移到置 `_isShuttingDown` 之后、**所有 await 之前**（`src/lib/shutdown.ts`），这才让本节开头那句里的「立即停止 accept」为真。
 >
-> 守卫在 `tests/shutdown/shutdown.unit.test.ts`（顺序不变量 + 组合真实中间件栈的 ingress 拒绝断言，含 pre-gate 抛错路径）。注意既有的 `tests/e2e/handover.e2e.test.ts` **守不住这两条**：它只断言 fresh connection 在 5 秒内收敛到新进程，并显式容忍重叠期的 503/ECONNRESET。
-> **残留（已知、未做）**：drain 期间**成功**返回的 2xx 不加该头，客户端下一次请求仍会先吃一条 503 再重连；要覆盖它就得给已在流式传输的 SSE 响应加头，那是另一个问题，此处未决。
+> 守卫分两层，缺一层就会假绿：`tests/shutdown/shutdown.unit.test.ts` 守中间件自身的条件（顺序不变量 + 组合中间件栈的 ingress 拒绝断言，含 pre-gate 抛错路径），`tests/shutdown/shutdown-ingress-wiring.it.test.ts` 守**生产装配真的注册了它**——用真实 `createServer()`。实测（把 `src/server.ts` 里那行注册删掉）：前者 44 条**全绿**，后者 4 条中**红 2 条**（另 2 条是反方向控制、本就该绿）。注意既有的 `tests/e2e/handover.e2e.test.ts` **两条都守不住**：它只断言 fresh connection 在 5 秒内收敛到新进程，并显式容忍重叠期的 503/ECONNRESET。
+> **残留（已知、未做）**：判据看的是最终状态码，所以两类响应拿不到该头——drain 期间正常完成的 2xx，以及**已提交 200 后在流中失败的 SSE**（HTTP 头早已发出，事后加不上）。两者的后果相同：socket 仍留在客户端池里，下一次请求先吃一条 503 再重连。要覆盖就得改成在流式响应提交头之前决策，那是另一个问题，此处未决。
 
 ### 统一机制：SO_REUSEPORT 重叠窗口接管
 
