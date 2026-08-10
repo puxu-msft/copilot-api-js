@@ -101,7 +101,7 @@
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 类型系统逼出全站点
 - [穷尽 Record 全填≠活路径在读它](methodology-exhaustive-record-proves-table-not-that-live-path-reads-it.md) — 从真实入口读字节+mutation 打在共享表上
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 前 grep 同错误子串
-- [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染
+- [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染；先读失败名单别读失败计数（一次 SIGILL 崩溃能把 6 抬成 58）
 - [随机 false-red 另一半嫌疑：判据挂在进程全局量上](methodology-false-red-from-process-global-quantities-not-the-mechanism.md) — 「修完一条换一条」即信号；换直接观测目标机制的 oracle
 - [收尾文档在合并落地那一刻变陈旧](methodology-closeout-doc-goes-stale-the-moment-the-merge-lands.md) — 写「待合并/下一步」即登记会过期断言（五字段）；自身合并状态改给判定命令
 - [并发 agent 不得共享 worktree 做 mutation](methodology-concurrent-agents-must-not-share-worktree-for-mutation.md) — 主会话调度责任
