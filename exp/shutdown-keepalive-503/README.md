@@ -9,12 +9,13 @@
 | 文件 | 问题 | 观测结果 |
 |---|---|---|
 | `query-history-gap.ts` | 事故窗口里 History 到底有没有记录？ | 13:01:57.734Z–13:11:46.755Z **零条**，前后请求密集 |
-| `query-history-gap-bounds.ts` | 空洞是 drain 慢造成的吗？ | 不是。前任在途请求 13:02:22.581Z 就 drain 完了（约 16 秒），余下约 9 分钟是它**仍活着且仍在拒绝** |
+| `query-history-gap-bounds.ts` | 空洞两端各是什么时刻？ | 最后一条已记录 operation 的 `ended_at` = 13:02:22.581Z（交接后约 16 秒），服务恢复于 13:11:46.755Z |
 | `probe-undici-pool-eviction.mjs` | undici（Claude Code 的 HTTP 栈）会因 `Connection: close` 弃用池中连接吗？ | 会。3 次请求 → **3 条新建连接**；对照组（不带头）复用，3 次请求 → 2 条连接 |
 | `probe-bun-connection-close.ts` | Bun 会转发该头吗？会自己关 socket 吗？ | **转发，但不自己关**；两组 `serverClosedSocket=false`。所以驱逐是客户端做的 |
 
 ## 它没有证明什么
 
+- **`query-history-gap-bounds.ts` 不能证明「drain 已完成」，也不能证明「余下时间前任仍活着且仍在拒绝」。** 它只读 operation 的 `created_at`/`ended_at`，**不**读进程存活、shutdown phase 或 registry 状态；而按 `docs/lifecycle.md` 的 lossless-drain 契约，逻辑终态（`failed`/`ended_at` 落库）**早于** operation 离开 registry。要还原「drain 何时真正完成、进程何时退出」需要进程侧或 shutdown 日志证据，本目录没有。**勘误**：commit `4245d832` 的 body 与本 README 早前版本把这一步写成了「drain 约 16 秒完成、余下 9 分钟是仍在拒绝」，那是超出该查询能力的推断，已在此收窄（历史提交不改写）。
 - **没有证明事故里客户端走的是哪条路径。** 证据不足以在「(A) 复用池中旧 socket」与「(B) 旧进程还没走到关 listener」之间判定——两者都能产生同样的观测。修复同时堵了两条，正是因为分不出来。
 - **`probe-undici-pool-eviction.mjs` 用的是 `node:http` 服务端，不是本项目的 Bun 服务端**：它测的是**客户端**行为，不能拿来推断本项目服务端的任何性质。对照组的「3 次请求 → 2 条连接」也只说明存在复用，不是精确的池行为模型。
 - **`probe-bun-connection-close.ts` 只覆盖了非流式 JSON 响应**，没有测 SSE、没有测 HTTP/2，也没有测 Bun 在真实关机（`server.stop`）期间的行为。

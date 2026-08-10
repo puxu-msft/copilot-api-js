@@ -31,8 +31,9 @@ function probe(path: string): Promise<{ raw: string; closedByServer: boolean }> 
       clearTimeout(timer)
       resolve({ raw, closedByServer: true })
     })
-    sock.on("error", () => {
+    sock.on("error", (err) => {
       clearTimeout(timer)
+      console.error(`  socket error on ${path}: ${err}`)
       resolve({ raw, closedByServer: closed })
     })
   })

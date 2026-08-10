@@ -4,6 +4,7 @@ import http from "node:http"
 
 async function run({ sendClose, label }) {
   let connections = 0
+  let failures = 0
   const server = http.createServer((req, res) => {
     const headers = { "content-type": "application/json" }
     if (sendClose) headers["connection"] = "close"
@@ -16,15 +17,20 @@ async function run({ sendClose, label }) {
   await new Promise((r) => server.listen(0, "127.0.0.1", r))
   const port = server.address().port
   for (let i = 0; i < 3; i++) {
+    // Never swallow silently: a broken future runtime could fail every request and still leave a plausible-looking connection count behind.
     try {
       await (await fetch(`http://127.0.0.1:${port}/v1/messages`, { method: "POST", body: "{}" })).text()
-    } catch {}
+    } catch (err) {
+      failures++
+      console.error(`  request ${i + 1} failed: ${err}`)
+    }
   }
   await new Promise((r) => setTimeout(r, 150))
-  console.log(`${label}: 3 requests -> ${connections} TCP connection(s)`)
+  console.log(`${label}: 3 requests -> ${connections} TCP connection(s)${failures ? ` (${failures} FAILED — result not meaningful)` : ""}`)
   server.closeAllConnections()
   server.close()
+  return failures
 }
 
-await run({ sendClose: false, label: "control (no Connection: close)" })
-await run({ sendClose: true, label: "fix     (Connection: close)  " })
+const failures = (await run({ sendClose: false, label: "control (no Connection: close)" })) + (await run({ sendClose: true, label: "fix     (Connection: close)  " }))
+if (failures > 0) process.exit(1)
