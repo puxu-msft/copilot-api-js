@@ -214,9 +214,14 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     // This matters most during a graceful-restart overlap: the successor opens the db while the predecessor is still serving at FULL SPEED (it has not even been sent the handoff signal yet — that comes later, at `notifyReady`), and a VACUUM here would hold the write lock far past the 5s `busy_timeout` the predecessor's writes are given, turning its in-flight persistence into SQLITE_BUSY failures.
     // Measured shape: `{busy:0,log:0,checkpointed:0}` alone, `{busy:1,...}` with a single open peer read transaction.
     // Probe with a ZERO busy_timeout: we want the answer now, not after the 5s the rest of this connection is configured to wait. A probe that blocked for the full busy_timeout on every overlapping start would itself be the regression (measured: it makes the open path hang 5s and times out the covering test).
-    database.exec("PRAGMA busy_timeout = 0;")
-    const checkpoint = database.prepare("PRAGMA wal_checkpoint(TRUNCATE);").get() as { busy?: number } | null
-    database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    // The restore MUST be in a finally: `.get()` can throw outright under lock contention (measured: `SQLiteError`, not always a populated `busy` column), and the outer catch below swallows it — leaving this process's main History connection permanently at busy_timeout=0, where every later concurrent write fails instantly instead of waiting.
+    let checkpoint: { busy?: number } | null = null
+    try {
+      database.exec("PRAGMA busy_timeout = 0;")
+      checkpoint = database.prepare("PRAGMA wal_checkpoint(TRUNCATE);").get() as { busy?: number } | null
+    } finally {
+      database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    }
     if (checkpoint?.busy) {
       consola.info(
         `[history/sqlite] skipping the startup VACUUM of ${dbPath}: another connection is still using it (graceful-restart overlap). `
