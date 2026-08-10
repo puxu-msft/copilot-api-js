@@ -1,8 +1,8 @@
-# Task 37 收尾终态报告（草稿·待最终评审）
+# Task 37 收尾终态报告
 
-- **状态**：草稿。已过 `review_temp_manifest` 与 `review_closeout_draft` 两道门，**尚未过 `review_closeout_final`**。
-- **交付锚点（不是「当前 master」）**：本轮交付的两个 commit 是 `fe8977c0`（代码）与 `d2f66fa9`（收尾产物合并）。**master 是一条持续前进的共享引用，本文不把它的某个值写成当前状态**——起草时它是 `d2f66fa9`，草稿评审期间已被 peer 推进了 10 个以上提交。判断交付是否在线上，用 `git merge-base --is-ancestor d2f66fa9 master`，别比对 SHA 相等。
-- **本会话工作树**：`.claude/worktrees/task37-closeout`（分支 `worktree-task37-closeout`，已 ff 合入 master，目录保留）；本报告在 `.claude/worktrees/encapsulated-kindling-forest` 写就（后台隔离护栏不允许直接写共享检出），**本报告自身合入 master 是收尾的最后一个动作，在此之前它只存在于该分支上**。
+- **状态**：**定稿**。两道评审门均已过——`review_temp_manifest`（第六轮 positive receipt，双向 diff 为空）与 `review_closeout_final`（两个正交视角，各自复核自己上一轮的发现是否闭合）。最终一轮的账：判据视角 BLOCKER 0 / MAJOR 1 / MINOR 4，接手方视角 BLOCKER 0 / MAJOR 1；两条 MAJOR 与四条 MINOR 均已在本文修掉，逐条记在第 5 节。
+- **交付锚点（不是「当前 master」）**：本轮交付的两个 commit 是 `fe8977c0`（代码）与 `d2f66fa9`（收尾产物）。**master 是一条持续前进的共享引用，本文不把它的某个值写成当前状态**——起草时是 `d2f66fa9`，两轮评审期间被 peer 推进了 59 个以上提交。判断交付是否在线上，用 `git merge-base --is-ancestor d2f66fa9 master`，别比对 SHA 相等。
+- **本会话工作树**：`.claude/worktrees/task37-closeout`（分支 `worktree-task37-closeout`，已并入 master，目录保留）；本报告在 `.claude/worktrees/encapsulated-kindling-forest` 写就（后台隔离护栏不允许直接写共享检出），已随其分支并入 master。
 - **发布状态**：**全部提交都是本地的、未推送**。本仓与 `~/.claude` 仓都没有推送动作；是否发布是用户的决定。
 
 ---
@@ -32,7 +32,7 @@
 | C1 | Task 37 合并态复审门已关闭，0 blocker | `.superpowers/sdd/progress.md` 第 22 行；评审报告 `docs/tmp/2026-08-09-task37-seam-review-{claims,drift,invariants,dispositions}.md`、`docs/tmp/2026-08-09-task37-{d1-arbitration,grammar-terminal-review}.md` | 复用（2026-08-09 闭合时的证据） |
 | C2 | Task 4 已解除阻塞 | 同上，账本第 21/23 行 | 复用 |
 | C3 | 代码交付 `fe8977c0` 已在 master 内 | `git merge-base --is-ancestor fe8977c0 master` → 0 | **新鲜**（2026-08-10 实跑） |
-| C4 | 收尾产物分支已合入 master，合并提交为 `d2f66fa9` | `git merge --ff-only worktree-task37-closeout`；`git merge-base --is-ancestor d2f66fa9 master` → 0 | **新鲜** |
+| C4 | 收尾产物已进入 master，整合结果 commit 为 `d2f66fa9` | `git merge-base --is-ancestor d2f66fa9 master` → 0。**两侧的操作不是一回事**：`d2f66fa9` 本身是「把 master 合进我的分支」的**合并提交**（父序 `b5acce8f` / `71dcfb91`），共享树那一侧做的则是 `git merge --ff-only`、**只快进不产生新提交**——这样共享树永远不碰 peer 的 WIP | **新鲜** |
 | C5 | 该合并给 master 带去的恰好是 5 个文档文件、零代码改动 | `git diff --name-status d2f66fa9^2 d2f66fa9` → 恰好 `docs/memory/feedback-fix-all-comparison-sites.md`、`docs/todo/deferred-backlog.md` 两处修改 + 三个 `docs/tmp/` 新增，共 5 行 | **新鲜**。⚠️ **`^2` 不是笔误**：`d2f66fa9` 的第一父是我的分支、第二父才是 master 侧，所以「master 得到了什么」要从 `^2` 出发。草稿里给的 `^1` 与 `fe8977c0 master` 两种写法都算成了别的量，见第 5 节第 11 条 |
 | C6 | 合并位置测试绿 | `bun run test:fast`（= `parallel-test unit http`）于 `d2f66fa9`：`16 shards · 5471 tests · 5471 pass · 0 fail · 5471 executed · 3 skipped`，exit 0 | **新鲜**。⚠️ **原始日志写在 job 临时目录里，会随 job 过期消失，不要去找它**——上面这行汇总就是本报告保存的全部，要更强的证据请按第 6 节配方重跑 |
 | C7 | 闭门时的全量门禁 | `16 shards · 7651 tests · 7651 pass · 0 fail · 11 skipped`，exit 0，无 crashed shard；typecheck 与 `lint:all` clean | 复用（2026-08-09，账本第 22 行）。**注意口径不同**：C6 是 fast 档（unit+http），C7 是闭门时的全后端档，两个数字不可比 |
@@ -78,7 +78,7 @@
     - 计划正文：`docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（「把现有 `DownstreamDeliverySession` 升级为 `BlockDeliveryOwner`」）。
     - **同 commit 硬约束**：同文件 `:67`——切换 driver 直接消费 grammar outcome 的**那一个** commit 里才能删 compatibility projection，不允许出现「旧 projection 已删、新 owner 尚未接管」的中间提交。
     - **已写好的验收探针**：`tests/pipeline/i9-followup-midblock-error.http.test.ts:64`，现为 `describe.skip`，skip 理由里写着解除条件。**别重写一个更弱的**——它断言的就是 Task 4 要建立的能力。
-    - ⚠️ **最贵的一条警告**：`docs/todo/deferred-backlog.md:1417`——做 Task 4 时必须把 `incomplete` 与 `failed` **并列**处理（`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定）；**只修 `failed` 会在同一位置再犯一次**。
+    - ⚠️ **最贵的一条警告**，在 backlog 条目 **`## 上游终态错误发生在块中途时，仍被当截断重试四次；直接修会泄漏半块`** 里（**故意不给行号**：`docs/todo/deferred-backlog.md` 是高频并发追加的文件，草稿里写的 `:1417` 在两轮评审期间就被 peer 推到了 1456，漂了 39 行；用 `rg -n '^## 上游终态错误发生在块中途时' docs/todo/deferred-backlog.md` 定位）。内容是：做 Task 4 时必须把 `incomplete` 与 `failed` **并列**处理——`src/lib/pipeline/delivery/adapters/responses.ts:76-78` 的 `case "response.incomplete"` → `semantic = "incomplete"` 显示它同样是上游的终态决定；**只修 `failed` 会在同一位置再犯一次**。（backlog 原文还引了同文件 `:17`，那一处**不支持**该论断，是它自己的笔误，别跟着找。）
     - **别重走的路**：本轮已试过「让 grammar 在块中途发出 failed 终态」，实测泄漏半块 + 多一个终止符，已撤回（见第 1 节与 `docs/tmp/2026-08-09-task37-grammar-terminal-review.md`）。
 - **backlog 新增 3 条**。其中一条是 entry-evidence 基线的**手工维护**条目，它自己带两个子项（`allowed_skipped` 须按 `skipSortKey` 逐字节全序、一个 `describe.skip` 套件产出两条 skip identity）——**是「3 条里的 1 条含 2 个子项」，不是「3 条里有 2 条是它们」**。
 - **`tests/history/search/` 的 14 条失败**是环境性的：gitignored 的 native 产物过期（构建于 2026-08-06，源码新 5 个提交）。正控：重新构建 → 28 pass / 0 fail。已登记，不是代码缺陷。
@@ -106,6 +106,8 @@
 10. **把账本里的一个数字原样复述进终报**——「六处 feed 与两个 translator」，我没问它数的是什么就抄了。派评审前的自我证伪跑了一次命令才发现它在任一 selector 下都偏小。**这是本报告在写作过程中撞上的、而不是评审抓到的**，形态与第 4 条同源：数字的载体换了，selector 仍然没人写。
 11. **我给的复验命令算的不是我声称的那个量，而且连错两版**——先写 `git diff fe8977c0 master -- docs/`（跨 138 个提交、返回 19 个文件），被两个视角独立指出后改成 `d2f66fa9^1`，一跑发现它列的是**master 带进来的东西**，方向正好反了（合并提交的第一父是我的分支）。第三版 `d2f66fa9^2` 才是 5。**结论 C5 从头到尾是对的，错的一直是我用来证明它的那条命令**——这是「跑过命令、拿到输出、结论仍然错」在同一份文档里的第三次。
 12. **在 reviewer 读同一份文件时改掉了它正在审的内容**——我在「判据证伪」视角审阅期间补写了 verification-log，导致它把报告里那句「欠账未还」判为 false-red。它判得对，而这个假红是我制造的。两个视角的报告对同一件事说法不一，就是这么来的；已在第 4 节写明时序。
+13. **把一个取自合并前的树的行号，写进了合并后才存在的文档**——`deferred-backlog.md:1417` 取自隔离树合 master **之前**，合并后 peer 的新条目把它推到 1456。两轮评审给出的答案还互相矛盾（1418 / 1456），最后按内容判定才定下来。**处置不是把数字改对，而是撤掉行号**：那是个高频并发追加的文件，改对的行号几小时后照样漂。改用 `rg` 锚小节标题。**这条恰好是我自己在第 5 节写下的那条纪律的反例**——写的时候 grep 过不够，`file:line` 要按最终文件复验。
+14. **写了「A2 的唯一载体是本报告」这个绝对断言而没核**——证据清单第 87 行就记着同一条教训。评审指出后一查就见。绝对断言（唯一/无/全部）不核就写，本轮第三次。
 
 ---
 
@@ -118,11 +120,13 @@
 | A1 | `positive-control-your-tests` | skill 更新 | 要把注入的变异恢复回去 | 原文只禁「变异**前**快照 `git diff`」，没说**变异后**从工作区导出补丁同样不成立；实测未追踪文件导出的补丁为空、什么都没恢复 | 就是该 skill 第 1 步的另一半，不是新概念 | **已实施并已评审**（`~/.claude` `eb3ea6f`，评审判 INFO／闭合） |
 | A2 | `catching-false-green-tests` | skill 更新 | 想靠「多加几组参数」让一条判据变强 | 给一个**结构上本就不具鉴别力**的形状加参数化，得到的是两个绿格子，不是更强的判据；本轮实例 `h2-committed-block-delivery` | 已确认该 skill 现无此条（`rg 'parameteris\|two green cells\|non-discriminating'` 无命中） | **仅建议**，等用户裁决 |
 | A3 | `closing-a-development-session` 的 `discover_nonfile_candidates` | skill 更新 | 反向对账连做几轮、条数不收敛 | 跨轮次**发散**（6 → 5 → 17+，第三轮还写「至少」）是**范围**信号不是力气信号；正确动作是缩范围，不是再审一遍 | 该 skill 已把「全量审计」列为退化形态，但没给「怎么认出自己正在滑进去」的症状 | **仅建议** |
-| A4 | user-rule `60-evidence-and-criteria` 的 `every-number-carries-scope` | rule 更新 | 从账本/上游文档里**引用**一个数字 | 现有条款管的是「你写下的数字要带口径」；本轮的错在**引用**——账本的数字错了，我抄过来时没问它数的是什么。引用不继承正确性 | 同一条款的未覆盖侧面，不是新规则 | **仅建议** |
+| ~~A4~~ | ~~user-rule `every-number-carries-scope`~~ | — | — | ~~「引用来的数字」未被覆盖~~ | **缺口不存在，已撤回** | **撤回**（见下） |
 
-A2/A3/A4 都是**指令类文本**，按 `instruction-text-must-be-reviewed` 安装前须独立评审，且 A4 改的是 user-level rule、属作者不得自装的层级。
+A2/A3 都是**指令类文本**，按 `instruction-text-must-be-reviewed` 安装前须独立评审。
 
-**它们各自的承载者不一样，别以为都一样牢**：A3 与 A4 的形态已作为 suggested source change 写进 `~/.claude/skills/closing-a-development-session/verification-log.md`（`e525ba1`），未来任何一次收尾都会读到。**A2 没有这样的承载者**——`catching-false-green-tests` 目录下只有 `SKILL.md`、没有 verification-log，所以本报告合入 master 后就是 A2 的唯一载体。这一点是写这张表时自己撞上的：我先写下了「三条均已记进日志」，去核实才发现对 A2 不成立。
+**A4 撤回，理由值得写下来**：我原本提议给 `every-number-carries-scope` 补一句「引用来的数字也要重算」。评审去读了规则原文——它的 `[hard]` 门写的是「**任何写进交付物的数字**必须①带口径②经不同原理交叉验证」，引用来的数字当然也是写进交付物的。**缺口不存在，规则一直在那儿，是我没照做。** 这个区分很重要：往一条已经覆盖了该情形的规则上再加一句，不会让人更照做，只会让规则更长——`best-practices-over-omission` 提醒过，删改规则文本都不是中性动作。
+
+**承载者核实**（第一版这里写错了，留作实例）：我先写下「A2 的唯一载体是本报告」，评审指出证据清单也记着它——去核，`docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md` 第 87 行的 N9 条目正是这条教训，且已在 master。A3 的形态另记在 `~/.claude/skills/closing-a-development-session/verification-log.md`（`e525ba1`）。**两条都不止一个载体**；我那句「唯一载体」是没核就写的绝对断言，与本轮反复在抓的形态同类。
 
 ---
 
