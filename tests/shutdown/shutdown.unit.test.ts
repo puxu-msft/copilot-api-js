@@ -743,6 +743,86 @@ describe("three-tier signal contract", () => {
     expect(closeHistory).toHaveBeenCalled()
   })
 
+  test("an already-settled operation still finalizing is left alone, and is not counted as terminated", async () => {
+    // The shape the drain is usually LEFT HOLDING at the end. `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (`src/lib/context/manager.ts`), so a request that reached its terminal but whose History/delivery/canonical work is still running stays visible in the registry.
+    // Two things must hold, and neither is free: tier 2 must not touch it (`reapInFlight()` would abort a lifecycle signal that the running finalization may be using — that would destroy the persistence this tier exists to preserve), and it must not be reported as terminated (`fail()` early-returns on a settled ctx, so counting it would tell the operator we killed something we did not).
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker([
+      { id: "live", status: "executing" },
+      { id: "finalizing", status: "executing", settled: true, releasesOnSettle: false },
+    ])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      // Only the live one was terminated — the settled one was skipped entirely, not merely no-op'd.
+      expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["live"])
+      expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["live"])
+
+      const text = banner.join("")
+      expect(text).toContain("terminated 1 in-flight request(s)")
+      // The count alone would be a half-truth: the drain is still held, and the operator has to know that before deciding whether to press again.
+      expect(text).toContain("1 already-settled operation(s) are still persisting")
+
+      // Tier 3 remains the escape for exactly this shape.
+      void handleShutdownSignal("SIGINT", { exitFn })
+      expect(exitFn).toHaveBeenCalledWith(130)
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("tier 2 before the drain has started says so instead of claiming it terminated anything", async () => {
+    // `stopping` also covers the awaits that run BEFORE the drain (`drainAdmissionHandoffs`, the handoff freezes). There is no drain source to reach yet, and this tier cannot unblock those — so the banner must not promise a flush it is not going to deliver.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const exitFn = mock((_code: number) => {})
+    let finishShutdown!: () => void
+    const heldShutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve
+    })
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", { gracefulShutdownFn: () => heldShutdown, exitFn })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      const text = banner.join("")
+      expect(text).toContain("the drain has not started yet")
+      expect(text).not.toContain("now flushing")
+      expect(exitFn).not.toHaveBeenCalled()
+
+      finishShutdown()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
   test("third signal during request drain is the hard escape", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
     const exitFn = mock((_code: number) => {})

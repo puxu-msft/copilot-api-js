@@ -81,7 +81,9 @@ test("real foreground SIGINT: first drains, second abandons the drain without ex
   expect(result.tier2Alive).toBe(true)
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("graceful shutdown started")
-  expect(result.output).toContain("abandoning the drain wait")
+  // Scope of this layer, stated so it is not read as more: this fixture holds `gracefulShutdown` on a promise that never resolves, so the process never reaches the drain. It proves that a real process, on a real TTY, SELECTS tier 2 on the second signal and survives it — and that tier 2 says so honestly when there is no drain to abandon, rather than printing a flush it never performed. Actual drain abandonment is proven at the component layer, which can inject a drain source.
+  expect(result.output).toContain("Second termination signal")
+  expect(result.output).toContain("the drain has not started yet")
 }, 14_000)
 
 test("two-signal PTY preserves READY observation through delayed child startup", () => {

@@ -613,20 +613,30 @@ function writeEmergencyNoThrow(message: string): void {
  * Terminates every accepted generation operation through the SAME request-level primitives the stale reaper and `timeouts.request_deadline` already use: `reapInFlight()` cancels the in-flight upstream work, `fail()` records the terminal state with its provenance.
  * Shutdown still owns no deadline of its own; this runs only because a human explicitly gave up waiting, which is why the terminal is attributed to `shutdown`/`operator-abandoned-drain` rather than to a timeout.
  *
- * After this returns, the normal drain loop observes an empty registry and falls through to `finalize()`, so History, Telemetry and Diagnostics still flush. That is the whole point of this tier: bounded by the operator, but not lossy.
+ * Each operation this DOES terminate stops holding the drain, so the drain loop can fall through to `finalize()` and History, Telemetry and Diagnostics still flush. That is the point of this tier: bounded by the operator, but not lossy.
+ *
+ * It is NOT a guarantee that the drain ends. Three shapes survive it, and the banner must not paper over them: an operation that is already settled but still finalizing (below); a lightweight operation (below); and the `stopping` awaits that run BEFORE the drain even starts (`drainAdmissionHandoffs`, the handoff freezes), where `activeDrainSource` is still null and there is nothing to reach. The third signal is the escape for all three.
  *
  * Scope limit — lightweight operations (count_tokens / embeddings) are NOT terminated here: `LightweightInFlightOperation` is a read-only descriptor with no cancellation surface. They are short by construction, and if one ever does wedge the drain the third signal remains the escape.
  *
- * @returns how many operations this reached.
+ * @returns what this actually did, split so the operator banner cannot overstate it.
  */
-function abandonDrain(signal: string): number {
+function abandonDrain(signal: string): { started: boolean; terminated: number; finalizing: number } {
   const source = activeDrainSource
-  if (!source) return 0
-  let reached = 0
+  // The drain has not begun yet — we are still in the `stopping` awaits that precede it (admission handoff, freeze). There is nothing to abandon, and this tier cannot unblock those; say so rather than printing a count that implies we acted.
+  if (!source) return { started: false, terminated: 0, finalizing: 0 }
+
+  let terminated = 0
+  let finalizing = 0
   for (const operation of source.getActive()) {
     // Same discriminator `formatActiveRequestsSummary` uses to tell the two registries apart.
     if ("operationId" in operation) continue
     try {
+      // An operation can be settled and STILL tracked: `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (context/manager.ts), so the ctx stays visible instead of silently vanishing. For those, `fail()` early-returns (`if (settled) return`) and `reapInFlight()` would abort a lifecycle signal that the still-running FINALIZATION may be using — so touching them is both a lie in the count and a risk to the persistence we are trying to preserve. Leave them.
+      if (operation.settled) {
+        finalizing++
+        continue
+      }
       operation.reapInFlight()
       operation.fail(
         operation.resolvedModel ?? operation.originalRequest?.model ?? "unknown",
@@ -634,13 +644,29 @@ function abandonDrain(signal: string): number {
         undefined,
         { attribution: { category: "shutdown", code: "operator-abandoned-drain" } },
       )
-      reached++
+      terminated++
     } catch (error) {
       // One wedged context must not stop us reaching the others — the operator asked to stop waiting, so best-effort is the correct shape here.
       consola.warn("[shutdown] could not terminate an operation while abandoning the drain:", error)
     }
   }
-  return reached
+  return { started: true, terminated, finalizing }
+}
+
+/**
+ * Phrase the tier-2 outcome for the operator, WITHOUT overstating it.
+ *
+ * The three shapes read very differently at 3am: "I terminated your requests and I am flushing" is a promise, and printing it when nothing was reached (or when what remains is finalization we deliberately refuse to interrupt) would send the operator looking for a flush that is not coming — or worse, make them trust a handoff that is still wedged.
+ */
+function describeDrainAbandonment(outcome: { started: boolean; terminated: number; finalizing: number }): string {
+  if (!outcome.started) {
+    return "the drain has not started yet, so there is nothing to abandon — this phase is still stopping ingress and cannot be shortened by this signal."
+  }
+  const finalizingNote =
+    outcome.finalizing > 0 ?
+      ` ${outcome.finalizing} already-settled operation(s) are still persisting and were deliberately left alone — interrupting them is what the next signal is for.`
+    : ""
+  return `abandoning the drain wait — terminated ${outcome.terminated} in-flight request(s), now flushing.${finalizingNote}`
 }
 
 export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
@@ -659,9 +685,9 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
     // Deliberately scoped to the phases that are still WAITING ON REQUESTS: once we are in `finalizing`/`notifying`/`failed` the thing being waited on IS the persistence barrier, which is exactly what the escape hatch exists to escape — so there the second signal must still exit immediately, as it always has.
     const waitingOnRequests = shutdownPhase === "stopping" || shutdownPhase === "draining"
     if (waitingOnRequests && postClaimTerminationSignals === 1) {
-      const reached = abandonDrain(signal)
+      const outcome = abandonDrain(signal)
       writeEmergencyNoThrow(
-        `[shutdown] Second termination signal (${signal}); abandoning the drain wait — terminated ${reached} in-flight request(s), now flushing. Press Ctrl+C again to exit immediately WITHOUT flushing`,
+        `[shutdown] Second termination signal (${signal}); ${describeDrainAbandonment(outcome)} Press Ctrl+C again to exit immediately WITHOUT flushing`,
       )
       return shutdownPromise ?? undefined
     }
@@ -679,7 +705,9 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   // the first is always recognized as the force-exit signal.
   _isShuttingDown = true
   setPhaseFireAndForget("stopping")
-  writeEmergencyNoThrow(`[shutdown] Received ${signal}; graceful shutdown started, waiting for accepted requests. Press Ctrl+C again to stop waiting and flush, or twice to exit immediately`)
+  writeEmergencyNoThrow(
+    `[shutdown] Received ${signal}; graceful shutdown started, waiting for accepted requests. Press Ctrl+C again to stop waiting and flush, or twice to exit immediately`,
+  )
 
   shutdownPromise = shutdownFn(signal).catch((error: unknown) => {
     writeEmergencyNoThrow(`[shutdown] Fatal error during shutdown: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)

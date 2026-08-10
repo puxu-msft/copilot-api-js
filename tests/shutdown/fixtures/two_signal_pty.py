@@ -91,7 +91,8 @@ try:
         # Tier 2 — the operator stops waiting for the request drain.
         # The process must NOT exit here: it still owes every durability barrier, and that is the whole difference between this tier and the escape hatch.
         os.write(fd, b"\x03")
-        read_until(b"abandoning the drain wait")
+        # Match the TIER marker, not the outcome wording. These fixture processes hold `gracefulShutdown` on a promise that never resolves, so they never reach the drain and tier 2 correctly reports that there was nothing to abandon — a different sentence from the one a real drain prints. What this layer proves is narrower than the banner text: the second signal selected tier 2 and the process SURVIVED it. Drain abandonment itself is proven at the component layer, which can inject a real drain source.
+        read_until(b"Second termination signal")
         tier2_alive = os.waitpid(pid, os.WNOHANG)[0] == 0
         # Tier 3 — the escape hatch, which waits for nothing.
         os.write(fd, b"\x03")
