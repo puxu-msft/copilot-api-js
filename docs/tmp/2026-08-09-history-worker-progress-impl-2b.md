@@ -133,7 +133,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 第二位独立评审（专找假绿）逐份对 6 个新测试做变异，**那 6 份都能变红**；它找到的阻断项全在**测试基座**上。逐条处置：
 
-- **[blocker] 缺口 2：fixture 的 teardown 解除刚重建的 writer 的武装** —— 已复现、修法已验证、**因爆炸半径回退并登记**。详见 `docs/todo/deferred-backlog.md` 该条（含机制、双方证据、可用修法、`3acc5b8b` 保存的复现测试、回退 commit `adb40c05`）。**关键数字**：修法本身正确，但会让 `bun run test:it` 从 6 fail（会话起点 `e3f8e5f2`）变成 **58 fail**——约 52 条 `it` 测试建立在「不落盘」之上。**`test:backend` 对它是盲的**（LPT 分片把互相干扰的文件分开），两种状态下门禁都是 0 fail。
+- **[blocker] 缺口 2：fixture 的 teardown 解除刚重建的 writer 的武装** —— **已修复**（`3acc5b8b` 落地 → `adb40c05` 误回退 → 复测后恢复）。**这里有一条比缺陷本身更值得记的教训**：我曾据**单次** `bun run test:it`（58 fail vs 基线 6）判断「约 52 条测试建立在不落盘之上、需逐条甄别」并把修复回退掉——**那个判断是错的**。复查日志：58 里只有约 16 条真断言失败，其余来自**一次 Bun 运行时崩溃**（SIGILL，`credential-four-track.it.test.ts`），且失败名单五花八门（systemd sdNotify、SonicBoom flush、openai-cc codec、gemini reverse wire），不可能是「为迁就不落盘而写的断言」。重新施加后**连跑两次均 5 fail 且无崩溃**，与基线一致。**判据：档位失败计数会被单次 runtime 崩溃整体抬高，任何据它下的「爆炸半径」结论都必须先看失败名单、并连跑两次。** 详见 `docs/todo/deferred-backlog.md` 该条。
 - **[major] 缺口 3：`deadlineMs <= 0` 只有 getter 判据** —— 已补行为判据（commit `6c571d6b`），并用评审给的精确变异（`<= 0` → `< 0`）验证会红。
 - **[major] 缺口 6：两种 ad-hoc 形态下 `tests/history` 都红且失败集不相交** —— 顺序形态 `bun test tests/history` 已由本轮两处修复变为 **0 fail**；`--parallel` 形态仍有 5 条，与 `test:it` 的 5 条同源，已随 blocker 一并登记（那 5 条在会话起点是 6 条，本轮少了一条）。
 - **[minor] 缺口 4（删 `clearTimeout` 仍绿）、缺口 5（删 rollback 里 `else readDatabase.close()` 仍绿）** —— 未处置，属判据强度而非缺陷；与 GPT 评审的 4 条 minor 一并留待收口后处理。
