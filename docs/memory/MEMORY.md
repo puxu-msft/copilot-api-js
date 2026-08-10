@@ -29,7 +29,7 @@
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
 - [聚合器把「没读到」当成「零」](methodology-missing-evidence-counted-as-zero.md) — 门禁在真失败之上报 `0 fail`；摘要最后打印而事实随事件落盘、两道判据读同一份缺失会互相掩盖、换源只把盲区挪走；阈值按正常值+故障值两端标定；判独立性交 provenance 图
 - [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 先写下影响集合再从集合内取样；争议交未卷入第三方
-- [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — assert 在写盘前→失败全丢而 commit 照跑；`bash -n` 绿区分不了两种结果
+- [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) → skill `editing-files-precisely` — assert 在写盘前→失败全丢而 commit 照跑；验证须针对新写入的字符串，`bash -n` 绿在未编辑文件上同样通过
 - [连续多轮「修复引入新回归且照绿」](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=改回原 bug 仍全绿即无裁决力；验收必须走真实 HTTP 入口
 - [plan 陈旧程度 ∝ 返工轮数，逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 按已知形态 grep 查不全；从 types.ts 逐签名出发；五类藏身处逐类过
 - [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）
