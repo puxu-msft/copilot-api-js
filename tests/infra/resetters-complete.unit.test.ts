@@ -119,9 +119,8 @@ const EXEMPT: Record<string, string> = {
   // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
   // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
   recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
-  // Injection setter remains available to tests that install explicit fakes. The fixture registers the
-  // async owning reset instead, because merely clearing the pointer would leak a live Worker.
-  setHistoryPersistenceRuntimeForTests: "runtime injector — reset via resetHistoryPersistenceRuntimeForTests (registered)",
+  // Injection setter remains available to tests that install explicit fakes. The fixture does not reset it through this table: merely clearing the pointer would leak a live Worker, so the fixture calls the owning `releaseHistoryPersistenceRuntime()` explicitly — and BEFORE `resetTestRuntime()`, because releasing after the rebuild disarms the runtime the next test is about to use (see tests/history/worker/fixture-persistence-survives-teardown.it.test.ts).
+  setHistoryPersistenceRuntimeForTests: "runtime injector — owned reset called explicitly by the fixture before resetTestRuntime, not via RESETTERS",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {

@@ -7,6 +7,7 @@
 import {
   //
   afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -133,6 +134,11 @@ class NeverReadyRuntime implements HistoryPersistenceRuntime {
 }
 
 let stuck: NeverReadyRuntime | undefined
+
+// Take History down before injecting: a predecessor file in this worker leaves it UP (the isolated fixture's teardown rebuilds it on purpose), and a bring-up against an already-installed History takes the idempotent branch instead of driving the double.
+beforeEach(async () => {
+  await initHistory(false)
+})
 
 afterEach(async () => {
   setHistoryStartupDeadlineMs(HISTORY_STARTUP_DEADLINE_MS)

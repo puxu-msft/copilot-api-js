@@ -1,6 +1,7 @@
 import {
   //
   afterEach,
+  beforeEach,
   expect,
   test,
 } from "bun:test"
@@ -25,6 +26,11 @@ import {
   resetConfigManagedState,
   setHistoryConfig,
 } from "~/lib/state"
+
+// Establish the precondition instead of inheriting it. The laziness assertion below is about what IMPORTING the registry does, so it needs an empty registry to start from — and since the isolated fixture now (correctly) leaves History up between tests, a predecessor file in this worker would otherwise decide whether this file passes.
+beforeEach(async () => {
+  await releaseHistoryPersistenceRuntime()
+})
 
 afterEach(async () => {
   setHistoryAdmissionControllerForTests(undefined)
