@@ -2,15 +2,15 @@
 
 **状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
 
-**Entry candidate A 已确定（2026-08-10）**：`14f354ff8dd3af439762b2ca1d628cc477f94e05`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出。下一动作是 T0.0d（validator 出 receipt）→ T0.1。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出。下一动作是 T0.0d（validator 出 receipt）→ T0.1。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
 
-**A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 的批次 15 轮全绿却在 validator 的 C9 上停住——producer 与 validator 同批冻结却从未端到端跑过，run log 缺 `canonical_command=` 字段。两处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
+**A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 与 `14f354ff` 的批次都 15 轮全绿却相继停在 validator 的 C9 上——producer 与 validator 同批冻结却从未端到端跑过，run log 先是缺 `canonical_command=`、补上后又缺 `verdict=`。三处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
 
 <!-- entry-evidence-pointer:v1 -->
-entry_sha=14f354ff8dd3af439762b2ca1d628cc477f94e05
-manifest_path=/home/xp/.claude/jobs/757dc257/tmp/entry-evidence-A-14f354ff/evidence-manifest.json
-manifest_sha256=1e7c17a156e56f686ac5f23b7441e2fef2434ef81a7e6cefdb171b62d09cf292
-archive_path=/home/xp/.claude/entry-evidence/A-14f354ff
+entry_sha=15c43e40d3c4c172425ec2356721b73bebd8315b
+manifest_path=/home/xp/.claude/jobs/757dc257/tmp/entry-evidence-A-15c43e40/evidence-manifest.json
+manifest_sha256=b33428643971347d3f824fa046004b9c392ca47f88bb18fe3ff3fe2cb470179d
+archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
 <!-- /entry-evidence-pointer:v1 -->
 
 `manifest_path` 指向产出它的那次运行的树外 OUT，**它才是 entry 的定义**；`archive_path` 是同一批产物的持久副本（job 目录会随 job 删除而消失），归档副本不定义 entry。两处 `evidence-manifest.json` 的 sha256 相同，已独立 `sha256sum` 复算。
