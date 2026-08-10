@@ -76,12 +76,30 @@ export function createMockTracker(initialRequests: Array<FakeRequest> = []) {
 
   requests = initialRequests.map(build)
 
+  /**
+   * A lightweight in-flight operation (count_tokens / embeddings), which the real drain source unions in alongside generation contexts.
+   *
+   * It carries the primitive spies too — **deliberately**. Production tells the two apart by `"operationId" in operation` and skips lightweight ones because they have no cancellation surface at all; giving the stub a working `reapInFlight`/`fail` means that if that discriminator is ever removed, the call lands on these spies and a test can SEE it. A stub without them would just throw into tier 2's catch block and stay green.
+   */
+  const buildLightweight = (operationId: string): RequestContext =>
+    ({
+      operationId,
+      reapInFlight: () => reapInFlight(operationId),
+      fail: (model: string, error: unknown, _partial?: unknown, opts?: unknown) => {
+        fail(operationId, model, error, opts)
+      },
+    }) as unknown as RequestContext
+
   return {
     /** ShutdownDrainSource interface — production passes manager.getAll(). */
     getActive: mock(() => [...requests]),
     /** Test-only: replace the active set. */
     _setActiveRequests: (r: Array<FakeRequest>) => {
       requests = r.map(build)
+    },
+    /** Test-only: seed the active set with a mix of generation contexts and lightweight operations, as the real union produces. */
+    _setActiveMixed: (r: Array<FakeRequest>, lightweightIds: Array<string>) => {
+      requests = [...r.map(build), ...lightweightIds.map((id) => buildLightweight(id))]
     },
     _clearRequests: () => {
       requests = []

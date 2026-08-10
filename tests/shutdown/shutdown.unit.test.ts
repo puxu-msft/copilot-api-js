@@ -823,6 +823,44 @@ describe("three-tier signal contract", () => {
     }
   })
 
+  test("tier 2 deliberately leaves lightweight operations alone", async () => {
+    // count_tokens / embeddings are `LightweightInFlightOperation` — read-only descriptors with no cancellation surface — so tier 2 skips them by design and the third signal is their escape.
+    // Without this test the skip is unpinned: dropping the `"operationId" in operation` guard sends the call into tier 2's catch block, which logs a warning and moves on, leaving every other assertion green.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker()
+    tracker._setActiveMixed([{ id: "generation" }], ["lightweight-a", "lightweight-b"])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      // The generation context, and only it. The lightweight stubs carry working primitives precisely so that reaching them would show up here.
+      expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["generation"])
+      expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["generation"])
+      // They are also not miscounted as finalizing work we chose to preserve — they are simply out of this tier's scope.
+      expect(banner.join("")).toContain("terminated 1 in-flight request(s)")
+      expect(banner.join("")).not.toContain("already-settled")
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
   test("third signal during request drain is the hard escape", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
     const exitFn = mock((_code: number) => {})
