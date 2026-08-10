@@ -6,6 +6,8 @@ import type { HistoryWorkerBackend } from "~/lib/history/worker/backend"
  * A `setTimeout`/`await` would prove nothing: the event loop stays responsive across those, and the whole question is what happens when it cannot. SQLite's schema reconcile, migrations, journal recovery and commit are all synchronous C calls with exactly this profile.
  */
 export function busyWaitMs(ms: number): void {
+  // A missing or non-numeric duration must be loud. `while (Date.now() < NaN)` is false on the first evaluation, so an undefined `blockMs` — a renamed `workerData` field, a fixture wired without it — would silently block for zero and leave the isolation test asserting nothing, in the arm that is supposed to prove the whole cutover.
+  if (!Number.isFinite(ms)) throw new Error(`[test] busyWaitMs needs a finite duration, got ${String(ms)}`)
   const until = Date.now() + ms
   while (Date.now() < until) {
     // Deliberately spinning: yielding here would defeat the purpose.

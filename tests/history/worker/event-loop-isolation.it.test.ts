@@ -68,27 +68,29 @@ function track<T extends HistoryPersistenceRuntimeImpl>(runtime: T): T {
  *
  * Two observations of one property, kept together on purpose. The metronome measures the event loop directly and finely; the liveness request is the user-visible end of it — an operator's probe, served by the same loop, through the real app and router. Task 2b.4 names both, and a timer alone cannot show that HTTP dispatch actually completes inside the blocking window.
  */
-async function observeMainThreadDuring(drive: () => Promise<void>): Promise<{ stall: number; livenessMs: number; livenessStatus: number }> {
+async function observeMainThreadDuring(drive: () => Promise<void>): Promise<{ stall: number; livenessMs: number; livenessStatus: number; elapsed: number }> {
   const ticks: Array<number> = [Date.now()]
   const metronome = setInterval(() => ticks.push(Date.now()), TICK_MS)
   let livenessMs = 0
   let livenessStatus = 0
+  const startedAt = Date.now()
   try {
     const driven = drive()
     // Issued WHILE the work is in flight, not after it: the question is whether the probe can be served during the block, so it must be racing the block rather than following it.
-    const startedAt = Date.now()
+    const probeStartedAt = Date.now()
     const response = await app.request("/health/liveness")
-    livenessMs = Date.now() - startedAt
+    livenessMs = Date.now() - probeStartedAt
     livenessStatus = response.status
     await driven
   } finally {
     clearInterval(metronome)
   }
+  const elapsed = Date.now() - startedAt
   ticks.push(Date.now())
 
   let longest = 0
   for (let i = 1; i < ticks.length; i++) longest = Math.max(longest, ticks[i] - ticks[i - 1])
-  return { stall: longest, livenessMs, livenessStatus }
+  return { stall: longest, livenessMs, livenessStatus, elapsed }
 }
 
 /** Start the runtime and persist one real terminal operation — initialize and persist are exactly the two calls the fixture blocks. */
@@ -116,6 +118,9 @@ describe("History persistence does not block the main thread", () => {
 
     // NEGATIVE CONTROL FIRST: if this does not freeze, the metronome is blind and the assertion below means nothing.
     expect(inProcess.stall).toBeGreaterThanOrEqual(BLOCK_MS * 0.8)
+
+    // The positive arm needs its own proof that the block HAPPENED. Without this, a fixture that silently stopped injecting it — a `workerData` field renamed, `withSynchronousBlock` no longer wrapped around the entry — would produce a small stall in the Worker arm and a large one in-process, and every assertion below would pass while the arm that is supposed to demonstrate isolation demonstrated nothing at all. Both `initialize` and `persist` are blocked, so the work takes at least two blocks; it just does not take them out of THIS thread.
+    expect(worker.elapsed).toBeGreaterThanOrEqual(BLOCK_MS * 2 * 0.8)
 
     // The claim. Compared RELATIVELY as well as absolutely: an absolute bound alone turns every loaded CI machine into a false red, while the ratio survives a slow machine because both arms slow together.
     expect(worker.stall).toBeLessThan(BLOCK_MS * 0.5)

@@ -19,6 +19,11 @@ interface BlockingBackendFixture {
 
 if (!parentPort) throw new Error("blocking-backend-worker fixture requires a parent port")
 
-const fixture = workerData as BlockingBackendFixture
+const fixture = workerData as BlockingBackendFixture | undefined
+
+// Refuse to start rather than run a Worker that blocks for nothing: a fixture whose duration never arrived would make the isolation test's positive arm pass by proving nothing at all.
+if (typeof fixture?.blockMs !== "number" || !Number.isFinite(fixture.blockMs)) {
+  throw new Error(`[test] blocking-backend-worker needs workerData.blockMs, got ${JSON.stringify(workerData)}`)
+}
 
 installHistoryWorkerMessageLoop(parentPort, withSynchronousBlock(createHistoryWorkerBackend(), fixture.blockMs))
