@@ -15,6 +15,18 @@
 
 **评审报告本身的一处更正**：G7 说「真正危害形态（writer）里 VACUUM 本来就会被吞掉」——主会话独立探针发现判据比评审描述的**还要窄一层**：`busy` 非零还需要 **WAL 非空**，空 WAL 时恒 `busy:0`。已按实测写进 ADR，未沿用评审的表述。
 
+## 第二轮（GPT reviewer 对上述修复的复审）
+
+修完上表后，把新代码交给未参与本轮修复的 `gpt-souls:reviewer` 复审，**又抓到一个 major，且是同一类缺陷的漏网格子**：
+
+| # | 级别 | 发现 | 处置 |
+| --- | --- | --- | --- |
+| H1 | **major** | 我修「横幅不得谎报」时只覆盖了「drain 未开始」和「有 settled 残余」两格，**漏了「registry 里只剩 lightweight」**：三个计数全为 0，落进「无残余」分支，照样打印 `terminated 0 … now flushing`——而 drain 正被 lightweight operation 阻着、根本没开始 flush。 | **已修**：`abandonDrain` 增计 `lightweight`，`describeDrainAbandonment` 改为**仅当残余列表为空才说 `now flushing`**，否则列出「STILL HELD by …」。新增专门用例；变异对照（把 flush 声称改回无条件）同时打红 3 条。 |
+| H2 | minor | 我给 settled skip 写的理由**过强**：canonical finalizer 其实**不读** `lifecycleSignal`（它等 `whenOperationQuiesced()`），真正消费该 signal 的是尚未 quiesce 的 operation-body／transport／delivery 收尾。 | **已修**：skip 本身正确（计数失真这条理由独立成立），但源码注释与 skill 边界②的因果说明已收窄到实际成立的范围。 |
+| H3 | minor | lightweight 替身只镜像了 `operationId` 判别式，而 `formatActiveRequestsSummary` 在同一判别式之后还要读 `kind`／`method`／`path`／`startTime`——替身会产出 `undefined`／`NaN`，在真实消费点比真依赖「更友好」。 | **已修**：`buildLightweight` 改为构造完整 `LightweightInFlightOperation` 形状，同时保留测试专用原语作为「判别式被删则 spies 咬红」的控制。 |
+
+**这一轮的教训**：H1 与 G2／G4 是**同一个缺陷的三个格子**，我修完两个就以为闭合了。判据不该按「我想到的场景」枚举，而该按**返回值的状态空间**穷举——`{started, terminated, finalizing, lightweight}` 有几种有意义的组合，横幅就该有几条对应的话。
+
 ---
 
 # 三档信号 / VACUUM gate —— 测试判别力评审与处置
