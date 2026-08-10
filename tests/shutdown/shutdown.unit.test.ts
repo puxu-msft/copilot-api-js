@@ -776,7 +776,8 @@ describe("three-tier signal contract", () => {
       const text = banner.join("")
       expect(text).toContain("terminated 1 in-flight request(s)")
       // The count alone would be a half-truth: the drain is still held, and the operator has to know that before deciding whether to press again.
-      expect(text).toContain("1 already-settled operation(s) are still persisting")
+      expect(text).toContain("1 already-settled operation(s) still persisting")
+      expect(text).not.toContain("now flushing")
 
       // Tier 3 remains the escape for exactly this shape.
       void handleShutdownSignal("SIGINT", { exitFn })
@@ -850,9 +851,48 @@ describe("three-tier signal contract", () => {
       // The generation context, and only it. The lightweight stubs carry working primitives precisely so that reaching them would show up here.
       expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["generation"])
       expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["generation"])
-      // They are also not miscounted as finalizing work we chose to preserve — they are simply out of this tier's scope.
-      expect(banner.join("")).toContain("terminated 1 in-flight request(s)")
-      expect(banner.join("")).not.toContain("already-settled")
+      // Skipping them does not make them disappear: they still HOLD the drain, so the banner must name them and must not promise a flush.
+      const text = banner.join("")
+      expect(text).toContain("terminated 1 in-flight request(s)")
+      expect(text).toContain("2 lightweight operation(s) that have no cancellation surface")
+      expect(text).not.toContain("now flushing")
+      expect(text).not.toContain("already-settled")
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("with only lightweight operations left, tier 2 does not claim it is flushing", async () => {
+    // The gap an independent reviewer found in the first version of this banner: with nothing terminable in the registry the counts are all zero, so the message read "terminated 0 in-flight request(s), now flushing" — while the drain was in fact still blocked by the very operations this tier refuses to touch. Zero reached must never render as progress.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker()
+    tracker._setActiveMixed([], ["lightweight-only"])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      const text = banner.join("")
+      expect(text).toContain("terminated 0 in-flight request(s)")
+      expect(text).toContain("1 lightweight operation(s) that have no cancellation surface")
+      expect(text).not.toContain("now flushing")
+      expect(exitFn).not.toHaveBeenCalled()
 
       tracker._clearRequests()
       await shutdownPromise

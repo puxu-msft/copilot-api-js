@@ -21,7 +21,9 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 SIGUSR2 启动 shutdown 后，随后第一个 SIGINT／SIGTERM 是**放弃 drain** 请求而非强退请求，第二个才强退；反过来，SIGINT／SIGTERM 启动 shutdown 后再收到 SIGUSR2，SIGUSR2 仍只是幂等交接。
 
-放弃档的三个已知边界，**强退档是三者共同的出路**：① 够不到 lightweight operation（`LightweightInFlightOperation` 是只读描述符、无取消面）；② **已 settled 但仍在 finalizing 的 operation 被有意跳过**——`releaseTrackedOperationIfTerminal` 在 `blocker !== "none"` 时是有意 no-op，这类 ctx 会留在 registry 里，而对它调 `reapInFlight()` 会中止其 finalization 正在用的 lifecycle signal，等于毁掉本档要保的持久化，所以只计数、不触碰；③ `stopping` **还覆盖 drain 开始之前的等待**（`drainAdmissionHandoffs`、handoff freeze），那时 `activeDrainSource` 仍为 null，本档够不到任何东西，横幅会如实说「drain 尚未开始」而非谎报 flushing。裁决见 ADR `docs/decisions/2026-08-10-three-tier-shutdown-signal-contract.md`。
+放弃档的三个已知边界，**强退档是三者共同的出路**：① 够不到 lightweight operation（`LightweightInFlightOperation` 是只读描述符、无取消面）；② **已 settled 但仍在 finalizing 的 operation 被有意跳过**——`releaseTrackedOperationIfTerminal` 在 `blocker !== "none"` 时是有意 no-op，这类 ctx 会留在 registry 里；跳过的理由有两条，别把第二条说过头：`fail()` 对已 settled 的 ctx 早返回（**计数会失真**），而 `reapInFlight()` abort 的 `lifecycleSignal` **canonical finalizer 本身并不读**（它等的是 `whenOperationQuiesced()`），但尚未 quiesce 的 operation-body／transport／delivery 收尾**确实消费同一个 signal**，abort 仍可能干扰它们；③ `stopping` **还覆盖 drain 开始之前的等待**（`drainAdmissionHandoffs`、handoff freeze），那时 `activeDrainSource` 仍为 null，本档够不到任何东西。
+
+**横幅只在没有东西还占着 drain 时才说 `now flushing`**——①②两种残余都会让它改口成「STILL HELD by …」。这条是评审实测抓出来的：早期版本在「registry 里只剩 lightweight」时打印「terminated 0 … now flushing」，而 drain 根本还没动。裁决见 ADR `docs/decisions/2026-08-10-three-tier-shutdown-signal-contract.md`。
 
 `stopped` 只表示 generation 与 lightweight 两个 in-flight registry 均清零、History terminal、Telemetry outbox、Diagnostic WAL／sink、终态通知和资源 close 全部成功。持久化失败进入 `failed` 并 exit 1，不能 resolve 成功 latch。
 

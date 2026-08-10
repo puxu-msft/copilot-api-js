@@ -79,11 +79,18 @@ export function createMockTracker(initialRequests: Array<FakeRequest> = []) {
   /**
    * A lightweight in-flight operation (count_tokens / embeddings), which the real drain source unions in alongside generation contexts.
    *
-   * It carries the primitive spies too — **deliberately**. Production tells the two apart by `"operationId" in operation` and skips lightweight ones because they have no cancellation surface at all; giving the stub a working `reapInFlight`/`fail` means that if that discriminator is ever removed, the call lands on these spies and a test can SEE it. A stub without them would just throw into tier 2's catch block and stay green.
+   * Built as the FULL `LightweightInFlightOperation` shape, not just the `operationId` discriminator: `formatActiveRequestsSummary` branches on that same discriminator and then reads `kind`/`method`/`path`/`startTime`, so a discriminator-only stub would satisfy the drain while producing `undefined`/`NaN` in the summary — a fake that is friendlier than the real thing in exactly the place the real thing is consumed.
+   *
+   * It also carries the primitive spies, which the real descriptor does NOT have. That asymmetry is deliberate: production skips lightweight operations because they have no cancellation surface, and giving the stub a working one means that if that skip is ever removed, the call lands on these spies where a test can SEE it, instead of throwing into tier 2's catch block and staying green.
    */
   const buildLightweight = (operationId: string): RequestContext =>
     ({
       operationId,
+      kind: "count_tokens",
+      method: "POST",
+      path: "/v1/messages/count_tokens",
+      startTime: Date.now(),
+      requestedModel: "claude-sonnet-4",
       reapInFlight: () => reapInFlight(operationId),
       fail: (model: string, error: unknown, _partial?: unknown, opts?: unknown) => {
         fail(operationId, model, error, opts)

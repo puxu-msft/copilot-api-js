@@ -621,18 +621,23 @@ function writeEmergencyNoThrow(message: string): void {
  *
  * @returns what this actually did, split so the operator banner cannot overstate it.
  */
-function abandonDrain(signal: string): { started: boolean; terminated: number; finalizing: number } {
+function abandonDrain(signal: string): { started: boolean; terminated: number; finalizing: number; lightweight: number } {
   const source = activeDrainSource
   // The drain has not begun yet — we are still in the `stopping` awaits that precede it (admission handoff, freeze). There is nothing to abandon, and this tier cannot unblock those; say so rather than printing a count that implies we acted.
-  if (!source) return { started: false, terminated: 0, finalizing: 0 }
+  if (!source) return { started: false, terminated: 0, finalizing: 0, lightweight: 0 }
 
   let terminated = 0
   let finalizing = 0
+  let lightweight = 0
   for (const operation of source.getActive()) {
-    // Same discriminator `formatActiveRequestsSummary` uses to tell the two registries apart.
-    if ("operationId" in operation) continue
+    // Same discriminator `formatActiveRequestsSummary` uses to tell the two registries apart. Counted, not just skipped: a lightweight operation still HOLDS the drain, so the banner has to be able to say what is keeping it open.
+    if ("operationId" in operation) {
+      lightweight++
+      continue
+    }
     try {
-      // An operation can be settled and STILL tracked: `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (context/manager.ts), so the ctx stays visible instead of silently vanishing. For those, `fail()` early-returns (`if (settled) return`) and `reapInFlight()` would abort a lifecycle signal that the still-running FINALIZATION may be using — so touching them is both a lie in the count and a risk to the persistence we are trying to preserve. Leave them.
+      // An operation can be settled and STILL tracked: `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (context/manager.ts), so the ctx stays visible instead of silently vanishing.
+      // Two reasons to leave those alone. The count: `fail()` early-returns on them (`if (settled) return`), so counting one as terminated is simply false. The risk: `reapInFlight()` aborts `lifecycleAbort`, and while the canonical finalizer itself does NOT read that signal (it waits on `whenOperationQuiesced()`), the operation body, transport and delivery paths that may still be winding down DO consume it — aborting there can disturb work that is still trying to finish.
       if (operation.settled) {
         finalizing++
         continue
@@ -650,23 +655,27 @@ function abandonDrain(signal: string): { started: boolean; terminated: number; f
       consola.warn("[shutdown] could not terminate an operation while abandoning the drain:", error)
     }
   }
-  return { started: true, terminated, finalizing }
+  return { started: true, terminated, finalizing, lightweight }
 }
 
 /**
  * Phrase the tier-2 outcome for the operator, WITHOUT overstating it.
  *
- * The three shapes read very differently at 3am: "I terminated your requests and I am flushing" is a promise, and printing it when nothing was reached (or when what remains is finalization we deliberately refuse to interrupt) would send the operator looking for a flush that is not coming — or worse, make them trust a handoff that is still wedged.
+ * "I terminated your requests and I am flushing" is a promise, and it reads very differently at 3am from what actually happened. `now flushing` is therefore claimed ONLY when nothing is left holding the drain — otherwise the operator goes looking for a flush that has not started, or trusts a handoff that is still wedged.
  */
-function describeDrainAbandonment(outcome: { started: boolean; terminated: number; finalizing: number }): string {
+function describeDrainAbandonment(outcome: { started: boolean; terminated: number; finalizing: number; lightweight: number }): string {
   if (!outcome.started) {
     return "the drain has not started yet, so there is nothing to abandon — this phase is still stopping ingress and cannot be shortened by this signal."
   }
-  const finalizingNote =
-    outcome.finalizing > 0 ?
-      ` ${outcome.finalizing} already-settled operation(s) are still persisting and were deliberately left alone — interrupting them is what the next signal is for.`
-    : ""
-  return `abandoning the drain wait — terminated ${outcome.terminated} in-flight request(s), now flushing.${finalizingNote}`
+
+  const stillHolding: Array<string> = []
+  if (outcome.finalizing > 0) stillHolding.push(`${outcome.finalizing} already-settled operation(s) still persisting`)
+  if (outcome.lightweight > 0) stillHolding.push(`${outcome.lightweight} lightweight operation(s) that have no cancellation surface`)
+
+  const terminatedNote = `abandoning the drain wait — terminated ${outcome.terminated} in-flight request(s)`
+  if (stillHolding.length === 0) return `${terminatedNote}, now flushing.`
+  // Deliberately does NOT say "now flushing": the drain is still held, so persistence has not begun. Both remaining shapes are ones this tier refuses to interrupt by design, which is exactly what the third signal is for.
+  return `${terminatedNote}, but the drain is STILL HELD by ${stillHolding.join(" and ")} — not flushing yet.`
 }
 
 export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
