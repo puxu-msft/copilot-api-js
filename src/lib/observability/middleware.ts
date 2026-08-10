@@ -63,7 +63,9 @@ import { getIsShuttingDown } from "~/lib/shutdown"
 const SYNTHETIC_PATHS = new Set<string>(["/v1/messages/count_tokens", "/anthropic/v1/messages/count_tokens"])
 
 /**
- * Guarantees that every rejection we hand back while shutting down tells the client to drop the connection.
+ * Guarantees that a response we hand back while shutting down tells the client to drop the connection, whenever its final HTTP status is 4xx/5xx.
+ *
+ * The criterion is the final status code, deliberately, not "did this interaction fail": a stream that already committed 200 and then fails mid-body cannot be tagged, because its headers are long gone. See the scope note at the end.
  *
  * This is load-bearing for the zero-downtime `--restart` handoff, not cosmetic.
  * Observed 2026-08-09: a takeover began at 13:02:06Z, and client sessions were still receiving the shutdown 503 at 13:09:24Z — over seven minutes later, long after the successor was listening and serving.
@@ -82,13 +84,17 @@ const SYNTHETIC_PATHS = new Set<string>(["/v1/messages/count_tokens", "/anthropi
  * A request already waiting on History admission is aborted by `stopHistoryAdmission()` and shaped by `onError` the same way.
  * Both were reproduced as 503s with no `Connection` header before this existed — hence one invariant at the shared base instead of a header on the one branch where the problem was first noticed.
  *
- * Scope note: only responses that failed. A 2xx completed during drain still leaves the socket pooled, so the client's next request costs one extra 503 before it reconnects. Widening this to every response would mean setting a header on already-streaming SSE responses, which is a separate question and deliberately not settled here.
+ * Scope note — two response shapes are left untagged, with the same consequence: a 2xx that completed normally during drain, and an SSE stream that committed 200 and then failed mid-body. In both the socket stays pooled, so the client's next request costs one extra 503 before it reconnects. Covering the streaming case would mean deciding before the stream commits its headers, which is a separate question and deliberately not settled here.
+ *
+ * Registration is guarded separately: `tests/shutdown/shutdown.unit.test.ts` holds the condition above, and `tests/shutdown/shutdown-ingress-wiring.it.test.ts` drives the real `createServer()` to hold the fact that production registers this at all. Measured — removing the registration in src/server.ts leaves all 44 of the former green and turns 2 of the latter's 4 red (the other 2 are reverse controls and stay green by design).
  *
  * See docs/lifecycle.md「优雅重启」: the PoC hit this keep-alive behaviour 8/8 and correctly fixed its *probe* to use fresh connections, but the production consequence for pooled clients stayed open until now.
  */
 export function shutdownConnectionCloseMiddleware(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     await next()
+    // Keep `getIsShuttingDown()` on the LEFT. Hono's `c.res` getter is not a plain read: it does `this.#res ||= createResponseInstance(null, ...)` (node_modules/hono/dist/context.js), so touching it on a path where the handler never produced a Response — a WebSocket upgrade, for one — materialises a placeholder and finalises the exchange early.
+    // Short-circuiting on the flag means we only touch `c.res` while shutting down, which is the one time we are going to write to it anyway. Swapping the operands would be silent: no test turns red.
     if (getIsShuttingDown() && c.res.status >= 400) c.header("Connection", "close")
   }
 }

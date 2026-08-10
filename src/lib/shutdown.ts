@@ -406,8 +406,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
   // closing them in Phase 1 would prevent users from seeing phase2/3/4/finalized
-  // progress in the UI. They are torn down in Phase 4 along with the HTTP
-  // server (force close) so the operator can observe the full shutdown timeline.
+  // progress in the UI. They are torn down by `closeAllClients()` in finalize, once every accepted operation has drained, so the operator can observe the full shutdown timeline.
+  // (This used to say they go down "in Phase 4 along with the HTTP server (force close)". There is no force close: `server.close(false)` above is the only `close` call in this file, and it deliberately leaves established connections alone.)
 
   // ── Step 2: Losslessly drain accepted operations ─────────────────────
   const activeCount = tracker.getActive().length

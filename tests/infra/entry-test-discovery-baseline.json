@@ -653,6 +653,7 @@
     "tests/shutdown/rate-limiter.unit.test.ts",
     "tests/shutdown/shutdown-abort-flow.unit.test.ts",
     "tests/shutdown/shutdown-h2-pool-drain.it.test.ts",
+    "tests/shutdown/shutdown-ingress-wiring.it.test.ts",
     "tests/shutdown/shutdown-messages-lossless.http.test.ts",
     "tests/shutdown/shutdown.unit.test.ts",
     "tests/state/state-buffered-merge.unit.test.ts",
