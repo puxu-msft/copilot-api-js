@@ -9,7 +9,7 @@
 | 文件 | 问题 | 观测结果 |
 |---|---|---|
 | `query-history-gap.ts` | 事故窗口里 History 到底有没有记录？ | 13:01:57.734Z–13:11:46.755Z **零条**，前后请求密集 |
-| `query-history-gap-bounds.ts` | 空洞两端各是什么时刻？ | 最后一条已记录 operation 的 `ended_at` = 13:02:22.581Z（交接后约 16 秒），服务恢复于 13:11:46.755Z |
+| `query-history-gap-bounds.ts` | 空洞两端各是什么时刻？ | 空洞前最后一条已记录 operation 的 `ended_at` = 13:02:22.581Z；13:10Z 之后首条已记录 operation 的 `created_at` = 13:11:46.755Z |
 | `probe-undici-pool-eviction.mjs` | undici（Claude Code 的 HTTP 栈）会因 `Connection: close` 弃用池中连接吗？ | 会。3 次请求 → **3 条新建连接**；对照组（不带头）复用，3 次请求 → 2 条连接 |
 | `probe-bun-connection-close.ts` | Bun 会转发该头吗？会自己关 socket 吗？ | **转发，但不自己关**；两组 `serverClosedSocket=false`。所以驱逐是客户端做的 |
 

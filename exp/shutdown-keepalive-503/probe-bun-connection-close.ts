@@ -13,14 +13,14 @@ const server = Bun.serve({
 })
 const port = server.port
 
-function probe(path: string): Promise<{ raw: string; closedByServer: boolean }> {
+function probe(path: string): Promise<{ raw: string; closedByServer: boolean; failed: boolean }> {
   return new Promise((resolve) => {
     const sock = net.connect(port, "127.0.0.1")
     let raw = ""
     let closed = false
     const timer = setTimeout(() => {
       sock.destroy()
-      resolve({ raw, closedByServer: closed })
+      resolve({ raw, closedByServer: closed, failed: raw === "" })
     }, 1500)
     sock.on("connect", () => sock.write(`GET ${path} HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n`))
     sock.on("data", (d) => {
@@ -29,23 +29,27 @@ function probe(path: string): Promise<{ raw: string; closedByServer: boolean }> 
     sock.on("end", () => {
       closed = true
       clearTimeout(timer)
-      resolve({ raw, closedByServer: true })
+      resolve({ raw, closedByServer: true, failed: raw === "" })
     })
+    // A socket error makes the run meaningless, so it must reach the exit code — printing it is not enough.
     sock.on("error", (err) => {
       clearTimeout(timer)
       console.error(`  socket error on ${path}: ${err}`)
-      resolve({ raw, closedByServer: closed })
+      resolve({ raw, closedByServer: closed, failed: true })
     })
   })
 }
 
+let failures = 0
 for (const [label, path] of [
   ["with Connection: close", "/close"],
   ["without (control)", "/plain"],
 ] as const) {
   const r = await probe(path)
+  if (r.failed) failures++
   const head = r.raw.split("\r\n\r\n")[0].replaceAll("\r\n", " | ")
-  console.log(`${label}: serverClosedSocket=${r.closedByServer}`)
+  console.log(`${label}: serverClosedSocket=${r.closedByServer}${r.failed ? " (FAILED — result not meaningful)" : ""}`)
   console.log(`   headers: ${head}`)
 }
 server.stop(true)
+if (failures > 0) process.exit(1)

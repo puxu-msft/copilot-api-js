@@ -1,5 +1,5 @@
-// Bounds the two edges of the gap: when the predecessor's accepted work actually finished draining, and when service resumed.
-// This is what showed the drain itself was fast (~16s) and that the remaining ~9 minutes were the predecessor still alive and still rejecting.
+// Timestamps the two edges of the gap, and nothing more: the `ended_at` of the last operation recorded before it, and the `created_at` of the first one recorded after it.
+// It reads operation rows only — not process liveness, not shutdown phase, not the registry. So it cannot show when the drain finished, when the predecessor exited, or that anything was being rejected in between; a logical terminal lands well before an operation leaves the registry. An earlier version of this header claimed all three.
 import { Database } from "bun:sqlite"
 
 const db = new Database("/home/xp/.local/share/copilot-api/history-v3.db", { readonly: true })
