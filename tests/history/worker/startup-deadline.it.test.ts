@@ -184,6 +184,22 @@ describe("History startup deadline", () => {
     expect((failure as Error).message).toMatch(/database file is not a database/)
   })
 
+  test("0 really means wait forever — a stuck bring-up is not given up on", async () => {
+    // The documented opt-out for operators who would rather block than be restarted. It had only a getter assertion, so `deadlineMs <= 0` could degrade to `< 0` — handing everyone who configured 0 an immediate 0ms deadline — with both deadline test files still green.
+    stuck = new NeverReadyRuntime()
+    setHistoryPersistenceRuntimeForTests(stuck)
+
+    const settled = await Promise.race([
+      initHistoryWithinStartupDeadline(true, 0).then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      Bun.sleep(120).then(() => "still waiting"),
+    ])
+
+    expect(settled).toBe("still waiting")
+  })
+
   test("disabling History is never subject to the deadline, even when teardown is slow", async () => {
     // Bringing History DOWN is not a bring-up and must not be raced against a deadline. Asserting that with an instant teardown would prove nothing — `initHistory(false)` beats any timer — so the runtime here takes 80ms to shut down while the deadline is 1ms. If the disable path were subject to the deadline, this would reject.
     const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "deadline-disable-")), "history.db")
