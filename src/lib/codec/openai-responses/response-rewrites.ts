@@ -29,7 +29,6 @@ import type {
   ResponseRewrite,
   RewriteState,
 } from "~/lib/pipeline/rewrite-registry"
-import type { UpstreamFrame } from "~/lib/pipeline/types"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
@@ -38,6 +37,11 @@ import {
   fixStreamEventIds,
   type StreamIdTracker,
 } from "~/lib/openai/stream-id-sync"
+import {
+  //
+  freshFrames,
+  preserveFrame,
+} from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
 
 const RESPONSES = (env: RequestEnvelope): boolean => env.clientFormat === "openai-responses"
@@ -60,7 +64,7 @@ const fixStreamIdsRewrite: ResponseRewrite = {
   createState: (): FixStreamIdsState => ({ tracker: createStreamIdTracker() }),
   transform: (frame, st): FrameAction => {
     const fixed = fixStreamEventIds(frame.data ?? "", frame.event, (st as FixStreamIdsState).tracker)
-    return { kind: "emit", frames: [fixed === frame.data ? frame : ({ ...frame, data: fixed } as UpstreamFrame)] }
+    return fixed === frame.data ? preserveFrame(frame) : freshFrames({ ...frame, data: fixed })
   },
 }
 

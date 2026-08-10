@@ -24,6 +24,7 @@ import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 describe("ccKeepaliveFrame", () => {
   test("is a data-bearing SSE frame, valid JSON, real chat.completion.chunk empty-delta shape", () => {
@@ -80,7 +81,7 @@ describe("ccKeepaliveFrame + makeSseSink forward-idle injection", () => {
     const written: Array<{ data: string; event?: string }> = []
     const forwarded: Array<SseEventRecord> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
 
     // `pingFrame` is built ONCE, here, under the FakeClock's frozen `now` — capture `created` at
@@ -119,7 +120,7 @@ describe("ccKeepaliveFrame + makeSseSink forward-idle injection", () => {
   test("a real forwarded frame resets the countdown — a steady stream never pings", async () => {
     const written: Array<{ data: string; event?: string }> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: ccKeepaliveFrame("gpt-5.4") } })
     for (let i = 0; i < 5; i++) {
@@ -133,7 +134,7 @@ describe("ccKeepaliveFrame + makeSseSink forward-idle injection", () => {
   test("aborted clientAbortSignal suppresses keepalive chunks", async () => {
     const written: Array<{ data: string; event?: string }> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
     const ac = new AbortController()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: ccKeepaliveFrame("gpt-5.4"), clientAbortSignal: ac.signal } })

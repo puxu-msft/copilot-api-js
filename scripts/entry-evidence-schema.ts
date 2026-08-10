@@ -82,10 +82,25 @@ function parseSkip(value: unknown): TestcaseSkip | SuiteSkip {
   fail("skip kind is invalid")
 }
 
-function skipSortKey(skip: TestcaseSkip | SuiteSkip): string {
+/**
+ * The identity of a skip, for every consumer that has to decide whether two skips are "the same
+ * one". Deliberately excludes `count` and `reason`: a skip that changed multiplicity or gained a
+ * different justification is still the same test, and callers report those as their own kinds of
+ * drift. Structural parameter so runtime identities (which carry no `reason`) key identically to
+ * baseline entries (which do) — the producer used to hold two byte-identical private copies of
+ * this, which is one comparison site too many for a rule that decides whether entry evidence is
+ * accepted.
+ */
+export function skipIdentityKey(
+  skip: { kind: "testcase"; file: string; classname: string; name: string; ordinal: number } | { kind: "suite"; file: string; suite_name: string },
+): string {
   return skip.kind === "testcase" ?
       [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join(SEPARATOR)
     : [skip.kind, skip.file, skip.suite_name].join(SEPARATOR)
+}
+
+function skipSortKey(skip: TestcaseSkip | SuiteSkip): string {
+  return skipIdentityKey(skip)
 }
 
 export function parseDiscoveryBaseline(raw: string): DiscoveryBaseline {

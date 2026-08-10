@@ -309,8 +309,14 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
+  // NOTE (Task 4 / Task 6 seam): the manager method this calls was renamed
+  // `drainModelOperationFinalizations` → `drainLifecycleFailures` in Task 4 (manager.ts). The
+  // `ShutdownDeps.drainModelOperationFinalizationsFn` field name, this local variable, and the
+  // `FinalizeDeps.drainModelOperationFinalizations` field below are Task 6's responsibility
+  // (plan: `Modify: src/lib/shutdown.ts` — dependency rename — Task 6 Step 3/5) and are left
+  // unchanged here; only the call target is updated so `bun run typecheck` passes for Task 4.
   const drainModelOperationFinalizations =
-    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
+    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainLifecycleFailures() ?? Promise.resolve())
   const stopAdmission = deps?.stopHistoryAdmissionFn ?? stopHistoryAdmission
   const drainAdmissionHandoffs = deps?.drainHistoryAdmissionHandoffsFn ?? drainHistoryAdmissionHandoffs
   const drainAdmission = deps?.drainHistoryAdmissionFn ?? drainHistoryAdmission
@@ -345,6 +351,24 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // ── Step 1: Stop accepting new requests ───────────────────────────────
   _isShuttingDown = true
+
+  // Stop listening for new connections (but keep existing ones alive).
+  // Do NOT await — server.close(false) stops accepting new connections immediately, but the returned promise won't resolve until all existing connections end.
+  // Upgraded WebSocket connections (even after close handshake) keep the HTTP server open indefinitely, which would block the entire shutdown sequence.
+  //
+  // This sits immediately after the flag above, BEFORE any await, on purpose.
+  // The flag makes the observability middleware answer 503; closing the listener is what stops the kernel handing us new connections at all.
+  // Every await between the two is a window where we still accept connections only to reject them, and under SO_REUSEPORT during a `--restart` takeover the kernel is load-balancing new connections across us and the successor, so a share of them fail here instead of being served next door.
+  // That window used to span `drainAdmissionHandoffs()` plus — on the handoff path specifically, which is exactly when a successor is competing for the port — the `freezeNegotiation`/`freezeCalibration` persistence I/O below. Neither is bounded: a process carrying a large History write backlog can sit in them for minutes, and while it does, it both rejects and keeps accepting.
+  // That is the likely shape of the 2026-08-09 incident, where clients were still getting the shutdown 503 seven minutes into a handoff; see the note on that 503 in src/lib/observability/middleware.ts, which closes the other path the evidence permits (a client whose pooled socket already points here). The two fixes cover different mechanisms — neither makes the other redundant.
+  // docs/lifecycle.md「优雅重启」specifies 旧进程立即停止 accept 新连接; this ordering is what makes "立即" true.
+  if (server) {
+    server.close(false).catch((error: unknown) => {
+      consola.error("Error stopping listener:", error)
+    })
+    consola.info("Stopped accepting new connections")
+  }
+
   // Reject only pre-context admission waiters. Already accepted operations own
   // bound reservations and continue losslessly through the operation registry.
   stopAdmission(new Error(`History admission stopped by ${signal}`))
@@ -382,20 +406,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
   // closing them in Phase 1 would prevent users from seeing phase2/3/4/finalized
-  // progress in the UI. They are torn down in Phase 4 along with the HTTP
-  // server (force close) so the operator can observe the full shutdown timeline.
-
-  // Stop listening for new connections (but keep existing ones alive).
-  // Do NOT await — server.close(false) stops accepting new connections immediately,
-  // but the returned promise won't resolve until all existing connections end.
-  // Upgraded WebSocket connections (even after close handshake) keep the HTTP
-  // server open indefinitely, which would block the entire shutdown sequence.
-  if (server) {
-    server.close(false).catch((error: unknown) => {
-      consola.error("Error stopping listener:", error)
-    })
-    consola.info("Stopped accepting new connections")
-  }
+  // progress in the UI. They are torn down by `closeAllClients()` in finalize, once every accepted operation has drained, so the operator can observe the full shutdown timeline.
+  // (This used to say they go down "in Phase 4 along with the HTTP server (force close)". There is no force close: `server.close(false)` above is the only `close` call in this file, and it deliberately leaves established connections alone.)
 
   // ── Step 2: Losslessly drain accepted operations ─────────────────────
   const activeCount = tracker.getActive().length

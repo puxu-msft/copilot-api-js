@@ -25,8 +25,8 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -34,6 +34,7 @@ import {
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
 import { restoreResponsesStreamFrameToolNames } from "~/lib/openai/tool-name-sanitize"
+import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { createUpstreamFrameDiagnostics } from "~/lib/upstream-stream-diagnostics"
@@ -64,6 +65,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
     if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
       return createCandidateResponseSession({
         ...input,
+        adapter: createResponsesDeliveryProtocolAdapter({ transport }),
         createState: () => ({
           anthropicAcc: createAnthropicStreamAccumulator(),
           diag: createUpstreamFrameDiagnostics(startedAtMs),
@@ -75,7 +77,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
           state.diag.observe(raw)
           if (!raw.data || raw.data === "[DONE]") return
           try {
-            accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+            accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
           } catch (error) {
             consola.error("[Responses:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
           }
@@ -105,6 +107,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
     const fallbackResponseId = (input.env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined)?.exchange?.responseId
     return createCandidateResponseSession({
       ...input,
+      adapter: createResponsesDeliveryProtocolAdapter({ transport }),
       createState: () => ({
         acc: createResponsesStreamAccumulator(),
         diag: createUpstreamFrameDiagnostics(startedAtMs),
@@ -135,9 +138,6 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
         state.bufferedMerge.observe(rendered)
         return rendered
       },
-      sawMessageStop: (state) => state.acc.status !== "",
-      sawUpstreamError: (state) => state.acc.streamError !== undefined,
-      ...(transport === "http" && { commitBoundaries: (_state: unknown, frame: ClientFrame) => isResponsesCommitBoundary(frame) }),
       ...(transport === "ws" && {
         stopAfterFrame: (_state: unknown, frame: ClientFrame) => {
           const event = parseResponsesEvent(frame)

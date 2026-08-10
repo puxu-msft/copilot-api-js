@@ -33,7 +33,6 @@ import {
 import {
   //
   type HistoryMigration,
-  MIGRATIONS,
   sqlMigration,
 } from "~/lib/history/sqlite/migrations/index"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
@@ -109,7 +108,11 @@ describe("HistoryMetaStorage", () => {
 
 describe("applyForwardMigrations", () => {
   test("an explicitly empty migration list is a no-op on a bare DB", async () => {
-    expect(MIGRATIONS.map((migration) => migration.name)).toEqual(["001-operation-summary-projection"])
+    // The shipped array's shape is asserted where it belongs — see
+    // transport-evidence-migration.it.test.ts, which pins the one ordering that
+    // is load-bearing (transport-evidence DDL before the triggers targeting it).
+    // A full-equality snapshot here was unrelated to this case's own claim and
+    // froze the broken order by construction.
 
     const db = freshDb()
     await applyForwardMigrations(db, [])

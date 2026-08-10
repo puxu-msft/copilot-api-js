@@ -62,6 +62,12 @@ import type {
 } from "./model-operation-record"
 import type {
   //
+  CanonicalFinalizationState,
+  DeliveryLifecycleState,
+  OperationLifecycleSnapshot,
+} from "./operation-lifecycle"
+import type {
+  //
   Attempt,
   EffectiveRequest,
   HeadersCapture,
@@ -81,6 +87,11 @@ import type {
 
 import { snapshotWithSummary } from "./activity-summary"
 import { createModelOperationRecorder } from "./model-operation-record"
+import {
+  //
+  deriveOperationBlocker,
+  isDeliveryTerminal,
+} from "./operation-lifecycle"
 import { createOperationScope } from "./operation-scope"
 
 export type {
@@ -282,6 +293,8 @@ export function createRequestContext(opts: {
    * event channel (the bus is the single event channel since P0.3).
    */
   onSettled?: (id: string) => void
+  /** Returns true only after the process shutdown failure barrier owns this lifecycle error. */
+  onLifecycleFailure?: (id: string, input: { phase: "delivery" | "canonical"; error: unknown }) => boolean
   /**
    * Scoped publisher for `request.*` ObservabilityEvent emissions. Optional —
    * tests/call sites that omit it leave the emit methods state-only (no bus
@@ -295,6 +308,7 @@ export function createRequestContext(opts: {
   const rawAttachmentOwner = createRawOperationAttachmentOwner()
   const startTime = Date.now()
   const onSettled = opts.onSettled
+  const onLifecycleFailure = opts.onLifecycleFailure
   const publisher = opts.publisher
   const method = opts.method ?? "UNKNOWN"
   const path = opts.path ?? "/"
@@ -409,7 +423,8 @@ export function createRequestContext(opts: {
   const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
   let syntheticFrameRoot: FrameNodeHandle | undefined
   let unresolvedTransformRoot: FrameNodeHandle | undefined
-  let deliveryFinalizationRequested = false
+  let deliveryState: DeliveryLifecycleState = Object.freeze({ state: "open" })
+  let canonicalState: CanonicalFinalizationState = "waiting"
   let pendingDeliveryClientPayload: unknown
   let pendingGenerationTerminal:
     | {
@@ -521,9 +536,31 @@ export function createRequestContext(opts: {
     gap: "semantic payload/frames captured; exact raw bytes unavailable; headers/trailers originate from folded views, so repeated header/trailer tuples and original field ordering are unavailable",
   }
 
+  interface CanonicalFrameFields {
+    readonly event?: unknown
+    readonly data?: unknown
+    readonly id?: unknown
+    readonly retry?: unknown
+    readonly raw?: unknown
+  }
+
+  function canonicalFrameFields(frame: unknown): CanonicalFrameFields {
+    if (typeof frame !== "object" || frame === null) return { data: String(frame) }
+    const candidate = frame as CanonicalFrameFields & { kind?: unknown; message?: unknown; idField?: unknown }
+    if (candidate.kind !== "parsed-sse" || typeof candidate.message !== "object" || candidate.message === null) return candidate
+    const message = candidate.message as CanonicalFrameFields
+    const idField = candidate.idField as { kind?: unknown; value?: unknown } | undefined
+    return {
+      ...(message.event !== undefined && { event: message.event }),
+      ...(message.data !== undefined && { data: message.data }),
+      ...(idField?.kind === "present" && { id: idField.value }),
+      ...(message.retry !== undefined && { retry: message.retry }),
+    }
+  }
+
   function frameWireKey(frame: unknown): string | undefined {
     if (typeof frame !== "object" || frame === null) return typeof frame === "string" ? `string:${frame}` : undefined
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     let data: string | undefined
     if (typeof candidate.data === "string") data = candidate.data
     else if (typeof candidate.raw === "string") data = candidate.raw
@@ -538,12 +575,7 @@ export function createRequestContext(opts: {
 
   function captureRawFrame(frame: unknown, sequence: number, track: string): void {
     if (!rawCaptureLease.requested) return
-    const candidate = (typeof frame === "object" && frame !== null ? frame : { data: String(frame) }) as {
-      event?: unknown
-      data?: unknown
-      id?: unknown
-      retry?: unknown
-    }
+    const candidate = canonicalFrameFields(frame)
     const bytes = new TextEncoder().encode(
       JSON.stringify({
         event: typeof candidate.event === "string" ? candidate.event : null,
@@ -557,14 +589,7 @@ export function createRequestContext(opts: {
   }
 
   function canonicalFrameValue(frame: unknown, record?: SseEventRecord): Readonly<Record<string, unknown>> {
-    if (typeof frame !== "object" || frame === null) {
-      return Object.freeze({
-        data: typeof frame === "string" ? frame : String(frame),
-        ...(record?.type !== undefined && { type: record.type }),
-        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
-      })
-    }
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
       ...(candidate.data !== undefined && { data: candidate.data }),
@@ -762,10 +787,10 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown): void {
+  function settleGenerationAttempt(attempt: GenerationAttemptCapture, settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
-    if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
+    if (settlement.verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -779,7 +804,7 @@ export function createRequestContext(opts: {
     if (response?.status !== undefined) responseStatus = response.status
     else if (attemptError?.status !== undefined) responseStatus = attemptError.status
     modelOperationRecorder.settleDispatch(attempt.handle, {
-      verdict,
+      verdict: settlement.verdict,
       ...(hasUpstreamResponse && {
         upstreamResponse: {
           ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
@@ -792,8 +817,8 @@ export function createRequestContext(opts: {
           ...(responseMetadata(response, attemptError) === undefined ? {} : { metadata: responseMetadata(response, attemptError) }),
         },
       }),
-      ...(reason !== undefined && { reason }),
-      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      ...(settlement.reason !== undefined && { reason: settlement.reason }),
+      ...("error" in settlement && { error: snapshotForRecorder(settlement.error) }),
     })
     attempt.settled = true
   }
@@ -861,7 +886,11 @@ export function createRequestContext(opts: {
     if (modelOperationRecorder.sealed || pendingGenerationTerminal !== undefined) return
     const currentAttempt = terminalGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
-      settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
+      settleGenerationAttempt(currentAttempt, {
+        verdict: outcome === "completed" ? "committed" : "failed",
+        reason: `terminal:${outcome}`,
+        ...((outcome === "failed" || outcome === "aborted") && error !== undefined && { error }),
+      })
     pendingGenerationTerminal = {
       outcome,
       ...(error !== undefined && { error: snapshotForRecorder(error) }),
@@ -874,21 +903,52 @@ export function createRequestContext(opts: {
     startGenerationFinalizerIfReady()
   }
 
+  function registerLifecycleFailure(phase: "delivery" | "canonical", error: unknown): boolean {
+    try {
+      return onLifecycleFailure?.(id, { phase, error }) === true
+    } catch {
+      // A throwing callback has not registered the error with the process barrier.
+      return false
+    }
+  }
+
+  function beginGenerationDeliveryFinalization(): void {
+    if (deliveryState.state !== "open") return
+    deliveryState = Object.freeze({ state: "finalizing" })
+  }
+
+  function isDeliveryOutcomeLocked(state: DeliveryLifecycleState): boolean {
+    return state.state === "finalized" || state.state === "failed"
+  }
+
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed || generationFinalizerPromise !== undefined) return
-    deliveryFinalizationRequested = true
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
     if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+    deliveryState = Object.freeze({ state: "finalized" })
     startGenerationFinalizerIfReady()
   }
 
+  function failGenerationDelivery(error: unknown): void {
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
+    const failureRegistered = registerLifecycleFailure("delivery", error)
+    deliveryState = Object.freeze({ state: "failed", error, failureRegistered })
+    if (failureRegistered) startGenerationFinalizerIfReady()
+  }
+
   function startGenerationFinalizerIfReady(): void {
-    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !deliveryFinalizationRequested) return
+    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !isDeliveryTerminal(deliveryState)) return
+    canonicalState = "running"
     const clientPayload = pendingDeliveryClientPayload
     const finalizer = withRejectionObserver(
       (async (): Promise<ModelOperationRecord> => {
-        await operationScope.whenOperationQuiesced()
         try {
-          return commitGenerationObservabilityTerminal(clientPayload)
+          await operationScope.whenOperationQuiesced()
+          const record = commitGenerationObservabilityTerminal(clientPayload)
+          canonicalState = "completed"
+          return record
+        } catch (error) {
+          if (registerLifecycleFailure("canonical", error)) canonicalState = "failed"
+          throw error
         } finally {
           rawCaptureLease.release()
         }
@@ -974,6 +1034,7 @@ export function createRequestContext(opts: {
       ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
       ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(deliveryState.state === "failed" && { deliveryFailure: snapshotForRecorder(deliveryState.error) }),
     }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: terminal.outcome,
@@ -1208,6 +1269,15 @@ export function createRequestContext(opts: {
     get modelOperationSealed() {
       return modelOperationRecorder.sealed
     },
+    get operationLifecycle(): OperationLifecycleSnapshot {
+      const base = {
+        settled,
+        operationScope: operationScope.snapshot,
+        delivery: deliveryState,
+        canonical: canonicalState,
+      }
+      return Object.freeze({ logicalState: _state, ...base, blocker: deriveOperationBlocker(base) })
+    },
     get originalRequest() {
       return _originalRequest
     },
@@ -1283,8 +1353,16 @@ export function createRequestContext(opts: {
       })
     },
 
+    beginModelOperationDeliveryFinalization() {
+      beginGenerationDeliveryFinalization()
+    },
+
     finalizeModelOperationDelivery(input) {
       finalizeGenerationDelivery(input?.clientPayload)
+    },
+
+    failModelOperationDelivery(error) {
+      failGenerationDelivery(error)
     },
 
     whenModelOperationFinalized() {
@@ -1461,6 +1539,17 @@ export function createRequestContext(opts: {
       ctx.setAttemptError(error)
     },
 
+    recordGenerationDispatchDiagnostic(dispatch, diagnostic) {
+      // Sealed-first, mirroring setGenerationDispatchTimingEpoch: a transport producer can still be
+      // draining when the record seals, and a late observation is not a programming error.
+      if (modelOperationRecorder.sealed) return
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      // Deliberately NOT selectGenerationAttempt + recordAttemptDiagnostic: that pair writes through
+      // the ambient current attempt and, worse, leaves it moved for every later ambient write.
+      recordAttemptDiagnostic(diagnostic.kind, diagnostic.severity, diagnostic.data, diagnostic.message, generationAttempt)
+    },
+
     setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
@@ -1505,12 +1594,16 @@ export function createRequestContext(opts: {
 
     settleGenerationDispatch(dispatch, input) {
       const attempt = selectGenerationAttempt(dispatch)
-      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)
+      settleGenerationAttempt(attempt, {
+        verdict: input.verdict,
+        ...("reason" in input && { reason: input.reason }),
+        ...("error" in input && { error: input.error }),
+      })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
       const previous = currentGenerationAttempt()
-      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+      if (previous && !previous.settled) settleGenerationAttempt(previous, { verdict: "discarded", reason: "superseded by next attempt" })
       ctx.beginGenerationDispatch({ candidate: ensurePrimaryGenerationCandidate(), ...attemptOpts })
     },
 
@@ -1621,12 +1714,11 @@ export function createRequestContext(opts: {
             }
           }
           recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", responseMetadata(response))
-          settleGenerationAttempt(
-            generationAttempt,
-            response.success ? "committed" : "failed",
-            response.success ? undefined : response.error,
-            response.success ? undefined : (attempt.error?.raw ?? response.error),
-          )
+          settleGenerationAttempt(generationAttempt, {
+            verdict: response.success ? "committed" : "failed",
+            ...(response.success ? {} : { reason: response.error }),
+            ...(response.success ? {} : { error: attempt.error?.raw ?? response.error }),
+          })
         }
       }
     },
@@ -2233,7 +2325,11 @@ export function createRequestContext(opts: {
         let reason = "failed"
         if (args.nextStrategy !== undefined) reason = `retry:${args.nextStrategy}`
         else if (args.willRetry) reason = "retry"
-        settleGenerationAttempt(generationAttempt, args.willRetry ? "discarded" : "failed", reason, a?.error)
+        settleGenerationAttempt(generationAttempt, {
+          verdict: args.willRetry ? "discarded" : "failed",
+          reason,
+          ...(a?.error !== undefined && { error: a.error }),
+        })
       }
       publisher?.publish({
         kind: "request.attempt_failed",

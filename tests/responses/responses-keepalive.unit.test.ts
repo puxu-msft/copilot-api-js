@@ -28,6 +28,7 @@ import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 describe("responsesKeepaliveFrame", () => {
   test("is a data-bearing SSE frame with a valid-JSON, synthetic (non-real) type", () => {
@@ -62,7 +63,7 @@ describe("responsesKeepaliveFrame + makeSseSink forward-idle injection", () => {
     const written: Array<{ data: string; event?: string }> = []
     const forwarded: Array<SseEventRecord> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
 
     const sink = makeSseSink(stream, {
@@ -86,7 +87,7 @@ describe("responsesKeepaliveFrame + makeSseSink forward-idle injection", () => {
   test("a real forwarded frame resets the countdown — a steady stream never pings", async () => {
     const written: Array<{ data: string; event?: string }> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 20, pingFrame: responsesKeepaliveFrame() } })
     for (let i = 0; i < 5; i++) {
@@ -100,7 +101,7 @@ describe("responsesKeepaliveFrame + makeSseSink forward-idle injection", () => {
   test("aborted clientAbortSignal suppresses keepalive pings", async () => {
     const written: Array<{ data: string; event?: string }> = []
     const stream = {
-      writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+      write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
     } as unknown as Parameters<typeof makeSseSink>[0]
     const ac = new AbortController()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 20, pingFrame: responsesKeepaliveFrame(), clientAbortSignal: ac.signal } })

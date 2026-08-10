@@ -446,7 +446,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     async function processRow(row: TailRow): Promise<void> {
       let document: Parameters<NativeHistoryIndex["upsertSummary"]>[0]
       try {
-        const record = hydrateManifest(connection, row.manifest_gz)
+        const record = hydrateManifest(connection, row.manifest_gz, row.operation_id)
         const content = projectSearchableText(record)
         const summary = recordToEntrySummary(record)
         document = {

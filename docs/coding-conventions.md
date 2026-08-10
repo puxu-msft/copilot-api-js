@@ -45,6 +45,39 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 
 **并行执行（均衡分片 runner）。** `test:fast`/`test:backend` 走 `scripts/parallel-test.ts`：按 committed per-file 耗时缓存（`scripts/test-timings.json`，`bun run test:timings` 刷新、缺失文件回退中位数）LPT 均衡分 `nproc` 桶、每桶单进程 `bun test`（片内共享模块缓存、只导入一次）、并行跑、聚合失败并正确退出码。实测 fast 档 **~5.5s**（vs `bun test --parallel` 12s）。**为何不用 `bun test --parallel`**：它强制 `--isolate`（每文件独立模块上下文），把重 `~/lib/*` 图**重导入 ~440 次**、wall 被重导入主导；分片让每桶只导入一次。**权衡**：片内文件共享 module-global，泄漏测试可能污染桶友（fixture 的 `RESETTERS`+`resetTestRuntime` 仍逐测隔离，只失进程级 isolate）——**查污染用 `test:fast:isolated`/`test:backend:isolated`**（`bun test --parallel`、每文件独立进程、防污染但慢）。retry backoff 等待经 `abortableDelay` 的延迟缩放 seam（isolated-fixture `beforeEach` 设 scale=0）在测试下瞬时 resolve（声明 waitMs/queueWaitMs 账目不变）。**pty 与 e2e 不并行**：pty 抢终端资源、e2e 触发真 GHC 限流。CI 分片另有 `bun test --shard=1/N`。
 
+**tally 的真相源是 JUnit XML + 文件身份完整性，两者缺一不可**（2026-08-09）。每个桶带 junit reporter 写一份 `shard-NN.xml`，pass/fail 由 `parseJUnit` 统计 `<failure>`／`<error>` 得出，pass 由 `executed - failed` 派生。**为什么不能读 stdout**：shard 在打印 summary 的过程中死掉时，`N fail` 那行永远不落，而失败的 testcase 行早已 flush 进 XML——按 stdout 统计就会在一条真失败之上打印绿色的 `0 fail`，同时把总数少报（实测一次：`3337 tests · 3337 pass · 0 fail`，而 junit 是 7529 executed、其中 1 条超时失败；原件在 `exp/junit-tally-false-green/`）。
+
+⚠️ **但 JUnit 计数只是「已观察到的量」，不等于「总量」。** 测试文件在**加载期抛错**时根本不产生任何 JUnit 行，而 bun 照样打印自己的 `N fail`（实测 bun 1.3.14：summary `1 pass / 1 fail / 1 error / 2 files`，XML 却是 `tests=1 failures=0` 且完全不含该文件）——于是连 crash 分类器也不触发。兜住这一层的是 **discovery↔runtime 的文件身份对账**（`compareFileIdentities`）：发现集合里少了谁就退出 1，并在 tally 行打出 `⚠ INCOMPLETE: N file(s) produced no JUnit rows`。
+
+**tally 数字的引用政策（本节是唯一定义处，别处只留指针）。** 这条政策是六轮独立评审收窄出来的，形状很重要：**它不是一条「满足 X 就可信」的充分判据，而是限定你能主张到什么强度**——前四轮我反复去找那条充分判据（先「无 `INCOMPLETE` 标记」、再「退出码 0」），每一条都被更窄的反例推翻，**别再去找第五条**。
+
+| 允许主张 | 条件 |
+|---|---|
+| 「该次运行**观察到** N 个用例通过、0 个失败」 | 退出码 0 **且**引用时带上 commit、命令与原始 tally 行 |
+| 「这次运行没有触发任何已实现的失真门」 | 同上（就是退出码 0 的含义） |
+
+| **不得**主张 | 为什么 |
+|---|---|
+| 「共 N 个用例」「全量总数是 N」 | 计数是**已观察量**，不是总量——加载期抛错的文件一行不写 |
+| 「用例数没有减少」「规模是 N」 | 增减类结论需要独立的完整性 oracle，退出码给不了 |
+
+**退出码 0 是必要条件，不是充分条件。** 它的含义是「当前已实现的三道门都没触发」，而这三道门都是**部分**覆盖：① `parseJUnit` 用文档**自己声明的** `tests`／`failures`／`skipped` 与解析结果对账，不一致就抛错——挡的是「**我方 parser** 丢行或误计」（实测 16/16 份真实产物三项全等，三臂各有独立负控）；**产出方不声明这三个属性时该门不生效**，且它**不独立于 producer**（详见下方警告）；② discovery↔runtime 文件身份对账，两个方向各配一个标记：`⚠ INCOMPLETE`（请求的文件没出现在 artifact 的 identity 集合里 ⇒ 数字是**下界**）与 `⚠ OUT-OF-SCOPE`（未被请求的文件却出现了 ⇒ 数字**超出**预期集合）；③ shard 非零退出却没打出 `N fail` 摘要时判定为 mid-bucket crash，把该桶用 `--isolate` 重跑定位。
+
+要把「观察量」升级成「总量」，**必须另外有一个能独立枚举目标成员的 oracle**。注意「独立」的判据是**追溯到不同的上游**，不是「换一种运行方式」。按能判到什么，分三层：
+
+1. **「每个请求的文件有没有在 artifact 里被提及」——可判（这就是全部）。** 门 ② 拿 `discover()` 的结果同时做 child 的 `bun test` argv 与期望集，再与 JUnit 回报的 file identity 集合比较（`scripts/parallel-test.ts` 的 `const files = discover()` 一处两用）。**它证明的严格只是「集合相等」**：每个 requested path 至少出现在某个 `<testsuite file>` 或 `<testcase file>` 里。**它不证明**该文件启动了、模块加载成功了、或写出了任何 testcase row——一个只有 `<testsuite file="…"/>`、零 testcase 的空壳同样满足它（实跑：`parseJUnit` 对它得 `files:[…], executed:0`，随后 identity 比较为 `missing:[], unexpected:[]`）。要判「真的跑起来了」，得另找能观察模块执行的来源，**不能从 identity 回声反推**。
+2. **「仓库里应该有哪些测试文件」——只有部分独立的交叉绊线。** 提交进仓库的发现基线（`tests/infra/entry-test-discovery-baseline.json`）**不是 runner 那三道门之一，也不是结构独立的 oracle**：它**由同一个 checkout、同一套后缀集、同形 `Bun.Glob` 生成与校验**，与 runner 的 discovery **共享上游**——若 discovery 规则本身系统性漏掉某类文件，该文件既不进期望集、也不进 argv、也不进 JUnit，门 ② 照绿。它挡的只是「基线随时间漂移」。
+    ⚠️ **但「不是那三道门」不等于「日常开发不用管它」**：`tests/infra/entry-evidence-schema.unit.test.ts` 是一条普通 `.unit.test.ts`，断言 `baseline.files` 与当前 discovery **完全相等**，因此 `test:fast` / `test:backend` **每次都在跑它**。**新增或删除任何测试文件，必须在同一个提交里同步该基线**，否则整档变红，且报错是集合 diff、**指不到根因**（2026-08-10 实测：新增一个 `.it` 文件漏登记 → 后端档 6 fail，其中 1 条是它）。收尾取证的 `capture-entry-evidence.ts` 是**另一个**消费者，不是唯一消费者。
+3. **「本应存在哪些 testcase」——不可判。** 没有任何东西独立枚举它；声明属性与行都出自同一份产物。**用例级总量至今不可判，这是已知缺口，不是待补的措辞。**
+
+⚠️ **门 ① 的「声明计数对账」也不是独立 oracle。** 根属性与 testcase 行同出一个 Bun JUnit producer、同一份 artifact，所以它是 **producer 内部的自洽检查**：独立于**我方 parser 的计数实现**（能抓到我们丢行），**不独立于 producer**——producer 若把某文件从行与声明里一起省掉（加载期抛错正是如此），两侧一致、该门照过。
+
+⚠️ **「同一 commit 连跑 N 次数字一致」同样不是完整性 oracle**——它与 tally 同源，三次可以稳定漏掉同一个文件，只能检出**随机漂移**、检不出**系统性缺失**。
+
+（**这一节被独立评审连续三轮各证伪一次「独立性」**：先是 N-run、再是「基线与 runtime 独立」、再是「声明计数是独立 oracle」。三次都是同一个错误形态——判独立性要问**各自最终追溯到谁**，不是问它们看起来有多不一样。**这三个机制目前都不独立，所以此处现在没有可用的独立完整性 oracle。**这不是禁止去建一个，但**目前也没有一个已被验证可行的候选**。曾在此列过两个例子，均**未通过 provenance 审查、已降级为待验证候选**：① 从 AST 静态枚举 `test()`／`describe()` —— 只有当它**独立决定扫哪些源文件**时才可能不同源；沿用同一套 discovery 规则的话，上游照旧相同。② 让被测进程在注册时自报 —— 通常与 JUnit reporter **共享同一张 registration graph**，多半同源。**新增任何一个之前，先交 provenance 图**（每侧的生产者、观测点、上游各是谁），并做双向验证（正确状态不误报、注入缺失能咬红）；**没有这张图就不算独立**。）
+
+实现新的报告器时同理：**只解析 XML 而不做上述对账，就会把加载期失败算成不存在**。
+
 第三方 I/O adapter 和 durability 协议必须按真相域分层：
 
 1. 真实 backend contract 锁定单位、默认值、callback、rotation 和 runtime 行为。
@@ -59,9 +92,20 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 
 写"只有拥有者模块能碰这个标识"这类结构守卫时，光禁字面量不够——`import` 那个常量再自己 `===` 比较，是完全等价的绕过，而且正是真实代码里出现过的写法。守卫要把**两种形态一起禁**，并用旧代码做正样本对照（把旧写法塞回去，守卫必须转红）。
 
-### 遍历全仓的结构守卫要给**显式时间预算**
+### 真实成本高的测试要给**显式时间预算**
 
-解析全部生产源文件的守卫（包边界、包面、环 ratchet 之类）本就逼近 bun 默认的 5s 单测超时，仓库多几个文件或与其它分片并行跑就会假红。给它显式预算（`}, 30_000)`，对齐 `circular-deps-ratchet`），**不要为了压进默认超时去缩小扫描面**——扫描面正是这类守卫的价值所在。
+> 负载敏感假红的**权威分类与预算取值规则**在 [docs/tmp/2026-08-08-load-sensitive-test-dispositions.md](tmp/2026-08-08-load-sensitive-test-dispositions.md)，在册实例清单在 [docs/todo/deferred-backlog.md](todo/deferred-backlog.md)。本节只讲写测试时该怎么做，判据以那两份为准。
+
+**先分型，再谈预算。** 加预算只对「机制有效、被 wall-clock 预算饿死」的那一类有用（权威文档的 B 类）。断言主体本身就是时间窗口（A 类）的，要换成因果/机制判据，加预算是白费；同一个文件里就有反例——`uds-transport.it.test.ts` 那条 spawn 子进程的 under-load 用例，超时从 5s 提到 30s 照样在 30012ms 红，根因是 16 路并行下的 spawn 饥饿（[HANDOVER:417-421](plan/2026-07-28-state-to-foundation/HANDOVER.md)）。
+
+分完型确属 B 类的，bun 的 5s 默认超时对下面两种都偏紧，而它们的 oracle 从来不是耗时：
+
+- **遍历全仓的结构守卫**（包边界、包面、环 ratchet 之类）解析全部生产源文件，本就逼近默认超时，仓库多几个文件就会假红。
+- **做真实 I/O / 子进程 / 大负载的 `it` 测试**（真 socket 传大 payload、逐个构建 git fixture 跑真实脚本、CAS 字节比对），单跑够快，但 `scripts/parallel-test.ts` 把 16 个分片压在同一台机器上时会翻倍甚至更多。
+
+**取值别拍脑袋**，按权威文档冻结的两条下界取大者、向上取整到 30/60 秒档：≥10× 该文件最慢用例的隔离实测，且 ≥3× 该用例在真实分片下**已观测**的最坏耗时。**同一文件多条都重就用文件级** `setDefaultTimeout(...)`（已实测确认它是文件作用域、不泄漏给同分片的兄弟文件），单条特例才用 `}, 30_000)`。**不要为了压进默认超时去缩小扫描面或削减负载**——那正是这类测试的价值所在。
+
+**测试挂钟预算不止 bun 那一个**：被测方自己也可能带生产默认 deadline，继承它就等于把生产取舍当成了测试判据。两种形态都踩过——`uds-client` 的 `query()` never-throw、超时即 resolve `[]`，把过期**伪装成空结果**（症状 `expected 50, received 0`，读起来像重组坏了）；`pingHistorySearchUdsClient` 的 300ms 默认是为 `/api/status` 快返「未安装」设计的，正向断言继承它就成了「sidecar 没应答」。凡是测真实传输的用例，**把被测方的 deadline 也显式传进去**；并注意**嵌套次序**——被测方的 deadline 必须小于 harness 预算，反过来会被 harness 先杀掉、丢失诊断。反向的用例（测的就是快速失败）则应保留生产默认值。
 
 ## 实现前门禁
 

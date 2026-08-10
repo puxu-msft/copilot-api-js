@@ -27,6 +27,7 @@
 ## 精炼保留（verification 簇 / 独有教学价值）
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
+- [聚合器把「没读到」当成「零」](methodology-missing-evidence-counted-as-zero.md) — 门禁在真失败之上报 `0 fail`；摘要最后打印而事实随事件落盘、两道判据读同一份缺失会互相掩盖、换源只把盲区挪走；阈值按正常值+故障值两端标定；判独立性交 provenance 图
 - [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 先写下影响集合再从集合内取样；争议交未卷入第三方
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — assert 在写盘前→失败全丢而 commit 照跑；`bash -n` 绿区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=改回原 bug 仍全绿即无裁决力；验收必须走真实 HTTP 入口
@@ -119,7 +120,7 @@
 - [谁合并谁退让但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存；边界：「两份都保」只对两侧纯新增成立，看 diff3 `|||||||` 段；[空 pathspec stash 会误 pop 别人 WIP](git-stash-push-empty-pathspec-pops-peer-wip.md)
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — `~/.claude/projects/<path>/*.jsonl`
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
-- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑；JUnit 只数叶节点
+- [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑；JUnit 只数叶节点，**且与 runner 同源、只抓解析错不抓 producer 漏项**
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段盲

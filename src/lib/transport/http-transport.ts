@@ -20,8 +20,6 @@
  * concern (retry-transport.md §4.1, P2.4) — this adapter is HTTP-only.
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
-
 import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -54,7 +52,11 @@ export interface UpstreamHttpTransportDeps {
 
 /** Build an HTTP {@link Transport} for one request. */
 export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Transport & PhysicalTransport {
-  const send: Transport["send"] = async (wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream> => {
+  const send = async (
+    wire: PreparedRequest,
+    env: RequestEnvelope,
+    options?: TransportDispatchOptions,
+  ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
     const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
     const headers = Object.fromEntries(wire.headers.entries())
     const body = wire.body as { model?: unknown; tools?: unknown }
@@ -105,14 +107,14 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     // (ctx.lifecycleSignal) is a DISTINCT provenance from `clientSignal` so a
     // mid-stream reaper-cancel reaches a still-connected client as an error frame
     // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
-    const frames = guardSseIterable(result as AsyncIterable<ServerSentEventMessage>, {
+    const frames = guardSseIterable(result as AsyncIterable<import("./parsed-sse-frame").ParsedSseFrame>, {
       idleTimeoutMs: deps.idleTimeoutMs,
       clientSignal: deps.clientAbortSignal,
       reaperSignal: env.ctx.lifecycleSignal,
       dispatchSignal: lifecycle.signal,
-    }) as AsyncIterable<UpstreamFrame>
+    })
 
-    return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle }
+    return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle } as UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame>
   }
   return { send, ...physicalTransportFromSend(send) }
 }

@@ -20,12 +20,18 @@ import {
   spyOn,
   test,
 } from "bun:test"
+import { Hono } from "hono"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
 import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { createBus } from "~/lib/observability"
+import {
+  //
+  observabilityMiddleware,
+  shutdownConnectionCloseMiddleware,
+} from "~/lib/observability/middleware"
 import {
   //
   getUpstreamWsManager,
@@ -543,6 +549,20 @@ describe("Phase 1: immediate actions", () => {
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(server.close).toHaveBeenCalledWith(false)
   })
+
+  test("closes the listener before anything that can await", async () => {
+    // Ordering invariant, not an incidental detail. `_isShuttingDown = true` makes the observability middleware answer 503; closing the listener is what stops us being handed connections at all.
+    // Anything awaited in between is a window where we still accept connections only to reject them — and under SO_REUSEPORT during a `--restart` takeover the kernel is splitting new connections between us and the successor, so a share of them fail here instead of being served next door.
+    // The window used to span `drainAdmissionHandoffs()` and, on the SIGUSR2 handoff path specifically, the negotiation/calibration persistence I/O.
+    const order: Array<string> = []
+    const server = { close: mock(async () => void order.push("close-listener")) }
+    const stopHistoryAdmissionFn = mock(() => void order.push("stop-admission"))
+    const drainHistoryAdmissionHandoffsFn = mock(async () => void order.push("drain-handoffs"))
+
+    await gracefulShutdown("SIGINT", createNoopDeps({ server, stopHistoryAdmissionFn, drainHistoryAdmissionHandoffsFn }))
+
+    expect(order).toEqual(["close-listener", "stop-admission", "drain-handoffs"])
+  })
 })
 
 // ============================================================================
@@ -592,6 +612,68 @@ describe("error resilience", () => {
 
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(getIsShuttingDown()).toBe(true)
+  })
+})
+
+// ============================================================================
+// Middleware integration — ingress rejection during shutdown
+// ============================================================================
+
+describe("ingress rejection during shutdown", () => {
+  // Mirrors the registration order in src/server.ts: the connection-close rule is outermost, the config/token middleware sits between it and observabilityMiddleware, and only the innermost one owns the 503 body.
+  // Composing the real order matters — testing observabilityMiddleware alone would miss that the middleware ahead of it can reject first, which is exactly the gap this suite exists to hold shut.
+  function appLikeProduction() {
+    const app = new Hono()
+    app.onError((error, c) => c.json({ error: String(error) }, 503))
+    app.use(shutdownConnectionCloseMiddleware())
+    app.use(async (c, next) => {
+      // Stands in for `applyConfigToState()` / `ensureValidCopilotToken()` in src/server.ts, which await and can throw.
+      if (c.req.path === "/pre-gate-failure") throw new Error("token refresh failed")
+      await next()
+    })
+    app.use(observabilityMiddleware())
+    app.post("/v1/messages", (c) => c.json({ ok: true }))
+    return app
+  }
+
+  test("serves normally until shutdown begins", async () => {
+    // Positive control: without it, a stack that rejected unconditionally, or tagged every response, would still pass the assertions below.
+    const res = await appLikeProduction().request("/v1/messages", { method: "POST" })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("connection")).toBeNull()
+  })
+
+  test("leaves failures alone while the server is healthy", async () => {
+    // Second control, the other direction: the rule is scoped to shutdown, not to failure. A 503 outside shutdown must not evict the client's pooled connection.
+    const res = await appLikeProduction().request("/pre-gate-failure", { method: "POST" })
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBeNull()
+  })
+
+  test("rejects with 503 and asks the client to drop the connection", async () => {
+    // `Connection: close` is what lets a pooled keep-alive client migrate to the successor during a `--restart` takeover: without it the client's retry reuses the socket it already holds to this dying process and lands right back here.
+    // Observed 2026-08-09: clients were still receiving this 503 more than seven minutes into a handoff, and History has no entries for any of it — the rejection is answered before a RequestContext exists, so the outage cannot show up in our own records.
+    // Verified against undici, the HTTP stack Claude Code uses: it opens a fresh connection per request when the response carries this header, and reuses the socket when it does not.
+    // The other half of that incident — a listener that had not been closed yet — is guarded separately by "closes the listener before anything that can await" above.
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    const res = await appLikeProduction().request("/v1/messages", { method: "POST" })
+
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBe("close")
+    expect(res.headers.get("retry-after")).toBe("1")
+    expect(await res.json()).toMatchObject({ error: { message: "Server is shutting down" } })
+  })
+
+  test("closes the connection even when the rejection happens before the shutdown gate", async () => {
+    // The config/token middleware runs ahead of observabilityMiddleware and awaits; if it throws during shutdown the response comes from `server.onError` and never reaches the gate's 503 branch.
+    // That path was reproduced returning a header-less 503, which is why the rule lives at the outermost layer instead of on the one branch where the problem was first noticed.
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    const res = await appLikeProduction().request("/pre-gate-failure", { method: "POST" })
+
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBe("close")
   })
 })
 

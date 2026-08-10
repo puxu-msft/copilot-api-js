@@ -62,13 +62,51 @@ import { getIsShuttingDown } from "~/lib/shutdown"
  */
 const SYNTHETIC_PATHS = new Set<string>(["/v1/messages/count_tokens", "/anthropic/v1/messages/count_tokens"])
 
+/**
+ * Guarantees that a response we hand back while shutting down tells the client to drop the connection, whenever its final HTTP status is 4xx/5xx.
+ *
+ * The criterion is the final status code, deliberately, not "did this interaction fail": a stream that already committed 200 and then fails mid-body cannot be tagged, because its headers are long gone. See the scope note at the end.
+ *
+ * This is load-bearing for the zero-downtime `--restart` handoff, not cosmetic.
+ * Observed 2026-08-09: a takeover began at 13:02:06Z, and client sessions were still receiving the shutdown 503 at 13:09:24Z — over seven minutes later, long after the successor was listening and serving.
+ * History shows nothing at all between 13:01:57.734Z and 13:11:46.755Z, because these rejections are answered before any RequestContext exists: the outage is invisible in our own records by construction.
+ *
+ * Two mechanisms can keep a client pinned to a dying process like that, and the incident evidence does not distinguish them:
+ *   (A) the client's pooled keep-alive socket already points here, so its retry never asks the kernel for a new connection and never reaches the successor;
+ *   (B) this process had not yet reached its listener close, so the kernel was still handing it fresh connections under SO_REUSEPORT.
+ * This middleware closes (A); the listener-close ordering in `gracefulShutdown` (src/lib/shutdown.ts, Step 1) closes (B). Neither alone covers what the evidence permits, so do not drop one as redundant.
+ *
+ * Verified against undici, the HTTP stack Claude Code uses: 3 requests → 3 fresh connections when the response carries this header, vs. socket reuse when it does not.
+ * Bun forwards the header but does not close the socket on its side, so for (A) the eviction is the client's doing.
+ *
+ * It lives here, as the OUTERMOST middleware, rather than on the shutdown 503 below, because that branch is not the only way we reject during shutdown.
+ * The config/token middleware runs ahead of `observabilityMiddleware` and awaits `applyConfigToState()` / `ensureValidCopilotToken()`; either throwing lands in `server.onError` and never reaches the branch below.
+ * A request already waiting on History admission is aborted by `stopHistoryAdmission()` and shaped by `onError` the same way.
+ * Both were reproduced as 503s with no `Connection` header before this existed — hence one invariant at the shared base instead of a header on the one branch where the problem was first noticed.
+ *
+ * Scope note — two response shapes are left untagged, with the same consequence: a 2xx that completed normally during drain, and an SSE stream that committed 200 and then failed mid-body. In both the socket stays pooled, so the client's next request costs one extra 503 before it reconnects. Covering the streaming case would mean deciding before the stream commits its headers, which is a separate question and deliberately not settled here.
+ *
+ * Registration is guarded separately: `tests/shutdown/shutdown.unit.test.ts` holds the condition above, and `tests/shutdown/shutdown-ingress-wiring.it.test.ts` drives the real `createServer()` to hold the fact that production registers this at all. Measured — removing the registration in src/server.ts leaves all 44 of the former green and turns 2 of the latter's 4 red (the other 2 are reverse controls and stay green by design).
+ *
+ * See docs/lifecycle.md「优雅重启」: the PoC hit this keep-alive behaviour 8/8 and correctly fixed its *probe* to use fresh connections, but the production consequence for pooled clients stayed open until now.
+ */
+export function shutdownConnectionCloseMiddleware(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    await next()
+    // Keep `getIsShuttingDown()` on the LEFT. Hono's `c.res` getter is not a plain read: it does `this.#res ||= createResponseInstance(null, ...)` (node_modules/hono/dist/context.js), so touching it on a path where the handler never produced a Response — a WebSocket upgrade, for one — materialises a placeholder and finalises the exchange early.
+    // Short-circuiting on the flag means we only touch `c.res` while shutting down, which is the one time we are going to write to it anyway. Swapping the operands would be silent: no test turns red.
+    if (getIsShuttingDown() && c.res.status >= 400) c.header("Connection", "close")
+  }
+}
+
 export function observabilityMiddleware(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    // Reject new requests during shutdown — keeps the legacy
-    // tui/middleware.ts contract in place. Idempotent: if the legacy
-    // middleware already returned 503, we won't reach here.
+    // Reject new requests during shutdown — keeps the legacy tui/middleware.ts contract in place. Idempotent: if the legacy middleware already returned 503, we won't reach here.
+    // `Connection: close` on this response is owned by `shutdownConnectionCloseMiddleware` above, which must be registered outermost; see its doc comment for why it is not set here.
     if (getIsShuttingDown()) {
-      return c.json({ type: "error", error: { type: "server_error", message: "Server is shutting down" } }, 503)
+      return c.json({ type: "error", error: { type: "server_error", message: "Server is shutting down" } }, 503, {
+        "Retry-After": "1",
+      })
     }
 
     const path = c.req.path

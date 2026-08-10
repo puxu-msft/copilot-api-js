@@ -26,6 +26,7 @@ import type {
   WireBlockAllocationPort,
 } from "~/lib/pipeline/types"
 
+import { isAnthropicErrorFrame } from "~/lib/anthropic/wire-frame-type"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { StreamClientAbortError } from "~/lib/stream"
 
@@ -57,12 +58,7 @@ function isMessageStart(frame: ClientFrame): boolean {
  * it as a close-off trigger (like the first `content_block_start`) inserts `stop@0` BEFORE it.
  */
 function isErrorEvent(frame: ClientFrame): boolean {
-  if (typeof frame.data !== "string") return false
-  try {
-    return (JSON.parse(frame.data) as { type?: unknown }).type === "error"
-  } catch {
-    return false // non-JSON frame — not an error event
-  }
+  return isAnthropicErrorFrame(frame)
 }
 
 /**

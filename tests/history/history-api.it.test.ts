@@ -29,7 +29,7 @@ import {
 } from "~/lib/history"
 import { HistorySearchUdsError } from "~/lib/history/search/uds-client"
 import { setHistorySearchClientForTests } from "~/lib/history/state"
-import { tryMarkSummaryProjectionReady } from "~/lib/history/v3/summary-store"
+import { validateAndMarkSummaryProjectionReady } from "~/lib/history/v3/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
@@ -227,7 +227,7 @@ describe("GET /api/entries", () => {
     const newer = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict needle newer" }], { startedAt: 200 })
     await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "deliberately unrelated text" }], { startedAt: 300 })
     const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
-    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     const target = db.prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
     const boundary = db.prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id").all(target.committed_at) as Array<{
       operation_id: string
@@ -258,7 +258,7 @@ describe("GET /api/entries", () => {
   test("returns 400 when a persisted cursor fails full-text membership", async () => {
     const cursor = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "different text" }])
     const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
-    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     setHistorySearchClientForTests({
       async query() {
         return []
@@ -279,7 +279,7 @@ describe("GET /api/entries", () => {
   test("returns 503 instead of a false empty list when strict persisted search cannot cover the frozen target", async () => {
     await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict lag needle" }])
     const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
-    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     setHistorySearchClientForTests({
       async query() {
         return []
