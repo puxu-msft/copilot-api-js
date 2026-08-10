@@ -15,6 +15,21 @@ archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
 
 `manifest_path` 指向产出它的那次运行的树外 OUT，**它才是 entry 的定义**；`archive_path` 是同一批产物的持久副本（job 目录会随 job 删除而消失），归档副本不定义 entry。两处 `evidence-manifest.json` 的 sha256 相同，已独立 `sha256sum` 复算。
 
+**T0.0d 已通过（2026-08-10）**：validator C1～C11 全绿、rc=0、receipt 原子写出。
+
+| 项 | 值 |
+|---|---|
+| receipt | `/home/xp/.claude/entry-evidence/A-15c43e40-receipt.json` |
+| receipt sha256 | `793eef39cb08d9103d07fae52a147938dd4c5c2b5cca93834896a22946712fc1`（已独立 `sha256sum` 复算） |
+| `entry_sha` | `15c43e40d3c4c172425ec2356721b73bebd8315b` |
+| `pointer_sha` | `26d21ccf0e8526a16f1609dc341ab56e1324a3a7` |
+| `validator_git_blob` | `282b1aa8700934e7305393e1a41b33cb201f89cf` |
+| `discovery_runner_git_blob` | `09a273247f2b2ef821dbc3b354d2bb350fcc861a` |
+| `verdict` | `green` |
+| 执行树 | `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover-a5`（detached 在 A，干净） |
+
+**下一步是 T0.1**，判据见 `cutover-plan.md` 的 T0.1 行：读该 receipt、重算 hash，并在任何 C0 测试/实现之前先分别注入 receipt 缺失、`entry_sha` 与执行树 HEAD 不同、`pointer_sha` 不可由 master 到达、manifest hash 漂移、validator blob 不同、`verdict != green` 六种情形，逐一确认 fail-closed。**T0.1 不重跑 15 次、不生成新的 manifest/P/receipt。**
+
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
