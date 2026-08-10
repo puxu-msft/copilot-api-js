@@ -67,8 +67,9 @@ describe("shutdown ingress wiring (real createServer)", () => {
     expect(res.headers.get("connection")).toBe("close")
   })
 
-  test("an unknown endpoint carries it too", async () => {
-    // Widens the guard past the one route above: the rule is registered outermost, so it must also cover responses shaped by notFound/onError rather than by the shutdown gate.
+  test("an unregistered path is rejected the same way", async () => {
+    // A second registration sample on a path with no route, showing the rule does not depend on the request matching one.
+    // It does NOT reach `notFound`/`onError`: while shutting down, observabilityMiddleware answers before `next()`, so routing never runs. Those response shapes are covered in tests/shutdown/shutdown.unit.test.ts, where a stand-in for the config/token middleware throws ahead of the gate.
     const server = createServer()
     await gracefulShutdown("SIGINT", noopShutdownDeps())
 
