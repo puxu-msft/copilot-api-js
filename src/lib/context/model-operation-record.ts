@@ -788,7 +788,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       ...(attempt.settledSequence === undefined ? {} : { settledSequence: attempt.settledSequence }),
       ...(attempt.settledAt === undefined ? {} : { settledAt: attempt.settledAt }),
       ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
-      ...(attempt.error === undefined ? {} : { error: attempt.error }),
+      ...("error" in attempt ? { error: attempt.error } : {}),
       ...(attempt.metadata === undefined ? {} : { metadata: attempt.metadata }),
       ...(attempt.extensions === undefined ? {} : { extensions: attempt.extensions }),
       ...(attempt.settlementExtensions === undefined ? {} : { settlementExtensions: attempt.settlementExtensions }),
@@ -1135,7 +1135,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       dispatch.settledAt = settled.occurredAt
       if (settlement.upstreamResponse !== undefined) dispatch.upstreamResponse = freezeTrack(settlement.upstreamResponse)
       if (settlement.reason !== undefined) dispatch.reason = settlement.reason
-      if (settlement.error !== undefined) dispatch.error = freezeCapturedValue(settlement.error)
+      if ("error" in settlement) dispatch.error = freezeCapturedValue(settlement.error)
       if (settlement.metadata !== undefined) {
         dispatch.metadata = freezeCapturedValue({ ...(dispatch.metadata as Readonly<Record<string, unknown>> | undefined), ...settlement.metadata })
       }

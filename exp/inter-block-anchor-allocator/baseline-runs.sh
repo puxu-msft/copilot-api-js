@@ -238,6 +238,19 @@ for i in $(seq 1 "$RUNS"); do
   ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ executed' | head -1 | grep -aoE '[0-9]+')"
   if [ -z "$ntests" ]; then ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"; fi
   printf '=== tests seen   : %s\n' "${ntests:-none}" >> "$log"
+
+  # The runner self-reports when its own counts are untrustworthy, and a floor
+  # comparison cannot see that: `N executed` clears MIN_TESTS just as happily
+  # when the runner has appended "these counts are a floor, not a total". Reading
+  # only the number would let a run the runner itself called incomplete stand as
+  # evidence -- the exact shape this batch exists to remove, one layer up.
+  if printf '%s' "$tail_line" | grep -qaE 'INCOMPLETE|OUT-OF-SCOPE'; then
+    printf '=== tally caveat : runner reported its own counts as unreliable\n' >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d printed a tally the runner itself flagged (INCOMPLETE/OUT-OF-SCOPE); not counting it green.\n' \
+      "$i" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+  fi
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi

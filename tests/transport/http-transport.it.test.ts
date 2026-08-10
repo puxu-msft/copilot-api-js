@@ -30,6 +30,7 @@ import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { semanticSseMessage } from "~/lib/transport/parsed-sse-frame"
 
+import { compatDispatchOptionsForTests } from "../helpers/dispatch-options"
 import {
   //
   autoRestoreFetch,
@@ -79,7 +80,7 @@ describe("createUpstreamHttpTransport", () => {
     })
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv(), compatDispatchOptionsForTests())
     const frames = await collect(upstream.frames)
     expect(frames.map((f) => semanticSseMessage(f).data)).toEqual(['{"choices":[{"delta":{"content":"hi"}}]}', "[DONE]"])
     expect(upstream.nonStream).toBeUndefined()
@@ -100,7 +101,7 @@ describe("createUpstreamHttpTransport", () => {
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
     const error = await Promise.race([
-      transport.send(makeWire({ stream: true }), makeEnv()).catch((value: unknown) => value),
+      transport.send(makeWire({ stream: true }), makeEnv(), compatDispatchOptionsForTests()).catch((value: unknown) => value),
       new Promise((resolve) => setTimeout(() => resolve(new Error("test guard expired")), 100)),
     ])
 
@@ -130,7 +131,7 @@ describe("createUpstreamHttpTransport", () => {
     })
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv(), compatDispatchOptionsForTests())
 
     expect((await collect(upstream.frames)).map((frame) => semanticSseMessage(frame).data)).toEqual(['{"choices":[{"delta":{"content":"late"}}]}', "[DONE]"])
   })
@@ -139,7 +140,7 @@ describe("createUpstreamHttpTransport", () => {
     setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    const result = await transport.open(makeWire({ stream: true }), makeEnv())
+    const result = await transport.open(makeWire({ stream: true }), makeEnv(), compatDispatchOptionsForTests())
 
     expect(result.kind).toBe("stream")
     if (result.kind !== "stream") throw new Error("expected stream physical result")
@@ -151,7 +152,7 @@ describe("createUpstreamHttpTransport", () => {
     const clientAbort = new AbortController()
     setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, clientAbortSignal: clientAbort.signal })
-    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv(), compatDispatchOptionsForTests())
 
     clientAbort.abort()
 
@@ -174,7 +175,7 @@ describe("createUpstreamHttpTransport", () => {
     const reaper = new AbortController()
     setFetchMock(() => createSseResponseThenBlock(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n']))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
-    const upstream = await transport.send(makeWire({ stream: true }), makeEnv({ lifecycleSignal: reaper.signal }))
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv({ lifecycleSignal: reaper.signal }), compatDispatchOptionsForTests())
 
     const iterator = upstream.frames[Symbol.asyncIterator]()
     // The first real frame flows through the guard normally.
@@ -193,7 +194,11 @@ describe("createUpstreamHttpTransport", () => {
     setFetchMock(() => new Response(JSON.stringify({ id: "cc-1", choices: [] }), { status: 200, headers: { "content-type": "application/json" } }))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    const upstream = await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
+    const upstream = await transport.send(
+      makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }),
+      makeEnv(),
+      compatDispatchOptionsForTests(),
+    )
     expect(await collect(upstream.frames)).toEqual([])
     expect(upstream.nonStream).toEqual({ id: "cc-1", choices: [] })
     await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
@@ -202,11 +207,11 @@ describe("createUpstreamHttpTransport", () => {
   test("physical open returns json and typed failed-open variants", async () => {
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
     setFetchMock(() => new Response(JSON.stringify({ id: "json" }), { status: 200, headers: { "content-type": "application/json" } }))
-    const success = await transport.open(makeWire({ stream: false }), makeEnv())
+    const success = await transport.open(makeWire({ stream: false }), makeEnv(), compatDispatchOptionsForTests())
     expect(success).toMatchObject({ kind: "json", body: { id: "json" } })
 
     setFetchMock(() => new Response("bad", { status: 500 }))
-    const failed = await transport.open(makeWire({ stream: false }), makeEnv())
+    const failed = await transport.open(makeWire({ stream: false }), makeEnv(), compatDispatchOptionsForTests())
     expect(failed.kind).toBe("failed-open")
     await expect(failed.lifecycle.quiesced).resolves.toBeUndefined()
   })
@@ -215,18 +220,22 @@ describe("createUpstreamHttpTransport", () => {
     setFetchMock(() => new Response(JSON.stringify({ error: "bad" }), { status: 400, headers: { "content-type": "application/json" } }))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    await expect(transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())).rejects.toThrow(
-      /Failed to create chat completions/,
-    )
+    await expect(
+      transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv(), compatDispatchOptionsForTests()),
+    ).rejects.toThrow(/Failed to create chat completions/)
   })
 
   test("via-responses url → uses the responses error label on failure", async () => {
     setFetchMock(() => new Response("nope", { status: 500 }))
     const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
 
-    await expect(transport.send(makeWire({ url: "/responses", stream: false, body: { model: "gpt-5", input: [], stream: false } }), makeEnv())).rejects.toThrow(
-      /Failed to create responses/,
-    )
+    await expect(
+      transport.send(
+        makeWire({ url: "/responses", stream: false, body: { model: "gpt-5", input: [], stream: false } }),
+        makeEnv(),
+        compatDispatchOptionsForTests(),
+      ),
+    ).rejects.toThrow(/Failed to create responses/)
   })
 
   // Guards the load-bearing wire.url contract (client-query-forwarding Step 6): the forwarded
@@ -250,7 +259,11 @@ describe("createUpstreamHttpTransport", () => {
     } as unknown as RequestEnvelope
 
     await expect(
-      transport.send(makeWire({ url: ENDPOINT.MESSAGES, stream: false, body: { model: "claude", messages: [], stream: false } }), env),
+      transport.send(
+        makeWire({ url: ENDPOINT.MESSAGES, stream: false, body: { model: "claude", messages: [], stream: false } }),
+        env,
+        compatDispatchOptionsForTests(),
+      ),
     ).rejects.toThrow(/Failed to create messages/) // NOT the generic fallback → errorLabelFor saw the clean wire.url
     expect(new URL(capturedUrl).searchParams.get("beta")).toBe("true") // query reached the upstream URL on the error path too
   })
@@ -267,7 +280,7 @@ describe("createUpstreamHttpTransport — request cancellation identity", () => 
 
     let caught: unknown
     try {
-      await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
+      await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv(), compatDispatchOptionsForTests())
     } catch (error) {
       caught = error
     }

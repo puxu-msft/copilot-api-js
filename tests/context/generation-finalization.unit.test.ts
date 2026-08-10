@@ -1,5 +1,7 @@
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -8,6 +10,12 @@ import {
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 
 import { createRequestContext } from "~/lib/context/request"
+import {
+  //
+  configureRawCapture,
+  getRawCaptureStatus,
+  resetRawCaptureManagerForTests,
+} from "~/lib/history/raw/manager"
 import {
   //
   resetModelOperationTerminalBusForTests,
@@ -21,6 +29,15 @@ function complete(ctx: ReturnType<typeof createRequestContext>): void {
 }
 
 describe("generation delivery and observability terminal", () => {
+  beforeEach(() => {
+    resetRawCaptureManagerForTests()
+    expect(configureRawCapture({ enabled: true, dbPath: ":memory:", maxObjectBytes: 1024 })).toBe(true)
+  })
+
+  afterEach(() => {
+    resetRawCaptureManagerForTests()
+  })
+
   test("delivery first waits for the later logical terminal before finalizing", async () => {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     const clientPayload = { role: "assistant", content: "ok" }
@@ -89,16 +106,59 @@ describe("generation delivery and observability terminal", () => {
     resetModelOperationTerminalBusForTests()
   })
 
-  test("exposes a finalizer rejection instead of reporting a successful canonical terminal", async () => {
-    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
-    ctx.beginGenerationCandidate({ role: "recovery" })
+  const canonicalFailureBarriers: ReadonlyArray<
+    readonly [
+      string,
+      ((id: string, failure: { phase: "delivery" | "canonical"; error: unknown }) => boolean) | undefined,
+      "failed" | "running",
+      "none" | "canonical-finalization",
+    ]
+  > = [
+    ["registered", () => true, "failed", "none"],
+    ["unregistered", () => false, "running", "canonical-finalization"],
+    ["missing", undefined, "running", "canonical-finalization"],
+    [
+      "throwing",
+      () => {
+        throw new Error("barrier unavailable")
+      },
+      "running",
+      "canonical-finalization",
+    ],
+  ]
 
-    complete(ctx)
-    ctx.finalizeModelOperationDelivery()
+  test.each(canonicalFailureBarriers)(
+    "keeps canonical commit failure visible when the barrier is %s",
+    async (_label, onLifecycleFailure, canonical, blocker) => {
+      const baselineLeases = getRawCaptureStatus().leasedOperations
+      const failures: Array<{ phase: "delivery" | "canonical"; error: unknown }> = []
+      const ctx = createRequestContext({
+        endpoint: "anthropic-messages",
+        ...(onLifecycleFailure !== undefined && {
+          onLifecycleFailure: (id, failure) => {
+            failures.push(failure)
+            return onLifecycleFailure(id, failure)
+          },
+        }),
+      })
+      expect(getRawCaptureStatus().leasedOperations).toBe(baselineLeases + 1)
+      ctx.beginGenerationCandidate({ role: "recovery" })
 
-    await expect(ctx.whenModelOperationFinalized()).rejects.toThrow(/open candidate/i)
-    expect(ctx.modelOperationTerminalRecord).toBeNull()
-  })
+      complete(ctx)
+      ctx.finalizeModelOperationDelivery()
+      const rejection = await ctx.whenModelOperationFinalized().then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      expect(rejection).toBeInstanceOf(Error)
+      expect((rejection as Error).message).toMatch(/open candidate/i)
+      expect(failures).toEqual(onLifecycleFailure === undefined ? [] : [{ phase: "canonical", error: rejection }])
+      expect(ctx.operationLifecycle).toMatchObject({ canonical, blocker })
+      expect(ctx.modelOperationTerminalRecord).toBeNull()
+      expect(getRawCaptureStatus().leasedOperations).toBe(baselineLeases)
+    },
+  )
 
   test("seals a recovery candidate as the winner instead of reopening the failed primary", async () => {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })

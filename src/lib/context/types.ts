@@ -34,7 +34,9 @@ import type {
   DispatchVerdict,
   ModelOperationRecord,
   OperationSyntheticKind,
+  RecordAttemptDiagnosticInput,
 } from "./model-operation-record"
+import type { OperationLifecycleSnapshot } from "./operation-lifecycle"
 
 // ─── Request State Machine ───
 
@@ -480,6 +482,8 @@ export interface RequestContext {
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
   /** Whether canonical observability has crossed its immutable terminal seal. */
   readonly modelOperationSealed: boolean
+  /** Independent logical, operation-body, delivery, and canonical finalization facts. */
+  readonly operationLifecycle: OperationLifecycleSnapshot
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -519,8 +523,12 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   /** Record canonical ingress once both the V2 body and inbound headers are available. */
   recordModelOperationIngress(): void
-  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
+  /** Mark the outer delivery owner as entering finalization. */
+  beginModelOperationDeliveryFinalization(): void
+  /** Notify that client delivery completed successfully; this does not synchronously seal canonical observability. */
   finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Preserve a delivery failure and advance canonical finalization only after the shutdown barrier registers it. */
+  failModelOperationDelivery(error: unknown): void
   /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
@@ -568,6 +576,12 @@ export interface RequestContext {
   setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
   setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  /**
+   * Records one diagnostic against an explicitly named dispatch.
+   * Unlike {@link setGenerationDispatchTransport} and friends it does NOT move the ambient "current" attempt: transport-level producers run concurrently with whatever else the request is doing, so selecting a current attempt to write through would both misattribute this diagnostic and silently re-point every later ambient write.
+   * Throws on an unknown handle while the record is still writable, and drops silently once sealed — the same contract as {@link setGenerationDispatchTimingEpoch}.
+   */
+  recordGenerationDispatchDiagnostic(dispatch: DispatchHandle, diagnostic: RecordAttemptDiagnosticInput): void
   setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
   captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
   captureGenerationDispatchFrameTransform(
