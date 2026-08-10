@@ -1,4 +1,4 @@
-# ADR: startup VACUUM 按活连接 gate，而非按行状态
+# ADR: startup VACUUM 按锁竞争 gate，而非按行状态
 
 - **状态**：Accepted
 - **日期**：2026-08-10
@@ -25,11 +25,24 @@ takeover overlap 下这句不成立。
 
 ## 定夺
 
-**按「是否存在其他活连接」gate，判据取自 `PRAGMA wal_checkpoint(TRUNCATE)` 的 `busy` 列。**
+**在启动 VACUUM 之前先探测锁竞争，判据取自 `PRAGMA wal_checkpoint(TRUNCATE)` 的 `busy` 列；`busy` 非零就跳过这次 VACUUM。**
 
-TRUNCATE checkpoint 想要的正是 VACUUM 随后要长时间持有的那个独占瞬间，所以它的 `busy` 就是「还有别人在用这个文件吗」最便宜的诚实答案——而且这个调用**函数原本就已经在做**（VACUUM 前的 WAL 收缩），改动只是开始读它的返回值。
+TRUNCATE checkpoint 想要的正是 VACUUM 随后要长时间持有的那个独占瞬间，所以它的 `busy` 是「此刻抢得到那个瞬间吗」最便宜的答案——而且这个调用**函数原本就已经在做**（VACUUM 前的 WAL 收缩），改动只是开始读它的返回值。
 
-实测形状（`bun:sqlite`）：独占时 `{busy:0, log:0, checkpointed:0}`；有一个 peer 持开着读事务时 `{busy:1, log:1, checkpointed:0}`。
+### 这个判据实际测到的是什么（比标题窄，别记错）
+
+实测（`bun:sqlite`，四格只变一个条件；探针见本 ADR 末尾复现步骤）：
+
+| 场景 | `wal_checkpoint(TRUNCATE)` 返回 |
+|---|---|
+| 无 peer，WAL 有内容 | `{busy:0, log:0, checkpointed:0}` |
+| **peer 连接已开，但没有事务**，WAL 有内容 | `{busy:0, …}` —— **放行** |
+| peer 持着读事务，WAL 有内容 | `{busy:1, log:1, checkpointed:0}` |
+| peer 事务已提交，WAL 有内容 | `{busy:0, …}` |
+
+所以它测的是「**此刻有没有别人持着事务**」，**不是**「有没有别的连接开着」；而且还有第二个必要条件——**WAL 必须非空**，空 WAL 时 checkpoint 无事可做，恒返回 `busy:0`。
+
+**因此本 gate 缩小危害窗口，但不消除它。** 一个已经打开库、此刻恰好空闲的前任进程会被放行，若它在 VACUUM 期间恢复写入，仍会撞上那把长时间的独占锁。要真正消除，得换成不依赖「采样瞬间」的判据（进程发现、或分片布局让新旧进程根本不写同一个文件——见 `docs/todo/deferred-backlog.md` 的读写分离条目）。选择这个判据的理由是**代价近乎为零且没有反向风险**：它复用已有调用、误判方向只会「少做一次 VACUUM」（下次启动再做），而不会误伤数据。
 
 ### 为什么不用 pidfile
 
@@ -52,12 +65,32 @@ pidfile 判据在**最需要它的场景失效**：`lifecycle.md` 明确规定 p
 
 ## 验证
 
-两条测试共用同一个膨胀过阈值的库，**唯一变量是有没有 peer 连接**，因而同时钉住两个方向：
+两条测试共用同一个膨胀过阈值的库，**唯一变量是有没有一个持着事务的 peer**，因而同时钉住两个方向：
 
 - 既有 `maybeVacuumOnStartup fires on reopen`（无 peer）→ VACUUM 照常触发，freelist 归零。**未修改，仍绿**。
-- 新增 `maybeVacuumOnStartup skips while another connection still holds the database`（有 peer）→ 跳过，freelist 保持 > 0。
+- 新增 `maybeVacuumOnStartup skips while another connection still holds the database`（peer 持读事务）→ 跳过，freelist 保持 > 0。
 
 变异对照：把 gate 去掉后**只有新增那条**变红，且红的形态是超时 5 秒——直接演示了缺陷本身（VACUUM 撞 peer 锁后等满 `busy_timeout`）。
+
+**这组测试钉住的是探针的输出，不是危害本身。** 它证明「持事务的 peer 在场时不 VACUUM」，**没有**证明「不 VACUUM 就不会有 SQLITE_BUSY」——上面已说明空闲 peer 会被放行。别把它读成后者。
+
+### 复现上表的探针
+
+```ts
+// bun run <此文件>.ts —— 每格前先写入，制造新的 WAL 内容；
+// 空 WAL 时 checkpoint 无事可做、恒返回 busy:0，会让四格看起来一样。
+import { Database } from "bun:sqlite"
+const db = new Database("/tmp/probe.db", { create: true })
+db.exec("PRAGMA journal_mode = WAL;")
+db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);")
+const probe = () => {
+  db.exec("PRAGMA busy_timeout = 0;")
+  const r = db.prepare("PRAGMA wal_checkpoint(TRUNCATE);").get()
+  db.exec("PRAGMA busy_timeout = 5000;")
+  return r
+}
+// 依次：无 peer / peer 已开无事务 / peer 持读事务 / peer 已提交，每格前 INSERT 一行再 probe()。
+```
 
 ## 范围
 

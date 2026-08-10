@@ -3,7 +3,7 @@
 - **状态**：Accepted
 - **日期**：2026-08-10
 - **裁决人**：用户（本会话直接裁决）
-- **相关**：推翻 [spec/2026-08-07-lossless-graceful-shutdown-drain.md](../spec/2026-08-07-lossless-graceful-shutdown-drain.md) 的**不变量 4**；[lifecycle.md](../lifecycle.md)「优雅关闭」「优雅重启」；skill `process-lifecycle-shutdown`；guard 处置记录 [tmp/2026-08-10-third-tier-signal-guard-dispositions.md](../tmp/2026-08-10-third-tier-signal-guard-dispositions.md)；同源 ADR [vacuum-gated-on-live-connections](2026-08-10-vacuum-gated-on-live-connections.md)
+- **相关**：推翻 [spec/2026-08-07-lossless-graceful-shutdown-drain.md](../spec/2026-08-07-lossless-graceful-shutdown-drain.md) 的**不变量 4**；[lifecycle.md](../lifecycle.md)「优雅关闭」「优雅重启」；skill `process-lifecycle-shutdown`；guard 处置记录 [tmp/2026-08-10-third-tier-signal-guard-dispositions.md](../tmp/2026-08-10-third-tier-signal-guard-dispositions.md)；同源 ADR [vacuum-gated-on-lock-contention](2026-08-10-vacuum-gated-on-lock-contention.md)
 
 ## 背景
 
@@ -40,7 +40,11 @@
 
 `abandonDrain` 走的是 stale reaper 与 `timeouts.request_deadline` **已经在用的同一组原语**——`ctx.reapInFlight()` 取消在飞上游、`ctx.fail()` 记终态。被 `d254d8ae` 删掉的 process-global `AbortController` / `getShutdownSignal()` **不复活**。
 
-因此「只有请求级机制能终止请求」这条不变量**继续成立**：shutdown 仍不拥有 deadline，是**人**按了第二次。终态 attribution 打 `category: "shutdown"` / `code: "operator-abandoned-drain"`，在产生点标签化，绝不伪装成 timeout。
+因此「只有请求级机制能终止请求」这条不变量**继续成立**：shutdown 仍不拥有 deadline，是**人**按了第二次。终态 attribution 打 `category: "shutdown"` / `code: "operator-abandoned-drain"`，在产生点标签化。
+
+⚠️ **但这只修对了两条 provenance 通道中的一条。** `reapInFlight()` 目前**无参数**、内部写死 `cancellationAbortError("stale-reaper", ...)`（`src/lib/context/request.ts:1125`），消费者 `src/lib/error/forward.ts:573` 据此产出 **504「Request cancelled by our own clock (stale-request reaper …)」**。所以本轮实现里，`fail()` 的 attribution 不伪装成 timeout，**取消信号那条通道仍然伪装成 timeout**——客户端和日志看到的是后者。修复要动 `CancellationCause` 与 forward 分流表，超出本轮范围，已登记 `docs/todo/deferred-backlog.md`（同日条目）。**在那条闭合前，不得声称第二档的终态「绝不被读成 timeout」。**
+
+`abandonDrain` 另有三个够不到的形态（lightweight operation、已 settled 仍在 finalizing 的 operation、drain 开始之前的 `stopping` 等待），逐条见 skill `process-lifecycle-shutdown` 的边界①②③；三者共同的出路都是第三档。
 
 ### 2. 第二档只在「还在等请求」的阶段生效（承重收窄）
 

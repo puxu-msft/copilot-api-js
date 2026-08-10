@@ -208,11 +208,12 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
           + `a one-time startup VACUUM will block briefly and needs ~equal temp disk. For a very large DB consider offline 'sqlite3 history.db "VACUUM;"'.`,
       )
     }
-    // Probe for a concurrent connection BEFORE committing to a VACUUM.
-    // A TRUNCATE checkpoint wants the same exclusive moment a VACUUM then holds for far longer, so a non-zero `busy` is the cheapest honest answer to "is another process still using this database?".
+    // Probe for lock contention BEFORE committing to a VACUUM.
+    // A TRUNCATE checkpoint wants the same exclusive moment a VACUUM then holds for far longer, so a non-zero `busy` is the cheapest available answer to "can I get that moment right now?".
     // Unlike a pidfile check this works identically on all three run paths — bare / systemd / pm2 — including the supervisor ones that deliberately write no pidfile, which are exactly the paths where an overlap is guaranteed by design.
     // This matters most during a graceful-restart overlap: the successor opens the db while the predecessor is still serving at FULL SPEED (it has not even been sent the handoff signal yet — that comes later, at `notifyReady`), and a VACUUM here would hold the write lock far past the 5s `busy_timeout` the predecessor's writes are given, turning its in-flight persistence into SQLITE_BUSY failures.
-    // Measured shape: `{busy:0,log:0,checkpointed:0}` alone, `{busy:1,...}` with a single open peer read transaction.
+    // SCOPE — do not read this as "is another process using the db?". Measured, one condition varied at a time: no peer -> `{busy:0,log:0,checkpointed:0}`; peer connection OPEN but holding NO transaction -> `busy:0`, i.e. LET THROUGH; peer holding a read transaction -> `{busy:1,log:1,checkpointed:0}`; peer transaction committed -> back to `busy:0`. A non-empty WAL is a second necessary condition: with nothing to truncate the checkpoint is trivially `busy:0`.
+    // So this NARROWS the hazard window rather than closing it — an idle-at-this-instant predecessor is let through and can resume writing mid-VACUUM. It is kept because the cost is ~zero (the call already happened for WAL shrink) and it cannot misfire destructively: a false `busy` only defers reclamation to a later start. Closing the window for real needs the read/write split (see docs/todo/deferred-backlog.md).
     // Probe with a ZERO busy_timeout: we want the answer now, not after the 5s the rest of this connection is configured to wait. A probe that blocked for the full busy_timeout on every overlapping start would itself be the regression (measured: it makes the open path hang 5s and times out the covering test).
     // The restore MUST be in a finally: `.get()` can throw outright under lock contention (measured: `SQLiteError`, not always a populated `busy` column), and the outer catch below swallows it — leaving this process's main History connection permanently at busy_timeout=0, where every later concurrent write fails instantly instead of waiting.
     let checkpoint: { busy?: number } | null = null
@@ -224,7 +225,7 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     }
     if (checkpoint?.busy) {
       consola.info(
-        `[history/sqlite] skipping the startup VACUUM of ${dbPath}: another connection is still using it (graceful-restart overlap). `
+        `[history/sqlite] skipping the startup VACUUM of ${dbPath}: another connection is holding a transaction (graceful-restart overlap). `
           + `Reclamation runs on a later start, once this process has the database to itself.`,
       )
       return
