@@ -10,11 +10,15 @@
 
 `src/lib/shutdown.ts` 实现首信号无损排空。shutdown 只拥有进程入口和资源生命周期，不拥有请求终止权。
 
-信号契约分为终止信号与交接信号：
+信号契约分为终止信号与交接信号。终止信号按**操作者按了几次**分三档——界由人显式划，shutdown 自己不拥有任何时限（裁决见 ADR [三档 shutdown 信号契约](decisions/2026-08-10-three-tier-shutdown-signal-contract.md)）：
 
-1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，并等待已接纳 operation 自行终态。
-2. lifecycle 已经进行时收到 SIGINT／SIGTERM，立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
-3. lifecycle 已经进行时收到 SIGUSR2，幂等返回已有 shutdown task，不强退、不重复 handoff-only 副作用。
+1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，并**无界**等待已接纳 operation 自行终态。
+2. **仍在等请求时**（`stopping`／`draining`）收到第二个 SIGINT／SIGTERM，放弃等待 drain，用请求级原语（`reapInFlight()` + `fail()`，与 stale reaper、`request_deadline` 同一组）中止残余 operation，**随后照常走完 finalize**——History、Telemetry、Diagnostic 全部落盘。终态 attribution 为 `shutdown`／`operator-abandoned-drain`，不伪装成 timeout。
+3. 再收到 SIGINT／SIGTERM，立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
+4. **已越过请求排空后**（`finalizing`／`notifying`／`failed`）收到的第一个 SIGINT／SIGTERM 就直接强退，不走第 2 档——此时在等的正是持久化 barrier，而那恰恰是逃生舱要逃离的东西。
+5. lifecycle 已经进行时收到 SIGUSR2，幂等返回已有 shutdown task，不强退、不重复 handoff-only 副作用（SIGUSR2 **不参与**档位升级）。
+
+> 第 2 档的两个已知边界：① 它够不到 lightweight operation（count_tokens／embeddings 的 `LightweightInFlightOperation` 是只读描述符、无取消面）；② 若某 operation 已 logically failed 却仍占着 registry，`fail()` 会被去重、未必让它离开。两种情况下第 3 档仍是出路。
 
 信号必须投递到应用记录的 runtime PID。Bun CLI／Volta shim 可能在 JS runtime 外再包一层 launcher；给 launcher 发 SIGUSR2 会走内核默认动作，根本到不了 `process.on("SIGUSR2")`。裸接管 pidfile 写入 `process.pid`；PTY 回归也从子进程输出读取 runtime PID 后发信号。
 
@@ -31,9 +35,12 @@
 
 `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成“已接纳”的机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开；count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 完成后注销。
 
-shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
+shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束，**或由操作者按下第二个终止信号**（上面第 2 档——那也走请求级原语，仍不是 shutdown 自己的时限）。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
 
-> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、Tasks 5–8 的两道启动 gate 都从那里进）。**当前状态：文档已在主线，Tasks 1–4 的代码仍只在特性分支 `fix-long-resident-operations` 上、未合并**——本节描述的仍是 master 现行行为。
+> ⚠️ **无界排空对 overlap 窗口的连带影响**：drain 无界意味着 overlap 也无界，下面「overlap 窗口的共享状态安全」各条隐患的暴露面随之无界，且本文档后面「不保证链式重叠重启」那条会从运维纪律问题变成**默认会发生**。第 2 档信号是操作者手上收回这个窗口的手段。
+> 另注意：运行实例若未显式设置 `timeouts.request_deadline`（bundled 默认 0＝禁用），则「请求级 deadline 兜底」这条前提在该实例上是**空的**——`response_header` 只管首字节前、`stream_idle` 只管帧间静默，一条持续产帧的长流没有上界。
+
+> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、Tasks 5–8 的两道启动 gate 都从那里进）。**当前状态：Tasks 1–4 + B1 已由 `cf3da6a9` 合并进 master**（本行此前长期写着「仍只在特性分支、未合并」，2026-08-10 核实为陈旧断言并更正；判定命令：`git merge-base --is-ancestor cf3da6a9 master`）。Tasks 5–8 的状态以上述 HANDOVER 为准。
 
 ### Finalizing 与 Stopped
 
@@ -149,7 +156,7 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
   - **修法**：旧进程 Step 1 停**两个 telemetry timer（persist + rollup）**——`stopPeriodicPersistence()` + `stopRollupTimer()`。最终 `shutdownRequestTelemetry()` 已先注销 `telemetryConfigUnsub`，再停 timer、排空并关闭数据库，保证 await 窗口内 config 热重载不能把 timer 重新拉活。接管场景还应在 Step 1 提前执行 producer seal，避免 drain 期与新进程并发上卷；最终 flush 仍推迟到 `finalizing`（drain-before-close，不丢在途 delta）。
 - **③ states.json（calibration `learned-limits.json` / feature-negotiation）—— 真有竞争，非「无冲突」**：两者都是 **debounce 全量快照覆盖写**（`schedulePersist()` → `atomicWriteJson` 整文件替换），且从**请求处理路径**触发（feature-negotiation 18 处、calibration 多处），**不受 Phase 1 的 `stopHistoryBackgroundWork`/`stopTelemetryBackgroundWork` 影响**——旧进程在整个 drain 期处理在途请求时仍会继续 `schedulePersist`。因是**整内存态覆盖整磁盘态**（非 telemetry 的可加 delta、非 reclaim 的行级 WHERE），若旧进程一次覆盖写 `rename()` 晚于新进程的覆盖写落地，会把新进程 overlap 期新学到的负反馈**整体覆盖丢失**。**修法（flush-then-freeze，仅 handoff）**：旧进程收到 **handoff 信号（SIGUSR2）时**对两个持久化各做一次 flush（清空 debounce、落最后一份），随后把 `schedulePersist` 降级为 **no-op（freeze）**——把「继续学习并落盘」的所有权让给新进程。**freeze 仅在 handoff 路径**：普通 SIGINT/SIGTERM 关机无后继者、freeze 无意义（且会污染反复 gracefulShutdown 的测试）——`gracefulShutdown(signal)` 据 `signal==="SIGUSR2"` gate。`persistenceFrozen` 单例的 reset 折进既有 `clearAnthropicFeatureNegotiationForTests`/`resetAllLimitsForTesting`（已在 RESETTERS 表、被 L1 守卫覆盖）。丢失只是可重学的缓存（符合「无向后兼容负担」下可接受的降级），但正确形状是 handoff-gated freeze、不是放任覆盖竞争。**Phase 1 IO 注记**：handoff 路径 Phase 1 因此含两次 `atomicWriteJson` 落盘（有界毫秒级），不再是纯同步 CPU-bound setup；普通关机 Phase 1 仍纯同步。
 - **④ WAL 并发写**：history.db 仍有「旧进程在途请求 settle 的 finalize 写」+「新进程新请求写」。WAL + `busy_timeout=5000` 已串行化两写者——这正是 SQLite WAL 多进程写者的设计场景，几秒内几笔串行写余量绰绰有余，无需额外锁。
-- **⑤ （History V2 removal 2026-07-18 后现状已变——原风险窗口的对策不再是「跳过」而是「本就无条件跑」）** ~~新进程一次性 schema/维护动作 —— `maybeVacuumOnStartup`（VACUUM）是承重遗漏~~：原设计描述的风险是「新进程 VACUUM 独占整库写锁，命中阈值时旧进程正常流量的任意 `entries_v2` 写会 `SQLITE_BUSY`」，本节记录的修法是按存活性裁决跳过 VACUUM。**现状**：History V3 的 `maybeVacuumOnStartup` 在 `openDatabase` 路径**无条件**跑（不采纳"存活共享库跳过"门槛——`v3_operations` 只落终态、无 V2 那种"进行中行"概念，overlap 期没有"另一进程正在写自己的行"这个并发风险维度，见 skill `history-sqlite-schema` DB-health 节的裁决记录）。overlap 窗口下若新旧进程恰好都在跑 startup VACUUM，WAL + `busy_timeout` 仍提供基础串行化保护（同④），但本条描述的「按 pid 存活性跳过」方案未随 V3 采纳，风险性质已从「entries_v2 写丢失」变为「V3 写在 busy_timeout 内重试／WAL 序列化」，两者不是同一问题。
+- **⑤ 新进程一次性 schema／维护动作 —— `maybeVacuumOnStartup`（VACUUM）**：原 V2 设计的风险是「新进程 VACUUM 独占整库写锁，命中阈值时旧进程正常流量的任意 `entries_v2` 写会 `SQLITE_BUSY`」，对策是按 pid 存活性跳过。**迁 V3 时该 gate 曾被明确不采纳**，理由是「`v3_operations` 只落终态、没有进行中行需要避让」。**2026-08-10 更正：那个理由避让错了对象**——VACUUM 要避让的不是**行的状态**而是**锁**（它独占写锁的时长 = 重写整个文件的时长，远超 peer 的 5 秒 `busy_timeout`），与行是不是终态无关。而 overlap 恰恰是引爆点：**新进程在 boot 期开库时，旧进程仍在全速服务**（交接信号要到 `notifyReady` 才发，比开库晚得多）。**现状：已按「是否存在其他活连接」gate**，判据取 `PRAGMA wal_checkpoint(TRUNCATE)` 的 `busy` 列（探测前置 `busy_timeout=0` 再恢复，否则探测自身会阻塞满 5 秒）。**不用 pidfile 判据**，因为 pidfile 是裸手动路径专属，而 systemd／pm2 的 blue-green 恰恰设计上保证有 overlap、却不写 pidfile。裁决与实测见 ADR [startup VACUUM 按活连接 gate](decisions/2026-08-10-vacuum-gated-on-live-connections.md)。
 
 > **为何不把 history/telemetry 拆成独立持久化服务**（曾评估）：overlap 写竞争是**有界、罕见、可被靶向修覆盖**的（旧进程降级后只剩个位数在途 finalize + 新进程新写），几个真隐患（reclaim 误杀 / telemetry rollup 并发上卷 / VACUUM 独占锁 / states.json 覆盖竞争）都是廉价靶向修（排除 WHERE / 停 timer+注销订阅 / 接管跳过 VACUUM / flush-then-freeze）。而拆服务代价不成比例：需给极富且在演进的 payload（zstd blob / 内容寻址 search_index / 异步两相 finalize / DDSketch）定义 IPC wire 协议，把「同进程一个 await 保证的 never-lose-settle 不变量」变成分布式投递协议；读侧（`/history/api/*`、`/api/status`、`/metrics`、WS 实时推送）也全是进程内同步读；SQLite 的价值本就是嵌入式零 IPC。本项目是单用户内部工具、并发仅「偶尔重启一次」，为有界问题引常驻 sidecar 是过度工程。**触发条件**（满足才值得重做，见 `docs/todo/deferred-backlog.md`）：转向多进程/多 worker 常驻并发 serving；或持久化背压开始阻塞请求 serving；或体量长出 SQLite、本就要迁 client-server DB。
 

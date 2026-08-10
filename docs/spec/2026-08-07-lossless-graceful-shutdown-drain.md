@@ -97,7 +97,7 @@ generation 与 lightweight 两个 in-flight registry 均清零后，shutdown 按
 1. 首信号关闭 ingress，但不降低任何已接纳 operation 的能力。
 2. shutdown 不以任何固定时间值终止 operation。
 3. 请求级 deadline 仍能终止真正超时的 operation，防止首信号无限等待泄漏。
-4. 第二信号在所有非 `stopped` 状态立即强退。
+4. ~~第二信号在所有非 `stopped` 状态立即强退。~~ **已于 2026-08-10 被 ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md) 修订**：仍在等**请求**时（`stopping`／`draining`）的第二个终止信号改为「中止残余 in-flight + 照常 finalize」，第三个才强退；已越过请求排空后（`finalizing`／`notifying`／`failed`）的下一个信号仍立即强退。修订理由：本 spec 删掉 `graceful_wait`／`abort_wait` 时，连带删掉了旧四步实现里「有界墙钟 **且** 干净 finalize」这一档（旧 Step 2/3/4 无论走哪条分支都会执行 `finalize()`），而优雅重启的快速切换需要的正是那一档。**本 spec 的其余不变量（尤其 2「shutdown 不以任何固定时间值终止 operation」）继续成立**——第二档由操作者按下、走请求级原语，不是 shutdown 自己的时限。
 5. History、Telemetry 和 Diagnostic 在最后一个 operation 终态落盘前保持可用。
 6. observer 只在 durability barrier 成功后看到 `finalized`。
 7. `waitForShutdown()` 只在 `stopped` resolve；失败路径不 resolve 成功 latch。
