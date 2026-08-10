@@ -34,7 +34,6 @@ import {
   //
   closeDatabase,
   getDatabase,
-  openDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { deleteMeta } from "~/lib/history/sqlite/meta"
@@ -63,7 +62,11 @@ import {
 import { createDatabase } from "~/lib/sqlite/driver"
 
 import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
-import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
+import {
+  //
+  commitV3HistoryEntry,
+  openTestDatabaseAsReadSource,
+} from "../../helpers/history-v3-fixtures"
 
 function persist(input: {
   id: string
@@ -152,7 +155,7 @@ describe("persisted list-search facade", () => {
   test("keeps a ready read on one SQLite snapshot while a concurrent writer revokes future readiness", async () => {
     closeDatabase()
     const dbPath = freshDbPath()
-    const reader = openDatabase(dbPath)
+    const reader = openTestDatabaseAsReadSource(dbPath)
     ensureV3Schema(reader)
     await applyForwardMigrations(reader)
     persist({ id: "snapshot-visible", startedAt: 100 })
@@ -205,7 +208,7 @@ describe("persisted list-search facade", () => {
   ])("wires the $name facade to one validated snapshot", async ({ read, expected }) => {
     closeDatabase()
     const dbPath = freshDbPath()
-    const reader = openDatabase(dbPath)
+    const reader = openTestDatabaseAsReadSource(dbPath)
     ensureV3Schema(reader)
     await applyForwardMigrations(reader)
     persist({ id: "snapshot-facade", startedAt: 100, sessionId: "snapshot-session" })

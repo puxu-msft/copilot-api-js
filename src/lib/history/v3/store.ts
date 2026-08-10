@@ -26,6 +26,7 @@ import type { Database } from "../sqlite/connection"
 import type { V3TimingSource } from "./timing-source"
 
 import { getDatabase } from "../sqlite/connection"
+import { getHistoryReadDatabase } from "../sqlite/read-connection"
 import {
   //
   deleteMeta,
@@ -221,8 +222,8 @@ export function setV3PersistRetryConfig(
     maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs),
   }
 }
-/** Read the current transient-retry budget (config-wiring assertions). */
-export function getV3PersistRetryConfigForTests(): V3PersistRetryConfig {
+/** Read the current transient-retry budget. Handed to the Worker at `initialize`, and read by config-wiring assertions. */
+export function getV3PersistRetryConfig(): V3PersistRetryConfig {
   return persistRetryConfig
 }
 
@@ -850,6 +851,8 @@ function insertOperationEvidenceRefs(db: Database, operationId: string, refs: Re
 }
 
 export function commitPreparedOperation(db: Database, prepared: PreparedOperation): "inserted" | "idempotent" {
+  // The failure seam fires HERE rather than at a caller, so it reaches whichever writer is live. It used to sit in the in-process drain loop, which the Batch 2b cutover took out of the production path — leaving a test that armed it watching a commit that could no longer fail. In-process only by construction: a real Worker thread has its own copy of this module, and nothing arms it there.
+  commitFailureInjectorForTests?.()
   ensureV3Schema(db)
   const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as
     | { revision: number; digest: string }
@@ -1104,7 +1107,6 @@ async function runDrain(): Promise<void> {
             let attemptConflict = false
             const result = await runHistoryWriteAsync("v3-drain", async () => {
               try {
-                commitFailureInjectorForTests?.() // DI-5 test seam: no-op in prod
                 const commitResult = commitPreparedOperation(getDatabase(), prepared)
                 if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
               } catch (error) {
@@ -1201,7 +1203,7 @@ export async function drainV3Writer(): Promise<void> {
 }
 
 export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<string>): number {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   if (operationIds.length === 0) return (db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n
   return (
@@ -1212,7 +1214,7 @@ export function countV3StoredOperationsExcluding(operationIds: ReadonlyArray<str
 }
 
 export function getV3StoreStatus(): V3StoreStatus {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   const summaryBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_summary_backlog").get() as { n: number }).n
   const projection = getSummaryProjectionReadiness(db)
@@ -1244,7 +1246,7 @@ function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3Stor
   }
 }
 
-export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
+export function getV3StoredOperation(operationId: string, db: Database = getHistoryReadDatabase()): V3StoredOperation | undefined {
   ensureV3Schema(db)
   const row = db.prepare("SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
     | V3StoredOperationRow
@@ -1252,7 +1254,7 @@ export function getV3StoredOperation(operationId: string, db: Database = getData
   return row ? storedOperationFromRow(db, row) : undefined
 }
 
-export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getDatabase()): Map<string, V3StoredOperation> {
+export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getHistoryReadDatabase()): Map<string, V3StoredOperation> {
   ensureV3Schema(db)
   if (operationIds.length === 0) return new Map()
   const rows = db
@@ -1275,7 +1277,7 @@ export function getV3Operation(operationId: string): ModelOperationRecord | unde
   return getV3StoredOperation(operationId)?.record
 }
 
-export function listV3StoredOperations(kind?: string, limit = 100, db: Database = getDatabase()): Array<V3StoredOperation> {
+export function listV3StoredOperations(kind?: string, limit = 100, db: Database = getHistoryReadDatabase()): Array<V3StoredOperation> {
   ensureV3Schema(db)
   const rows =
     kind ?
@@ -1312,7 +1314,7 @@ function summaryFromRow(
 
 /** Visit persisted summaries newest-first after validating each canonical operation. */
 export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, kind?: string, pageSize = 256): void {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   let offset = 0
   while (true) {
@@ -1453,14 +1455,14 @@ export async function drainV3SummaryBackfill(): Promise<void> {
 }
 
 export function countV3Operations(kind?: string): number {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   ensureV3Schema(db)
   const row = kind ? db.prepare("SELECT COUNT(*) AS n FROM v3_operations WHERE kind=?").get(kind) : db.prepare("SELECT COUNT(*) AS n FROM v3_operations").get()
   return (row as { n: number }).n
 }
 
 /** Visit persisted operations newest-first with bounded SQLite/result memory. */
-export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64, db: Database = getDatabase()): void {
+export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64, db: Database = getHistoryReadDatabase()): void {
   ensureV3Schema(db)
   let offset = 0
   while (true) {

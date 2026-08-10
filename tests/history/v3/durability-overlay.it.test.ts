@@ -18,7 +18,6 @@ import {
 } from "~/lib/history/state"
 import {
   //
-  drainV3Writer,
   resetV3WriterForTests,
   setV3CommitFailureInjectorForTests,
   setV3PersistRetryConfig,
@@ -32,10 +31,15 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
-import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
+import {
+  //
+  getHistoryAdmissionController,
+  peekHistoryPersistenceRuntime,
+} from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
 
 import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 function terminalRecord(id: string) {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: Date.now() } })
@@ -54,9 +58,10 @@ function durabilityOf(id: string): EntrySummary["durability"] {
 beforeEach(async () => {
   resetModelOperationTerminalBusForTests()
   resetV3WriterForTests()
-  setStateForTests({ historyDbPath: ":memory:" })
-  await initHistory(true)
+  setStateForTests({ historyDbPath: historyTestDbPath() })
+  // Before `initHistory`: the Worker is handed its retry budget at `initialize`, so a budget set afterwards would reach no generation under test.
   setV3PersistRetryConfig({ maxAttempts: 1, backoffMs: 0 })
+  await initHistory(true)
 })
 
 afterEach(async () => {
@@ -84,7 +89,7 @@ describe("recent terminal durability overlay", () => {
     publishModelOperationTerminal(historyTerminalPublication(record))
     expect(observedDuringPublish).toBe("pending")
     await drainModelOperationTerminalSubscribers()
-    await drainV3Writer()
+    await peekHistoryPersistenceRuntime()?.drain()
     expect(durabilityOf(record.identity.operationId)).toBe("failed")
     unsubscribe()
   })
@@ -116,7 +121,7 @@ describe("recent terminal durability overlay", () => {
     publishModelOperationTerminal(historyTerminalPublication(record))
     expect(observedDuringPublish).toBe("pending")
     await drainModelOperationTerminalSubscribers()
-    await drainV3Writer()
+    await peekHistoryPersistenceRuntime()?.drain()
     expect(durabilityOf(record.identity.operationId)).toBeUndefined()
     unsubscribe()
   })

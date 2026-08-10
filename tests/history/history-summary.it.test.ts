@@ -40,6 +40,7 @@ import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { insertHistoryEntry } from "../helpers/history-fixtures"
+import { historyTestDbPath } from "../helpers/test-bootstrap"
 
 // ─── Helpers ───
 
@@ -63,7 +64,7 @@ function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
 }
 
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 

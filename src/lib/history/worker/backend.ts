@@ -14,12 +14,20 @@ import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import {
   //
+  startV3Maintenance,
+  stopV3Maintenance,
+} from "~/lib/history/v3/maintenance"
+import {
+  //
   V3OperationConflictError,
   commitPreparedOperation,
+  drainV3SummaryBackfill,
   ensureV3Schema,
   prepareModelOperation,
   recoverV3Journal,
   runWithTransientRetry,
+  startV3SummaryBackfill,
+  stopV3SummaryBackfill,
 } from "~/lib/history/v3/store"
 
 import type {
@@ -74,7 +82,14 @@ export interface HistoryWorkerBackend {
   initialize(config: HistoryWorkerStartConfig): Promise<HistoryWorkerBackendReady>
   persist(envelope: HistoryOperationEnvelope): Promise<HistoryPersistenceOutcome>
   applyConfig(revision: number, config: HistoryWorkerHotConfig): RawTargetDescriptor
-  stopMaintenance(): void
+  /**
+   * Stop claiming new maintenance/backfill units and finish the one in hand.
+   *
+   * Async because §8.2 step 4 draws that exact line: shutdown does NOT drain the
+   * recoverable backlog, but it does complete the unit already claimed — which is only
+   * observable if the caller can wait for it.
+   */
+  stopMaintenance(): Promise<void>
   close(): void
 }
 
@@ -119,6 +134,7 @@ export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}):
   const open = deps.openSemanticDatabase ?? openOwnedHistoryDatabase
   let database: Database | undefined
   let startConfig: HistoryWorkerStartConfig | undefined
+  let maintenanceRunning = false
 
   return {
     async initialize(config) {
@@ -142,6 +158,14 @@ export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}):
       }
       database = opened
       startConfig = config
+      // Maintenance and summary backfill are WRITES, so they follow the write connection
+      // into the Worker (spec §1.15 puts checkpoint / incremental vacuum / optimize /
+      // summary backfill here). They cannot stay on the main thread past this batch: once
+      // the Worker owns the write handle exclusively, the main thread's is readonly and
+      // every one of these would fail on it.
+      startV3SummaryBackfill(opened)
+      startV3Maintenance(opened, Math.max(1, Math.round(config.maintenanceIntervalMs / 1000)))
+      maintenanceRunning = true
       return {
         selectedDriver: detectHistorySqliteDriver(),
         rawTarget: createRawTargetDescriptor(config.configRevision, config.rawConfig),
@@ -199,17 +223,28 @@ export function createHistoryWorkerBackend(deps: HistoryWorkerBackendDeps = {}):
       return createRawTargetDescriptor(revision, config.rawConfig)
     },
 
-    stopMaintenance() {
-      // Batch 2a owns no maintenance unit — no backfill, checkpoint, vacuum or optimize
-      // runs in the Worker yet, so there is nothing to stop and nothing to wait for.
-      // Deliberately NOT a flag: a gate that no code reads would suggest maintenance is
-      // being suppressed. Batch 4b introduces the loops and must make this stop them.
+    async stopMaintenance() {
+      if (!maintenanceRunning) return
+      maintenanceRunning = false
+      // Stop claiming NEW units first, then wait for the claimed one. Reversing this would
+      // race: the backfill loop could pick up another page while we were awaiting the last.
+      stopV3Maintenance()
+      stopV3SummaryBackfill()
+      await drainV3SummaryBackfill()
     },
 
     close() {
       const opened = database
       database = undefined
       startConfig = undefined
+      // A `shutdown` that never went through `stop-maintenance` (a crash-adjacent path, or
+      // a caller that skipped the step) must not leave a timer writing to a handle we are
+      // about to close.
+      if (maintenanceRunning) {
+        maintenanceRunning = false
+        stopV3Maintenance()
+        stopV3SummaryBackfill()
+      }
       opened?.close()
     },
   }

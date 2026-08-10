@@ -33,15 +33,15 @@
 
 shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
 
-> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、Tasks 5–8 的两道启动 gate 都从那里进）。**当前状态：文档已在主线，Tasks 1–4 的代码仍只在特性分支 `fix-long-resident-operations` 上、未合并**——本节描述的仍是 master 现行行为。
+> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、剩余的启动 gate 都从那里进）。**当前状态：Tasks 1–4 + B1 的代码已于 2026-08-09 合入 master；Tasks 5–8 未开工。** 所以本节描述的**仍是 master 现行行为**——上面那条摘要行由 Task 6 负责，尚未改动（`git grep -n "request.state" -- src/lib/shutdown.ts` 仍能命中）。
 
 ### Finalizing 与 Stopped
 
 registry 清零后，进程进入 `finalizing`：
 
-1. `RequestContextManager.drainModelOperationFinalizations()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。
+1. `RequestContextManager.drainLifecycleFailures()` join finalizer registry，并暴露排空期间记录的 canonical terminal 发布失败。（该方法在 2026-08-09 由 lifecycle Task 4 从 `drainModelOperationFinalizations` 改名；`ShutdownDeps`／`FinalizeDeps` 上的同名**字段**尚未跟改，那是 Task 6 的活。）
 2. 释放 token runtime，随后关闭上游 WebSocket 与 h2 池。此时不存在会被 teardown 中断的 operation。
-3. `shutdownHistory()` 排空 terminal subscriber／V3 writer并关闭数据库。
+3. `shutdownHistory()` 排空 terminal subscriber、再 `runtime.drain()` 等 Worker 侧的未 ACK 持久化项到达终态，随后释放 runtime 并关闭主线程只读句柄。（Batch 2b 之前这一步排空的是主线程的 V3 writer；写连接迁入 Worker 后已无本地队列可等——详见 [history.md](history.md) 的 drain-before-close 节。）
 4. `shutdownRequestTelemetry()` 封闭 config 订阅与 timer producer，排空 pending delta 并关闭数据库。
 5. `shutdownStructuredFileSink()` 写 sealing marker，排空并 fsync Diagnostic。
 6. durability barrier 全部成功后向观察者发布 `finalized`，再关闭观察者 WS。

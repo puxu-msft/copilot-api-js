@@ -44,8 +44,9 @@ import {
   handleUnpinEntry,
 } from "~/routes/history/handler"
 
-import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
+import { commitV3HistoryEntry, historyTestWriteDatabase } from "../helpers/history-v3-fixtures"
 import { primeUdsConnectForBunTest } from "../helpers/prime-uds-for-bun-test"
+import { historyTestDbPath } from "../helpers/test-bootstrap"
 
 // See prime-uds-for-bun-test.ts's doc comment: `handleSearch` (Phase 4 cutover)
 // now calls the sidecar's UDS client, whose FIRST-EVER connect attempt in this
@@ -117,7 +118,7 @@ async function json<T = unknown>(res: Response): Promise<T> {
 // ─── Setup / Teardown ───
 
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 
@@ -226,7 +227,7 @@ describe("GET /api/entries", () => {
     const older = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict needle older" }], { startedAt: 100 })
     const newer = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict needle newer" }], { startedAt: 200 })
     await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "deliberately unrelated text" }], { startedAt: 300 })
-    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    const db = historyTestWriteDatabase()
     expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     const target = db.prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
     const boundary = db.prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id").all(target.committed_at) as Array<{
@@ -257,7 +258,7 @@ describe("GET /api/entries", () => {
 
   test("returns 400 when a persisted cursor fails full-text membership", async () => {
     const cursor = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "different text" }])
-    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    const db = historyTestWriteDatabase()
     expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     setHistorySearchClientForTests({
       async query() {
@@ -278,7 +279,7 @@ describe("GET /api/entries", () => {
 
   test("returns 503 instead of a false empty list when strict persisted search cannot cover the frozen target", async () => {
     await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict lag needle" }])
-    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    const db = historyTestWriteDatabase()
     expect(validateAndMarkSummaryProjectionReady(db).ready).toBe(true)
     setHistorySearchClientForTests({
       async query() {
@@ -465,36 +466,36 @@ describe("GET /api/entries/:id", () => {
 // ─── handlePinEntry / handleUnpinEntry ───
 
 describe("POST /api/entries/:id/pin and /unpin", () => {
-  test("pin returns the updated entry with pinned=true and persists it", async () => {
+  // Pinning writes `v3_operations.pinned`, and the Batch 2b cutover moved the semantic write connection into the Worker while the `set-pinned` RPC is not scheduled until the Batch 6 query-RPC cutover. Ruled 2026-08-09 to accept the outage rather than pull that protocol message forward, so what these tests pin down for now is that the endpoint says so plainly instead of surfacing a database fault.
+  //
+  // The contract to restore in Batch 6 — pin returns 200 with `pinned: true` and a later GET still reports it, unpin clears it, and an unknown id is a 404 — is recorded in docs/todo/deferred-backlog.md. Reinstate these tests from there.
+  test("pin reports the capability as unavailable, naming the reason", async () => {
     const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "keep me" }])
 
     const res = await post(`/api/entries/${entry.id}/pin`)
-    expect(res.status).toBe(200)
-    const body = await json<HistoryEntry>(res)
-    expect(body.id).toBe(entry.id)
-    expect(body.pinned).toBe(true)
+    expect(res.status).toBe(503)
+    const body = await json<{ error: string }>(res)
+    expect(body.error).toContain("History Worker")
+    expect(body.error).toContain("Batch 6")
 
-    // A subsequent GET reflects the persisted pin state.
+    // The entry itself is untouched and still readable — this is a missing capability, not a broken store.
     const getRes = await get(`/api/entries/${entry.id}`)
-    expect((await json<HistoryEntry>(getRes)).pinned).toBe(true)
+    expect(getRes.status).toBe(200)
+    expect((await json<HistoryEntry>(getRes)).pinned).toBeFalsy()
   })
 
-  test("unpin clears the flag", async () => {
+  test("unpin reports the same unavailability", async () => {
     const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "toggle" }])
-    await post(`/api/entries/${entry.id}/pin`)
 
     const res = await post(`/api/entries/${entry.id}/unpin`)
-    expect(res.status).toBe(200)
-    expect((await json<HistoryEntry>(res)).pinned).toBe(false)
-
-    const getRes = await get(`/api/entries/${entry.id}`)
-    expect((await json<HistoryEntry>(getRes)).pinned).toBe(false)
+    expect(res.status).toBe(503)
+    expect((await json<{ error: string }>(res)).error).toContain("unavailable")
   })
 
-  test("pin returns 404 for a non-existent id", async () => {
+  test("an unknown id reports unavailability rather than 404", async () => {
+    // Deliberate precedence: with no writer at all the endpoint cannot act on ANY id, so answering 404 here would imply the request would have worked for a real one.
     const res = await post("/api/entries/nope/pin")
-    expect(res.status).toBe(404)
-    expect((await json<{ error: string }>(res)).error).toContain("not found")
+    expect(res.status).toBe(503)
   })
 })
 

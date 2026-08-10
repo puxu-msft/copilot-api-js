@@ -13,6 +13,7 @@ import fs from "node:fs/promises"
 import { z } from "zod"
 
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
+import { setHistoryStartupDeadlineMs } from "~/lib/history/startup-deadline-config"
 import {
   //
   DEFAULT_V3_PERSIST_RETRY_CONFIG,
@@ -951,6 +952,11 @@ export async function applyConfigToState(): Promise<Config> {
         }
       }
       if (h.persistence_queue_capacity !== undefined) setHistoryConfig({ historyPersistenceQueueCapacity: h.persistence_queue_capacity })
+      // Startup-only knob, read once by the process entry point before it listens — same
+      // shape as the persist-retry budget below: a module setter, no state field, because
+      // there is nothing for a running instance to react to after startup has finished.
+      // An explicit `null` means "delete this key", not "wait forever" — only a real number moves the deadline.
+      if (h.startup_deadline_ms !== undefined && h.startup_deadline_ms !== null) setHistoryStartupDeadlineMs(h.startup_deadline_ms)
       if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
       if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
       if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })

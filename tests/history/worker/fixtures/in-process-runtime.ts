@@ -1,4 +1,4 @@
-import type { HistoryWorkerBackendDeps } from "~/lib/history/worker/backend"
+import type { HistoryWorkerBackend, HistoryWorkerBackendDeps } from "~/lib/history/worker/backend"
 import type { HistoryWorkerTransport } from "~/lib/history/worker/runtime"
 
 import {
@@ -21,14 +21,18 @@ import { HistoryPersistenceRuntimeImpl } from "~/lib/history/worker/runtime"
  * the backend, and the main thread's module graph must stay free of `bun:sqlite` and the
  * compression codec — the dependency this whole migration exists to remove.
  */
-export function createInProcessHistoryPersistenceRuntime(deps: HistoryWorkerBackendDeps = {}): HistoryPersistenceRuntimeImpl {
+export function createInProcessHistoryPersistenceRuntime(
+  deps: HistoryWorkerBackendDeps = {},
+  /** Wrap the backend before the message loop drives it — the seam the isolation control uses to inject the SAME synchronous block the real-Worker arm injects. */
+  wrapBackend: (backend: HistoryWorkerBackend) => HistoryWorkerBackend = (backend) => backend,
+): HistoryPersistenceRuntimeImpl {
   return new HistoryPersistenceRuntimeImpl({
     workerFactory: () => {
       const transport = new InProcessHistoryWorkerTransport()
       // A retryable startup failure must look like a dead generation, not like a dead
       // process: the real Worker's `process.exit` would end the HOST here (the proxy, or
       // the test runner), so this host reports the same thing through an `exit` event.
-      installHistoryWorkerMessageLoop(transport.workerPort, createHistoryWorkerBackend(deps), {
+      installHistoryWorkerMessageLoop(transport.workerPort, wrapBackend(createHistoryWorkerBackend(deps)), {
         terminateForRestart: (exitCode) => transport.simulateExit(exitCode),
       })
       return transport

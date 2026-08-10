@@ -26,6 +26,7 @@ import { setStateForTests } from "~/lib/state"
 import { initResponsesWebSocket } from "~/routes/responses/ws"
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 function captureWsEvents(): WSEvents {
   let factory: ((context: never) => WSEvents | Promise<WSEvents>) | undefined
@@ -46,7 +47,7 @@ describe("Responses WebSocket History admission", () => {
   let controller: HistoryAdmissionControllerImpl
 
   beforeEach(async () => {
-    setStateForTests({ historyDbPath: ":memory:", clientWebsocketKeepOpen: true })
+    setStateForTests({ historyDbPath: historyTestDbPath(), clientWebsocketKeepOpen: true })
     await initHistory(true)
     controller = new HistoryAdmissionControllerImpl({
       capacity: 1,

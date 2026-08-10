@@ -1,4 +1,4 @@
-export { clearHistory, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, setPinned, updateEntry } from "./entries"
+export { HistoryPinUnavailableError, clearHistory, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, setHistoryStoreWipeForTests, setPinned, updateEntry } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getHistorySummariesAsync, getSummary } from "./queries"
 export { searchContains, searchHistory } from "./search"
 export { getAgentIdFromHeaders, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, getSessionSummaries } from "./sessions"

@@ -31,7 +31,6 @@ import { createModelOperationRecorder } from "~/lib/context/model-operation-reco
 import {
   //
   closeDatabase,
-  getDatabase,
   isDatabaseOpen,
 } from "~/lib/history/sqlite/connection"
 import {
@@ -63,6 +62,7 @@ import {
   SUMMARY_PROJECTION_READY_KEY,
 } from "~/lib/history/v3/summary-schema"
 import { setStateForTests } from "~/lib/state"
+import { historyTestWriteDatabase } from "../../helpers/history-v3-fixtures"
 
 function terminalRecord(id: string) {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: 100 } })
@@ -74,7 +74,7 @@ function terminalRecord(id: string) {
 }
 
 function tableExists(name: string): boolean {
-  return Boolean(getDatabase().prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
+  return Boolean(historyTestWriteDatabase().prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
 }
 
 describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
@@ -97,12 +97,12 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     await initHistory(true)
     expect(tableExists("history_meta")).toBe(true)
     expect(tableExists("v3_operation_summaries")).toBe(true)
-    expect(Boolean(getDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
+    expect(Boolean(historyTestWriteDatabase().prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='v3_operation_summaries_after_insert'").get())).toBe(true)
     // Set, not array: the ledger records WHICH migrations ran, and pending is
     // decided by set membership (storage.ts logMigration). Asserting the array
     // verbatim made these cases accidental copies of the apply-order snapshot,
     // so changing the shipped order broke cases making no claim about it.
-    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+    expect(new Set(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
       new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation"]),
     )
   })
@@ -111,13 +111,13 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     await initHistory(true)
     await drainV3SummaryBackfill()
 
-    expect(getMeta(getDatabase(), SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+    expect(getMeta(historyTestWriteDatabase(), SUMMARY_PROJECTION_READY_KEY)).toBe("1")
   })
 
   test("initHistory drains an in-flight summary backfill before disabling and closing its database", async () => {
     await initHistory(true)
     await drainV3SummaryBackfill()
-    const db = getDatabase()
+    const db = historyTestWriteDatabase()
     for (const id of ["disable-drain-a", "disable-drain-b", "disable-drain-c"]) commitPreparedOperation(db, prepareModelOperation(terminalRecord(id)))
     db.prepare("DELETE FROM v3_operation_summaries").run()
     startV3SummaryBackfill(db, 1)
@@ -130,7 +130,7 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
   test("the integrity migration invalidates legacy authority before startup strictly repairs valid operations", async () => {
     await initHistory(true)
     await drainV3SummaryBackfill()
-    const db = getDatabase()
+    const db = historyTestWriteDatabase()
     const prepared = prepareModelOperation(terminalRecord("legacy-ready"))
     commitPreparedOperation(db, prepared)
     db.prepare("UPDATE history_meta SET value=? WHERE key=?").run(
@@ -153,8 +153,8 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     await initHistory(true)
     await drainV3SummaryBackfill()
 
-    expect(getMeta(getDatabase(), SUMMARY_PROJECTION_READY_KEY)).toBe("1")
-    expect(getDatabase().prepare("SELECT projection_status,projection_error FROM v3_operation_summaries WHERE operation_id=?").get(prepared.id)).toEqual({
+    expect(getMeta(historyTestWriteDatabase(), SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+    expect(historyTestWriteDatabase().prepare("SELECT projection_status,projection_error FROM v3_operation_summaries WHERE operation_id=?").get(prepared.id)).toEqual({
       projection_status: "ready",
       projection_error: null,
     })
@@ -174,20 +174,20 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     // First application: real DDL against the SAME db initHistory opened
     // (not a fresh throwaway db) — proves the pipe is genuinely connected, not
     // just independently functional.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1)
     expect(tableExists("wiring_probe")).toBe(true)
     // Set, not array: the ledger records WHICH migrations ran, and pending is
     // decided by set membership (storage.ts logMigration). Asserting the array
     // verbatim made these cases accidental copies of the apply-order snapshot,
     // so changing the shipped order broke cases making no claim about it.
-    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+    expect(new Set(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
       new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation", "001-wiring-probe"]),
     )
 
     // Idempotent rerun: Umzug's ledger (in the SAME history_meta table
     // initHistory's open path built) must skip an already-applied migration.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1) // NOT re-invoked
   })
 
@@ -224,7 +224,7 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     db.close()
 
     await expect(initHistory(true)).rejects.toThrow(/schema version blocked/i)
-    const failed = getDatabase()
+    const failed = historyTestWriteDatabase()
     expect(failed.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "5" })
     expect(failed.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_transport_evidence'").get()).toBeNull()
     expect((failed.prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name)).not.toContain("format_version")
@@ -232,9 +232,9 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
     closeDatabase()
 
     await initHistory(true)
-    expect(getDatabase().prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "6" })
+    expect(historyTestWriteDatabase().prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "6" })
     expect(tableExists("v3_transport_evidence")).toBe(true)
-    expect((getDatabase().prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name)).toContain("format_version")
+    expect((historyTestWriteDatabase().prepare("PRAGMA table_info(v3_journal)").all() as Array<{ name: string }>).map(({ name }) => name)).toContain("format_version")
   })
 
   test("initHistory rethrows (not swallows) when a migration fails — refuse-to-start contract", async () => {
@@ -252,10 +252,10 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
         },
       },
     ]
-    await expect(applyForwardMigrations(getDatabase(), failing)).rejects.toThrow("boom")
+    await expect(applyForwardMigrations(historyTestWriteDatabase(), failing)).rejects.toThrow("boom")
     // Failed migration must stay unlogged (pending) so it retries next start.
     // Set semantics: the claim is "boom is absent", not a particular order.
-    expect(new Set(JSON.parse(getMeta(getDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
+    expect(new Set(JSON.parse(getMeta(historyTestWriteDatabase(), MIGRATIONS_RUN_KEY) ?? "[]") as Array<string>)).toEqual(
       new Set(["001-transport-evidence-schema", "001-operation-summary-projection", "002-summary-integrity-invalidation"]),
     )
   })
@@ -268,14 +268,14 @@ describe("Umzug migrations wired to V3 initHistory (Phase 4d)", () => {
         upCallCount++
       }),
     ]
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1)
 
     await shutdownHistory()
     await initHistory(true) // production open path sees the shipped migration in the ledger and skips it
 
     // Re-apply the SAME test migrations against the reopened db — ledger persisted on disk.
-    await applyForwardMigrations(getDatabase(), migrations)
+    await applyForwardMigrations(historyTestWriteDatabase(), migrations)
     expect(upCallCount).toBe(1) // still not re-invoked — ledger survived the restart
   })
 })

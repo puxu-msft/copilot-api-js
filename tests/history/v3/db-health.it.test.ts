@@ -130,10 +130,10 @@ describe("DB-health adopted into the V3 open path (Phase 4b)", () => {
     const optimizeSpy = spyOn(connection, "runOptimize")
 
     expect(isV3MaintenanceRunningForTests()).toBe(false)
-    startV3Maintenance(3600) // long interval — this test drives the tick directly, not via the timer
+    startV3Maintenance(connection.getDatabase(), 3600) // long interval — this test drives the tick directly, not via the timer
     expect(isV3MaintenanceRunningForTests()).toBe(true)
 
-    runV3MaintenanceTick()
+    runV3MaintenanceTick(connection.getDatabase())
 
     expect(checkpointSpy).toHaveBeenCalledTimes(1)
     expect(vacuumSpy).toHaveBeenCalledTimes(1)

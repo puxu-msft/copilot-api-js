@@ -56,13 +56,16 @@ import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {
   //
   drainV3SummaryBackfill,
-  drainV3Writer,
   resetV3WriterForTests,
   setV3TransactionBFailureInjectorForTests,
 } from "~/lib/history/v3/store"
 import { setSummarySnapshotObserverForTests } from "~/lib/history/v3/summary-store"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
-import { resetHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
+import {
+  //
+  peekHistoryPersistenceRuntime,
+  releaseHistoryPersistenceRuntime,
+} from "~/lib/history/worker/registry"
 import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -166,7 +169,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
   // Injected factory/writer seams: reset to their default (null/undefined) so a
   // mock injected by one test never leaks into the next (RFC §11 R2).
-  { name: "resetHistoryPersistenceRuntimeForTests", reset: resetHistoryPersistenceRuntimeForTests },
+  //
+  // `releaseHistoryPersistenceRuntime` deliberately does NOT belong here: it owns the process's History writer rather than one test's mock, and this loop runs after the rebuild. It is called explicitly before `resetTestRuntime()` above.
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
@@ -286,15 +290,21 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   })
 
   afterEach(async () => {
-    // Drain any fire-and-forget async V3 terminal write (a request that settled
-    // during the test kicks one via `subscribeModelOperationTerminals`, see
-    // state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the
-    // in-flight write lands on a closed handle ("Cannot use a closed database")
-    // or leaks into the next test. Mirrors the production shutdown drain
-    // (`shutdownHistory`'s `drainV3Writer` call).
-    await drainV3Writer()
+    // Drain any fire-and-forget async V3 terminal write (a request that settled during the test kicks one via `subscribeModelOperationTerminals`, see state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the in-flight write lands on a closed handle ("Cannot use a closed database") or leaks into the next test. Mirrors the production shutdown drain.
+    //
+    // Since the Batch 2b cutover this drains the RUNTIME, not an in-process writer queue: the writer is on the Worker side of the boundary, so awaiting a main-thread queue would prove nothing about what actually reached disk. `peek` rather than `get` because a test that shut History down must not resurrect a runtime here just to drain it.
+    //
+    // Guarded by the snapshot because `drain()` on a runtime that was never started (or was shut down mid-test) throws rather than returning empty, and that is the right contract for it — draining implies a writer to drain. `ready` covers the normal case; `pendingEnvelopes` covers a generation that crashed with work still unacked, which is exactly when skipping the drain would leak a write into the next test.
+    const runtime = peekHistoryPersistenceRuntime()
+    const persistence = runtime?.snapshot()
+    if (runtime && persistence && (persistence.ready || persistence.pendingEnvelopes > 0)) await runtime.drain()
+    // The in-process test backend runs on THIS thread, so unlike production its summary backfill is reachable from here — and it must be drained before the artifact is swapped.
     await drainV3SummaryBackfill()
     restoreStateForTests(snapshot)
+    // BEFORE the rebuild, not after. This releases whatever runtime THIS test left behind — an injected double, a real one it started — so nothing leaks into the next file; `resetTestRuntime()` then brings History back up and the runtime it creates is the one the next test uses.
+    //
+    // It used to sit in `RESETTERS`, which runs after `resetTestRuntime()`, and so it shut down the runtime that had just been created while the admission controller's sink still pointed at it. `enqueue` on a stopped runtime settles `"failed"` at once — no write, no throw, no log — so from the second test of every file onwards, persisting through the production chain silently did nothing. See tests/history/worker/fixture-persistence-survives-teardown.it.test.ts.
+    await releaseHistoryPersistenceRuntime()
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget
     // would let an enqueued write land in the next test (the exact class of leak

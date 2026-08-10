@@ -514,6 +514,8 @@ Commit: `feat(history): add semantic worker backend`
 
 ### Task 2b / Batch 2b: Semantic Production Cutover
 
+**状态：已完成（2026-08-09/10，待 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/tmp/2026-08-09-batch2b-review-gpt.md](../tmp/2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](../tmp/2026-08-09-history-worker-progress-impl-2b.md)。
+
 **Files:**
 - Modify: `src/lib/history/state.ts`
 - Modify: `src/lib/history/worker/registry.ts`

@@ -12,9 +12,9 @@ import path from "node:path"
 import { PATHS } from "~/lib/config/paths"
 import {
   //
-  getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
+import { getHistoryReadDatabase } from "~/lib/history/sqlite/read-connection"
 import {
   //
   initHistory,
@@ -48,7 +48,8 @@ describe("History V3 physical isolation", () => {
     setHistoryConfig({ historyDbPath: "" })
     await initHistory(true)
 
-    const databases = getDatabase().prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>
+    // Through the READ handle: since the Worker cutover that is the only connection this thread has, and "which file did the main thread attach" is exactly what this test is about.
+    const databases = getHistoryReadDatabase().prepare("PRAGMA database_list").all() as Array<{ name: string, file: string }>
     expect(databases.find((database) => database.name === "main")?.file).toBe(PATHS.HISTORY_V3_DB)
     expect(fs.readFileSync(PATHS.HISTORY_DB)).toEqual(legacyBytes)
     expect(fs.statSync(PATHS.HISTORY_DB).mtimeMs).toBe(legacyStat.mtimeMs)

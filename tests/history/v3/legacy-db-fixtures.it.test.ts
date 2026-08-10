@@ -13,7 +13,6 @@ import path from "node:path"
 import {
   //
   closeDatabase,
-  openDatabase,
   openDatabaseReadonly,
 } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
@@ -27,6 +26,8 @@ import {
   visitV3Summaries,
 } from "~/lib/history/v3/store"
 import { compressBytes } from "~/lib/sqlite/compression"
+
+import { openTestDatabaseAsReadSource } from "../../helpers/history-v3-fixtures"
 
 const FIXTURE_DIR = path.join(import.meta.dir, "fixtures", "transport-evidence")
 const tmpDirs: Array<string> = []
@@ -60,7 +61,7 @@ describe("real History V3 legacy SQLite fixtures", () => {
   ] as const) {
     test(`${fixture.file} remains readable through detail, readonly/search, summary, and direct hydrate`, () => {
       const dbPath = copyFixture(fixture.file)
-      const writable = openDatabase(dbPath)
+      const writable = openTestDatabaseAsReadSource(dbPath)
       const before = digestMap(writable)
       expect(writable.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get()).toEqual({ value: "5" })
       expect(writable.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_transport_evidence'").get()).toBeNull()
@@ -81,7 +82,7 @@ describe("real History V3 legacy SQLite fixtures", () => {
       }
       readonly.close()
 
-      openDatabase(dbPath)
+      openTestDatabaseAsReadSource(dbPath)
       const summaries: Array<string> = []
       visitV3Summaries((summary) => summaries.push(summary.id))
       expect(summaries.sort()).toEqual([...fixture.ids].sort())
@@ -94,7 +95,7 @@ describe("real History V3 legacy SQLite fixtures", () => {
     { file: "schema5-manifest-v2-shared.db", id: "fixture-v2-a" },
   ])("$file migrated to schema 6 refuses a legacy row carrying a stray normalized evidence ref", async ({ file, id }) => {
     const dbPath = copyFixture(file)
-    const db = openDatabase(dbPath)
+    const db = openTestDatabaseAsReadSource(dbPath)
     ensureV3Schema(db)
     await applyForwardMigrations(db)
 

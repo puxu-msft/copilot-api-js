@@ -1,46 +1,56 @@
-# HANDOVER：超长驻留 operation lifecycle（Tasks 1–4 已落地，5–8 待做）
+# HANDOVER：超长驻留 operation lifecycle（Tasks 1–4 已合入 master，5–8 待做）
 
-**状态：已评审定稿（2026-08-09）** —— 经独立 reviewer 逐条核验：0 blocker，两条 major（行数衍生数字错误、Task 4 门禁数字陈旧）已修，1 条 minor 已补入正文。评审报告存档于 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-handover-review.md`。
+**状态：进行中（Tasks 1–4 已合入 master，5–8 未开工）**
 
-- **文档在主线、代码在分支**（2026-08-09 落地）：本目录连同 spec / plan / 两份评审 / `docs/tmp/` 全部证据，已由 `6bda73d8` 合入 **master**——按 CLAUDE.md `docs-merge-before-execute`，定稿文档不留在特性分支。**代码没有合**，仍只在 `fix-long-resident-operations` 上，是否合并、何时合并由用户单独决定。所以：在 master 上读到本文是正常的，但你**读不到 Tasks 1–4 的实现**，要看代码得切到该分支或那个 worktree。
-- **核验基线**：`3e418cdb03b93162e57c540ee4361d35f602835e`（2026-08-08）。下方所有「当前状态」断言都在该 commit 上取证。
-- **分支 / worktree**：`fix-long-resident-operations` @ `/home/xp/src/copilot-api-js/.worktree/fix-long-resident-operations`。
-- **未提交改动**：无（`git status --short` 为空）。**未追踪文件**：无。
-- **已跑门禁**：十文件 focused gate `197 pass / 0 fail / 687 expect`（在 `e397720a`，其后代码未再变）；Task 4 焦点集 `bun test tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts` → **`30 pass / 0 fail / 74 expect`**（在 `a8eeaf4c` 之后；独立 reviewer 在自己的副本复现同一数字）。`bun run typecheck` exit 0，`git diff --check` exit 0。
+- **2026-08-09 首版经独立 reviewer 逐条核验**：0 blocker，两条 major（行数衍生数字错误、Task 4 门禁数字陈旧）已修，1 条 minor 已补入正文。报告存档于 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-handover-review.md`。
+- ⚠️ **其后为反映「代码已合入 master」而做的改写未经独立评审**：涉及「必须最先做的事」整节、`test:backend` 负载敏感专节、待办 2、以及头部各条状态行。事实断言均已重新取证（命令写在正文里，可自行复跑），但**没有第二双眼睛看过**。接手方若要依赖这几节做决策，按 `no-self-review` 先派一次评审。
+
+- **文档与代码现在都在 master**（2026-08-09）：文档由 `6bda73d8` 先合（CLAUDE.md `docs-merge-before-execute`）；**Tasks 1–4 + B1 的代码随后经 `merge-long-resident-lifecycle` 分支四轮集成合入 master**，最终 fast-forward 到 `0e0768ee`。所以在 master 上既读得到计划、也读得到实现。原分支 `fix-long-resident-operations` 已被取代，**不要再从它起步**。
+- **核验基线**：两层，别混用。
+  - **合并态断言**（头部状态、「必须最先做的事」、`test:backend` 专节、待办 2）取证于 **master `0e0768ee`**（2026-08-09）。
+  - **Task 1–4 实现期的断言**（硬事实表、各 Task 的评审结论与门禁读数）取证于特性分支 `3e418cdb` / `a8eeaf4c`（2026-08-08）。那些 commit 已随合并进入 master，结论未变。
+- **从哪起步**：从 **master** 新开隔离 worktree（放 `.worktrees/`）。历史分支 `fix-long-resident-operations` 与集成分支 `merge-long-resident-lifecycle` 都已被合并取代，**不要从它们起步**。
+- **主树状态**：合并落地时主树只有其他会话的 WIP（本特性零残留）。**接手时自己跑一次 `git status --short`**，别采信这句——它是快照。
+- **已跑门禁（合并态，master `3df0e08d`——这是该引用的那一组）**：十文件 focused gate + Task 4 焦点集 + `tests/history/worker/admission-shutdown.unit.test.ts` + `tests/infra/entry-evidence-schema.unit.test.ts`，共 15 文件 → **`236 pass / 0 fail`**；`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。
+  - **实现期的读数（分支上，供追溯，不要拿来当合并态判据）**：十文件 gate `197 pass / 0 fail / 687 expect`（`e397720a`）；Task 4 焦点集 `30 pass / 0 fail / 74 expect`（`a8eeaf4c` 之后，独立 reviewer 在自己的副本复现同一数字）。
   ⚠️ **不要引用更早的 `26 pass / 62 expect`**——那是 `3e418cdb`（修 blocker 之前）的真实读数，blocker 整改新增了用例后已变为 30/74。它不是错数，是**陈旧数**；照它核对会误判成回归。
-  `bun run test:backend` 见下方专节（**在 History 子系统间歇性红**）。
-- **未推送**。分支自基线 `92858d08` 起共 32 个提交。
+  `bun run test:backend` 见下方专节（**负载敏感，红了先判归属再下结论**）。
+- **未推送**。本特性的全部提交都在本地 master 上，是否推送由用户决定。
 
-## `bun run test:backend` 在 History 子系统间歇性红（**别误判成自己弄坏的**）
+## `bun run test:backend` 是负载敏感的（**别误判成自己弄坏的**）
 
-同一 commit 上连跑四次，签名每次都不同：`0 fail` → `0 fail` → `2 个分片崩溃` → `2 fail`。第四次的两条失败是 `tests/history/v3/store-performance.it.test.ts`（性能断言，并行下 15.1s）与 `tests/history/worker/packaged-runtime.it.test.ts`（beforeEach/afterEach 钩子 5s 超时）。**两条在隔离下都通过**（分别 3 pass/7.59s 与 2 pass/3.11s）。
+**这不限于 History 子系统**——这是 2026-08-09 合并期间修正的认识。同一棵树、同一 commit 连跑三次：`0 fail` → **`28 fail + 4 分片崩溃`** → **`3 fail + 2 崩溃`**，失败集合每次都不同。更早（2026-08-08）在特性分支上连跑四次也是四种签名（`0 fail` → `0 fail` → `2 崩溃` → `2 fail`），当时命中的是 `tests/history/v3/store-performance.it.test.ts` 与 `tests/history/worker/packaged-runtime.it.test.ts`。
 
-- **判定**：16 分片并发下的负载敏感 flake，落在 History 子系统；本项目改动的是 `src/lib/context/`、`src/lib/pipeline/generation/`、`src/lib/transport/dispatch-lifecycle.ts` 与 `shutdown.ts` 的一处调用点，与 History 无交集。
-- **诚实边界**：本文**未**在基线 commit 上复跑 `test:backend` 做 A/B 对照，所以「非本项目引入」是基于「隔离通过 + 子系统无交集 + 签名不稳定」三条推断，**不是 A/B 实证**。若接手方需要更强证据，在基线上跑一次即可。
-- **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断本项目是否破坏了东西，以十文件 focused gate 与 Task 4 焦点集为准（它们稳定绿）。红了先看失败文件是否落在 History，是就隔离复跑确认。
+命中过的用例横跨三类，共同点是**都对 wall-clock 或扫描耗时敏感**：
+
+- **性能/计时断言**：`tests/history/v3/store-performance.it.test.ts`、`tests/history/v3/summary-query-performance.it.test.ts`、`tests/history/v3/db-health.it.test.ts`（VACUUM freelist，实测 5690ms）。
+- **5s 超时的架构 AST 扫描**：`tests/architecture/package-boundaries.unit.test.ts`、`telemetry-domain-surface.unit.test.ts`、`anchor-remap-single-authority.unit.test.ts`（失败耗时精确落在 5004–5132ms，即超时本身）。
+- **钩子超时**：`tests/history/worker/packaged-runtime.it.test.ts`。
+
+- **分片崩溃会吞掉该分片的 skip 计数**：28-fail 那次 skip 从 43 掉到 9。**别把 skip 数的异动当成 gate 配置被改了**去查一圈。
+- **判定**：16 分片并发 + 本机同时有多个 peer 会话在跑各自的套件 → 负载敏感 flake。
+- **本轮的实证（比推断强）**：对其中最可疑的四个文件（`history/search` 两个、`architecture` 两个）做了定向 A/B——**纯 master 与合并态逐字相同**，均为 `24 pass / 20 skip / 0 fail`。全部三条最终失败也在隔离下通过（`28 pass / 0 fail`）。
+- **诚实边界**：**未**在纯 master 上以同等负载跑完整 `test:backend` 做全量 A/B。所以「非本次改动引入」依据的是「文件面不相交 + 隔离通过 + 签名不稳定 + 定向 A/B 相同」四条，**不是全量 A/B 实证**。
+- **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断自己是否破坏了东西，以十文件 focused gate 与 Task 4 焦点集为准（它们稳定绿）。红了先看失败文件**是否落在自己的改动面内**，不在就隔离复跑确认。
+- **旁证**：master 上有 peer 维护的 `docs/tmp/2026-08-08-load-sensitive-test-dispositions.md`（及其 `-review`），记录的是同一批用例——这个问题不是本特性独有的。
 
 ## 入口指引（按序读）
 
-1. **本文**——先读「必须最先做的事」与「已确证的硬事实」。
+1. **本文**——先读「已确证的硬事实」与「各 Task 当前状态」；「必须最先做的事」那节已完成，只需扫一眼确认不要重做。
 2. `docs/plan/2026-08-08-long-resident-operation-lifecycle.md`——计划正文，Tasks 5–8 在第 384 行之后。**注意它对 `shutdown.ts` 的描述可能已陈旧，见下。**
 3. `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`——逐轮进度、在途意图、**已作废路线（四条，别重试）**。
 4. 三份评审证据（都已进仓库，不会被 `git clean` 删）：`docs/tmp/*-task-3-report.md`（M1–M9 变异证据）、`*-b1-verification.md`（verifier 三轮）、`*-b1-merged-review.md`（reviewer 三轮）。
 
-## 必须最先做的事：先合并 master，再动 Tasks 5–8
+## ~~必须最先做的事：先合并 master~~ —— 已完成（2026-08-09），不要重做
 
-**这是本次交接最重要的一条，不做会白干。**
+**这一节曾是本交接最重要的一条；它已经做完了。** 保留在此是为了让接手方一眼看出「不必再合一次」，并留下当时的取舍。
 
-- **证据（别引用写死的数字，跑命令）**：这里的每个量都随 master 前进而变，所以只给复现命令——**2026-08-08 首次写下时的 287 个提交，到 2026-08-09 已是 459**，写死的值一天就烂了。
-  - 落后多少个提交：`git rev-list --count fix-long-resident-operations..master`
-  - 其中多少个改过主战场文件：`git log --oneline fix-long-resident-operations..master -- src/lib/shutdown.ts | wc -l`
-  - `shutdown.ts` 被改成什么样：`git diff --numstat $(git merge-base fix-long-resident-operations master) master -- src/lib/shutdown.ts`，并用 `git show <ref>:src/lib/shutdown.ts | wc -l` 两端各数一次交叉验证（**两法必须互证**，2026-08-08 那次两法都得净减 199 行）。
-  - 同期 master 也改过 `src/lib/context/manager.ts` 与 `src/lib/context/request.ts`——**正是 Task 4 与 Task 2 改的两个文件**，一并按上面的 numstat 命令重取。
-- **为什么阻塞**：Tasks 5–8 的主要战场就是 `shutdown.ts`（Task 6「暴露 tracked-operation 运维真相」、Task 8 文案与验收）。master 的 lossless-shutdown 重写已经删改了计划正文引用的结构，照旧基线施工等于对着不存在的代码写。
-- **前提仍成立（已核实，不必重查）**：master 版 `formatActiveRequestsSummary`（`master:src/lib/shutdown.ts:246-256`）**仍然打印 `request.state`**——正是产生 `(failed, 17620s)` 的那个字段。所以本项目要修的缺陷在当前 master 上依然存在，工作没有作废。措辞已由 `active request(s)` 改为 `accepted operation(s)`，**Task 8 里任何按旧文案写的断言都要重新校准**。
-- **合并策略**：按 memory `methodology-remerge-stale-feature-across-subsystem-rewrite`——**取 master 的结构，重放我们的 delta**，不要把 master 的重写往回改成旧形状。
-- **实测会撞 3 处冲突**（独立评审代跑确认，**撞上是预期的，不是你弄坏了**）：`src/lib/context/manager.ts`、`src/lib/shutdown.ts`、以及 `docs/memory/MEMORY.md`。前两个是真正需要判断的地方。
-  ⚠️ 第三处的成因在 2026-08-09 变了：本分支加的那条 memory 索引行**现在已经独立存在于 master**（措辞略有调整），所以合并时它不是「新增 vs 未有」而是「两份措辞不同的同一行」——**取 master 那份**，别把分支的旧措辞放回去。本目录下的文档文件同理：master 版是权威，分支版是旧快照。
-- **合并后必须重跑**：十文件 focused gate + `bun run typecheck` + `bun run test:backend`（只看 `0 fail`）。
+- **结果**：Tasks 1–4 + B1 已在 master 上，最终 fast-forward 到 `0e0768ee`。集成走的是独立分支 `merge-long-resident-lifecycle`（共四轮：主集成 + 三次追 master），不是在共享主树上直接合。
+- **当时怎么解的两处代码冲突**（下次遇到同一区域可复用这个判断）：
+  - `src/lib/context/manager.ts` —— 保留 master 新增的 History reservation 释放（`failBeforeTerminal`），丢掉 Task 4 有意删除的 `operationScopes.delete` + `failures.push`。**代码里留了合并注记**，别再把那两行加回来。
+  - `src/lib/shutdown.ts` —— 保留 master 新增的三行 admission 依赖解析，同时应用 Task 4 的方法改名 `drainModelOperationFinalizations` → `drainLifecycleFailures`。`ShutdownDeps` 的字段名仍是旧名，**那是 Task 6 的责任**，代码里已有接缝注释。
+- **前提仍成立（已在合并后的 master 上复核）**：`formatActiveRequestsSummary` **仍然打印 `request.state`**——正是产生 `(failed, 17620s)` 的那个字段。**本特性要修的缺陷至今仍在，Tasks 5–8 没有作废。** 摘要文案已是 `accepted operation(s)`（不再是 `active request(s)`），**Task 8 里任何按旧文案写的断言都要重新校准**。当前行号自己取：`git grep -n "request.state" -- src/lib/shutdown.ts`。
+- **仍然有效的纪律**：这仓库并发极高（一天内 master 前进数百个提交），追 `--ff-only` 不会收敛。做法是**在隔离 worktree 里集成、验证、再回主树做一次无风险的 fast-forward**；期间 master 又动就再吃一轮增量，按 `moving-shared-head-is-not-failure` 只对**与自己改动面相交**的部分做定向验证，不每轮全量重跑。
 
 ## 已确证的硬事实（别再重新推导）
 
@@ -77,9 +87,9 @@
    - **遗留边界形态**：「失败先于 settle 且 ctx 永不 settle」时，ctx 与 barrier **各留 1 条**——有界性等同于 release，该形态下 release 永不发生。**这正是本项目要消灭的僵尸形态**，reviewer 建议由 **Task 7 的僵尸回归矩阵**覆盖。
      验收：Task 7 矩阵含该形态并断言最终被回收或被 `/api/status` 如实呈现。
    - **两条已记录、本轮不改的观察**（见进度文件）：C2 的「未登记 failure」保护分支**生产不可达**（`request.ts:910` 的 outcome lock 在登记前就 return），只有推理无正负样本，**待独立裁决，别自行删除该分支**；C3 现实现下终态到 release 全是 microtask 链，`/api/status` 撞不上 `blocker==="none"` 的 invariant throw，**Task 6 接线时若在其间插入 await 就会变 500**。
-2. **合并 master**（见上「必须最先做的事」）
-   - 验收：合并后三道门禁全绿，且 `git log --oneline master..HEAD` 只含本项目的提交。
-   - 证伪：`grep -n "state" src/lib/shutdown.ts` 若显示 drain 摘要仍直接读 `request.state` 而未经 lifecycle blocker 归一，说明缺陷仍在（这正是要修的）。
+2. ~~**合并 master**~~ —— **已完成**（2026-08-09，fast-forward 到 `0e0768ee`），见上同名小节。
+   - 当时的验收已满足：typecheck / `lint:all` / `test:backend` 三道门（`test:backend` 的红逐条隔离复核后全部归因为负载敏感，见同名小节）。
+   - **但它的证伪判据现在指向 Tasks 5–8 仍要做的事**，别误读成已修：`git grep -n "request.state" -- src/lib/shutdown.ts` 仍能命中——drain 摘要**依旧直接读 `request.state`**、未经 lifecycle blocker 归一。**这正是 Task 6 要修的缺陷，至今仍在。**
 3. **Tasks 5–8 按计划推进**，但先做一次 **plan-vs-code 对账**
    - 验收：逐条核对 Tasks 5–8 引用的每个 `file:line` 与符号在合并后的树上仍存在；不存在的当场标注并改写计划。
    - 证伪：任一被引用符号 grep 不到，即证明该 Task 的步骤已陈旧。
@@ -89,7 +99,7 @@
 
 - 本项目所修的 drain 行为与 master 新落地的 **lossless shutdown** 系列（`04e6ecb1 fix: drain accepted requests losslessly on shutdown`、`d254d8ae refactor: remove shutdown-owned request cancellation`、`71c043cf docs: finalize lossless shutdown lifecycle`）**处在同一区域**。
 - **尚未对账**：本文作者未逐条核对这两套工作的取舍是否冲突（例如「shutdown 不拥有 drain deadline，只有 request 级机制可终止工作」这条 master 新裁决，与本计划的 blocker 聚合是否一致）。
-- **这是一条正式待办**：合并 master 后，**先读 `71c043cf` 引入的那份 lossless shutdown 文档，再动 Tasks 6/8**；若发现取舍冲突，交用户裁决，不要自行取舍。
+- **这是一条正式待办，至今未闭合**：合并 master 已完成，但这条对账**没做**。**动 Tasks 6/8 之前先读 `71c043cf` 引入的那份 lossless shutdown 文档**；若发现取舍冲突，交用户裁决，不要自行取舍。
 
 ## 本轮我犯过的错（每条绑复现点）
 

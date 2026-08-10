@@ -1,6 +1,18 @@
 # HANDOVER —— generation emission command algebra Commit -1 待正式合并
 
-**状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。**Pre-merge A 不存在**：下一动作是将该分支正式合入当时真实的 master；只有该 merge result 才定义 entry candidate **A**，随后执行 T0.0f → pointer **P** → T0.0d → T0.1。
+**状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
+
+**Entry candidate A 已确定（2026-08-10）**：`c38baa6ac509767c508b6d89b3859d7684358397`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出。下一动作是 T0.0d（validator 出 receipt）→ T0.1。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+
+<!-- entry-evidence-pointer:v1 -->
+entry_sha=c38baa6ac509767c508b6d89b3859d7684358397
+manifest_path=/home/xp/.claude/jobs/757dc257/tmp/entry-evidence-A-c38baa6a/evidence-manifest.json
+manifest_sha256=3cf95f99fdd46d5025921f0096d82f7c5a72e89aca6cf1fbeddd461e41d86f59
+archive_path=/home/xp/.claude/entry-evidence/A-c38baa6a
+<!-- /entry-evidence-pointer:v1 -->
+
+`manifest_path` 指向产出它的那次运行的树外 OUT，**它才是 entry 的定义**；`archive_path` 是同一批产物的持久副本（job 目录会随 job 删除而消失），归档副本不定义 entry。两处 `evidence-manifest.json` 的 sha256 相同，已独立 `sha256sum` 复算。
+
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。

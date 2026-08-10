@@ -1252,6 +1252,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：① setter 改为**非空即抛**（slot 已有实例时拒绝，逼调用方先走 owner reset）——这是最强也最省事的一档，本 registry 无真实并发需求，够用；若确需安全替换非空 slot 才上 owner 级 async `replace(next)`，**注意「写在同一函数里」不会让跨 `await` 的替换原子**，须显式指定线性化点并让**所有读写（含 getter 与 lazy-init）参加同一协议**，否则 dispose 期间普通 getter 会拿到正在关闭的实例（详见 skill `owned-singleton-lifecycle`）。**「返回被顶掉的值」只是辅助接缝、不构成保证**——JS/TS 调用方可以无声忽略返回值，拿到了也可以不 dispose。② reset 显式选一条失败策略并写进注释——推荐「先 compare-and-clear 再把错误抛出去」，这样失败可见**且**状态可用；改完补一条测试：`shutdown()` reject 后 `runtime` 已被清、且异常仍传播。③ 顺带补上 skill 里那条本仓尚无的反向测试：在 `shutdown()` 暂停期装入 replacement，断言它幸存（现有 `tests/history/worker/registry.unit.test.ts:42-62` 只暂停 shutdown、断言旧值仍在与完成后清空，**没有**在暂停期装新实例）。**三项的验收 oracle 统一为「落败实例持有的资源可观测地停了」**，不是「引用换了」。
 - **为何暂缓**：本轮任务是把这套生命周期合同写成 skill，不是改产品代码；且这两处是 **test seam**，误用后果落在测试可信度而非线上行为，与本轮已闭合的其他项不同档。改动虽小但要新增三条测试并选定失败策略，值得自己的一次验证链。
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
+- **2026-08-09 补充（Batch 2b 实测）**：本 registry 的实例是**一次性**的（`start()` 后 `shutdown()` 即终态），因此「已停止但仍留在 registry」是唯一不可恢复的状态——下一次消费者拿到它、start 它、被告知 `has been shut down`。Batch 2b 因此把**三个**生命周期出口（`shutdownHistory`、`initHistory(false)`、`initHistory` 的重装分支）统一改成 **release（停止 + 清引用）而非只 stop**，见 `src/lib/history/state.ts`。**这条一次性语义应当写进 skill `owned-singleton-lifecycle` 的正文**：现有 skill 讲的是「谁拥有、怎么 compare-and-clear」，没讲「被顶掉的实例可能永远不能复活，因此 stop 与 clear 必须同时发生、且要在每一个出口都发生」。实证代价：分三轮才修对，中间两轮分别是 282 与 49 条全档失败，每轮都只修了眼前那条路径。改 skill 属指令类文本，需走评审，故登记于此。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
 
 ## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-08 合并态验证 + 2026-08-09 A3 复评 round 4，两个会话独立撞到同一问题）
@@ -1316,7 +1317,45 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：**「何时放弃启动」属于拥有进程启动的一方，不属于 runtime**。Batch 2b 把 runtime 接进生产启动序列时，须在**调用方**加启动截止时间（deadline），超时后按 §7.2 让 shutdown 进入 `failed` 并 exit 1。runtime 侧已备好可观测出口：`HistoryWorkerStatus` 的 `consecutiveFailures` 与 `nextRetryAt`（`protocol.ts`），deadline 逻辑读它们即可，**不需要**改 restart-policy。若最终判断 runtime 自己也该有上限，那要先修 spec §7.2 的 fatal 成因清单再改代码，顺序不能反。
 - **为何暂缓**：Batch 2a 的 runtime **尚无生产调用点**（`getHistoryPersistenceRuntime()` 无生产消费者，接线是 Batch 2b），因此该挂起在本批**够不到生产**。在没有启动序列的批次里预先实现 deadline，等于把机制放在它无法被正确验收的地方。
 - **触发条件（必做，不是可选）**：Batch 2b 把 terminal subscriber 与 runtime 接进生产启动序列的那一次。验收 oracle：注入一个**永不清除**的可重试启动错误，断言进程在 deadline 后以非零码退出，而不是停在「未监听」。
+- **2026-08-09 状态更新（Batch 2b 已实现机制，未实现进程级 oracle）**：`src/lib/history/startup-deadline.ts` 提供 `initHistoryWithinStartupDeadline`，`packages/cli/src/start.ts` 在 `initHistory` 那一处接线并在超时后 `process.exit(1)`；默认 30s，`history.startup_deadline_ms` 可配（`0` = 永远等），错误对象带 `consecutiveFailures` 与 `nextRetryAt`。**`restart-policy.ts` 未改动**，符合本条的归属判断。已有覆盖：机制层 `tests/history/worker/startup-deadline.it.test.ts`（runtime 永不 settle → 抛 `HistoryStartupDeadlineError` 且带计数）、config 接线层 `tests/config/history-startup-deadline-config.unit.test.ts`。
+- **✅ 2026-08-09 已闭合**：进程级 oracle 已落地 `tests/e2e/history-startup-deadline.e2e.test.ts`（e2e 档，不进 `test:backend`）。做法：产物只写 V3 owner 标记表、**不建 schema**（owner 校验通过 → 不是永久错误；Worker 必须写 schema → 撞锁），测试进程持 `BEGIN EXCLUSIVE` 长期占锁，制造持续的 `database is locked`。断言：全程轮询端口从未接受连接、输出含 `retryable startup failure`（排除永久错误冒充）、含 `startup deadline exceeded`、退出码非零、耗时 ≥ deadline，**且 deadline 报告之后没有任何后续动作**。
+  - **最后一条断言是靠变异找出来的，别删**：去掉入口的 `process.exit(1)` 后，进程会继续走到 Phase 4 并因缺 GitHub token 而死，**同样非零退出、耗时几乎相同**（实测 7206ms vs 7180ms），前四条断言全部照绿。只有「deadline 之后什么都没做」这一条会变红。
+  - 上面「触发条件（必做）」一节保留作为历史依据与判据来源；条目本身**不再是开启项**。
 - **发现方**：Batch 2a 第二轮对抗性评审（`a71d2167` major「无限重启无终态」）与第三轮 spec 一致性评审（`ad6a56d2` major「`maxConsecutiveFailures` 与冻结 spec 冲突」）**结论相反**，由用户裁决撤回上限并登记本条。
+
+## Pin/unpin 端点在 Batch 2b→6 窗口期不可用（2026-08-09，用户裁决）
+
+- **根因 / 现状**：`POST /api/entries/:id/{pin,unpin}` 写的是 `v3_operations.pinned`，是主线程**最后一条**生产写路径（`src/routes/history/handler.ts` `setEntryPinState` → `setPinned` → `setV3OperationPinned`）。Batch 2b 的 cutover 把 semantic 写连接搬进 Worker、主线程句柄变只读，这条路径随之失去写入口；而计划把 `set-pinned` 排在 **Batch 6** 的 query-RPC surface 里（`docs/plan/2026-08-07-history-persistence-worker.md` 的 Batch 6 「RPC surface」段落），2b 章节没有提到它。取证（2026-08-09 本会话实跑）：`rg -n 'setPinned' src/routes/` 只命中 `src/routes/history/handler.ts` 一处；`src/routes/negotiation/route.ts` 里的同名 `setPinned` 是 feature-negotiation 的不同函数，无关。同时确认 `clearHistory`（`clearV3Store` 的唯一调用方）**无 route 消费者**，其 test-only 定位属实，因此**不存在第二条主线程生产写路径**。
+- **当前行为**：端点返回 **503**，body 的 `error` 说明能力去了 Worker、RPC 在 Batch 6 落地（`HistoryPinUnavailableError`，定义在 `src/lib/history/entries.ts`）。选 503 而不是让 `getDatabase()` 抛 `database not initialized`，是为了让运维看到「这个能力暂时没有」而不是「数据库坏了」。条目本身照常读写，只有 pin 标志不能改。
+- **待恢复的契约（Batch 6 照此重建测试）**：`tests/history/history-api.it.test.ts` 的 `POST /api/entries/:id/pin and /unpin` 原有三条断言——① pin 返回 200、body 的 `pinned` 为 `true`，随后 `GET /api/entries/:id` 仍报告 `pinned: true`（**持久化**，不只是响应体）；② unpin 返回 200 且 `pinned` 变 `false`，随后 GET 也是 `false`；③ 未知 id 返回 **404** 且 `error` 含 `not found`。当前这三条已替换为断言 503 的版本，恢复时把上面三条写回去。**注意 ③ 的优先级现在是反的**：没有写入口时任何 id 都先撞 503，Batch 6 之后必须让 404 重新排在前面。
+- **理想架构 / 若做需改什么**：Batch 6 加 `set-pinned` 协议消息对（`protocol.ts` 的 main→worker / worker→main 两侧 + `parseBase` 的类型分支），走 `runtime.ts` 已有的相关请求通道 `request<T>()`（含 worker 重启后的 `reissue`），backend 侧调用现有的 `setV3OperationPinned(id, pinned, db)` 纯 primitive。`setPinned` 随之由同步 `boolean` 变 `Promise<boolean>`，route handler 需 `await`；届时删除 `HistoryPinUnavailableError` 与 handler 里的 503 分支。
+- **为何暂缓**：用户 2026-08-09 在「提前搬进 Worker／接受窗口期不可用／拆独立小批次」三个选项中裁决**接受窗口期不可用**，依据 CLAUDE.md 「无向后兼容负担：允许短期报错／功能不可用」。提前搬需要新增协议消息，会把 2b 的范围推出已评审边界，并预支 Batch 6 的 RPC 形状。
+- **触发条件（必做，不是可选）**：Batch 6 的 query-RPC cutover。验收 oracle：上面「待恢复的契约」三条全绿，且 `rg -n 'HistoryPinUnavailableError' src/` 为空。
+
+## History persistence status 把已切换的后端仍报为 `legacy`（2026-08-09，Batch 2b 独立评审 minor）
+
+- **根因 / 现状**：`src/lib/history/worker/status.ts` 的 `getHistoryPersistenceStatus(backend = "legacy")` 有个**默认参数**，而两个生产消费者——`src/routes/status/route.ts` 与 `src/lib/metrics-exposition.ts`——都**不传参**。Batch 2b 之后 terminal 持久化实际全部经 Worker，但 `/api/status` 与 metrics 里的 `backend` 字段恒为 `"legacy"`。这是**面向运维的谎报字段**：它正是运维用来判断「持久化到底在哪条路径上」的那一个值。
+- **为什么不能顺手把默认值改成 `"worker"`**：`composeHistoryPersistenceStatus` 对 `backend === "worker"` 会额外断言 `admission.unacked === runtime.pendingEnvelopes`，**不等就抛**。这两个计数由 admission 与 Worker 在**不同时刻**更新，瞬时不等是可能的；一旦不等，`/api/status` 会 500——把一个「字段值不对」换成「端点挂掉」，比现状更糟。所以正确修法不是改默认值，而是**先决定那条一致性断言的归属**：它是「状态组装的不变量」还是「诊断用的告警」？若是后者，应改为在快照里带一个 `mismatch` 标志而不是抛；若是前者，则要证明两者在快照点必然一致（需要在同一临界区取两个计数）。
+- **理想架构 / 若做需改什么**：① 去掉 `backend` 的默认参数，让调用方**必须**显式说明（默认参数正是这次说谎的机制——它让「没人传」看起来像「传了 legacy」）；② cutover 之后 `"legacy"` 在生产已不可达，考虑整体删除该联合成员，让类型系统直接拒绝这个状态；③ 同时处理上面那条一致性断言的归属。
+- **为何暂缓**：`②` 会牵动既有测试的断言，`③` 是行为决策（抛 vs 报告），都超出「收尾顺手修」的范围，而错误值本身不影响持久化正确性。
+- **触发条件**：下一次动 `/api/status` 的 History 段、或 Batch 6 的 query-RPC cutover（那时 backend 语义还会再变一次），两者取先到者。
+- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/tmp/2026-08-09-batch2b-review-gpt.md`）。
+
+## semantic-write 架构守卫问的是拼写、不是能力（2026-08-09，Batch 2b 独立评审 minor）
+
+- **根因 / 现状**：`tests/architecture/history-worker-boundaries.unit.test.ts` 用 **直接 identifier 匹配 + 单文件扫描** 判定「主线程不再写 semantic DB」。它挡得住直白的写法，挡不住 namespace alias（`import * as c from ...; c.getDatabase()`）、import alias、`await import()` 动态导入、以及经 re-export／helper 间接调用。**当前代码边界事实成立**（第三轮评审逐条取证确认），弱的是**未来防回归的强度**。
+- **理想架构 / 若做需改什么**：换轴——不再枚举写法，而是按**模块能力**判定：用 resolver 判断 `state.ts`（及主线程模块图）能否**到达**写 opener／commit primitive，即做可达性分析而不是文本匹配。项目已有同类经验：见 skill `reshaping-a-bypassed-guard`（守卫被合法写法绕过时，应迁移不变量而不是继续补形态）。
+- **为何暂缓**：换轴是独立的一块工作，且当前边界已由另一条**计时**判据（`tests/history/worker/event-loop-isolation.it.test.ts`）从完全不同的原理侧面守住——两条一起被同一种绕过手法骗过的概率远低于任一条单独。
+- **触发条件**：守卫再次被一个合法写法绕过时（哪怕只是评审指出而非实际发生），直接换轴，不要再加一条 identifier 形态。
+- **发现方**：Batch 2b 第三轮独立评审 minor 2 与命题 7 裁决。
+
+## 统一测试 fixture 的 teardown 会解除刚重建的 writer 的武装（2026-08-10，Batch 2b 假绿专项评审 blocker；**已修复**）
+
+- **根因**：`tests/helpers/isolated-fixture.ts` 的 `afterEach` 先 `await resetTestRuntime()`（它经 `initHistory(true, 100)` 建好 runtime 并让 admission 的 sink 指向它），**随后**才跑 `RESETTERS` 循环，而循环里注册着 `releaseHistoryPersistenceRuntime` —— 把刚建好的那个 runtime 关掉并摘出 registry。于是**从每个文件的第 2 个用例起**：registry 为空、admission 的 sink 仍指着一个已 shutdown 的 runtime，`enqueue` 命中停机分支后**当场以 `"failed"` 结算——不写盘、不抛错、不打日志**。
+- **影响面**：129 个用该 fixture 的文件里，「发一个请求 → 断言 History 里有这条记录」这类端到端断言**结构性地无法成立**。本批新增的三份测试各自在 `beforeEach` 里写 `await initHistory(false)`，注释从三个不同角度描述了同一个症状——那是绕过，不是修复。
+- **修法**：把 `releaseHistoryPersistenceRuntime` 移出 `RESETTERS`、改为在 `resetTestRuntime()` **之前**显式调用。保留原意图（一个测试注入的 mock 不得泄漏），同时让下一个测试真正要用的 runtime 活着。回归测试 `tests/history/worker/fixture-persistence-survives-teardown.it.test.ts` 断言**第 2、3 个**用例仍能经生产链落盘（第 1 个无论如何都过，这正是它长期没被发现的原因）。
+- **⚠️ 一条方法论教训，比缺陷本身更值得记**：本会话曾**据单次测量把这个修复回退掉**——那次 `bun run test:it` 报 58 fail（基线 6），我据此判断「约 52 条测试建立在不落盘之上、需逐条甄别」。**那个判断是错的**：复查日志发现 58 里只有约 16 条真断言失败，其余来自**一次 Bun 运行时崩溃**（`oh no: Bun has crashed`，SIGILL，`tests/diagnostics/credential-four-track.it.test.ts`），且失败名单五花八门（systemd sdNotify、SonicBoom flush、openai-cc codec、gemini reverse wire）——不可能是「为迁就不落盘而写的断言」。重新施加修复后**连跑两次均为 5 fail 且无崩溃**，与回退态、与基线完全一致。**教训：`test:it` 这类档位的失败计数会被单次 runtime 崩溃整体抬高，任何基于它的「爆炸半径」判断都必须先看失败名单、并连跑两次**（这正是本仓 `empirical-verification` 一直在说的事，我在自己身上没执行）。
+- **剩余的 5 条 `it` 失败与本条无关**：`durability-overlay`、`history-api` ×3、`history-store` 的 `clearHistory`，在基线 commit 上同样红（本会话用只读对照 worktree 核实过），属既有问题、单独跟踪。
 
 > **状态更新（2026-08-09，合并 master 时对账）**：本条开出的「理想架构②——改为断言算法性质而非墙钟比值」**已在 master 落地**（`tests/history/v3/store-performance.it.test.ts` 的 query-plan oracle：观察 commit 实际 prepare 的 SELECT/DELETE/UPDATE 语句、断言其计划不退化为 SCAN，并带「planned.length > 0」的正控防空跑），且墙钟比值那条已被 `RUN_PERF_TESTS` gate 移出 `test:backend`、文件级 `setDefaultTimeout(60_000)` 按实测worst case 设定。**同文件那条 CAS 字节比也已重新标定**为 `>=30` physical / `>=50` live——旧的 `10x` 在去重**完全**失效时实测为 9.51 / 10.79，即 live 那一侧毫无鉴别力（见本文件「仓库里仍有文档把同源证据写成独立」条所引评审）。
 > **仍未闭合的部分**：query-plan oracle **严格窄于**原比值断言——它看不见「保持索引计划但成本仍增长」（N+1 点查、行变大、JS 侧 per-operation работы）。那部分现在只由 perf 档承担，而 perf 档默认不跑。**触发条件照旧：再看到相关红，直接做②的延伸，别调阈值。**

@@ -12,7 +12,7 @@ import {
   listHistoryOverlayEntries,
   listHistoryOverlaySummaries,
 } from "./queries"
-import { getDatabase } from "./sqlite/connection"
+import { getHistoryReadDatabase } from "./sqlite/read-connection"
 import { recordToHistoryEntry } from "./v3/projection"
 import {
   //
@@ -29,7 +29,7 @@ import {
 
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const overlay = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId !== undefined)
   const snapshot = withValidatedSummarySnapshot(db, () => querySessionSummaries(db, limit, overlay))
   if (snapshot.ready) return snapshot.value
@@ -157,7 +157,7 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const overlayEntries = listHistoryOverlayEntries().filter((entry) => entry.operationKind === "generation" && entry.sessionId === sessionId)
   const overlaySummaries = listHistoryOverlaySummaries().filter((summary) => summary.operationKind === "generation" && summary.sessionId === sessionId)
   const snapshot = withValidatedSummarySnapshot(db, () => querySessionEntryPage(db, sessionId, cursor, limit, overlaySummaries))

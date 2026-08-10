@@ -188,6 +188,17 @@ exit ${runnerExitCode}
     expect(log).toContain("=== tests seen   : 10")
   })
 
+  // The validator compares each run log's canonical_command field against the manifest's, so a log
+  // that only carries the human `=== command` line fails C9 and no receipt is ever written. That is
+  // exactly what the first real batch hit. Space-joined, not %q-quoted: %q leaves a trailing space.
+  test("baseline runner records the canonical command as a machine-readable field", () => {
+    const { log } = runBaselineSummaryFixture(0)
+    const field = /^canonical_command=(.+)$/m.exec(log)?.[1]
+    expect(field).toBeDefined()
+    expect(field).toMatch(/^bash \/.*\/fake-runner\.sh$/)
+    expect(field?.endsWith(" ")).toBe(false)
+  })
+
   test("baseline runner preserves a failing suite's count and exit-code diagnosis", () => {
     const { result, log } = runBaselineSummaryFixture(7)
     const stderr = new TextDecoder().decode(result.stderr)

@@ -51,6 +51,7 @@ import { generateId } from "~/lib/utils"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../../helpers/state-fixture"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 // Snapshot global state once and restore after every test — the `replayFromHistory` describe block
 // below seeds the module-global history store (in-flight map + memory-backed SQLite), matching the
@@ -58,7 +59,7 @@ import { autoRestoreState } from "../../helpers/state-fixture"
 autoRestoreState()
 
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 

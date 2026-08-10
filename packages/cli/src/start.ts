@@ -37,7 +37,7 @@ import {
 } from "~/lib/diagnostics/file"
 import {
   //
-  initHistory,
+  initHistoryWithinStartupDeadline,
   setHistoryPublisher,
   startHistoryBackfills,
 } from "~/lib/history"
@@ -386,7 +386,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
   const historyEnabled = options.history ?? state.historyEnabled
-  await initHistory(historyEnabled)
+  try {
+    await initHistoryWithinStartupDeadline(historyEnabled)
+  } catch (error) {
+    // Spec §8.1 forbids listening before History is ready, and the Worker's startup retries are rate-limited but uncapped by design — so without an exit here a persistently locked or failing database leaves the process neither serving nor terminating, which is strictly worse for an operator than a crash. This is the one place that owns "stop waiting": end the process with a non-zero code so a supervisor can restart or alert.
+    consola.error("History failed to start; refusing to serve without it.", error)
+    process.exit(1)
+  }
   // Assemble the telemetry domain BEFORE its first lifecycle op: the composition root adapts core
   // PATHS + the live `telemetry.*` config view + the config-change subscription into the domain's
   // injected ports and installs the process-singleton runtime every tolerant `peekTelemetryRuntime()`

@@ -30,7 +30,7 @@ import {
 import { extractInboundSearchText } from "./normalize-message"
 import { getHistorySearchClient } from "./search/client-registry"
 import { HistorySearchUdsError } from "./search/uds-client"
-import { getDatabase } from "./sqlite/connection"
+import { getHistoryReadDatabase } from "./sqlite/read-connection"
 import {
   //
   projectSearchableText,
@@ -361,7 +361,7 @@ function resolveTransientSummaryCursor(
 }
 
 function resolveReadySummaryCursor(
-  db: ReturnType<typeof getDatabase>,
+  db: ReturnType<typeof getHistoryReadDatabase>,
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   resolution: TransientCursorResolution,
@@ -403,7 +403,7 @@ function resolveCanonicalSummaryCursor(
 }
 
 function queryReadySummaryCandidates(
-  db: ReturnType<typeof getDatabase>,
+  db: ReturnType<typeof getHistoryReadDatabase>,
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   capacity: number,
@@ -441,7 +441,7 @@ function queryCanonicalSummaryCandidates(
 }
 
 function buildSummaryResult(
-  db: ReturnType<typeof getDatabase>,
+  db: ReturnType<typeof getHistoryReadDatabase>,
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   limit: number,
@@ -496,7 +496,7 @@ export function getSummary(id: string): EntrySummary | undefined {
   if (inflight) return toEntrySummary(inflight)
   const recent = getRecentModelOperationTerminal(id)
   if (recent) return recentRecordToSummary(recent)
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const snapshot = withValidatedSummarySnapshot(db, () => getPersistedSummary(db, id))
   if (snapshot.ready) return snapshot.value
   const stored = getV3StoredOperation(id)
@@ -563,7 +563,7 @@ export async function getHistorySummariesAsync(options: QueryOptions = {}): Prom
     .filter((record) => recentMatchesSearch(record, options.search))
     .map((record) => recentRecordToSummary(record))
   const cursorResolution = resolveTransientSummaryCursor(options, operationKind, true)
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   /**
    * The frozen target and the set of rows the index already owns, taken as ONE snapshot -- and
    * that snapshot is now also the one the readiness marker is read in, so a projection that stops
@@ -694,7 +694,7 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     (summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options),
   )
   const cursorResolution = resolveTransientSummaryCursor(options, operationKind)
-  const db = getDatabase()
+  const db = getHistoryReadDatabase()
   const readySnapshot = withValidatedSummarySnapshot(db, () => {
     const cursorSummary = resolveReadySummaryCursor(db, options, operationKind, cursorResolution)
     const stored = queryReadySummaryCandidates(db, options, operationKind, limit + 256 + overlaySummaries.length + 1, cursorSummary)

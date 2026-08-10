@@ -8,7 +8,7 @@ export {
   ensureV3Schema,
   garbageCollectTransportEvidence,
   getV3Operation,
-  getV3PersistRetryConfigForTests,
+  getV3PersistRetryConfig,
   getV3StoredOperation,
   getV3StoreStatus,
   type HydratedTransportEvidence,

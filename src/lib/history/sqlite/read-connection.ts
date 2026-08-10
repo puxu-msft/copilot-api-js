@@ -1,4 +1,5 @@
-import type { Database } from "./connection"
+// Straight from the driver rather than re-importing `connection.ts`'s alias for it: `connection.ts` imports THIS module (openInMemoryDatabase publishes its handle here), and pointing back at it would close an import cycle for nothing more than a type alias.
+import type { SqliteDatabase as Database } from "~/lib/sqlite/driver"
 
 /**
  * Main-thread READONLY History handle for the write-first migration stage.
@@ -26,6 +27,20 @@ export function installHistoryReadDatabase(database: Database): void {
 export function getHistoryReadDatabase(): Database {
   if (!readDatabase) throw new Error("[history/sqlite] History read database is not installed")
   return readDatabase
+}
+
+/** Whether a readonly handle is currently published. Lets `initHistory` tell "already brought up" from "a test detached my handle". */
+export function peekHistoryReadDatabase(): Database | undefined {
+  return readDatabase
+}
+
+/**
+ * Forget the published handle WITHOUT closing it.
+ *
+ * For tests whose read handle is owned by someone else — `openInMemoryDatabase()` publishes the write singleton so the app's read paths resolve against the same in-memory database the test is populating, and that singleton is closed by `closeDatabase()`, not here. Closing it twice would be the bug this exists to avoid.
+ */
+export function detachHistoryReadDatabaseForTests(): void {
+  readDatabase = undefined
 }
 
 export function closeHistoryReadDatabase(): void {
