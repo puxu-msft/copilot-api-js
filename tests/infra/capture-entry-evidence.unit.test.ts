@@ -199,6 +199,14 @@ exit ${runnerExitCode}
     expect(field?.endsWith(" ")).toBe(false)
   })
 
+  // The validator also cross-checks each run log's verdict against the manifest's. The producer
+  // asserts "green" from its own side; the log's copy is the one the wrapper DETERMINED, so the
+  // equality check is only worth anything if a red run really writes red.
+  test("baseline runner records a verdict it determined, both ways", () => {
+    expect(/^verdict=(.+)$/m.exec(runBaselineSummaryFixture(0).log)?.[1]).toBe("green")
+    expect(/^verdict=(.+)$/m.exec(runBaselineSummaryFixture(7).log)?.[1]).toBe("red")
+  })
+
   test("baseline runner preserves a failing suite's count and exit-code diagnosis", () => {
     const { result, log } = runBaselineSummaryFixture(7)
     const stderr = new TextDecoder().decode(result.stderr)

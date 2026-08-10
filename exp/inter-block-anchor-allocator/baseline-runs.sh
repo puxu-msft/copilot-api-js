@@ -156,6 +156,10 @@ printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
 failed=0
 for i in $(seq 1 "$RUNS"); do
   log="$(printf '%s/run-%02d.log' "$OUT_DIR" "$i")"
+  # The validator cross-checks each run log's verdict against the manifest's, so the verdict has
+  # to be something this script DETERMINED, not something the producer asserted. Snapshot the
+  # cumulative failure counter so the end of the iteration can tell whether this run added to it.
+  failed_before="$failed"
   artifact_dir=""
   if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
     artifact_dir="$(printf '%s/run-%02d-artifacts' "$OUT_DIR" "$i")"
@@ -248,7 +252,7 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== no summary  : the log has no [parallel-test] summary line\n' >> "$log"
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d produced no recognizable [parallel-test] summary line; not counting it green.\n' "$i" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
 
   # A run that executed no tests is not a green run. Reported count is the
@@ -277,14 +281,14 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d printed a tally the runner itself flagged (INCOMPLETE/OUT-OF-SCOPE); not counting it green.\n' \
       "$i" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d reported %s tests (MIN_TESTS=%s); not counting it green.\n' \
       "$i" "${ntests:-no}" "$MIN_TESTS" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
 
   # Every run in a batch must report the same count. A batch that starts honest
@@ -297,7 +301,7 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d reported %s tests but run 01 reported %s; the batch is not measuring one thing.\n' \
       "$i" "${ntests:-none}" "$first_ntests" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
   printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \
     "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo "YES:$drift_why" || echo no)" "${tail_line:-<no summary line>}"
@@ -305,6 +309,7 @@ for i in $(seq 1 "$RUNS"); do
   if [ "$drift" = 1 ]; then
     printf 'baseline-runs: %s changed during run %02d; this run measured no single commit.\n' "$drift_why" "$i" >&2
     if [ "$STOP_ON_FAIL" = "1" ]; then
+      printf 'verdict=red\n' >> "$log"
       printf 'baseline-runs: stopping. Log: %s\n' "$log" >&2
       exit 1
     fi
@@ -313,6 +318,7 @@ for i in $(seq 1 "$RUNS"); do
   if [ "$rc" -ne 0 ]; then
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     if [ "$STOP_ON_FAIL" = "1" ]; then
+      printf 'verdict=red\n' >> "$log"
       printf 'baseline-runs: run %02d exited %d; stopping. Log: %s\n' "$i" "$rc" "$log" >&2
       exit 1
     fi
@@ -324,8 +330,14 @@ for i in $(seq 1 "$RUNS"); do
     if [ ! -d "$artifact_dir" ] || [ "$shard_count" -lt 1 ] || [ ! -f "$artifact_dir/runtime-identity.json" ] || [ ! -f "$artifact_dir/skipped-multiset.json" ]; then
       failed=$((failed + 1))
       printf 'baseline-runs: run %02d missing required test artifacts in %s\n' "$i" "$artifact_dir" >&2
-      if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+      if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
     fi
+  fi
+
+  if [ "$failed" -eq "$failed_before" ] && [ "$rc" -eq 0 ] && [ "$drift" != 1 ]; then
+    printf 'verdict=green\n' >> "$log"
+  else
+    printf 'verdict=red\n' >> "$log"
   fi
 done
 
