@@ -657,3 +657,148 @@ eb3ea6f skills(positive-control): close the other end of the "don't snapshot the
 - `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:33-43,100-114` — 怪味类型：历史快照与移动 ref 混用；处置：本轮修。理由：同一条命题在写作时成立、复验时换了对象。
 - `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:78` — 怪味类型：待办状态与其真实载体双源漂移；处置：本轮修。理由：日志已经落地，报告仍保留条件式欠账。
 - 第三方方案：本任务是 Git 谱系与文档事实核验，Git／`rg`／现有测试已是成熟工具，不存在值得引入的额外第三方方案。
+
+
+# `review_closeout_final`：上一轮发现闭合与整改 diff 复评
+
+## 评审摘要
+
+- **评审范围**：只复核上一轮 3 条 MAJOR、`d73ecb9e` 对终报的整改、终报第 2 节 C4/C5/C6/C8 新证据、第 6 节资产表、第 7 节全部配方及整改引入的自指状态；未重审全文。
+- **已读取／执行的证据**：上一轮报告、整改后终报、接手方报告、`d73ecb9e` diff；在 `/home/xp/src/copilot-api-js`、冻结 worktree `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout`（HEAD `d2f66fa9`）及 `/home/xp/.claude` 实跑下列命令。
+- **总体 verdict**：**修复 MAJOR 后可进入下一阶段**。
+- **BLOCKER：0。MAJOR：1。MINOR：4。**
+
+## 上一轮 3 条 MAJOR 的闭合裁定
+
+### M1：C5 复验命令——已闭合
+
+命令：
+
+```sh
+git -C /home/xp/src/copilot-api-js diff --name-status d2f66fa9^2 d2f66fa9
+git -C /home/xp/src/copilot-api-js diff --name-status d2f66fa9^2 d2f66fa9 | wc -l
+git -C /home/xp/src/copilot-api-js diff --name-only d2f66fa9^2 d2f66fa9 | grep -Evc '^docs/' || true
+```
+
+输出：
+
+```text
+M docs/memory/feedback-fix-all-comparison-sites.md
+A docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
+A docs/tmp/2026-08-09-task37-closeout-review.md
+A docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+M docs/todo/deferred-backlog.md
+LINE_COUNT=5
+NON_DOC_COUNT=0
+```
+
+裁定：`d2f66fa9^2` 确为当时 master 侧父；命令准确给出 5 个 `docs/` 文件且无代码路径，上一轮 MAJOR 已闭合，未产生 false-red。
+
+### M2：把移动的 `master` 固定成 `d2f66fa9`——已闭合
+
+命令：
+
+```sh
+git -C /home/xp/src/copilot-api-js merge-base --is-ancestor d2f66fa9 master; echo rc=$?
+git -C /home/xp/src/copilot-api-js rev-parse master
+git -C /home/xp/src/copilot-api-js log -1 --format=%H -- docs/tmp/2026-08-10-task37-closeout-terminal-report.md
+```
+
+输出：
+
+```text
+rc=0
+50d2221948d6ea0594cc002614cd83aaf6a142b3
+d73ecb9ec3451ba188410a0a90820eb50dd29a5d
+```
+
+裁定：终报不再声称当前 `master = d2f66fa9`，改用祖先谓词；在当前 master 已前进到 `50d22219` 时仍正确，上一轮 MAJOR 已闭合。
+
+### M3：verification-log 被误写为欠账——已闭合
+
+命令：
+
+```sh
+git -C /home/xp/.claude show --stat --oneline e525ba1
+rg -n '^## 2026-08-10 · copilot-api-js Task 37|session `a7c2cc1a`' /home/xp/.claude/skills/closing-a-development-session/verification-log.md /home/xp/.claude/skills/proving-where-a-command-ran/verification-log.md
+git -C /home/xp/.claude status --short -- skills/closing-a-development-session/verification-log.md skills/proving-where-a-command-ran/verification-log.md
+```
+
+输出关键行：
+
+```text
+e525ba1 docs(closeout): field records from the Task 37 closeout, including two falsifications
+.../closing-a-development-session/verification-log.md | 20 ++++++++++++++++++++
+.../proving-where-a-command-ran/verification-log.md    | 8 ++++++--
+closing.../verification-log.md:55:## 2026-08-10 · copilot-api-js Task 37 merged-seam review closeout ...
+proving.../verification-log.md:57:- **2026-08-10 · session `a7c2cc1a` · V2 · falsifying** ...
+proving.../verification-log.md:58:- **2026-08-10 · session `a7c2cc1a` · V3 · insufficient ...** ...
+```
+
+最后一条 `git status` 无输出。裁定：两份日志均由 `e525ba1` 提交，终报也已如实解释两轮评审为何不一致；上一轮 MAJOR 已闭合。
+
+## 第 2 节与第 7 节逐条实跑
+
+1. C3/C4：
+
+```sh
+git -C /home/xp/src/copilot-api-js merge-base --is-ancestor fe8977c0 master && echo 'code delivery in master'
+git -C /home/xp/src/copilot-api-js merge-base --is-ancestor d2f66fa9 master && echo 'closeout merge in master'
+```
+
+输出：
+
+```text
+code delivery in master
+closeout merge in master
+```
+
+2. C5：输出即上文 5 行，路径全部位于 `docs/`。
+
+3. C13：在冻结 worktree 原样运行终报命令，输出 12 个文件，计数分别为 11 个 `:1` 与 `src/lib/anthropic/stream.ts:2`，合计 13；其余被测原语定义文件被 glob 正确排除。
+
+4. C6：先确认 `RUN_PERF_TESTS_matches=0`，再用同一次 shell 的 cwd／top-level／HEAD gate 在 `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout`、HEAD `d2f66fa99b27b219cca4204465e86c477a075374` 运行：
+
+```text
+[parallel-test] 16 shards · 5471 tests · 5471 pass · 0 fail · 5471 executed · 3 skipped · 73.71s
+```
+
+退出码 0；终报保存的 tally 可复现。
+
+5. C10 与 verification-log：
+
+```sh
+git -C /home/xp/.claude log --oneline -1 -- skills/positive-control-your-tests/SKILL.md
+git -C /home/xp/.claude log --oneline -1 -- skills/closing-a-development-session/verification-log.md
+```
+
+输出：
+
+```text
+eb3ea6f skills(positive-control): close the other end of the "don't snapshot the diff" rule
+e525ba1 docs(closeout): field records from the Task 37 closeout, including two falsifications
+```
+
+6. C8：`git -C /home/xp/src/copilot-api-js diff d2f66fa9^2 d2f66fa9 -- docs/todo/deferred-backlog.md` 显示我侧新增的两个 `allowed_skipped` 维护子项；`git -C /home/xp/src/copilot-api-js merge-base --is-ancestor c38baa6a d2f66fa9^2` 退出 0，且 `git show c38baa6a -- ...` 显示 master 侧划除。两侧证据均在冻结谱系中，整改没有把正确结论改成 false-red。
+
+## 事实性发现
+
+[MAJOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:1,3` — 除调用方已知的第 5 行外，标题仍写“草稿·待最终评审”，状态仍写“尚未过 `review_closeout_final`”；本轮报告一旦交付，这两处就立即成为第二组自指陈旧断言，使终态报告继续宣称最终门未闭合 — 当前 `git show master:... | nl -ba` 仍能逐字看到这两句 — 与修第 5 行同批改成终态标题及“final review 已通过”，并把本轮 verdict／报告路径作为证据。
+
+[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:35` — C4 把 `d2f66fa9` 称作“合并提交”容易误称 fast-forward 动作的性质；`git show -s d2f66fa9` 表明它是分支先合 master 产生的 merge commit，随后 master 只是 fast-forward 到该 tip — 改成“快进后的 tip 为 `d2f66fa9`”或“整合结果 commit”为宜；祖先判定本身正确。
+
+[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:81` — 整改新增的“最贵警告”引用 `docs/todo/deferred-backlog.md:1417` 已漂移；`nl -ba` 的 1417 行为空，实际警告在 1456 行。相邻 `adapters/responses.ts:17,:77-78` 中第 17 行只是 `deliveryMode`，真正支持 `incomplete` 终态的是 77–78 行 — 交付前按最终文件重取行号。
+
+[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:125` — A2 “本报告合入 master 后就是 A2 的唯一载体”是错误的全称断言；`rg` 还命中 `/home/xp/src/copilot-api-js/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md:87`（完整 N9 形态、判据、变异与建议）及 `...task37-seam-review-dispositions.md:136-144` — 应收窄为“没有 verification-log 这一类未来收尾必经的承载者”，不能写“唯一载体”。
+
+[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:121` — A4 把 `every-number-carries-scope` 说成未覆盖“引用的数字”，但权威条款 `/home/xp/.claude/rules/agents/60-evidence-and-criteria.md:39-44` 已以“任何写进交付物的数字”及“每个数字”覆盖来源无关的全部数字，引用并不构成契约缺口 — 可保留为实战例证或措辞澄清建议，但别声称现有规则漏管。
+
+## 主观建议
+
+[建议] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:129-152` — 第 7 节命令依赖读者位于仓库根，虽然本轮按绝对根绑定后全部通过，但独立复制单条配方时仍可能跑错树 — 预期影响是降低接手方误跑其他 worktree 的概率 — 把仓库命令统一写成 `git -C /home/xp/src/copilot-api-js ...`，测试配方显式 `cd` 并打印／核对 HEAD；不影响本轮 verdict。
+
+## 结构怪味扫描
+
+- `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:1-5,89-91,125` — 怪味类型：同一文档同时承载“合入前流程说明”与“合入后终态”，形成自失效状态句；处置：本轮修标题／状态／第 5 行，历史过程改为过去时。
+- `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:116-125` — 怪味类型：资产“是否存在”“是否有 durable carrier”“未来流程是否必读”三个谓词混为一列；处置：本轮修 A2/A4 的事实强度，不必重构整表。
+- 第三方方案：本轮是 Git 谱系与文档事实核验，Git、`rg`、`nl` 与现有测试已足够，不存在需引入的第三方方案。

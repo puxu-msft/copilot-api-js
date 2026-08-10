@@ -320,3 +320,157 @@ C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的
 **总体**：报告的**事实断言质量很高**（C1–C13 逐条复算基本站得住，行号精确、口径分离清楚、`anchor-numbers-to-commits` 执行得比多数收尾报告好）。它的问题**全部集中在「作为接手入口的可操作性」上**——报告自己不在 master、它宣称已修的账本数字不在 master、给读者的自证命令算的不是要证的东西、被它宣布解除阻塞的那个人拿不到任何入口、唯一的新鲜证据锚在一个会蒸发的路径上。
 
 **建议处置**：B1 必须在报告定稿前解决（合并 `53efd301` 到 master，或在报告顶部显式标注未合并状态与判定命令）；B4/B5/B6 的修法都是**在报告里补路径与命令**，不涉及重新取证，成本很低而收益直接落在下一个人身上。
+
+---
+
+## 最终轮（`review_closeout_final`）—— 只判 B1 与 B4 是否闭合
+
+评审锚点：`git rev-parse master` → `50d2221948d6ea0594cc002614cd83aaf6a142b3`（与派活给的值一致）。整改提交 `d73ecb9e docs(closeout): close both draft reviews, and stop pinning a moving ref`。以下命令均在 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest`（同一 object database）跑出，读的是 master 的**提交树**而非工作区。
+
+### B1（原 BLOCKER：终报与账本修正都不在 master）→ ✅ **已闭合**
+
+四项承载者逐个实地核验：
+
+```
+$ git cat-file -e master:docs/tmp/2026-08-10-task37-closeout-terminal-report.md
+IN-MASTER                                          # 终报本体已在 master
+
+$ git ls-tree -r --name-only master | grep 'draft-review'
+docs/tmp/2026-08-10-task37-closeout-draft-review-claims.md
+docs/tmp/2026-08-10-task37-closeout-draft-review-successor.md
+                                                   # 两份草稿评审均已在 master
+
+$ git show master:.superpowers/sdd/progress.md | grep -c '13 call sites across 12 files'
+1                                                  # 账本已带可重算口径的修正措辞
+
+$ git show master:.superpowers/sdd/progress.md | grep -c 'six accumulator feeds and two translators'
+1                                                  # ← 这一次命中是引文，不是残留
+```
+
+**关于那一次裸关键词命中，我按派活提示做了上下文取证，不靠转述采信**：
+
+```
+$ git show master:.superpowers/sdd/progress.md \
+    | grep -o 'The earlier wording said "six accumulator feeds and two translators", which is under-counted on either selector'
+The earlier wording said "six accumulator feeds and two translators", which is under-counted on either selector
+```
+
+命中的整句是**对旧措辞的引用并当场判其偏小**，断言式的原措辞已归零。即：账本上不存在任何一处仍以断言语气给出那个数字。
+
+**接手方现在会做什么**（原三条错误动作全部消失）：在 master 的 `docs/tmp/` 能直接找到终报，不会重做收尾；读账本第 22 行拿到的是重算命令与 13/12 的口径，不会按 8 个站点核对而漏掉 5 处；两份草稿评审也在 master，可以看到这份报告被审过什么、不会重派。
+
+### B4（原 MAJOR：C5 配方算的不是 C5）→ ✅ **已闭合**
+
+把第 7 节给出的配方原样跑一遍：
+
+```
+$ git diff --name-status d2f66fa9^2 d2f66fa9
+M	docs/memory/feedback-fix-all-comparison-sites.md
+A	docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
+A	docs/tmp/2026-08-09-task37-closeout-review.md
+A	docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+M	docs/todo/deferred-backlog.md
+
+$ git diff --name-only d2f66fa9^2 d2f66fa9 | wc -l
+5
+```
+
+**恰好 5 行、全部落在 `docs/` 下、零 `src/`、零 `tests/`**，与 C5 的断言逐字符相符。`^2` 的方向也复核过：`d2f66fa9` 的父序是 `b5acce8f`（我的收尾分支）、`71dcfb91`（master 侧），所以「这次合并给 master 带去了什么」确实要从第二父出发——报告第 36 行那句「`^2` 不是笔误」的解释成立，不是事后合理化。
+
+原草稿那条 `git diff --name-status fe8977c0 master -- docs/` 跨 138 个提交、返回 105 个文件（其中含 `src/lib/history/*` 十余处改动与一个文件删除），会让接手方把无关的 peer 交付当成本次收尾的爆炸半径——**这个诱因已被移除**。
+
+### 本轮小结（仅限 B1/B4）
+
+| 原发现 | 级别 | 本轮判定 |
+|---|---|---|
+| B1 终报与账本修正不在 master | BLOCKER | **已闭合**，四项承载者全部实地可达，引文命中已排除 |
+| B4 C5 配方算的不是 C5 | MAJOR | **已闭合**，配方实跑返回恰好 5 个 docs 文件、零代码 |
+
+B2 / B5 / B6 / B7 / B8 本轮未复核，留待下一次唤醒。
+
+---
+
+### B5（原 MAJOR：Task 4 无入口）→ ⚠️ **四分之三闭合，第 4 个入口的行号已漂移**
+
+以接手方身份逐个打开报告第 4 节列的四个位置，判据是「那一行的内容是否支持报告对它的描述」，不是「文件是否存在」。
+
+| # | 报告的引用 | master 上那一行的实际内容 | 判定 |
+|---|---|---|---|
+| 1 | `docs/plan/…/plan-1-sse-and-delivery-foundation.md:72` | `## Task 4：把现有 DownstreamDeliverySession 升级为 BlockDeliveryOwner` | ✅ 精确命中，与报告描述逐字相符 |
+| 2 | 同文件 `:67`（同 commit 硬约束） | `- [ ] Task 4 切换 driver 直接消费 grammar outcomes 的同一 commit 才删除 compatibility projection；禁止出现“旧 projection 已删、新 owner 尚未接管”的中间提交。` | ✅ 精确命中，「同 commit 硬约束」的描述成立 |
+| 3 | `tests/pipeline/i9-followup-midblock-error.http.test.ts:64` | `describe.skip("[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK …"` | ✅ 精确命中，确为 `describe.skip`，且 skip 理由里确实写着解除条件 |
+| 4 | `docs/todo/deferred-backlog.md:1417` | **空行** | ❌ **行号漂移，指向空行** |
+
+第 4 条的取证：
+
+```
+$ git show master:docs/todo/deferred-backlog.md | sed -n '1417p' | cat -A
+$                                        # 整行只有一个换行，是空行
+
+$ git show master:docs/todo/deferred-backlog.md | sed -n '1410,1416p' | cut -c1-40
+  | 9.51s | 某次运行的逐用例之和 …        # ← 这一整段属于 `test-timings.json` 缓存偏差那条 backlog
+  | 6.726245s | HEAD `a8b846ce` 的逐用例之和 …
+- **根因 / 现状**：**未归因，且差额本身不稳定。** …
+- **当前行为**：LPT 按缓存值给该文件配重。…
+- **理想架构 / 若做需改什么**：先确认 `bun run test:timings` 的采集口径 …
+- **为何暂缓**：今天无红；只影响分片均衡度 …
+- **发现方**：C3 裁决期间的邻域实测（`reviewer`，2026-08-09）…
+
+$ git show master:docs/todo/deferred-backlog.md | grep -n '^## 上游终态错误发生在块中途时'
+1451:## 上游终态错误发生在块中途时，仍被当截断重试四次；直接修会泄漏半块（…）
+
+$ git show master:docs/todo/deferred-backlog.md | grep -n '只修 `failed` 会在同一位置再犯一次'
+1456:- **理想架构 / 若做需改什么**：终态排空必须知道**最后一个 commit 边界在哪** …
+```
+
+**真实位置是 master 的 1451（条目标题）／1456（那句警告），报告写的 1417 差了 39 行。**
+
+**成因不是笔误，是结构性的**——写的时候它是对的：
+
+```
+$ git show d2f66fa9:docs/todo/deferred-backlog.md | grep -n '只修 `failed` 会在同一位置再犯一次' → 1417
+$ git show d73ecb9e:docs/todo/deferred-backlog.md | grep -n '只修 `failed` 会在同一位置再犯一次' → 1417
+```
+
+即：整改提交 `d73ecb9e` 落地那一刻 1417 还准确，是此后 peer 会话往 `deferred-backlog.md` 里追加条目把它推下去的。`deferred-backlog.md` 是本仓**并发写入最频繁**的文件之一（多个会话各自 append 条目），把一个长期驻留在 master 的报告用**裸行号**指进它，寿命以小时计。
+
+**接手方会因此做出什么错误动作**：
+
+1. **最贵的那条警告落空。** 报告自己把它标为「⚠️ 最贵的一条警告」，接手方跳到 1417 看到空行、往上看到的是 `test-timings.json` 分片配重那条完全无关的条目，最省力的结论是「这份报告的指针过期了」——进而**连带不信任前三条（其实全对）**，或者干脆放弃查证直接开工。
+2. **但危害有天花板**：报告在同一行里已经把警告内容**内联复述**了（「必须把 `incomplete` 与 `failed` **并列**处理」「只修 `failed` 会在同一位置再犯一次」，并给了 `adapters/responses.ts:77-78` 作为佐证）。所以即使指针死了，**接手方仍拿得到这条知识**，不会真的只修 `failed`。这是本条判 MAJOR 而不是 BLOCKER 的理由，也说明报告「指针 + 内联复述」的写法本身是对的。
+
+**修复建议（只改一处，不必重新取证）**：把 `docs/todo/deferred-backlog.md:1417` 换成**不随邻居漂移的定位符**——条目标题或一条 grep：
+
+```
+docs/todo/deferred-backlog.md 的「## 上游终态错误发生在块中途时，仍被当截断重试四次」条目
+定位：rg -n '^## 上游终态错误发生在块中途时' docs/todo/deferred-backlog.md
+```
+
+**同一处顺带核实的旁证**：`src/lib/pipeline/delivery/adapters/responses.ts` 的 `:77`/`:78` 确为 `case "response.incomplete": {` / `semantic = "incomplete"`，**支持**「`incomplete` 同样是上游的终态决定」的论断；`:17` 是 `const deliveryMode = transport === "http" ? "unit" : "response-terminal"`，与 `incomplete` 无直接关系——但这处引用是从 backlog 条目里原样继承的，不是本轮整改新引入，且报告未给它的完整路径（实际在 `src/lib/pipeline/delivery/adapters/`），一并建议补齐。
+
+### B6（原 MAJOR：C6 证据锚在会蒸发的路径上）→ ✅ **已闭合**
+
+整改后的 C6（报告第 37 行）读作：
+
+> ⚠️ **原始日志写在 job 临时目录里，会随 job 过期消失，不要去找它**——上面这行汇总就是本报告保存的全部，要更强的证据请按第 6 节配方重跑
+
+逐条对照我原来点名的三个错误动作：
+
+| 原风险 | 现在还成立吗 |
+|---|---|
+| 接手方把 `$CLAUDE_JOB_DIR` 展开成自己的 job 目录、找不到文件、判「证据不存在」 | ❌ 不成立。`$CLAUDE_JOB_DIR/tmp/testfast-merged.log` 这个路径**已从报告中整条移除**，改为「不要去找它」的显式指令，接手方不会去追一个不存在的路径 |
+| 因判「无证据」而重跑 `test:fast`，甚至连带重跑 `test:backend` | ❌ 不成立。汇总行（`16 shards · 5471 tests · 5471 pass · 0 fail · 3 skipped`，exit 0）已**内联**进 C6，本身就是证据；C6 边界段与 C7 又明写两档口径不可比、且按 `moving-shared-head-is-not-failure` 不触发全量复跑。想要更强证据的人被导向第 7 节的 `bun run test:fast`，那是**正确的档位**，不会误导去跑 `test:backend` |
+| 它没进 evidence-manifest，接手方无法反查 | ❌ 不再是缺陷。报告不再声称该日志被持久化，反而明说「上面这行汇总就是本报告保存的全部」——**声明与事实一致**，这正是原发现要求的 |
+
+**额外正向确认**：第 7 节的 `bun run test:fast` 那条**没有写死期望数字**（只写了 `env | grep -c RUN_PERF_TESTS # 期望 0` 这个环境前提）。这很重要——master 自 `d2f66fa9` 起已前进 59 个提交，若配方里焊死「期望 5471 pass」，接手方今天跑出来必然对不上而判 false-red。报告避开了这个坑。
+
+**残留（不构成发现，仅记）**：C6 的 5471 与 C7 的 7651 都是快照值，报告已分别锚到 `d2f66fa9` 与 2026-08-09 闭门时刻并标注不可比，符合 `every-number-carries-scope`。
+
+### 本轮小结（B5 / B6）
+
+| 原发现 | 级别 | 本轮判定 |
+|---|---|---|
+| B5 Task 4 无入口 | MAJOR | **部分闭合**：入口 1/2/3 精确命中；入口 4 的裸行号 `deferred-backlog.md:1417` 已漂移 39 行（真实位置 1451/1456），指向空行。因警告内容已内联复述，危害限于浪费时间与侵蚀信任，仍判 MAJOR，建议改用条目标题/grep 定位 |
+| B6 C6 证据锚在会蒸发路径 | MAJOR | **已闭合**：易失路径整条移除、汇总行内联、导向正确档位的复验配方，且配方未焊死数字 |
+
+B2 / B7 / B8 本轮未复核，留待下一次唤醒。
