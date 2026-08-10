@@ -113,10 +113,14 @@ describe("History startup deadline, at process level", () => {
       expect(output).toMatch(/retryable startup failure/)
       // The deadline's own error, not some other startup failure — this is what separates "gave up on purpose" from "died for an unrelated reason".
       expect(output).toMatch(/startup deadline exceeded/)
-      expect(exitCode).not.toBe(0)
+      // Exact code, and not a signal: `not.toBe(0)` also accepts `null`, which is what an exit code is when the process was killed — so a `process.exit(1)` degraded into an abort or a signal death would have passed.
+      expect(exitCode).toBe(1)
+      expect(proc.signalCode).toBeNull()
       // It actually WAITED rather than failing fast.
       expect(elapsed).toBeGreaterThanOrEqual(DEADLINE_MS)
-      // And it stopped THERE. This is the assertion that fails when the entry point forgets to exit: the process then walks on into the phases after History — token setup, the model catalogue, the listener — and dies later for an unrelated reason, which every check above would still accept. Nothing may be attempted after the deadline is reported.
+      // And it stopped THERE. This is the assertion that fails when the entry point forgets to exit: the process then walks on into the phases after History — token setup, the model catalogue, the listener — and dies later for an unrelated reason, which every check above would still accept.
+      //
+      // Honest limits, so nobody reads more into a green than it carries. It proves nothing further was reported as an ERROR — not that no statement ran, and not that nothing at all was printed: the Worker is still retrying while the process tears down, so its `[warn] retryable startup failure` lines legitimately keep appearing after this point (widening this to `warn` was tried and is a false red). An implementation that continued silently and then exited 1 before listening would still pass, and the check is coupled to how the logger lays a message out. A filesystem marker was tried first (does the next phase's telemetry.db appear?) and measured NOT to discriminate — it is created lazily, so the correct and the broken process leave the same directory behind.
       const afterDeadline = output.slice(output.indexOf("startup deadline exceeded"))
       expect(afterDeadline).not.toMatch(/\berror\b/i)
     },
