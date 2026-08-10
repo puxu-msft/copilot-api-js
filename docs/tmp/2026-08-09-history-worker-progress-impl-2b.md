@@ -88,6 +88,9 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 - **不让主线程与 Worker 同时持写句柄**：那正是本设计要消灭的双写者形态，也与 spec §8.1「Worker 打开 semantic DB」冲突。
 - **不在 2b 给 raw capture 也切 Worker**：3b 的事；提前切会让两个进程同时打开同一 raw artifact。
 - **不让共享 primitive `openDatabase()` 自己发布只读句柄**（合并期试过并撤回）。想让「开库」与「发布读句柄」一步到位，focused 跑两个文件时 31 pass 看着成立；**完整分片就抛错**——`initHistory` 活着时它已经装了自己的只读句柄，`installHistoryReadDatabase` 拒绝静默顶替。改成 test-only 的 `openTestDatabaseAsReadSource()`（`tests/helpers/history-v3-fixtures.ts`）后受影响文件 34 pass、合并态 0 fail。**教训**：发布进程级单例是**所有权**动作，不该藏进一个被生产与测试共用的 primitive 里。
+- **两条被否决的 e2e 判据加固**（`tests/e2e/history-startup-deadline.e2e.test.ts`，源码注释里也有，这里登记以便对账）：
+  - 把 deadline 之后的禁词从 `error` 放宽到 `error|warn|fatal` —— **实测假红**：进程 teardown 期间 Worker 合法地继续打印 `[warn] retryable startup failure`，正确实现照样被判红。
+  - 用「下一阶段的 `telemetry.db` 是否出现」当文件系统 marker —— **实测零裁决力**：它是惰性创建的，正确态与删掉 `process.exit(1)` 的变异态留下的目录**完全相同**（`history-v3.db logs github_token config.yaml`）。
 
 ## 第二轮：GPT 独立评审的处置（commit `25fe6880`…`454b03f8`）
 
@@ -145,7 +148,9 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 ## 收尾对账补录：变异台账与非文件教训（2026-08-10）
 
-本节由收尾阶段的 `discover_nonfile_candidates` 独立对账补出——**独立 reviewer 从 transcript 独立枚举后，比作者的自查清单多找出 17 条**，且这些全是「git 记不下、下一个人会重做」的东西。作者自查清单里有一条（`erasableSyntaxOnly` 拒构造函数参数属性）在本会话事件源中**找不到出处**，按对账结论撤回，不留在记录里。
+本节由收尾阶段的 `discover_nonfile_candidates` 独立对账补出——**独立 reviewer 从 transcript 独立枚举后，比作者的自查清单多找出 17 条**。措辞要准确：不是这 17 条全都无处可查，其中若干（合并取舍、被否决的 e2e 加固）已零散地存在于合并提交说明或测试源码注释里，但**都没有进入候选清单、没有被对账**，因而也就没有一个地方能让下一个人成体系地读到。
+
+**这里有一条关于评审本身的教训，比补录内容更值得记。** 第一轮对账判定「作者声称的 `erasableSyntaxOnly` 拒构造函数参数属性一事，事件源中找不到出处」，我**照单撤回**了。第二轮它自己深扫薄区间后推翻了这个判断：JSONL 2775 明确记着 `bringup-lifecycle.it.test.ts(71,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled`，2778 把构造函数参数属性改成了显式字段。**原记录成立，撤回是错的，现已恢复。** 判据：**评审给出的否定性断言（「查无此事」「无消费者」「未落盘」）与它的肯定性发现不同档次**——肯定性发现自带证据，否定性断言的证据是「我没找到」，而搜索范围与关键词是它自己选的。收到否定性断言时，要么自己去核，要么要求它交出搜索范围；不能像我这次一样直接据以删除已有记录。
 
 ### 变异台账（符号 → 测试 → 失败形状）
 
@@ -155,7 +160,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 |---|---|---|
 | 删 `packages/cli/src/start.ts` deadline catch 的 `process.exit(1)` | `tests/e2e/history-startup-deadline.e2e.test.ts` | **第一版四断言全绿**——进程继续走到 Phase 4、因缺 token 非零退出，7206ms vs 7180ms 几乎同耗时。补「deadline 之后无任何 ERROR」判据后才红 |
 | `workerData.blockMs` 改 key（令其 undefined） | `tests/history/worker/event-loop-isolation.it.test.ts` | 原测试**仍 1 pass**：`Date.now()+undefined` 为 `NaN`、阻塞循环零次，相对断言反而更容易绿。补 Worker 侧 elapsed 正控 + finite 校验后 0 pass／1 fail |
-| 竞争 readonly handle 的处置 | bring-up 事务用例 | 只断 `toBe(competitor)` 时假绿——close 后 identity 仍可能相同。第一次变异清指针（身份断言先红，不精确），第二次「close 但保留发布」才由 usability 断言精确咬住 |
+| rollback 里按所有权分支处置只读句柄（`peek() === readDatabase ? closeHistoryReadDatabase() : readDatabase.close()`）——变异**竞争者已发布**那一侧 | `tests/history/worker/bringup-lifecycle.it.test.ts` 的「竞争 readonly handle」用例 | 只断 `toBe(competitor)` 时假绿——close 之后 identity 仍可能相同。第一次变异清掉指针（身份断言先红，但红得不精确），第二次「close 但保留发布」才由 usability 断言精确咬住 |
 | 删 `initHistoryWithinStartupDeadline` 的 `!enable` 短路 | `tests/history/worker/startup-deadline.it.test.ts` | 原「禁用不受 deadline 约束」是**空过**：快速 `initHistory(false)` 即使失去短路也可能赢过 1ms timer。构造 80ms shutdown 后 3 pass／1 fail |
 | `deadlineMs <= 0` → `< 0` | 同上 | 原先只有 getter 判据、两测试**仍绿**。补「120ms 后仍在 waiting」的行为判据后 10 pass／1 fail |
 | 删 start 失败后的 release | `tests/history/worker/registry.unit.test.ts` | 精确复现 terminally-failed runtime 污染：2 pass／1 fail；恢复后 6 pass／0 fail |
@@ -163,9 +168,26 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 | 撤销 bring-up 的 rollback 事务 | 同上 | `shutdownCalls` 判据精确变红（滞留 runtime） |
 | fixture `afterEach` 的 rebuild／release 顺序 | `tests/history/worker/fixture-persistence-survives-teardown.it.test.ts` | 修前 1 pass／2 fail、修后 3 pass／0 fail。HEAD 探针：t1 persisted=1、t2 persisted=0／durability=failed；base `baef58b3` 同链 persisted=1 |
 
+### 变异后**仍绿**的两条（判据强度缺口，非缺陷）
+
+同一批变异里有两条没能变红。上文只把它们摘要成「缺口 4／5」，粒度同样不足以重建，补齐并单列——**「仍绿」和「变红」必须在纸面上可区分**，混在一张表里会让读者以为每条都被证明有裁决力：
+
+| 变异 | 打的测试 | 结果 |
+|---|---|---|
+| 删 `src/lib/history/startup-deadline.ts` 成功路径的 `clearTimeout` | `tests/history/worker/startup-deadline.it.test.ts` | **10 pass / 0 fail** —— timer 泄漏无人看得见 |
+| 删 rollback 的 `else readDatabase.close()`（**未发布**那一侧） | `tests/history/worker/bringup-lifecycle.it.test.ts` | **6 pass / 0 fail** —— 本次打开但未发布的 readonly fd／读锁泄漏无人看得见 |
+
+两条都不是生产缺陷，是**现有判据看不见资源泄漏**；已按 minor 登记，收口后处理。证据出处：`docs/tmp/2026-08-09-batch2b-review-testing.md`。
+
+### 合并期的两处非平凡取舍（正文，不只是指向合并提交）
+
+- **`queries.ts` 取 master 结构、重放自己的窄 delta。** master 在本分支在飞期间把 `queries.ts` 大改成 snapshot-ready 结构，而本分支的 delta 只是把默认 DB accessor 换成 `getHistoryReadDatabase()`。处置是**采用 master 的结构，再把那条窄 delta 重放上去**；否决了「用陈旧的特性分支结构覆盖 master」——后者会把 peer 的重写整体回退掉，而冲突标记不会告诉你这件事。
+- **同一个 `startV3SummaryBackfill`／`drainV3SummaryBackfill` 调用，生产要删、fixture 要留。** 生产 `state.ts` 里那对调用在 cutover 之后**跨线程够不到真实 Worker**（主线程的模块状态是另一个实例），所以删；而测试 fixture 的 in-process backend 与主线程**同一实例**，那对调用仍然有效、必须保留。**看起来完全对称的两处，处置相反**——判据是「这一侧的 backfill 到底跑在哪个线程上」，不是「两边保持一致」。
+
+
 ### 被证伪的归因
 
-- **`Cannot use a closed database` 一度被归给「query 层缓存了旧句柄」——错。** 读源码确认查询每次重新 `get`；真因是 `openInMemoryDatabase()` **发布**读句柄而 `closeDatabase()` 只关不撤销发布（已在上一节记为顺带修掉的真缺陷）。**判据**：症状出现在离现场很远的地方时，先查「谁发布的、谁负责撤销」，别先怀疑缓存。
+- **`Cannot use a closed database` 一度被归给「query 层缓存了旧句柄」——错。** 读源码确认查询每次重新 `get`；真因是 `openInMemoryDatabase()` **发布**读句柄而 `closeDatabase()` 只关不撤销发布（已在上一节记为顺带修掉的真缺陷）。**判据（限定到这个形态，不外推成通用诊断顺序）**：当一个**被发布过**的句柄被关闭、而报错出现在离关闭点很远的地方时，把「谁发布的、谁负责撤销」与「缓存了旧引用」**并列**排查——本轮只证明了这一个实例的真因，不构成「永远先查发布」的普遍次序。
 - 「约 52 条测试建立在不落盘之上」的错判见**上文**第四轮那条（本节位于全文末尾），不重复。
 
 ### 范围 / 解析错误（跑了命令、拿到输出，结论仍错）
@@ -176,7 +198,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 ### 标定值（只是当次观测，不是跨机 SLA）
 
-- **线程隔离对照**：Worker 形态 stall 30ms vs in-process 1053ms；补 liveness 探测后 10ms vs 532ms，两侧 HTTP 均 200。机器为本轮的 Linux/Bun 环境、带并发负载。
+- **线程隔离对照**：Worker 形态 stall 30ms vs in-process 1053ms；补 liveness 探测后 10ms vs 532ms，两侧 HTTP 均 200。测于本轮的 Linux/Bun 环境、focused isolation test 单跑；**当时的机器负载没有记录，别把它当成「带负载下的表现」**。
 
 ### 能力探针（跑过、且结论被用来支撑实现决策）
 
