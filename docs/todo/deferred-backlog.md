@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `package-boundaries` 的全仓 AST 扫描在繁忙 CI 上会撞 5s 默认超时（2026-08-10）
+
+- **现状**：`tests/architecture/package-boundaries.unit.test.ts` 的 `no object literal with \`kind: "stream-error"\` outside \`streamErrorOutcome\`` 会 AST 解析全仓源码。正常耗时 **0.856s**（实测取自仓库内 JUnit fixture `tests/infra/fixtures/bun-junit-shard-14.xml:467` 的 `time="0.856002"`），对 bun 的 5000ms 默认超时有约 5.8 倍余量；但在 `bun run test:fast` 的 16 shard 争抢下实测跑到 **5071ms 而超时**，使整个 shard 崩溃（`0 fail` + `1 shard(s) crashed`）。
+- **为何这次不修**：`[hard]` **它不是零余量的脆弱测试，不该按 `validate-entry-evidence` 那样放宽超时。** 判据是「无负载单跑是否零余量」——该文件在 load 25 下单跑仍 `24 pass / 0 fail`，而 `validate-entry-evidence` 单跑无负载就要 5–6s。给所有超时一刀切放宽会掩盖真回归，所以只改真正没余量的那个。本次超时的直接诱因是外部长跑进程（load average 25，三个无关进程各占满一核），属环境。
+- **但它仍会复发**：争抢有一部分来自 `test:fast` **自身的 16 shard**，不全来自外部进程，所以繁忙 CI 上同一格仍可能撞线。**发现方**：语义桥 C0.3 的评审复核（2026-08-10）。
+- **若做需改什么**：`[hard]` **改的是该用例的 fixture 策略，不是超时值。** 方向：把全仓 AST 解析的结果在文件级 `beforeAll` 里做一次并复用（该文件有多条守卫各自重复解析），或把源码集合缓存到 shard 之间可共享的位置。改完须用「注入一处违规写法 → 该守卫变红」的正控确认判别力未损，且不得放宽超时来充数。
+- **判定该不该动手的命令**：`bun test tests/architecture/package-boundaries.unit.test.ts` 单跑——若它在**空闲机器**上开始逼近 5s，那才说明余量真的没了，此时按上面的方向改 fixture 策略。
+
 ## orphan 清理不区分「尾随待执行 tool_use」与「中段真孤儿」（2026-08-09）
 
 - **根因 / 现状**：`processToolBlocks()` 的第二遍扫描（`src/lib/anthropic/sanitize/tool-blocks.ts:80` 的 `for (const msg of messages)`）对**所有位置**的 assistant 消息施加同一条规则——`:91-97` 只判 `!toolResultIds.has(block.id)`，命中即删。循环体内**没有** message index、`messages.at(-1)` 或任何「是否还有后续消息」的判断，因此「最后一条 assistant 消息里尚无 `tool_result` 的 `tool_use`」（agent loop 中合法的待执行状态）与「中段未配对的真孤儿」不可区分。`server_tool_use` 同条件（`:117-123`）。删空后整条 assistant 消息不进入结果（`:141-142`）。基线 commit `63869fa0`。
