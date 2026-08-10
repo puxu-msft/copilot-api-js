@@ -98,12 +98,10 @@ export function openOwnedHistoryDatabase(dbPath: string): Database {
     // used to fall through to the V2 schema branch because it never matched the
     // `history-v3.db` basename check).
     //
-    // DB-health (Phase 4b): unlike the retired V2 open path, there is no
-    // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
-    // stores terminal (committed) rows, with no pending/executing/streaming
-    // concept, so there is no "another process may still be writing an in-flight
-    // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
-    // gate is deliberately NOT adopted from V2). Both run unconditionally.
+    // DB-health (Phase 4b): V2's row-level "存活共享库跳过" liveness gate is still deliberately NOT adopted, and its reasoning still holds — V3's `v3_operations` only ever stores terminal (committed) rows, with no pending/executing/streaming concept, so there is no "another process may still be writing an in-flight row" risk to defer around (plan §6 / §4b).
+    //
+    // That reasoning was, however, applied to the wrong hazard. What a VACUUM has to defer around is not the STATE OF ANY ROW but the LOCK: it holds an exclusive write lock for as long as it takes to rewrite the whole file, which during a restart overlap starves the predecessor's writes past their 5s busy_timeout.
+    // `maybeVacuumOnStartup` therefore carries its own gate, keyed on live connections rather than on row state — see the probe there.
     maybeVacuumOnStartup(database, dbPath)
     seedAnalyzeIfNeeded(database)
   } catch (err) {
@@ -210,17 +208,30 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
           + `a one-time startup VACUUM will block briefly and needs ~equal temp disk. For a very large DB consider offline 'sqlite3 history.db "VACUUM;"'.`,
       )
     }
-    // VACUUM cannot run inside a transaction. Checkpoint+truncate the WAL first
-    // to shrink it and reduce lock contention with any overlapping connection.
-    database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
+    // Probe for a concurrent connection BEFORE committing to a VACUUM.
+    // A TRUNCATE checkpoint wants the same exclusive moment a VACUUM then holds for far longer, so a non-zero `busy` is the cheapest honest answer to "is another process still using this database?".
+    // Unlike a pidfile check this works identically on all three run paths — bare / systemd / pm2 — including the supervisor ones that deliberately write no pidfile, which are exactly the paths where an overlap is guaranteed by design.
+    // This matters most during a graceful-restart overlap: the successor opens the db while the predecessor is still serving at FULL SPEED (it has not even been sent the handoff signal yet — that comes later, at `notifyReady`), and a VACUUM here would hold the write lock far past the 5s `busy_timeout` the predecessor's writes are given, turning its in-flight persistence into SQLITE_BUSY failures.
+    // Measured shape: `{busy:0,log:0,checkpointed:0}` alone, `{busy:1,...}` with a single open peer read transaction.
+    // Probe with a ZERO busy_timeout: we want the answer now, not after the 5s the rest of this connection is configured to wait. A probe that blocked for the full busy_timeout on every overlapping start would itself be the regression (measured: it makes the open path hang 5s and times out the covering test).
+    database.exec("PRAGMA busy_timeout = 0;")
+    const checkpoint = database.prepare("PRAGMA wal_checkpoint(TRUNCATE);").get() as { busy?: number } | null
+    database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    if (checkpoint?.busy) {
+      consola.info(
+        `[history/sqlite] skipping the startup VACUUM of ${dbPath}: another connection is still using it (graceful-restart overlap). `
+          + `Reclamation runs on a later start, once this process has the database to itself.`,
+      )
+      return
+    }
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
     // VACUUM rewrote the ENTIRE db into the -wal file (WAL mode), so the -wal now
     // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
     // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
-    // the -wal file; only TRUNCATE reclaims its bytes on disk. We are still
-    // single-connection at startup (server not yet listening) so TRUNCATE takes
-    // its exclusive moment uncontended and shrinks the -wal back to zero. Without
+    // the -wal file; only TRUNCATE reclaims its bytes on disk. The probe above
+    // established that we hold this database alone, so TRUNCATE gets its
+    // exclusive moment uncontended and shrinks the -wal back to zero. Without
     // this the multi-GB WAL persists on disk indefinitely.
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize

@@ -109,6 +109,27 @@ describe("DB-health adopted into the V3 open path (Phase 4b)", () => {
     expect(pragmaInt(db, "freelist_count")).toBe(0)
   })
 
+  test("maybeVacuumOnStartup skips while another connection still holds the database (restart overlap)", () => {
+    const dbPath = freshDbPath()
+    bloatPastVacuumThreshold(dbPath)
+
+    // Stand in for the predecessor during a graceful-restart overlap: a second connection holding an open read transaction, which is exactly what a successor meets when it opens the db while the old process is still serving (the handoff signal is not sent until `notifyReady`, much later).
+    const peer = createDatabase(dbPath)
+    peer.exec("PRAGMA busy_timeout = 0;")
+    peer.exec("BEGIN")
+    peer.prepare("SELECT count(*) AS n FROM v3_objects").all()
+
+    try {
+      const db = openDatabase(dbPath)
+      // The bloat must SURVIVE. Reclaiming it here would hold an exclusive write lock for the length of a full-file rewrite and starve the peer's in-flight writes past their 5s busy_timeout; deferring to a later, uncontended start is the correct trade.
+      // Paired with the test above — same bloated db, the ONLY difference is the presence of this peer connection — so together they pin both directions of the gate.
+      expect(pragmaInt(db, "freelist_count")).toBeGreaterThan(0)
+    } finally {
+      peer.exec("COMMIT")
+      peer.close()
+    }
+  })
+
   test("seedAnalyzeIfNeeded fires on first open: sqlite_stat1 exists", () => {
     const dbPath = freshDbPath()
     const db = openDatabase(dbPath)
