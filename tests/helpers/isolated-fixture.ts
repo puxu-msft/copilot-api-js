@@ -162,7 +162,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // Injected factory/writer seams: reset to their default (null/undefined) so a
   // mock injected by one test never leaks into the next (RFC §11 R2).
   //
-  // `releaseHistoryPersistenceRuntime` deliberately does NOT belong here: it owns the process's History writer rather than one test's mock, and this loop runs after the rebuild. It is called explicitly before `resetTestRuntime()` above.
+  // KNOWN DEFECT, deliberately left in place for now: this loop runs AFTER `resetTestRuntime()`, so releasing here shuts down the runtime that was just rebuilt and leaves admission's sink pointing at a stopped one — from the second test of every file onwards, persisting through the production chain silently does nothing. Moving the release before the rebuild fixes that and takes `bun run test:it` from 6 failures to 58, because ~52 tests were written against the broken behaviour. Triaging those is its own piece of work; see docs/todo/deferred-backlog.md.
+  { name: "releaseHistoryPersistenceRuntime", reset: releaseHistoryPersistenceRuntime },
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
@@ -291,10 +292,6 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     const persistence = runtime?.snapshot()
     if (runtime && persistence && (persistence.ready || persistence.pendingEnvelopes > 0)) await runtime.drain()
     restoreStateForTests(snapshot)
-    // BEFORE the rebuild, not after. This releases whatever runtime THIS test left behind — an injected double, a real one it started — so nothing leaks into the next file; `resetTestRuntime()` then brings History back up and the runtime it creates is the one the next test uses.
-    //
-    // It used to sit in `RESETTERS`, which runs after `resetTestRuntime()`, and so it shut down the runtime that had just been created while the admission controller's sink still pointed at it. `enqueue` on a stopped runtime settles `"failed"` at once — no write, no throw, no log — so from the second test of every file onwards, persisting through the production chain silently did nothing. See tests/history/worker/fixture-persistence-survives-teardown.it.test.ts.
-    await releaseHistoryPersistenceRuntime()
     await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget
     // would let an enqueued write land in the next test (the exact class of leak

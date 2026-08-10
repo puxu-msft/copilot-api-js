@@ -1290,3 +1290,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：换轴是独立的一块工作，且当前边界已由另一条**计时**判据（`tests/history/worker/event-loop-isolation.it.test.ts`）从完全不同的原理侧面守住——两条一起被同一种绕过手法骗过的概率远低于任一条单独。
 - **触发条件**：守卫再次被一个合法写法绕过时（哪怕只是评审指出而非实际发生），直接换轴，不要再加一条 identifier 形态。
 - **发现方**：Batch 2b 第三轮独立评审 minor 2 与命题 7 裁决。
+
+## 统一测试 fixture 的 teardown 会解除刚重建的 writer 的武装（2026-08-10，Batch 2b 假绿专项评审 blocker；已复现、修法已知、因爆炸半径回退）
+
+- **根因**：`tests/helpers/isolated-fixture.ts` 的 `afterEach` 先 `await resetTestRuntime()`（它经 `initHistory(true, 100)` 建好 runtime 并让 admission 的 sink 指向它），**随后**才跑 `RESETTERS` 循环，而循环里注册着 `releaseHistoryPersistenceRuntime` —— 把刚建好的那个 runtime 关掉并摘出 registry。于是**从每个文件的第 2 个用例起**：registry 为空、admission 的 sink 仍指着一个已 shutdown 的 runtime，`enqueue` 命中停机分支后**当场以 `"failed"` 结算——不写盘、不抛错、不打日志**。
+- **影响面**：129 个用该 fixture 的文件里，「发一个请求 → 断言 History 里有这条记录」这类端到端断言**结构性地无法成立**，唯一能过的写法是用 `commitV3HistoryEntry` 直接播种。本批新增的三份测试各自在 `beforeEach` 里写 `await initHistory(false)`，注释从三个不同角度描述了同一个症状——**那是绕过，不是修复**。
+- **实证**：评审探针走完整生产链（bind reservation → publish terminal → drain → 直接查 `v3_operations`）得 `t1 persisted=1 / t2 persisted=0 durability=failed`；在 base `baef58b3` 上同一探针 `persisted=1`（正控成立）。本会话独立复现：一份三用例的 fixture 测试，第 1 条过、第 2/3 条得 0 行。**因此这是 Batch 2b 引入的回归。**
+- **修法（已验证有效，但被回退）**：把 `releaseHistoryPersistenceRuntime` 移出 `RESETTERS`、改为在 `resetTestRuntime()` **之前**显式调用。它保留原有意图（一个测试注入的 mock 不得泄漏到下一个），同时让下一个测试真正要用的 runtime 活着。复现用测试与该修法**完整保存在 commit `3acc5b8b`**，回退在 `<本次回退 commit>`。
+- **为何回退**：修好之后 History 在每个用例里**真的会落盘**，而约 52 个 `it` 档测试是建立在「不落盘」之上的——实测 `bun run test:it` 由 **6 fail（会话起点 `e3f8e5f2`）变成 58 fail**。逐条甄别哪些断言守着真不变量、哪些只是适应了坏行为，是独立一块工作（`red-tests-may-be-guarding-something` 的大规模版本），不该塞进本批收尾。**注意 `test:backend` 对它是盲的**：LPT 分片把互相干扰的文件分开了，交付门禁两种状态下都是 0 fail。
+- **若做需改什么**：① 应用上面的修法；② 逐一分类那 52 条——真守护型断言要连同其被守护的行为一起修，只是适应旧行为的要改成断言真实落盘；③ 把复现测试（`3acc5b8b` 里那份）加回去当回归；④ 顺带确认 `test:it` 剩余的 5 条既有失败。
+- **触发条件**：下一次有人要写「发请求 → 断言 History 有记录」的测试时（那时会直接撞上），或 Batch 3b/6 再动 History 测试基座时，取先到者。**在修好之前，任何依赖 fixture 自动落盘的新测试都要自己 `await initHistory(false)` 再拉起。**
+- **发现方**：Batch 2b 假绿专项评审缺口 2（`docs/tmp/2026-08-09-batch2b-review-testing.md`），主会话独立复现并确认。

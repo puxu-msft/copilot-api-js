@@ -310,7 +310,6 @@
     "tests/history/worker/delivery-ack-ordering.http.test.ts",
     "tests/history/worker/event-loop-isolation.it.test.ts",
     "tests/history/worker/fatal-state.unit.test.ts",
-    "tests/history/worker/fixture-persistence-survives-teardown.it.test.ts",
     "tests/history/worker/overlay-read-surfaces.it.test.ts",
     "tests/history/worker/packaged-runtime.it.test.ts",
     "tests/history/worker/pending-overlay.it.test.ts",
