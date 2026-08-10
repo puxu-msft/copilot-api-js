@@ -11,6 +11,9 @@ import {
   expect,
   test,
 } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 import type {
   //
@@ -31,7 +34,9 @@ import {
   initHistoryWithinStartupDeadline,
   setHistoryStartupDeadlineMs,
 } from "~/lib/history/startup-deadline"
+import { openOwnedHistoryDatabase } from "~/lib/history/sqlite/connection"
 import { initHistory } from "~/lib/history/state"
+import { ensureV3Schema } from "~/lib/history/v3/store"
 import { setHistoryPersistenceRuntimeForTests } from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
 
@@ -45,11 +50,28 @@ class NeverReadyRuntime implements HistoryPersistenceRuntime {
   nextRetryAt = 1_754_000_000_000
   /** When set, `start()` rejects immediately instead of hanging — the ordinary failure shape, as opposed to the stuck one. */
   failStartWith: Error | undefined
+  /** When set, `start()` succeeds against this artifact, so the runtime can be brought UP and then taken back down. */
+  startSucceedsAt: string | undefined
+  /** Teardown takes this long, which is what makes "is the disable path subject to the deadline?" an answerable question. */
+  shutdownDelayMs = 0
   private abandonStart: ((error: Error) => void) | undefined
 
-  start(): Promise<HistoryWorkerReady> {
-    if (this.failStartWith) return Promise.reject(this.failStartWith)
-    return new Promise<HistoryWorkerReady>((_resolve, reject) => {
+  async start(): Promise<HistoryWorkerReady> {
+    if (this.failStartWith) throw this.failStartWith
+    if (this.startSucceedsAt) {
+      const owned = openOwnedHistoryDatabase(this.startSucceedsAt)
+      ensureV3Schema(owned)
+      owned.close()
+      return {
+        workerGeneration: 1,
+        threadId: 1,
+        selectedDriver: "bun:sqlite",
+        configRevision: 1,
+        rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+        recoveredJournalOperations: 0,
+      } as HistoryWorkerReady
+    }
+    return await new Promise<HistoryWorkerReady>((_resolve, reject) => {
       // Intentionally never settles on its own: the retry loop is still going.
       this.abandonStart = reject
     })
@@ -80,8 +102,8 @@ class NeverReadyRuntime implements HistoryPersistenceRuntime {
     return Promise.resolve({ outcomes: {} })
   }
 
-  shutdown(): Promise<void> {
-    return Promise.resolve()
+  async shutdown(): Promise<void> {
+    if (this.shutdownDelayMs > 0) await Bun.sleep(this.shutdownDelayMs)
   }
 
   snapshot(): HistoryWorkerStatus {
@@ -156,10 +178,21 @@ describe("History startup deadline", () => {
     expect((failure as Error).message).toMatch(/database file is not a database/)
   })
 
-  test("disabling History is never subject to the deadline", async () => {
-    // Bringing History DOWN does no I/O and cannot hang; a deadline there would put a timer on every start that runs without History.
+  test("disabling History is never subject to the deadline, even when teardown is slow", async () => {
+    // Bringing History DOWN is not a bring-up and must not be raced against a deadline. Asserting that with an instant teardown would prove nothing — `initHistory(false)` beats any timer — so the runtime here takes 80ms to shut down while the deadline is 1ms. If the disable path were subject to the deadline, this would reject.
+    const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "deadline-disable-")), "history.db")
+    const runtime = new NeverReadyRuntime()
+    runtime.startSucceedsAt = dbPath
+    runtime.shutdownDelayMs = 80
+    setHistoryPersistenceRuntimeForTests(runtime)
+    setStateForTests({ historyDbPath: dbPath })
+    await initHistoryWithinStartupDeadline(true, 5000)
+
     setHistoryStartupDeadlineMs(1)
+    const startedAt = Date.now()
     await initHistoryWithinStartupDeadline(false)
+    // It waited for the slow teardown rather than giving up at 1ms.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(60)
   })
 
   test("config drives the deadline the process entry point uses", () => {
