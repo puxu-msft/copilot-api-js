@@ -681,8 +681,8 @@ describe("ingress rejection during shutdown", () => {
 // Signal escalation
 // ============================================================================
 
-describe("two-signal contract", () => {
-  test("broken terminal feedback cannot prevent the second signal from exiting", async () => {
+describe("three-tier signal contract", () => {
+  test("broken terminal feedback cannot prevent the escape signal from exiting", async () => {
     const unregister = registerTerminal({
       state: () => {
         throw new Error("broken terminal")
@@ -701,6 +701,8 @@ describe("two-signal contract", () => {
 
     try {
       const shutdownPromise = handleShutdownSignal("SIGINT", { gracefulShutdownFn: () => heldShutdown, exitFn })
+      // Tier 2 (abandon the drain), then tier 3 (the hard escape). The invariant under test is unchanged by the retiering: a terminal that throws on every write must not be able to hold the process hostage.
+      void handleShutdownSignal("SIGINT", { exitFn })
       void handleShutdownSignal("SIGINT", { exitFn })
 
       expect(exitFn).toHaveBeenCalledWith(130)
@@ -711,7 +713,37 @@ describe("two-signal contract", () => {
     }
   })
 
-  test("second signal during request drain exits immediately", async () => {
+  test("second signal during request drain abandons the drain but still finalizes", async () => {
+    const tracker = createMockTracker([{ status: "executing" }])
+    const exitFn = mock((_code: number) => {})
+    const closeHistory = mock(async () => {})
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, shutdownHistoryFn: closeHistory })),
+      exitFn,
+    })
+
+    expect(shutdownPromise).toBeDefined()
+    expect(getIsShuttingDown()).toBe(true)
+
+    // Tier 2: the operator stops waiting for the drain — but NOT for durability.
+    void handleShutdownSignal("SIGINT", { exitFn })
+
+    // It must terminate in-flight work through the request-level primitives...
+    expect(tracker._reapInFlight).toHaveBeenCalledTimes(1)
+    expect(tracker._fail).toHaveBeenCalledTimes(1)
+    // ...tagging provenance at the source, so the terminal reads as an operator decision rather than as a timeout.
+    expect(tracker._fail.mock.calls[0]?.[3]).toMatchObject({ attribution: { category: "shutdown", code: "operator-abandoned-drain" } })
+    // ...and it must NOT exit. That is the whole difference from tier 3.
+    expect(exitFn).not.toHaveBeenCalled()
+
+    await shutdownPromise
+
+    // The point of this tier: persistence still ran, so the fast path is not a lossy one.
+    expect(closeHistory).toHaveBeenCalled()
+  })
+
+  test("third signal during request drain is the hard escape", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
     const exitFn = mock((_code: number) => {})
 
@@ -720,16 +752,10 @@ describe("two-signal contract", () => {
       exitFn,
     })
 
-    expect(shutdownPromise).toBeDefined()
-    expect(getIsShuttingDown()).toBe(true)
+    void handleShutdownSignal("SIGINT", { exitFn })
+    expect(exitFn).not.toHaveBeenCalled()
 
-    // The second signal is the global escape hatch. It does not advance one
-    // internal step at a time and must not wait for the request drain.
-    void handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
-      exitFn,
-    })
-
+    void handleShutdownSignal("SIGINT", { exitFn })
     expect(exitFn).toHaveBeenCalledTimes(1)
     expect(exitFn).toHaveBeenCalledWith(130)
 
@@ -737,7 +763,7 @@ describe("two-signal contract", () => {
     await shutdownPromise
   })
 
-  test("second signal exits even before the graceful task enters its first step", async () => {
+  test("signals arriving before the graceful task enters its first step are still counted", async () => {
     const exitFn = mock((_code: number) => {})
     let finishShutdown!: () => void
     const heldShutdown = new Promise<void>((resolve) => {
@@ -749,6 +775,8 @@ describe("two-signal contract", () => {
       exitFn,
     })
 
+    // The race this guards: a signal landing before the async task has run a single step must still advance the tier, never be dropped.
+    void handleShutdownSignal("SIGINT", { exitFn })
     void handleShutdownSignal("SIGINT", { exitFn })
 
     expect(exitFn).toHaveBeenCalledWith(130)
@@ -757,7 +785,7 @@ describe("two-signal contract", () => {
     await shutdownPromise
   })
 
-  test("second SIGTERM uses the conventional forced-exit status", async () => {
+  test("the escape SIGTERM uses the conventional forced-exit status", async () => {
     const exitFn = mock((_code: number) => {})
     let finishShutdown!: () => void
     const heldShutdown = new Promise<void>((resolve) => {
@@ -769,6 +797,7 @@ describe("two-signal contract", () => {
       exitFn,
     })
 
+    void handleShutdownSignal("SIGTERM", { exitFn })
     void handleShutdownSignal("SIGTERM", { exitFn })
     expect(exitFn).toHaveBeenCalledWith(143)
 
