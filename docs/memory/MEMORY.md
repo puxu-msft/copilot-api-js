@@ -32,11 +32,11 @@
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — assert 在写盘前→失败全丢而 commit 照跑；`bash -n` 绿区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=改回原 bug 仍全绿即无裁决力；验收必须走真实 HTTP 入口
 - [plan 陈旧程度 ∝ 返工轮数，逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 按已知形态 grep 查不全；从 types.ts 逐签名出发；五类藏身处逐类过
-- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）；缝含角色/数据可得性/格式三型
+- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）
 - [输出过滤会伪造失败](methodology-output-filter-fakes-a-failure.md) — `| rg`/`tail` 让退出码变成过滤器的且吞掉判据；要判成败就别过滤，嫌长先落盘再筛
-- [我写的门总在执行接缝上失效](methodology-gates-i-write-fail-at-the-execution-seam.md) — 九形态；写完每条门问四问（谁在哪个未越过的时刻执行·判否回哪步·执行者拿得到输入吗·可逆吗）；对账到 diff 为空
+- [门写了但没人去执行它](methodology-gates-i-write-fail-at-the-execution-seam.md) → skill `making-a-gate-actually-fire` — 九形态+四问（谁在哪个未越过的时刻执行·判否回哪步·拿得到输入吗·可逆吗）；`&&` 是门而换行不是；对账到 diff 为空
 - [`--ff-only` 被拒别按成因清单对号入座](methodology-ff-only-refusal-is-not-a-conflict.md) — 读 in-progress 状态+`ls-files -u`+实际 stderr 分流；别把「工作区干净」当前置；`ls-tree` 第二列是类型不是 OID
-- [顺序前置先分型再判](methodology-ordering-gate-needs-a-trigger-that-reads-it.md) — 状态门 vs capability 门；验收须隔离目标门、核对阻断 provenance；反复被反向打回就去分型
+- [顺序前置先分型再判](methodology-ordering-gate-needs-a-trigger-that-reads-it.md) — 状态门 vs capability 门；须隔离目标门+核对阻断 provenance；反复被反向打回就分型
 - [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 触发点最易只写成陈述；判据=未来会话必经流程会不会真走到；汇总须降派生视图、指纹给命令别给裸值
 - [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能投证实票
 - **skill 按意图描述、召回宁滥勿缺**（用户 2026-08-09 裁决）→ skill `authoring-skills` — 拒绝漏召回、接受误触发；意图到位内容不到位＝扩充别新建；枚举触发词是黑名单；重写指令文本必丢覆盖面，须双向逐条对账
@@ -44,7 +44,7 @@
 - **写 skill 的元方法** → user-level skill `authoring-skills`（在 `~/.claude/skills/`、无仓库内链接）— 文本为主·schema 严谨度用于表达而非装门禁·概念给 kebab slug 别给流水号·拆文件按「是否必须常驻」不按大小
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence 断言最易凭结构推断而错
-- [收尾汇总的表述系统性强于其证据](methodology-closeout-summaries-overstate-their-evidence.md) — 六形态（数字无 selector·汇总压掉计数·写反方向·全称词没穷举·集合名词没定义·漏传播阻断）；定稿前逐个概括问六问
+- [收尾汇总的表述系统性强于其证据](methodology-closeout-summaries-overstate-their-evidence.md) — 六形态（数字无 selector·汇总压掉计数·写反方向·全称词没穷举·集合名词没定义·漏传播阻断）；定稿前逐个问
 - [超时归因逐层剥离别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的在你配置那层之下（undici headersTimeout ~300s）
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超容忍+读 request.signal
 - [诊断日志是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能恒打零；[先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md)；[工具输出反常先疑代理链路别编叙事](feedback-dont-fabricate-evidence-or-tool-distrust-narratives.md)
@@ -121,7 +121,6 @@
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — `~/.claude/projects/<path>/*.jsonl`
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
 - [合并主线使分支冻结的测试地板失效](methodology-merge-invalidates-branch-frozen-test-floor.md) — 集合取并集、标量按合并态实跑；JUnit 只数叶节点，**且与 runner 同源、只抓解析错不抓 producer 漏项**
-- [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段盲
 - [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — 无缓存；[消费者只在富快照上读到字段](methodology-consumer-reads-field-only-on-enriched-snapshot.md) 字段放所有变体共有顶层+真实 bus IT
