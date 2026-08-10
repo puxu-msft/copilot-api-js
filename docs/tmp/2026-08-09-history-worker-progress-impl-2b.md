@@ -128,3 +128,16 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 - **[major] 2b.4 少了计划要求的 `/health/liveness` 腿** → commit `66c2bc42`。这条我认账：**是我单方面把冻结判据缩窄成 metronome 一条**，理由写在注释里（同一事件循环、等价观测）——论证本身没错，但缩窄冻结判据不是实现者能单方面做的决定。补上后实测：真 Worker 臂 liveness 10ms、in-process 臂 532ms，两侧都是 200。
 
 **复审对我三个自问的独立结论**（都判为非 blocker/major，理由值得留档）：① 生命周期队列被卡死的 bring-up 永久堵塞——生产上信号处理器要到 History ready **之后**才安装（`start.ts:567`），所以启动卡住期间首个 SIGTERM 走 OS 默认终止，根本进不了队列；我原先注释里写的「排到队尾、第二信号强退」**不符合生产接线**，结局反而更安全。② 落败 bring-up 的 `.catch` 没有吞掉返给调用方的错误。③ `startup-deadline-config.ts` 的拆分不构成重复实现；更理想的长期形状是 config parser 产出 startup options、由 composition root 显式传入，彻底去掉 module-global setter——**登记为可选改进，不在本批**。
+
+## 第四轮：假绿专项评审的处置（HEAD `adb40c05`）
+
+第二位独立评审（专找假绿）逐份对 6 个新测试做变异，**那 6 份都能变红**；它找到的阻断项全在**测试基座**上。逐条处置：
+
+- **[blocker] 缺口 2：fixture 的 teardown 解除刚重建的 writer 的武装** —— 已复现、修法已验证、**因爆炸半径回退并登记**。详见 `docs/todo/deferred-backlog.md` 该条（含机制、双方证据、可用修法、`3acc5b8b` 保存的复现测试、回退 commit `adb40c05`）。**关键数字**：修法本身正确，但会让 `bun run test:it` 从 6 fail（会话起点 `e3f8e5f2`）变成 **58 fail**——约 52 条 `it` 测试建立在「不落盘」之上。**`test:backend` 对它是盲的**（LPT 分片把互相干扰的文件分开），两种状态下门禁都是 0 fail。
+- **[major] 缺口 3：`deadlineMs <= 0` 只有 getter 判据** —— 已补行为判据（commit `6c571d6b`），并用评审给的精确变异（`<= 0` → `< 0`）验证会红。
+- **[major] 缺口 6：两种 ad-hoc 形态下 `tests/history` 都红且失败集不相交** —— 顺序形态 `bun test tests/history` 已由本轮两处修复变为 **0 fail**；`--parallel` 形态仍有 5 条，与 `test:it` 的 5 条同源，已随 blocker 一并登记（那 5 条在会话起点是 6 条，本轮少了一条）。
+- **[minor] 缺口 4（删 `clearTimeout` 仍绿）、缺口 5（删 rollback 里 `else readDatabase.close()` 仍绿）** —— 未处置，属判据强度而非缺陷；与 GPT 评审的 4 条 minor 一并留待收口后处理。
+
+**顺带修掉的一个真缺陷（非评审指出，是修 blocker 时撞出来的）**：`openInMemoryDatabase()` 会把写单例**发布**为进程级读句柄，而 `closeDatabase()` 只关不撤销发布——读注册表里因此会留下一个**已关闭**的句柄，下一次 `getHistoryReadDatabase()` 把它交给某个查询，在离现场很远的地方炸成 `Cannot use a closed database`。已在配对处修死（commit `2e2dcc99`），它本身把 `test:it` 从 6 fail 降到 5 fail。
+
+**本轮合并结论**：GPT 评审的最终 verdict 是「无未闭合 blocker／major，可合并」；假绿评审的 blocker 落在**测试基座**、已按 `no-silently-cut-but-defer` 完整登记并保留可复现的修法。**是否在带着这条已登记缺陷的前提下合并 master，留给用户裁决**——它不影响生产代码正确性，但会让「发请求→断言 History 有记录」这类测试在 129 个文件里继续无法成立。
