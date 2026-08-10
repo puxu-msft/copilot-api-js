@@ -2,11 +2,28 @@
 
 配套交付：分支 `worktree-shutdown-keepalive-503`（master 之上 10 个提交）。本文件是收尾规程 `closing-a-development-session` 的 `inventory_job_tmp` / `discover_nonfile_candidates` / `review_temp_manifest` 三个阶段的产物，供独立评审对账。
 
-## A. job 临时目录 manifest
+## A. 临时状态 manifest（三个根的并集）
 
-枚举命令与口径：`find /home/xp/.claude/jobs/94a67bb3/tmp \( -type f -o -type l \)` = **6**，`fd -H -I --type f --type l` = **6**（两法一致；`fd` 不带 `-I` 会遵守 gitignore 而少报，本项目已有该踩坑记录）。枚举时点在终态报告**之前**；清单定稿前复列，**无新增文件**。
+⚠️ **首版只盘了 `$CLAUDE_JOB_DIR/tmp` 一个根（6 项），漏了另外两个（46 项）**——规程明写「若 harness 另有独立的 job/session 临时根，盘**两者的并集**，别挑窄的那个」，而我恰好挑了最窄的。由用户追问「job tmp 目录也分析归纳了吗」才发现。并集 **52 项**，分三个根：
 
-**最终处置：一律保留，零删除。** 理由：全部行的长期价值均已进入已提交的接收者，删除与否不影响可恢复性；而删除需要独立评审出具正面回执，保留是更保守的一侧。目录交由 harness 过期。
+| 根 | 数量 | 交叉核对 |
+|---|---|---|
+| A1 `$CLAUDE_JOB_DIR/tmp`（`/home/xp/.claude/jobs/94a67bb3/tmp`） | **6**（文件） | `find` = 6，`fd -H -I` = 6 |
+| A2 `$CLAUDE_JOB_DIR` 下 `tmp/` 之外 | **2**：`state.json`（1494 B）、`timeline.jsonl`（67373 B） | `find … -path …/tmp -prune -o` |
+| A3 独立 task-output 根 `/tmp/claude-1000/-home-xp-src-copilot-api-js--claude-worktrees-shutdown-keepalive-503/94a67bb3-…/` | **44**：38 文件 + 6 符号链接，文件合计 8,962,798 B | `find` = 44，`fd -H -I` = 44 |
+
+**最终处置：三个根一律保留，零删除。**
+
+- **A1**：长期价值已全部进入已提交的接收者（逐行见下表）。
+- **A2**：harness 的作业簿记（状态与时间线）。不是任何已交付断言的唯一产出者；`timeline.jsonl` 对事后做 session-time-attribution 有用，但本轮未用它支撑任何结论。
+- **A3**：38 个普通文件是后台命令输出，6 个符号链接指向 `~/.claude/projects/…/subagents/agent-*.jsonl`（各评审 agent 的完整 transcript）。**六轮评审的发现与处置已分别落进本清单 B 节与终态报告第 4 节**，故原始 transcript 不是任何已交付断言的唯一产出者。
+- **A2/A3 不属本会话所有**（harness 生成与管理），规程亦禁止动他人或共享的临时路径——即使判为可弃也不由我删。
+
+> **溯源限制（须知）**：B 节的 `:NNNN` 引用指向**本会话 transcript**（`~/.claude/projects/…/94a67bb3-….jsonl`），它同样由 harness 管理、**不在仓库内**。一旦被轮转或清理，那些行号引用将无法复核；届时可复核的只剩本清单与终态报告里已转述的内容。这是有意接受的限制，不是疏漏——把整份 transcript 复制进仓库既不合规也无必要。
+
+### A1 明细（`$CLAUDE_JOB_DIR/tmp`）
+
+枚举时点在终态报告**之前**；清单定稿前复列，**无新增文件**。
 
 | 绝对路径 | 类型 | 长期价值 | 接收者 / 替代证据 | 最终动作 | 清理前置 |
 |---|---|---|---|---|---|

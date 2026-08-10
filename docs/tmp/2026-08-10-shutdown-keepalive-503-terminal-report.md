@@ -58,7 +58,15 @@ git -C <worktree> log --oneline master..HEAD                    # 本分支尚�
 
 ## 5. 临时状态
 
-job 临时目录 `/home/xp/.claude/jobs/94a67bb3/tmp`：**6 个文件，零删除**，全部有处置（4 个承重探针已归档进 `exp/shutdown-keepalive-503/` 并复跑；2 个 schema 内省脚本判为可弃但保留）。目录交由 harness 过期。明细见 `docs/tmp/2026-08-10-shutdown-keepalive-503-closeout-manifest.md` A 节。
+临时状态的并集是**三个根、52 项**，**零删除**：
+
+- `$CLAUDE_JOB_DIR/tmp`：**6** 个文件，全部有处置（4 个承重探针已归档进 `exp/shutdown-keepalive-503/` 并从新位置复跑；2 个 schema 内省脚本判为可弃但保留）。
+- `$CLAUDE_JOB_DIR` 下 `tmp/` 之外：**2**（`state.json`、`timeline.jsonl`），harness 作业簿记。
+- 独立 task-output 根 `/tmp/claude-1000/…/94a67bb3-…/`：**44**（38 个后台命令输出 + 6 个指向各评审 agent transcript 的符号链接）。六轮评审的发现与处置已落进收尾清单 B 节与本报告第 4 节。
+
+后两个根**不属本会话所有**（harness 生成与管理），即使判为可弃也不由我删。
+
+⚠️ **首版只盘了第一个根**，是被用户追问才补全的——规程要求盘并集、别挑窄的那个。明细与溯源限制见 `docs/tmp/2026-08-10-shutdown-keepalive-503-closeout-manifest.md` A 节。
 
 **保留的他人 WIP**：无——本 worktree 为本会话独占新建。
 
