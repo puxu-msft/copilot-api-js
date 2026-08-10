@@ -5,10 +5,10 @@ branch: history-worker-batch-2a
 worktree: /home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a
 plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session
-status: active
+status: done
 ---
 
-> **状态：进行中。** 本文件是 Batch 2b 的活跃进度真相源；`impl-2a` 已停更、只作历史证据。只记 git 不保存的三项：剩余项及验收、在途意图、已作废路线。
+> **状态：已完成，2026-08-10 fast-forward 合入 `master`（合并提交 `b2444a17`）。** 本文件是 Batch 2b 的进度真相源；`impl-2a` 已停更、只作历史证据。只记 git 不保存的三项：剩余项及验收、在途意图、已作废路线。
 >
 > **worktree／branch 沿用 2a 的**（用户 2026-08-09 明确授权复用）。因此路径与分支名里的 `batch-2a` 与本批内容不符——**这是已知的名实不符，不是走错了树**。
 
@@ -35,9 +35,9 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 - [x] **2b.3 删除生产旧 writer ownership**：删 `legacy-terminal-sink.ts` 及其生产安装，保留脚本/测试明确依赖的纯 primitive；architecture test 禁 `state.ts` 调 `enqueueModelOperationWithOutcome`／`drainV3Writer`，禁生产 registry 再引用 legacy adapter。
 - [x] **2b.4 线程隔离正负对照** — `tests/history/worker/event-loop-isolation.it.test.ts`（commit `de351c81`）。真 Worker 注入 500ms sync block，主线程 metronome 最大停顿 **30ms**；同一 block 经 in-process backend 则停顿 **1053ms**（正控）。`/health/liveness` 未单独发请求：该路由是同一事件循环上的同步 JSON handler（`src/server.ts`），被延迟的正是 metronome 直接测的那段时间，理由已写进测试头。
 - [x] **2b.5 模型交付不等 ACK** — bus 层在 `semantic-cutover.it.test.ts`（已用「同步 ACK」变异证明有裁决力）；**评审指出 bus 层证不出交付顺序**，已补真实 HTTP 层 `tests/history/worker/delivery-ack-ordering.http.test.ts`（commit `454b03f8`）：注入的 runtime **永不 ACK**，请求若等 ACK 就只能超时，因此「跑到断言」本身即证据。
-- [ ] **2b.6 门禁与提交**：计划指定的四个测试文件 + `bun run test:backend` + `bun run build:backend`。
+- [x] **2b.6 门禁与提交** — 合并态 `test:backend` 7732 pass / 0 fail、`build:backend` exit 0、typecheck 绿。
 - [x] **（本批新增的硬性前置，来自 2a 的裁决）启动截止时间** — `src/lib/history/startup-deadline.ts` + `packages/cli/src/start.ts` 接线（commit `4a4a1e09`）。默认 30s、`history.startup_deadline_ms` 可配、`0` 表示永远等；超时抛 `HistoryStartupDeadlineError`（带 `consecutiveFailures`／`nextRetryAt`），入口 `process.exit(1)`。**未改 `restart-policy.ts`**。⚠️ **仍欠 backlog 指定的进程级 oracle**：注入永不清除的可重试启动错误、spawn 真进程、断言 deadline 后非零退出而非停在「未监听」。当前覆盖到机制层与 config 接线层，spawn 层没有。
-- [ ] 独立 review 到 0 blocker／major，再 fast-forward 合 `master`，回填计划状态行。
+- [x] 独立 review 到 0 blocker／major（两位评审、四轮），计划状态行已回填，已 fast-forward 合入 `master`（`b2444a17`）。合并期间 master 前进过两次，第二轮无冲突；第一轮 20 个冲突 hunk 中三处非平凡取舍记在合并提交 `42bdc6aa` 的说明里。
 
 ## 在途意图（决定与理由）
 
