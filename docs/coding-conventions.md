@@ -66,7 +66,8 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 要把「观察量」升级成「总量」，**必须另外有一个能独立枚举目标成员的 oracle**。注意「独立」的判据是**追溯到不同的上游**，不是「换一种运行方式」。按能判到什么，分三层：
 
 1. **「每个请求的文件有没有在 artifact 里被提及」——可判（这就是全部）。** 门 ② 拿 `discover()` 的结果同时做 child 的 `bun test` argv 与期望集，再与 JUnit 回报的 file identity 集合比较（`scripts/parallel-test.ts` 的 `const files = discover()` 一处两用）。**它证明的严格只是「集合相等」**：每个 requested path 至少出现在某个 `<testsuite file>` 或 `<testcase file>` 里。**它不证明**该文件启动了、模块加载成功了、或写出了任何 testcase row——一个只有 `<testsuite file="…"/>`、零 testcase 的空壳同样满足它（实跑：`parseJUnit` 对它得 `files:[…], executed:0`，随后 identity 比较为 `missing:[], unexpected:[]`）。要判「真的跑起来了」，得另找能观察模块执行的来源，**不能从 identity 回声反推**。
-2. **「仓库里应该有哪些测试文件」——只有部分独立的交叉绊线。** 提交进仓库的发现基线（`tests/infra/entry-test-discovery-baseline.json`）**不参与生产门**——它只在收尾取证时由 `capture-entry-evidence.ts` 对账。且它**由同一个 checkout、同一套后缀集、同形 `Bun.Glob` 生成与校验**，与 runner 的 discovery **共享上游**。它挡的是「基线随时间漂移」，**不是结构独立的 oracle**——若 discovery 规则本身系统性漏掉某类文件，该文件既不进期望集、也不进 argv、也不进 JUnit，门 ② 照绿。
+2. **「仓库里应该有哪些测试文件」——只有部分独立的交叉绊线。** 提交进仓库的发现基线（`tests/infra/entry-test-discovery-baseline.json`）**不是 runner 那三道门之一，也不是结构独立的 oracle**：它**由同一个 checkout、同一套后缀集、同形 `Bun.Glob` 生成与校验**，与 runner 的 discovery **共享上游**——若 discovery 规则本身系统性漏掉某类文件，该文件既不进期望集、也不进 argv、也不进 JUnit，门 ② 照绿。它挡的只是「基线随时间漂移」。
+    ⚠️ **但「不是那三道门」不等于「日常开发不用管它」**：`tests/infra/entry-evidence-schema.unit.test.ts` 是一条普通 `.unit.test.ts`，断言 `baseline.files` 与当前 discovery **完全相等**，因此 `test:fast` / `test:backend` **每次都在跑它**。**新增或删除任何测试文件，必须在同一个提交里同步该基线**，否则整档变红，且报错是集合 diff、**指不到根因**（2026-08-10 实测：新增一个 `.it` 文件漏登记 → 后端档 6 fail，其中 1 条是它）。收尾取证的 `capture-entry-evidence.ts` 是**另一个**消费者，不是唯一消费者。
 3. **「本应存在哪些 testcase」——不可判。** 没有任何东西独立枚举它；声明属性与行都出自同一份产物。**用例级总量至今不可判，这是已知缺口，不是待补的措辞。**
 
 ⚠️ **门 ① 的「声明计数对账」也不是独立 oracle。** 根属性与 testcase 行同出一个 Bun JUnit producer、同一份 artifact，所以它是 **producer 内部的自洽检查**：独立于**我方 parser 的计数实现**（能抓到我们丢行），**不独立于 producer**——producer 若把某文件从行与声明里一起省掉（加载期抛错正是如此），两侧一致、该门照过。

@@ -69,6 +69,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
@@ -313,7 +314,7 @@ export const createChatCandidateResponseSession: CandidateResponseSessionFactory
         state.diag.observe(raw)
         if (!raw.data || raw.data === "[DONE]") return
         try {
-          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+          accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
         } catch (error) {
           consola.error("[ChatCompletions:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
         }

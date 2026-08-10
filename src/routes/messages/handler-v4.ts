@@ -119,8 +119,8 @@ import {
   handleWarmupRequest,
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { applyConfigToState } from "~/lib/config/config"
 import {
   //
@@ -295,6 +295,9 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
         if (rawEvent.data) {
           try {
             parsed = JSON.parse(rawEvent.data) as StreamEvent
+            // The accumulator switches on the payload's `type`, but upstream may only name the frame on the SSE `event:` line — a raw `event: error` body is just `{ error: { ... } }`.
+            // Without this the accumulator fell through to `default`, `acc.streamError` stayed unset, and the terminal branch below read the missing `message_stop` as a truncation: it retried the upstream's own decision and then appended a synthesised truncation error on top of the real one.
+            parsed = nameAnthropicEventFromWire(rawEvent, parsed)
             accumulateAnthropicStreamEvent(parsed, state.acc)
           } catch (error) {
             consola.error("Failed to parse Anthropic stream event:", error, rawEvent.data)
@@ -1870,9 +1873,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // Undefined for `ping` → every anchor branch in the driver is inert.
           anchor: anchorHooks,
           anchorState,
-          // Anthropic block-level commit remains a handler-selected delivery policy. The
-          // candidate session owns accumulators/diagnostics but must not shadow this outer gate.
-          commitBoundaries: anthropicCommitBoundaries,
+          // No `commitBoundaries` here on purpose. It used to be passed, with a comment claiming the candidate session "must not shadow this outer gate" — and the candidate shadowed it anyway: `mergeCandidateResponseOpts` spreads `{ ...outer, ...candidate }` and does not recombine this field, and the Anthropic adapter's `deliveryMode` is `"unit"`, so the candidate always supplies its own. The parameter was inert and the comment said the opposite, which is worse than either alone.
+          // Task 3 made `DeliveryProtocolAdapter.classify` the only wire classifier; block commit boundaries are derived from its `complete-unit` outcomes. If a handler-level commit policy is ever needed again it has to be expressed over outcomes, not by re-parsing wire frames here.
           // Continuation-retry (spec 2026-07-22 §4-§5, ADR D3): after a committed block, a mid-stream cut
           // runs a synthetic continuation exchange whose frames stitch onto the same client stream. The
           // ledger accumulates the delivered prefix (extractor → text/tool_use, thinking excluded); the

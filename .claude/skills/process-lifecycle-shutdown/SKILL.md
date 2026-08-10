@@ -60,8 +60,8 @@ description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT
 
 首信号阶段只允许：
 
-- `_isShuttingDown=true`，middleware 拒绝新 ingress；
-- `server.close(false)` 停止监听；
+- `_isShuttingDown=true`，middleware 拒绝新 ingress；**经该 middleware 且最终状态为 4xx/5xx 的响应**由最外层 `shutdownConnectionCloseMiddleware` 补 `Connection: close`。不补则 keep-alive 客户端**可能**继续复用指向本进程的旧 socket、迁不到接管者：2026-08-09 一次接管中，客户端在交接开始七分钟后仍收到该 503，同期 History 有约十分钟空洞（**空洞不等于中断时长**——被拒请求在建 RequestContext 前返回、本就不入库）。详见 `docs/lifecycle.md`「优雅重启」。
+- `server.close(false)` 停止监听——**必须排在首信号阶段所有 await 之前**，否则本进程会进入「已在拒绝、却仍在 accept」的窗口；
 - `stopReaper()`；
 - 停止 History maintenance、Telemetry rollup 等不属于请求完成路径的后台 producer；
 - SIGUSR2 handoff 专属的 states flush／freeze。

@@ -67,6 +67,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import {
   //
@@ -246,7 +247,7 @@ const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (i
         state.diag.observe(raw)
         if (!raw.data || raw.data === "[DONE]") return
         try {
-          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+          accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
         } catch (error) {
           consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
         }
