@@ -40,7 +40,7 @@ shutdown 不设置自己的排空 deadline，也不发布 request abort。请求
 > ⚠️ **无界排空对 overlap 窗口的连带影响**：drain 无界意味着 overlap 也无界，下面「overlap 窗口的共享状态安全」各条隐患的暴露面随之无界，且本文档后面「不保证链式重叠重启」那条会从运维纪律问题变成**默认会发生**。第 2 档信号是操作者手上收回这个窗口的手段。
 > 另注意：运行实例若未显式设置 `timeouts.request_deadline`（bundled 默认 0＝禁用），则「请求级 deadline 兜底」这条前提在该实例上是**空的**——`response_header` 只管首字节前、`stream_idle` 只管帧间静默，一条持续产帧的长流没有上界。
 
-> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、Tasks 5–8 的两道启动 gate 都从那里进）。**当前状态：Tasks 1–4 + B1 已由 `cf3da6a9` 合并进 master**（本行此前长期写着「仍只在特性分支、未合并」，2026-08-10 核实为陈旧断言并更正；判定命令：`git merge-base --is-ancestor cf3da6a9 master`）。Tasks 5–8 的状态以上述 HANDOVER 为准。
+> **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、剩余的启动 gate 都从那里进）。**当前状态：Tasks 1–4 + B1 的代码已于 2026-08-09 合入 master；Tasks 5–8 未开工。** 所以本节描述的**仍是 master 现行行为**——上面那条摘要行由 Task 6 负责，尚未改动（`git grep -n "request.state" -- src/lib/shutdown.ts` 仍能命中）。
 
 ### Finalizing 与 Stopped
 
