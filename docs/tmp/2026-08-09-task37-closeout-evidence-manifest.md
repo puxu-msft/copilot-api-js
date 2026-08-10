@@ -38,7 +38,7 @@
 
 **合计 427，与冻结清单成员数相等**（`recompute-classes.py` 机械对账，OK）。
 
-**不执行删除。** 427 个路径全部有处置，交由 harness 在 job 过期时回收。理由：删除不可逆，而这些文件的**结论**已全部有仓库载体，保留它们的边际成本为零、边际风险为负。
+**不执行删除。** 理由是**可核验的门，不是价值判断**（第一版写的「边际成本为零、边际风险为负」是后者，已撤）：① harness 在 job 过期时自行回收该目录，`closing-a-development-session` 明确允许在「每个对象均有 disposition」的前提下保留；② 删除不可逆，而本轮 review 的非文件双向对账**曾经非空**（见 N8–N13），按同一 skill 必须失败关闭、保留全部对象。冻结集合之后新增的对象（写作时已到 429）由上表的类规则给出「保留至过期」的动作；**若将来改为主动删除，类规则不够——必须重新逐路径冻结、分类并复评。**
 
 ## 「唯一产出方」审查（skill 明确点名的高危类）
 
@@ -56,15 +56,27 @@
 
 文件清单结构上看不见的知识。**每行标 provisional，处置与文件行同权。**
 
+**事件源与范围（第一版没写，是 RR4 判 MAJOR 的直接原因）**：本 job 的 transcript 实际位于 `/home/xp/.claude/projects/-home-xp-src-copilot-api-js--claude-worktrees-task37-closeout/a7c2cc1a-1103-4c54-8ae1-e2837bda4112.jsonl`（15108 行）。⚠️ **transcript 路径随会话所在 worktree 变化**——第一版我给评审的是 worktree 前缀之前的旧路径，那个文件不存在，评审自己定位到了真路径。
+
+**本 job 横跨两个阶段**：前半是 Task 9（History V3 证据存储），后半是 Task 37（接缝复审）。下表**覆盖整个 session**，不再只回顾 Task 37 尾段——N8–N13 就是反向对账补出来的，其中 N8–N11 来自前半段。
+
 | # | 类 | 内容 | 来源事件 | 如何复现 | 载体 |
 | --- | --- | --- | --- | --- | --- |
-| N1 | 3 修正的解析／作用域错误 | **在变异之后用 `git diff` 导出恢复 patch，对未跟踪文件得到空 patch，恢复因此没有发生**。它**失败关闭、不是静默失效**：`git apply --reverse --check` 对空输入报 `No valid patches in input` 并退出 128，`&&` 链就此停住、`RESTORED` 未打印——但变异仍在树上，须手工撤销 | 对 `src/lib/anthropic/wire-frame-type.ts`（当时新建、未 `git add`）做正控 | 新建文件 → 编辑 → `git diff -- <file>` 得空 → `git apply --reverse --check` 该空 patch | ⚠️ 见「待补载体」 |
+| N1 | 3 修正的解析／作用域错误 | **在变异之后用 `git diff` 导出恢复 patch，对未跟踪文件得到空 patch，恢复因此没有发生**。它**失败关闭、不是静默失效**：`git apply --reverse --check` 对空输入报 `No valid patches in input` 并退出 128，`&&` 链就此停住、`RESTORED` 未打印——但变异仍在树上，须手工撤销 | 对 `src/lib/anthropic/wire-frame-type.ts`（当时新建、未 `git add`）做正控 | 新建文件 → 编辑 → `git diff -- <file>` 得空 → `git apply --reverse --check` 该空 patch | skill `positive-control-your-tests` 步骤 1（本次补） |
 | N2 | 3／6 | **discovery 基线 `allowed_skipped` 必须按 `skipSortKey`（NUL 连接的 identity 字段）逐字节全序**；追加到末尾会以 `allowed_skipped are not unique bytewise sorted` 失败，而**报错的测试名是「tracks the current backend discovery population」**（一条 files 断言），真正的 throw 来自 `parseDiscoveryBaseline`，极易误判 | 注册 gated skip 时踩中 | 往 `allowed_skipped` 末尾追加一条后跑该守卫 | backlog（本次补） |
 | N3 | 3／6 | **一个被 `describe.skip` 的套件产出两条 skip identity**：具名那条 + `name:"(unnamed)"` 的套件级那条。只登记具名的会留下潜伏的多重集不匹配 | 用真实运行的 `skipped-multiset.json` 核对时发现 | 跑 `parallel-test` 后读 artifacts 的 `skipped-multiset.json` | backlog（本次补） |
-| N4 | 6 运行时探针 | `errorShapingEnabled` 经 `setStateForTests` 在**全应用 HTTP 测试里确实生效**（关闭态可观测到 raw error 帧原样透传） | 参数化 `i9-h2-buffered-probe` 时实测 | 见该测试的 `describe.each([true, false])` | **无需补载体**——见下 |
+| N4 | 6 运行时探针 | `errorShapingEnabled` 经 `setStateForTests` 在**全应用 HTTP 测试里确实生效**（关闭态可观测到 raw error 帧原样透传） | 参数化 `i9-h2-buffered-probe` 时实测（JSONL 附近） | 见该测试的 `describe.each([true, false])` | **无需补载体**——见下 |
 | N5 | 1 已否决路线 | 在 `mergeCandidateResponseOpts` 里 OR-组合 `commitBoundaries`（修法①）——会让 handler 层 JSON classifier 复活，违反 Task 3 冻结契约「adapter.classify 是唯一 wire classifier」 | 修 D2 时的两个候选 | —— | dispositions 已记 |
 | N6 | 1 已否决路线 | `test.failing` 取代 `describe.skip`——自解除更优，但 JUnit／基线口径未验证、本仓无先例 | 第三轮评审建议 | —— | backlog 已记 |
 | N7 | 2 已证伪的因果 | 「`discardOpen` 保证半块不会送达客户端」——错。`discard-open-unit` outcome 在 `src/` 零消费者，它只清 grammar 自己的累积 | `b8ab9dbb` 提交信息写下该断言，第三轮评审证伪 | `grep -rn 'discard-open-unit' src/` | `grammar.ts` 注释 + dispositions |
+| **N8** | 1 已否决路线 + 2 已证伪 | **D5 整条路线被撤回**：让 `acceptTerminal` 对 `failed` 终态发出终态而非协议错误，重试确实停了，**但引入半块泄漏 + 双终态**。这是「路线」级候选，N7 只记了它其中一条错误因果，替代不了它 | JSONL 13720–14077 | backlog 那条 A／B（分支开：1 次上游调用 + `content_block_delta("mid-block")` 上线；撤回态：4 次调用、该 delta 0 次） | `docs/todo/deferred-backlog.md`「已被实测否掉的直接修法」 |
+| **N9** | 3 无失败信号的判据错误 | **把控制点参数化到一个结构上无鉴别力的形状**（「已提交块 + error」——块已提交后重试闸门本就关闭，`upstreamCalls` 恒为 1），结果是**两格绿而非一格更强的判据**。我在同一轮里刚写下这个形状判别不了任何 error 分类机制，随后又把新控制点放了进去。**可执行判据**：给一条判据加参数之前，先问「这个形状在**任一**参数取值下能不能被目标变异打红」；答不出就先做变异对照，别先加参数 | JSONL 13668／14741 | 移除 adapter 的 event 行回落 → 该测试两格仍绿；移到「无前置内容」形状后才红 | 本表（自足）+ **建议**加入 skill `catching-false-green-tests`，已向用户提出、待裁决 |
+| **N10** | 6 运行时探针 | **真实入口探针实测客户端收到 `["message_start","error","error"]`**（两个终态），这是 D6 的直接证据、也是把判据从 `toContain` 改成数条数的理由 | JSONL 14441 | 见 `tests/pipeline/i9-h2-buffered-probe.http.test.ts` 的 `event: error` 计数断言 | `fefb0951` 提交信息 + 该测试 |
+| **N11** | 3 无失败信号的判据错误 | **首版性能判据「测了个空」**——没跑迁移，判据从未触达目标路径 | JSONL 7303（Task 9 阶段） | —— | ⚠️ 仅此表；Task 9 阶段的收尾产物见 `docs/tmp/2026-08-08-*` 系列 |
+| **N12** | 2 已证伪的因果 | `stripAnsi` 漏删 ESC 的根因被探针证伪 | JSONL 5966（Task 9 阶段） | —— | ⚠️ 仅此表 |
+| **N13** | 2 已证伪的因果 | 「negotiation flaky 已闭合」与 `createSerializedAsyncFn` 的假设先后被证伪；另有测试 fixture 对 `commitV3HistoryEntry` API 的假设不成立 | JSONL 1471／6027／6058（Task 9 阶段） | —— | ⚠️ 仅此表 |
+
+**N11–N13 标注**：这三条属本 job 前半的 Task 9 阶段。该阶段已在本 job 早期单独收过尾（产物见 `docs/tmp/2026-08-08-task9-review-*.md` 与当时的 backlog 增补），**但这三条未见于那批产物**。此处登记为已知缺口，不追溯补建载体——它们的价值低于 N8／N9，且相关代码已合并数日。
 
 ## 待补载体（本次收尾产生的动作项）
 
@@ -72,5 +84,7 @@
 
 ## 查过但判定**不需要**改载体的（记下来，免得下次重查）
 
-- **N4**：初判为「限定既有记忆的适用面」，**复核后撤回**。记忆 `reference-config-yaml-overwrites-setstatefortests-per-request` 的判据本来就不是「一律空操作」，而是「取决于生效 `config.yaml` 有没有显式写那个键」——它的原文写着「同一个 policy 对象里一半字段听测试、一半字段听配置文件⋯⋯因为 `config.yaml` 没写那个键」。实测 `grep -n 'error_shaping\|errorShaping' config.yaml` 无命中，所以 `errorShapingEnabled` 存活**正是该机制的预测结果**。这是印证实例，不是订正，**不改那条记忆**。
+- **N4**：初判为「限定既有记忆的适用面」，**复核后撤回**。记忆 `reference-config-yaml-overwrites-setstatefortests-per-request` 的判据本来就不是「一律空操作」，而是「取决于生效 config 里有没有显式写那个键」。
+    **真正的独立依据是代码路径**：`tests/pipeline/i9-h2-buffered-probe.http.test.ts` 用默认 `createFullTestApp()`、且请求 payload 没有 `system`，按 canonical skill `test-isolation` 的调用点表，这条 harness／route 在目标消费之前不会触发 `applyConfigToState()`，所以 `setStateForTests({ errorShapingEnabled })` 存活。
+    ⚠️ **仓库根 `config.yaml` 无命中只是辅助证据，不能单独裁决**——`test-isolation` 明确警告仓库根那一份不代表 bundled + user 合成后的生效 config。第一版把它当主要理由写了，是方法上的错；照那样泛化会在别的 suite 漏掉 sandbox user config 与 synthetic bundled config。结论仍是**印证实例、不是订正，不改那条记忆**。
 
