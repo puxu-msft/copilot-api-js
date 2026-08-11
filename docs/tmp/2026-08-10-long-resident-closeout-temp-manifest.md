@@ -2,7 +2,11 @@
 
 > **终态：全部保留，一个文件都不删。** 独立评审（`docs/tmp/2026-08-10-closeout-temp-manifest-review.md`）判 3 blocker、给出 `RELEASE_DELETION: NO`。按 `closing-a-development-session` §5 fail closed。
 >
-> 下表的「长期价值 / 仓库载体」仍然有效——它记录的是**内容有没有别的载体**，不是删除授权。
+> 下表的「长期价值 / 仓库载体」记录的是**内容有没有别的载体**，不是删除授权。
+>
+> ⚠️ **「载体」这一列是主张，不是已核验的结论。** 独立评审只逐项验过其中两类（三份 raw review 存在于 `HEAD`、两份评审件与 `docs/tmp` 同名文件逐字节相同）；**脚本、日志、中间快照、提交信息输入这几类的载体主张没有逐项复核过**。既然终态是全部保留，这个缺口不会造成损失——但**不得**把这一列当成「删了也没关系」的凭据。
+>
+> 🔴 **2026-08-11 新增的硬约束**：`incident-manifest.zst` 从「有重取路径」降级为**唯一副本**——那条 History 记录已从服务端消失（实测 404）。**在用户裁决它的去留之前，这个目录一个文件都不能清。**
 
 枚举命令与交叉验证（两法一致）：
 ```
@@ -10,7 +14,14 @@ find $T \( -type f -o -type l \) | wc -l    # 首次盘点 104，收尾自身又
 fd -H -I --type f --type l . $T | wc -l      # 同值（-I 必需：fd 默认遵守 .gitignore 会少报）
 ```
 
-当前总数：**113**（2026-08-11 05:26 实测，`find` 与 `fd -H -I` 两法一致）。冻结时是 109，此后本会话自身又产出 `fix-skillref.py`、`fix-mem.py`、`fix-hk.py`、`gate15.log` 四个——**这正是评审第 1 条 blocker 指出的漂移**：会话还活着，删除对象集合就还在长。
+总数是**一条移动的读数，不是当前全量**：冻结时 109 → 评审时 110 → **05:26 实测 113** → **同日复评实测 118**（每次都 `find` 与 `fd -H -I` 两法一致）。**上面任何一个数字都只是它那一刻的历史测量**；要当前值就自己跑：
+
+```
+T=/home/xp/.claude/jobs/36fcb851/tmp
+find $T \( -type f -o -type l \) | wc -l ; fd -H -I --type f --type l . $T | wc -l
+```
+
+**这个持续增长正是评审第 1、2 条 blocker 的实证**：会话还活着，删除对象集合就还在长——所以「枚举完 → 评审 → 删除」这条链在会话内永远闭合不了。
 
 ## 为什么终态是「全部保留」而不是补齐证据后删除
 
@@ -22,15 +33,15 @@ fd -H -I --type f --type l . $T | wc -l      # 同值（-I 必需：fd 默认遵
 
 | 类别 | 文件 | 长期价值 | 仓库载体 / 替代证据 | 处置 |
 |---|---|---|---|---|
-| 原始 reviewer 输出 | `lifecycle-spec-review-claude.md`、`lifecycle-spec-rereview-claude.md`、`lifecycle-plan-review.md` | **有** | 已逐字提交 `docs/tmp/*-{spec-review,spec-rereview,plan-review}-raw.md`（`be10afc6`） | 内容已有载体；**本轮不删** |
-| 已有同名载体的评审件 | `handover-review.md`、`task-4-review.md` | 有 | 与 `docs/tmp/*-handover-review.md` / `*-task-4-review.md` **逐字节相同**（diff 验证） | 内容已有载体；**本轮不删** |
-| 失败/空产物 | `lifecycle-plan-rereview.md`(19B "Prompt is too long")、`lifecycle-plan-rereview-minimal.md`(0B)、`lifecycle-spec-review-gpt.md`(76B API Error)、`task3-overstrict-single-error.patch`(0B) | 无内容 | —— | 内容已有载体；**本轮不删** |
-| **incident 原始导出** | `incident-manifest.zst` (542KB) | **有，且含用户真实请求/响应内容** | 身份与重取路径已记入 HANDOVER（operationId + `/history/api/entries/:id/export`）；**blob 本身未提交** | **保留，交用户裁决**（唯一无仓库载体者） |
-| agent transcript 切片 | `agent-a46e6c56981b3cd1b.{pre-trim*,trim-candidate*}.jsonl`（12 个，约 55MB） | 派生数据 | 技术已在记忆 `reference-subagent-transcript-5mib-gate-blocks-resume`；原 transcript 仍在 projects/ | 内容已有载体；**本轮不删** |
-| 处理脚本 | `trim_transcript_again.py`、`validate_transcript_slice.py`、`audit_b1_progress.sh`、`canon.ts`、`upd-*.py`、`fix-*.py`、`doc-sync.py`、`add-disables.py` | 一次性 | 产出全部已提交；`audit_b1_progress.sh` 的通用形态在 skill `writing-handover-docs` | 内容已有载体；**本轮不删** |
-| 测试/lint 日志 | `backend*.log`、`gate*.log`、`entry*.log`、`lint*.log`、`tc*.log`、`iso.log`、`cap.log`、`ab-*.log`、`backend-run.txt` | 派生 | 读数已写进提交信息与 HANDOVER 的门禁节 | 内容已有载体；**本轮不删** |
-| 提交信息输入 | `*-msg.txt`、`msg-*.txt`、`commit-msg*.txt` | 无 | 对应 commit 均已存在且含该信息 | 内容已有载体；**本轮不删** |
-| 中间快照 | `master-shutdown.ts`、`memory-head.md`、`memory-myline.patch`、`wt.txt`、`*-files.txt` | 派生 | 均可由 `git show` / `git worktree list` 重取 | 内容已有载体；**本轮不删** |
+| 原始 reviewer 输出 | `lifecycle-spec-review-claude.md`、`lifecycle-spec-rereview-claude.md`、`lifecycle-plan-review.md` | **有** | 已逐字提交 `docs/tmp/*-{spec-review,spec-rereview,plan-review}-raw.md`（`be10afc6`） | **本轮不删**；载体主张未逐项复核 |
+| 已有同名载体的评审件 | `handover-review.md`、`task-4-review.md` | 有 | 与 `docs/tmp/*-handover-review.md` / `*-task-4-review.md` **逐字节相同**（diff 验证） | **本轮不删**；载体主张未逐项复核 |
+| 失败/空产物 | `lifecycle-plan-rereview.md`(19B "Prompt is too long")、`lifecycle-plan-rereview-minimal.md`(0B)、`lifecycle-spec-review-gpt.md`(76B API Error)、`task3-overstrict-single-error.patch`(0B) | 无内容 | —— | **本轮不删**；载体主张未逐项复核 |
+| **incident 原始导出** | `incident-manifest.zst` (542KB) | **有，且含用户真实请求/响应内容** | ⚠️ **重取路径已失效**：2026-08-11 实测 `GET /history/api/entries/req_1786064856101_137/export` → **404**（对照 `entries?limit=1` → 200，服务正常、是记录没了）。**blob 本身未提交** | **它现在是唯一副本，必须保留，交用户裁决** |
+| agent transcript 切片 | `agent-a46e6c56981b3cd1b.{pre-trim*,trim-candidate*}.jsonl`（12 个，约 55MB） | 派生数据 | 技术已在记忆 `reference-subagent-transcript-5mib-gate-blocks-resume`；原 transcript 仍在 projects/ | **本轮不删**；载体主张未逐项复核 |
+| 处理脚本 | `trim_transcript_again.py`、`validate_transcript_slice.py`、`audit_b1_progress.sh`、`canon.ts`、`upd-*.py`、`fix-*.py`、`doc-sync.py`、`add-disables.py` | 一次性 | 产出全部已提交；`audit_b1_progress.sh` 的通用形态在 skill `writing-handover-docs` | **本轮不删**；载体主张未逐项复核 |
+| 测试/lint 日志 | `backend*.log`、`gate*.log`、`entry*.log`、`lint*.log`、`tc*.log`、`iso.log`、`cap.log`、`ab-*.log`、`backend-run.txt` | 派生 | 读数已写进提交信息与 HANDOVER 的门禁节 | **本轮不删**；载体主张未逐项复核 |
+| 提交信息输入 | `*-msg.txt`、`msg-*.txt`、`commit-msg*.txt` | 无 | 对应 commit 均已存在且含该信息 | **本轮不删**；载体主张未逐项复核 |
+| 中间快照 | `master-shutdown.ts`、`memory-head.md`、`memory-myline.patch`、`wt.txt`、`*-files.txt` | 派生 | 均可由 `git show` / `git worktree list` 重取 | **本轮不删**；载体主张未逐项复核 |
 
 ## 文件清单看不见的候选（非文件类）
 
