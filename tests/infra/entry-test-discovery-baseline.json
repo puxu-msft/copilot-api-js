@@ -813,7 +813,7 @@
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search cursor is bound to the index that produced it",
-      "name": "a cursor that outlived its index cannot certify the rebuilt one \u2014 while an intact index keeps its cursor",
+      "name": "a cursor that outlived its index cannot certify the rebuilt one — while an intact index keeps its cursor",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -939,7 +939,7 @@
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "tails, hydrates, and indexes conversation + response text \u2014 excludes upstream-only frames",
+      "name": "tails, hydrates, and indexes conversation + response text — excludes upstream-only frames",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -948,7 +948,7 @@
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
       "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "v3_operations is append-once for searchable content \u2014 no UPDATE path changes an already-tailed row's projection",
+      "name": "v3_operations is append-once for searchable content — no UPDATE path changes an already-tailed row's projection",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -956,7 +956,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) \u2014 silent permanent data loss, real probes",
+      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
       "name": "BLOCKER 1: a single poisoned manifest (bad format version) permanently wedges the tail -- every HEALTHY row after it is silently never indexed, forever, even across restarts",
       "ordinal": 1,
       "count": 1,
@@ -965,7 +965,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) \u2014 silent permanent data loss, real probes",
+      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
       "name": "BLOCKER 2 (page-boundary follow-up, 2026-07-22 merged-state review major): THREE same-millisecond rows, with pageSize smaller than that count, are ALL indexed by a SINGLE tailOnce() call -- not left for a second call to finish",
       "ordinal": 1,
       "count": 1,
@@ -974,7 +974,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) \u2014 silent permanent data loss, real probes",
+      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
       "name": "BLOCKER 2 (restart variant): the overlap-dedup state survives a daemon restart -- a fresh instance reading the persisted cursor does not re-lose the same-millisecond row",
       "ordinal": 1,
       "count": 1,
@@ -983,7 +983,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) \u2014 silent permanent data loss, real probes",
+      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
       "name": "BLOCKER 2: two operations committed in the SAME millisecond, indexed in one tail round, then discovered across TWO separate tail rounds in either lexicographic order -- neither is permanently lost",
       "ordinal": 1,
       "count": 1,
@@ -1019,7 +1019,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "GET entries?search traverses real HTTP -> UDS -> sidecar -> Tantivy and returns the narrow summary page",
       "ordinal": 1,
       "count": 1,
@@ -1028,7 +1028,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "History disabled still 400s before ever touching the sidecar client",
       "ordinal": 1,
       "count": 1,
@@ -1037,7 +1037,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "a facet other than inbound returns empty + partial even with a reachable sidecar (projection has no data for it)",
       "ordinal": 1,
       "count": 1,
@@ -1046,7 +1046,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "an unparsable query is 400 while an unreachable sidecar stays 503",
       "ordinal": 1,
       "count": 1,
@@ -1055,8 +1055,8 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
-      "name": "an unreachable sidecar (no process listening) degrades to empty + partial \u2014 200, never 500",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
+      "name": "an unreachable sidecar (no process listening) degrades to empty + partial — 200, never 500",
       "ordinal": 1,
       "count": 1,
       "reason": "native-unavailable"
@@ -1064,7 +1064,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search \u2014 real end-to-end sidecar (Phase 4 cutover)",
+      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
       "name": "source=inbound with a reachable sidecar returns genuine hits, mapped to full EntrySummary rows",
       "ordinal": 1,
       "count": 1,
@@ -1073,7 +1073,7 @@
     {
       "kind": "testcase",
       "file": "tests/history/v3/store-performance.it.test.ts",
-      "classname": "History V3 store performance (timing \u2014 perf tier only)",
+      "classname": "History V3 store performance (timing — perf tier only)",
       "name": "prepare and commit do not depend on prior session history length",
       "ordinal": 1,
       "count": 1,
@@ -1082,7 +1082,7 @@
     {
       "kind": "testcase",
       "file": "tests/openai/cc-to-anthropic-stream.unit.test.ts",
-      "classname": "cc-to-anthropic-stream \u2014 interleaved parallel tool-call args (reviewer gap #1)",
+      "classname": "cc-to-anthropic-stream — interleaved parallel tool-call args (reviewer gap #1)",
       "name": "interleaved tool args never emit a content_block_delta on an already-stopped block",
       "ordinal": 1,
       "count": 1,
@@ -1091,7 +1091,7 @@
     {
       "kind": "testcase",
       "file": "tests/pipeline/i9-followup-midblock-error.http.test.ts",
-      "classname": "[GATED \u2014 requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe \u2014 H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
+      "classname": "[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
       "name": "(unnamed)",
       "ordinal": 1,
       "count": 1,
@@ -1100,7 +1100,7 @@
     {
       "kind": "testcase",
       "file": "tests/pipeline/i9-followup-midblock-error.http.test.ts",
-      "classname": "[GATED \u2014 requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe \u2014 H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
+      "classname": "[GATED — requires Task 4 owner cutover: the buffered terminal drain must drop frames past the last commit boundary] I9 follow-up probe — H2 error arriving MID-BLOCK (open unit, no content_block_stop)",
       "name": "commits the terminal error without retrying, and without leaking the block that never closed",
       "ordinal": 1,
       "count": 1,
@@ -1109,7 +1109,7 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "[GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
+      "classname": "[GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
       "name": "(unnamed)",
       "ordinal": 1,
       "count": 1,
@@ -1118,8 +1118,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "errorShapingEnabled=false \u2192 P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
+      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "errorShapingEnabled=false → P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
@@ -1127,8 +1127,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) \u2192 terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
+      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) → terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
@@ -1136,8 +1136,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "pre-commit-window RST/truncation, block-level judges replayable \u2192 replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
+      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "pre-commit-window RST/truncation, block-level judges replayable → replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
@@ -1145,8 +1145,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "errorShapingEnabled=false \u2192 P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
+      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "errorShapingEnabled=false → P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
@@ -1154,8 +1154,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) \u2192 terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
+      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) → terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
@@ -1163,8 +1163,8 @@
     {
       "kind": "testcase",
       "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 \u2014 both modes required, not just default) &gt; [GATED \u2014 requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation \u2192 defer-to-block-level consumption",
-      "name": "pre-commit-window RST/truncation, block-level judges replayable \u2192 replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
+      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
+      "name": "pre-commit-window RST/truncation, block-level judges replayable → replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
       "ordinal": 1,
       "count": 1,
       "reason": "whole-suite-skip"
