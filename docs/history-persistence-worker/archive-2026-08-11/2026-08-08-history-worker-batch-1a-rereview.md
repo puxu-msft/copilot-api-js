@@ -1,6 +1,6 @@
 # History Worker Batch 1a 第二轮整改复审
 
-> 状态：通过。评审对象为 `fb3a969d3a814671712eb790716a13e37a263604..9e5ab5a2fec68a24dec263439fa4035a03e9b0ee`，评审者为恢复原 transcript 的 reviewer `acf499466aa10c311`。本文转录 reviewer 的最终结构化结果；本会话的独立实测记录见 `docs/history-persistence-worker/2026-08-07-history-worker-progress-impl-1.md`。
+> 状态：通过。评审对象为 `fb3a969d3a814671712eb790716a13e37a263604..9e5ab5a2fec68a24dec263439fa4035a03e9b0ee`，评审者为恢复原 transcript 的 reviewer `acf499466aa10c311`。本文转录 reviewer 的最终结构化结果；本会话的独立实测记录见 `docs/history-persistence-worker/archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md`。
 
 ## 结论
 
@@ -18,7 +18,7 @@
 - **C4 PASS——runtime 共用同一 sink 契约。** `src/lib/history/worker/runtime.ts:42-50` 继承 `HistoryTerminalSink`；`src/lib/history/worker/runtime.ts:118-138,203-211,373-400` 将无 transport、校验／发送异常与 callback 异常收口而不向 `enqueue()` 调用者抛出，聚焦回归全绿。
 - **C5 PASS——pause→close 旧 major 未回归。** `src/lib/history/worker/admission.ts:181-217` 保持 pause waiter 全量 reject，`resume()` 不得复活已关闭 controller；相关测试位于 `tests/history/worker/admission.unit.test.ts:291-330`。
 - **C6 PASS——正确 sink 正路径仍成立。** `tests/history/worker/admission.unit.test.ts:120-139,212-229` 覆盖 pending→messageId→terminal outcome，未因 fail-closed 防御而破坏正常结算。
-- **C7 PASS——修法符合冻结 replay 边界。** 冻结 spec `docs/spec/2026-08-06-history-persistence-worker.md:159-163` 要求已进入 runtime pending 集合的 Worker crash envelope 重放；plan `docs/history-persistence-worker/plan.md:461-481` 把 restart／replay 归 runtime、reservation 归 admission。没有冻结契约要求对违反 no-throw 端口契约的 sink 自动重投；当前 fail-closed 边界不削弱后续 runtime generation replay。
+- **C7 PASS——修法符合冻结 replay 边界。** 冻结 spec `docs/history-persistence-worker/spec.md:159-163` 要求已进入 runtime pending 集合的 Worker crash envelope 重放；plan `docs/history-persistence-worker/plan.md:461-481` 把 restart／replay 归 runtime、reservation 归 admission。没有冻结契约要求对违反 no-throw 端口契约的 sink 自动重投；当前 fail-closed 边界不削弱后续 runtime generation replay。
 
 ## 最终裁决
 

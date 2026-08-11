@@ -2,7 +2,7 @@
 
 ## 评审范围、证据与 verdict
 
-- 评审对象：`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/2026-08-08-history-worker-batch-1b-terminal-report.md`、`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/2026-08-08-history-worker-batch-1b-temp-manifest.md`。
+- 评审对象：`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-terminal-report.md`、`/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-temp-manifest.md`。
 - 独立性：本评审者未参与 H1/H2/H3，不沿用此前 reviewer 结论。
 - 最终复核时 worktree provenance：`pwd -P` 与 `git rev-parse --show-toplevel` 均为 `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume`；HEAD `922b741bf70720150d6a4ab2cd3b252d3f46ed25`，`master` `d1011fe7eb1f26c0c646b667164ddb0e4dd80bf0`。评审期间候选从 `d1011fe7` 前进到 `922b741b`，因此以下结论以最终文件与最终 Git 状态为准。
 - 已读取／执行：两份对象全文；共享 type owner／V3 alias／Worker protocol 与 protocol test；候选 Git graph；shared working tree bytes、对象类型、mode 与 shared index 三方对账；56 项 temp disk↔manifest 逐路径对账；11 selectors 存在性；protocol unit test；live remote refs 与 GitHub PR 查询。
@@ -42,9 +42,9 @@
 
 ## 事实性发现（仅 blocker／major）
 
-[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/2026-08-08-history-worker-batch-1b-temp-manifest.md:7` — 同路径内容变化只要求“说明来源”，不足以证明 disposition／receiver 仍覆盖当前内容 — 上述 WIP patch 覆写反例会在新门下放行并丢失唯一工作；当前 240-byte snapshot 又证明整表重做过严 — 按 D1 三项附加条件改成“逐变化路径语义复核；仅受影响范围更新与复审”。
+[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-temp-manifest.md:7` — 同路径内容变化只要求“说明来源”，不足以证明 disposition／receiver 仍覆盖当前内容 — 上述 WIP patch 覆写反例会在新门下放行并丢失唯一工作；当前 240-byte snapshot 又证明整表重做过严 — 按 D1 三项附加条件改成“逐变化路径语义复核；仅受影响范围更新与复审”。
 
-[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/2026-08-08-history-worker-batch-1b-terminal-report.md:63-64` 与 `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/2026-08-08-history-worker-batch-1b-temp-manifest.md:6` — Git 顺序门无法约束 Claude job 自动 cleanup，存在终审后、收尾提交进入 master 祖先前被平台清理的路径 — 将 durable receiver 的提交与验证前移，final review 锚定 commit；master ancestry 留作集成完成门，不要把不可控 harness cleanup 写成受该门控制。
+[major] `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-terminal-report.md:63-64` 与 `/home/xp/src/copilot-api-js/.claude/worktrees/history-worker-batch-1b-resume/docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-temp-manifest.md:6` — Git 顺序门无法约束 Claude job 自动 cleanup，存在终审后、收尾提交进入 master 祖先前被平台清理的路径 — 将 durable receiver 的提交与验证前移，final review 锚定 commit；master ancestry 留作集成完成门，不要把不可控 harness cleanup 写成受该门控制。
 
 ## 结构怪味扫描
 

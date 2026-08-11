@@ -14,7 +14,7 @@
 
 **Tech Stack:** TypeScript 5.9、Bun 1.3.14、Node 24、`node:worker_threads`、`bun:sqlite`／`node:sqlite`、Hono、tsdown、Bun test、SQLite WAL。
 
-**Behavior oracle:** `docs/spec/2026-08-06-history-persistence-worker.md`。冲突时先停下核对规格，不自行改动冻结契约。
+**Behavior oracle:** `docs/history-persistence-worker/spec.md`。冲突时先停下核对规格，不自行改动冻结契约。
 
 **Runtime prerequisite verified:** 2026-08-07 临时探针以同一 `node:worker_threads` 主／子脚本分别在 Bun 1.3.14 与 Node 24 运行，`parentPort`、`Uint8Array`、`Map`、`bun:sqlite`／`node:sqlite` 均成功并返回 `n=7`。该探针不入库、不替代 Batch 0 自动化。
 
@@ -36,7 +36,7 @@
 
 ## Execution Progress Contract
 
-执行者在第一笔实现前创建 `docs/history-persistence-worker/2026-08-07-history-worker-progress-impl-1.md`，frontmatter 包含：
+执行者在第一笔实现前创建 `docs/history-persistence-worker/archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md`，frontmatter 包含：
 
 ```yaml
 ---
@@ -108,7 +108,7 @@ status: active
 
 ### Task 0 / Batch 0: Protocol and Worker Runtime Skeleton
 
-**状态：已完成（骨架引入于 `d1598297`「add worker runtime skeleton」）。** 状态行由 2026-08-10 的对账补记——本批当时漏了状态行，而复选框未勾，两处都看不出它已完成。证据：`src/lib/history/worker/{protocol,runtime}.ts` 及配套测试均在树上；执行记录见 [2026-08-07-history-worker-progress-impl-1.md](2026-08-07-history-worker-progress-impl-1.md)。**注意**：`protocol.ts` 里的 `maintenanceIntervalMs`／`stop-maintenance`、`runtime.ts` 的 `stopMaintenance()` 都来自本批而非 4b（`git blame` 实证），别把它们记成后续批次的产出。
+**状态：已完成（骨架引入于 `d1598297`「add worker runtime skeleton」）。** 状态行由 2026-08-10 的对账补记——本批当时漏了状态行，而复选框未勾，两处都看不出它已完成。证据：`src/lib/history/worker/{protocol,runtime}.ts` 及配套测试均在树上；执行记录见 [2026-08-07-history-worker-progress-impl-1.md](archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md)。**注意**：`protocol.ts` 里的 `maintenanceIntervalMs`／`stop-maintenance`、`runtime.ts` 的 `stopMaintenance()` 都来自本批而非 4b（`git blame` 实证），别把它们记成后续批次的产出。
 
 **Files:**
 - Create: `src/lib/history/worker/protocol.ts`
@@ -467,7 +467,7 @@ Commit: `feat(history): gate model operations on persistence capacity`
 
 ### Task 2a / Batch 2a: Semantic Worker Backend
 
-**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/history-persistence-worker/2026-08-08-history-worker-progress-impl-2a.md](2026-08-08-history-worker-progress-impl-2a.md)。
+**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-progress-impl-2a.md](archive-2026-08-11/2026-08-08-history-worker-progress-impl-2a.md)。
 
 **Files:**
 - Create: `src/lib/history/worker/backend.ts`
@@ -522,7 +522,7 @@ Commit: `feat(history): add semantic worker backend`
 
 ### Task 2b / Batch 2b: Semantic Production Cutover
 
-**状态：已完成（`b2444a17`，2026-08-10 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/history-persistence-worker/2026-08-09-batch2b-review-gpt.md](2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md](2026-08-09-history-worker-progress-impl-2b.md)。
+**状态：已完成（`b2444a17`，2026-08-10 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/history-persistence-worker/archive-2026-08-11/2026-08-09-batch2b-review-gpt.md](archive-2026-08-11/2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/history-persistence-worker/archive-2026-08-11/2026-08-09-history-worker-progress-impl-2b.md](archive-2026-08-11/2026-08-09-history-worker-progress-impl-2b.md)。
 
 **Files:**
 - Modify: `src/lib/history/state.ts`
@@ -1004,7 +1004,7 @@ bun test tests/architecture/history-worker-boundaries.unit.test.ts tests/history
 实施全部 batch 后：
 
 - 将本计划头部状态改为 `已完成（<final sha>）`；
-- 把 `docs/history-persistence-worker/2026-08-07-history-worker-progress-impl-1.md` 标为已被正式计划取代并归档／删除；
+- 把 `docs/history-persistence-worker/archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md` 标为已被正式计划取代并归档／删除；
 - 更新 `docs/DESIGN.md` 活架构、`docs/history-v3-schema.md` connection ownership、`docs/lifecycle.md` Worker barrier、`docs/API.md` status fields、`docs/coding-conventions.md` Worker test/ownership 约定；
 - 对所有旧“History async but same event loop”措辞做跨文档 grep disposition；
 - 运行 merged-state review 后才宣告完成。

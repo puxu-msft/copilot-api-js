@@ -26,7 +26,7 @@
 证据链：
 1. 按 plan（`docs/plan/2026-08-08-long-resident-operation-lifecycle.md` Task 4 Step 5）指定的确切命令独立复现：`bun test tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts` → 实测 **30 pass / 0 fail / 74 expect**（在当前 HEAD `9fd1ae45`；另在 commit `3e418cdb` 通过 `git archive` 检出隔离目录尝试复现遇 `undici` 模块解析问题，属环境问题非测试问题，故以当前 HEAD 复现为准——两者之间只有 manager.ts 的 minor 修复 `a8eeaf4c`，不影响该焦点集测试数）。
 2. 该数字与 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-task-4-review.md:60` 里 reviewer 独立复现的原话完全一致：「仓库自带焦点集……在我的副本实跑 **30 pass / 0 fail / 74 expect**，与实施侧自报一致（该数字我独立复现，不是转述）」。
-3. 全仓 `grep -rn "26 pass\|62 expect"` 唯一命中的另一处是 `docs/tmp/2026-08-07-history-worker-progress-impl-1.md:19`——**完全不相关的另一个话题**（history-worker protocol/runtime 测试，日期还是 08-07），原文写的是「protocol/runtime **26 pass／0 fail**」（无 62 expect 字样，expect 数字来源不明）。
+3. 全仓 `grep -rn "26 pass\|62 expect"` 唯一命中的另一处是 `docs/history-persistence-worker/archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md:19`——**完全不相关的另一个话题**（history-worker protocol/runtime 测试，日期还是 08-07），原文写的是「protocol/runtime **26 pass／0 fail**」（无 62 expect 字样，expect 数字来源不明）。
 
 **接手方会因此做出的错误动作**：接手方若照 HANDOVER.md:8 的说法去核对「Task 4 自身门禁」，会拿 26/62 这两个错误数字与自己实测的 30/74 对比，误判为「回归」或「环境不一致」，从而浪费时间去排查一个并不存在的差异；更坏的情况是，若接手方不复验直接采信文档数字写进后续交接文档，会把一个跨话题串号的错误数字继续传播下去。
 
