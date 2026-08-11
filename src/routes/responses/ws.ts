@@ -17,6 +17,7 @@ import type {
 } from "hono/ws"
 
 import consola from "consola"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
@@ -311,7 +312,7 @@ async function handleResponseCreateV4(
   try {
     result = await driver.runRequest({
       body: wireBody,
-      originalBodyForHistory: rawPayload,
+      originalBodyForHistory: snapshotHistoryBody(rawPayload),
       headers: new Headers(), // WS transport: no inbound HTTP headers to capture
       method: "WS",
       path: "/v1/responses",

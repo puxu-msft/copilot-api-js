@@ -253,6 +253,31 @@ export type ExchangeStage = (env: RequestEnvelope) => Promise<UpstreamStream>
 // Driver
 // ============================================================================
 
+const historyBodySnapshotBrand: unique symbol = Symbol("historyBodySnapshot")
+
+/**
+ * A caller-owned, private copy of the client body that History may retain.
+ *
+ * The only constructor deep-clones `source`; after construction the caller must
+ * treat `body` as immutable. This prevents a route and a codec from both taking
+ * a full request-sized copy merely to establish the same history boundary.
+ */
+export interface HistoryBodySnapshot {
+  readonly body: unknown
+  readonly [historyBodySnapshotBrand]: true
+}
+
+/** Create the private History snapshot required when a route will mutate its wire body. */
+export function snapshotHistoryBody(source: unknown): HistoryBodySnapshot {
+  return Object.freeze({ body: structuredClone(source), [historyBodySnapshotBrand]: true })
+}
+
+/** Read a route-created snapshot and reject forged, aliased history bodies at the codec boundary. */
+export function historySnapshotBody(snapshot: HistoryBodySnapshot): unknown {
+  if (snapshot[historyBodySnapshotBrand] !== true) throw new Error("originalBodyForHistory must be created by snapshotHistoryBody")
+  return snapshot.body
+}
+
 /**
  * The inbound HTTP request abstraction handed to S1 (`codec.parse`). Thin: it
  * carries only what parse needs — the already-JSON-parsed body, inbound headers
@@ -286,14 +311,12 @@ export interface RawHttpRequest {
    */
   readonly stream?: boolean
   /**
-   * The client's raw inbound body for the history snapshot, when it differs from
-   * `body`. The route applies the async, non-idempotent system-prompt injection
-   * to `body` BEFORE `codec.parse` (parse is sync — P2.2-D3); it passes the
-   * pre-injection client body here so parse records the inboundRequest as what
-   * the client actually sent (not the server-modified wire body). Defaults to
-   * `body` when omitted (no system-prompt injection happened).
+   * A private client-body snapshot supplied by a route before it mutates `body`.
+   * Construct only with {@link snapshotHistoryBody}; codecs retain this exact
+   * value as History ingress and therefore never clone it again. When omitted,
+   * `body` has no private-ownership guarantee, so the codec must clone it.
    */
-  readonly originalBodyForHistory?: unknown
+  readonly originalBodyForHistory?: HistoryBodySnapshot
   /**
    * Model resolution computed by the route BEFORE the sync parse, at the legacy
    * timing point (before the async system-prompt's `applyConfigToState` config

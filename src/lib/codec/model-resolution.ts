@@ -28,7 +28,7 @@
 
 import type { RouteOverride } from "~/lib/models/resolver"
 import type { ResolvedModel } from "~/lib/pipeline/envelope"
-import type { RawHttpRequest } from "~/lib/pipeline/types"
+import { historySnapshotBody, type RawHttpRequest } from "~/lib/pipeline/types"
 
 import { HTTPError } from "~/lib/error"
 import {
@@ -78,7 +78,7 @@ export interface CodecModelResolution {
  *   model is not in the body (gemini reads it from the URL path).
  */
 export function resolveCodecModel(raw: RawHttpRequest, opts?: { requestedModel?: string }): CodecModelResolution {
-  const bodyModel = (raw.originalBodyForHistory ?? raw.body) as { model?: string } | undefined
+  const bodyModel = (raw.originalBodyForHistory === undefined ? raw.body : historySnapshotBody(raw.originalBodyForHistory)) as { model?: string } | undefined
   const requestedModel = raw.modelOverride ?? opts?.requestedModel ?? bodyModel?.model ?? ""
   const resolvedTarget = raw.preResolved ?? resolveModelTarget(requestedModel)
   const resolvedName = resolvedTarget.name

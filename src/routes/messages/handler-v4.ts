@@ -28,6 +28,7 @@ import type { Context } from "hono"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
@@ -52,6 +53,7 @@ import type {
   DriverRequestResult,
   OwnerOperation,
   ResponseFailureSource,
+  HistoryBodySnapshot,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -660,7 +662,7 @@ async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, hi
   // Snapshot the client's raw inbound body BEFORE the system-prompt injection —
   // this is the history `originalBodyForHistory` (the codec records it as the
   // inboundRequest; the wire body below is the server-modified form).
-  const clientRaw = structuredClone(payload)
+  const clientRaw = snapshotHistoryBody(payload)
 
   // System-prompt injection (async, non-idempotent) has moved OFF the route into the anthropic
   // codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` (Phase 4) sees the
@@ -702,7 +704,7 @@ async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, hi
 
 interface RunMessagesDriverArgs {
   wireBody: MessagesPayload
-  clientRaw: MessagesPayload
+  clientRaw: HistoryBodySnapshot
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
@@ -893,7 +895,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   }
 
   // Non-streaming: await the upstream-settled runRequest, then render the real HTTP status.
-  if (!clientRaw.stream) {
+  if (!wireBody.stream) {
     return runUpstreamSettledPath()
   }
 

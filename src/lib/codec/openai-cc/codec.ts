@@ -39,6 +39,7 @@
  */
 
 import consola from "consola"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { RequestContext } from "~/lib/context/request"
@@ -352,10 +353,7 @@ function parseOpenAiCc(
   // route, P2.2-D3); `originalBodyForHistory` (when present) is the client's raw
   // pre-injection body for the history snapshot.
   const incoming = raw.body as ChatCompletionsPayload
-  const clientBody = (raw.originalBodyForHistory ?? raw.body) as ChatCompletionsPayload
-
-  // Snapshot the CLIENT raw (pre-rewrite, pre-system-prompt) for history.
-  const originalSnapshot = structuredClone(clientBody)
+  const originalSnapshot = raw.originalBodyForHistory === undefined ? structuredClone(raw.body as ChatCompletionsPayload) : (historySnapshotBody(raw.originalBodyForHistory) as ChatCompletionsPayload)
 
   // Model resolution (requested/resolved/selected/clientModel) via the shared
   // codec primitive. Azure deployment routes inject the deployment name as an
