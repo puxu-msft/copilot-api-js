@@ -114,7 +114,7 @@ describe("abort-provenance gap counter", () => {
     expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "pre-commit", surface: "anthropic", count: 1 }])
 
     resetAbortProvenanceGapsForTests()
-    forwardError(mockCtx(), cancellationAbortError("request-deadline", "request_deadline"))
+    forwardError(mockCtx(), cancellationAbortError("client-request-deadline", "client_request_deadline"))
     expect(total()).toBe(0)
   })
 

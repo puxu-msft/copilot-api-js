@@ -532,18 +532,6 @@ describe("Phase 1: immediate actions", () => {
     expect(closeTokenRuntime).toHaveBeenCalledTimes(1)
   })
 
-  test("calls contextManager.stopReaper in Phase 1", async () => {
-    const stopReaper = mock(() => {})
-    await gracefulShutdown("SIGINT", createNoopDeps({ contextManager: { stopReaper } }))
-    expect(stopReaper).toHaveBeenCalledTimes(1)
-  })
-
-  test("handles missing contextManager gracefully", async () => {
-    // contextManager not passed — should not throw
-    await gracefulShutdown("SIGINT", createNoopDeps({ contextManager: undefined }))
-    expect(getIsShuttingDown()).toBe(true)
-  })
-
   test("calls server.close(false) to stop listening", async () => {
     const server = createMockServer()
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))

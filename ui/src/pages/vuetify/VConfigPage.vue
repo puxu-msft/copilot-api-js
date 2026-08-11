@@ -55,7 +55,8 @@ onMounted(() => {
 const proxy = topLevelField("proxy", null)
 const fetchTimeout = nestedField("timeouts", "response_header", null)
 const streamIdleTimeout = nestedField("timeouts", "stream_idle", null)
-const staleRequestMaxAge = nestedField("timeouts", "stale_request_max_age", null)
+const upstreamRequestDeadline = nestedField("timeouts", "upstream_request_deadline", null)
+const clientRequestDeadline = nestedField("timeouts", "client_request_deadline", null)
 const modelRefreshInterval = topLevelField("model_refresh_interval", null)
 const systemPromptPrepend = topLevelField("system_prompt_prepend", null)
 const systemPromptAppend = topLevelField("system_prompt_append", null)
@@ -372,9 +373,16 @@ function nestedField<
               :min="0"
             />
             <ConfigNumber
-              v-model="staleRequestMaxAge"
-              label="Stale Request Max Age"
-              description="Force-fail active requests that outlive this threshold."
+              v-model="upstreamRequestDeadline"
+              label="Upstream Request Deadline"
+              description="Abort ONE upstream attempt that outlives this. Retry/hedge budget is untouched."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="clientRequestDeadline"
+              label="Client Request Deadline"
+              description="Fail the whole client request once it outlives this, across every retry."
               suffix="s"
               :min="0"
             />

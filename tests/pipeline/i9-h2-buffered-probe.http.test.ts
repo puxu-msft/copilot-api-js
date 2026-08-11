@@ -67,7 +67,6 @@ describe.each([true, false])("I9 probe — H2 (raw upstream event:error) on the 
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
-      staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       errorShapingEnabled,

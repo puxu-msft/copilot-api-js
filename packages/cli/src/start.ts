@@ -443,9 +443,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // 保证 WS 重连后已在飞行的行富字段立即非空(attemptCount/queueWaitMs/transport/models…)。
   setConnectedDataFactory(() => contextManager.getAll().map((ctx) => toActiveRequestWire(snapshotWithSummary(ctx))))
 
-  // Start stale request reaper (periodic cleanup of stuck active contexts)
-  contextManager.startReaper()
-
   // ===========================================================================
   // Phase 4: External Dependencies (network)
   // ===========================================================================

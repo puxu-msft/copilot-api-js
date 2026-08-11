@@ -14,7 +14,8 @@ export interface ConfigYamlResponse {
   timeouts?: {
     stream_idle?: number
     response_header?: number
-    stale_request_max_age?: number
+    upstream_request_deadline?: number
+    client_request_deadline?: number
   }
   model_refresh_interval?: number
   history?: {
@@ -57,7 +58,8 @@ export interface EditableConfig {
   timeouts?: {
     stream_idle?: number | null
     response_header?: number | null
-    stale_request_max_age?: number | null
+    upstream_request_deadline?: number | null
+    client_request_deadline?: number | null
   } | null
   model_refresh_interval?: number | null
   history?: {

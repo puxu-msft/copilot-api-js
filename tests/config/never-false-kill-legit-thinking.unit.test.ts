@@ -9,8 +9,8 @@ import { parse } from "yaml"
 interface BundledTimeouts {
   response_header: number
   stream_idle: number
-  stale_request_max_age: number
-  request_deadline: number
+  upstream_request_deadline: number
+  client_request_deadline: number
 }
 
 test("bundled defaults never wall-clock-kill a live request that may still be legitimately thinking", () => {
@@ -19,7 +19,7 @@ test("bundled defaults never wall-clock-kill a live request that may still be le
   expect(bundled.timeouts).toMatchObject({
     response_header: 0,
     stream_idle: 0,
-    stale_request_max_age: 0,
-    request_deadline: 0,
+    upstream_request_deadline: 0,
+    client_request_deadline: 0,
   })
 })

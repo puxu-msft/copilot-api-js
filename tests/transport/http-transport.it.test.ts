@@ -172,7 +172,7 @@ describe("createUpstreamHttpTransport", () => {
 
   test("mid-stream reaper (ctx.lifecycleSignal) → guarded frames throw StreamReaperCancelError (live client gets a frame, NOT clean-EOF/settled-abort)", async () => {
     // The transport folds `env.ctx.lifecycleSignal` into the guard's `reaperSignal` (http-transport.ts:88/119).
-    // When the stale reaper / request-deadline force-fails an ACTIVELY STREAMING request, that signal fires
+    // When the stale reaper / client-request-deadline force-fails an ACTIVELY STREAMING request, that signal fires
     // mid-stream and the guard must throw `StreamReaperCancelError` — its OWN provenance, distinct from a
     // client disconnect. That routes to the driver's `stream-error` outcome, so the handler delivers a
     // terminal error frame to the STILL-CONNECTED client + settles `failed`. This is the regression guard for

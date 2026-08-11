@@ -1024,19 +1024,19 @@ export async function applyConfigToState(): Promise<Config> {
 
     // Timeouts section (scalar: override only when present)
     if (config.timeouts) {
-      // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
-      // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
-      // than inferred. Pure observation — reads state, records a diff, no behavior change.
+      // Snapshot timeout scalars before/after apply so a hot reload that changes an upstream guard
+      // is observable rather than inferred. Pure observation — reads state, records a diff.
       const timeoutBefore = {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       }
       const t = config.timeouts
       if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
       if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-      if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
-      if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
+      if (t.client_request_deadline !== undefined) setTimeoutConfig({ clientRequestDeadline: t.client_request_deadline })
+      if (t.upstream_request_deadline !== undefined) setTimeoutConfig({ upstreamRequestDeadline: t.upstream_request_deadline })
       // Per-model override maps (already bundled+user per-key merged upstream).
       // Replace semantics per field; app-guard only (no dispatcher rebuild).
       if (t.stream_idle_overrides !== undefined) {
@@ -1048,7 +1048,8 @@ export async function applyConfigToState(): Promise<Config> {
         })
       }
       recordConfigReloadTimeoutDiff(timeoutBefore, {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       })
@@ -1195,8 +1196,8 @@ export async function applyConfigToState(): Promise<Config> {
       const timeouts = config.timeouts
       if ((timeouts?.response_header ?? 0) > 0) boundedWaits.push("response_header (TTFB / time-to-first-byte)")
       if ((timeouts?.stream_idle ?? 0) > 0) boundedWaits.push("stream_idle (mid-stream silence)")
-      if ((timeouts?.stale_request_max_age ?? 0) > 0) boundedWaits.push("stale_request_max_age (active upstream lifetime)")
-      if ((timeouts?.request_deadline ?? 0) > 0) boundedWaits.push("request_deadline (client request lifetime)")
+      if ((timeouts?.upstream_request_deadline ?? 0) > 0) boundedWaits.push("upstream_request_deadline (one upstream attempt)")
+      if ((timeouts?.client_request_deadline ?? 0) > 0) boundedWaits.push("client_request_deadline (whole client request)")
       for (const [model, seconds] of Object.entries(timeouts?.response_header_overrides ?? {})) {
         if (seconds > 0) boundedWaits.push(`response_header_overrides.${model}=${seconds}s`)
       }

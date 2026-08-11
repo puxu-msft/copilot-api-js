@@ -233,17 +233,16 @@ timeouts:
   # gpt-5.5 (effort=high) has shown 266–462s zero-frame silent-reasoning gaps before a burst; this proves fixed positive bounds can kill valid requests, so the bundled config sets no override.
   stream_idle_overrides: {}
 
-  # 单次尝试上游，最大存活秒数（0 = 禁用）。
-  # Max seconds an active upstream request can live (0 = disabled).
+  # 单次上游尝试的最大存活秒数（0 = 禁用）。烧完只中止这一次尝试，重试／hedge 预算不受影响。
+  # Max seconds ONE upstream attempt can live (0 = disabled). Firing aborts only that attempt; the retry/hedge budget is untouched.
   #
-  # TODO: rename stale_request_max_age as upstream_request_deadline
-  stale_request_max_age: 0
+  # 与另外两个上游守卫互补：response_header 只管首字节前，stream_idle 只管帧间空档，两者都拦不住「一直滴水但永不结束」的尝试。
+  # Complements the two phase-scoped guards: response_header covers only the pre-header wait and stream_idle only the gap between frames — neither bounds an attempt that trickles forever.
+  upstream_request_deadline: 0
 
-  # 客户端请求的最大存活秒数（0 = 禁用）。一次客户端请求可能会被多次内部重试。
-  # Max seconds an active client request can live (0 = disabled). One client request may be attempted multiple times.
-  #
-  # TODO: rename request_deadline as client_request_deadline
-  request_deadline: 0
+  # 一次客户端请求的最大存活秒数（0 = 禁用）。从受理开始计，重试与 hedge 都不重置它，所以它是整个请求的外层上限。
+  # Max seconds one CLIENT request can live (0 = disabled). Measured from admission and never reset by retries or hedged candidates, so it bounds the whole client-visible operation.
+  client_request_deadline: 0
 
 # ============================================================================
 # Upstream transport (GHC) / 上游传输

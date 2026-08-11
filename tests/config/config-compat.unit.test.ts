@@ -93,7 +93,7 @@ describe("config compat — legacy key migration (file load)", () => {
     expect(result.timeouts).toEqual({
       stream_idle: 100,
       response_header: 200,
-      stale_request_max_age: 300,
+      client_request_deadline: 300,
     })
     expect((result as Record<string, unknown>).fetch_timeout).toBeUndefined()
     expect((result as Record<string, unknown>).stream_idle_timeout).toBeUndefined()

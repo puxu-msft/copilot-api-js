@@ -46,11 +46,6 @@ import type { RequestContext } from "~/lib/context/request"
 
 import { createRequestContextManager } from "~/lib/context/manager"
 import { createBus } from "~/lib/observability"
-import {
-  //
-  setStateForTests,
-  state,
-} from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import {
   //
@@ -58,8 +53,6 @@ import {
   http2Fetch,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
-
-import { waitUntil } from "../helpers/wait-until"
 
 let server: http2.Http2Server
 let url: string
@@ -93,19 +86,32 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 })
 
-/** A manager + a stale (age-exceeded) active ctx the reaper will force-fail. */
-function makeStaleCtx(): { manager: ReturnType<typeof createRequestContextManager>; ctx: RequestContext; failEvents: () => number } {
+/** A manager + an active ctx that a request-level force-fail will terminate. */
+function makeActiveCtx(): { manager: ReturnType<typeof createRequestContextManager>; ctx: RequestContext; failEvents: () => number } {
   const bus = createBus()
   let failCount = 0
   bus.subscribe((e) => {
     if (e.kind === "request.failed") failCount++
   })
   const manager = createRequestContextManager({ publisher: bus.scope("request") })
-  setStateForTests({ staleRequestMaxAge: 0.05 })
   const ctx = manager.create({ endpoint: "anthropic-messages" })
   ctx.setOriginalRequest({ model: "claude-opus-4-8", messages: [], stream: true, payload: {} })
   ctx.beginAttempt({})
   return { manager, ctx, failEvents: () => failCount }
+}
+
+/**
+ * The request-level force-fail, verbatim in shape with shutdown's `abandonDrain` (shutdown.ts):
+ * `reapInFlight()` cancels the in-flight upstream work, `fail()` records the terminal with its
+ * provenance. This used to be spelled `manager._runReaperOnce()`; the periodic reaper was removed
+ * on 2026-08-11 but BOTH primitives it drove are still live, so the abort topologies below are
+ * unchanged — only the caller that pulls the trigger is.
+ */
+function forceFail(ctx: RequestContext): void {
+  ctx.reapInFlight()
+  ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error("Drain abandoned by operator (SIGTERM) before this request completed"), undefined, {
+    attribution: { category: "shutdown", code: "operator-abandoned-drain" },
+  })
 }
 
 /** Fold the ctx lifecycle (reaper) signal into a fetch signal EXACTLY as the transport does
@@ -136,32 +142,23 @@ async function withUnhandledWatch(fn: () => Promise<void>): Promise<number> {
   }
 }
 
-describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhandledRejection)", () => {
-  let origMaxAge: number
-  beforeEach(() => {
-    origMaxAge = state.staleRequestMaxAge
-  })
-  afterEach(() => {
-    setStateForTests({ staleRequestMaxAge: origMaxAge })
-  })
-
+describe("P4 — real request-level abort of an in-flight upstream fetch (0 unhandledRejection)", () => {
   test("AWAITED fetch (pre-response): reaper aborts it → rejection surfaces to the awaiter, 0 unhandled", async () => {
-    const { manager, ctx } = makeStaleCtx()
+    const { manager, ctx } = makeActiveCtx()
     const p = http2Fetch(`${url}/v1/messages`, { method: "POST", body: "{}", signal: foldedReaperSignal(ctx) })
 
     const unhandled = await withUnhandledWatch(async () => {
-      await waitUntil(() => ctx.durationMs > 50, { label: "ctx to exceed maxAge" })
-      manager._runReaperOnce() // ④: reapInFlight() → lifecycleSignal abort → folded signal aborts the fetch
+      forceFail(ctx) // reapInFlight() → lifecycleSignal abort → folded signal aborts the fetch
       expect(ctx.lifecycleSignal.aborted).toBe(true) // PROOF the abort path actually ran (anti pass-null)
-      expect(manager.activeCount).toBe(0) // PROOF the reaper reaped THIS ctx (the reject below is its abort)
+      expect(manager.activeCount).toBe(0) // PROOF the force-fail terminated THIS ctx (the reject below is its abort)
       await expect(p).rejects.toThrow(/stale-request reaper/i) // rejects normally (not swallowed), CARRYING the reaper's own reason
     })
 
     expect(unhandled).toBe(0)
   })
 
-  test("③ COMMIT-after-`await p` window topology: reaper aborts the fetch a DETACHED async closure awaits → 0 unhandled", async () => {
-    const { manager, ctx } = makeStaleCtx()
+  test("③ COMMIT-after-`await p` window topology: a force-fail aborts the fetch a DETACHED async closure awaits → 0 unhandled", async () => {
+    const { ctx } = makeActiveCtx()
     const p = http2Fetch(`${url}/v1/messages`, { method: "POST", body: "{}", signal: foldedReaperSignal(ctx) })
 
     const unhandled = await withUnhandledWatch(async () => {
@@ -177,8 +174,7 @@ describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhan
           callbackError = e // C3b's COMMIT dispatch classifies this (signal-state) as reaper-cancel → fail + rich frame
         }
       })()
-      await waitUntil(() => ctx.durationMs > 50, { label: "ctx to exceed maxAge" })
-      manager._runReaperOnce()
+      forceFail(ctx)
       expect(ctx.lifecycleSignal.aborted).toBe(true)
       await callbackDone
       expect(callbackError).toBeInstanceOf(Error) // the abort reached the detached awaiter (no orphan)
@@ -188,7 +184,7 @@ describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhan
   })
 
   test("ABANDONED (no-awaiter) fetch: reaper aborts it → 0 unhandled (⑤ defensive observer absorbs it)", async () => {
-    const { ctx } = makeStaleCtx()
+    const { ctx } = makeActiveCtx()
 
     const unhandled = await withUnhandledWatch(async () => {
       // Orphan the promise (no await, no .catch by the caller) but hold a ref so GC doesn't collect it
@@ -203,18 +199,17 @@ describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhan
     expect(unhandled).toBe(0)
   })
 
-  test("idempotent: `_runReaperOnce` does reapInFlight + fail; the settled guard dedups (single fail, 0 unhandled)", async () => {
-    const { manager, ctx, failEvents } = makeStaleCtx()
+  test("idempotent: the force-fail does reapInFlight + fail; the settled guard dedups (single fail, 0 unhandled)", async () => {
+    const { ctx, failEvents } = makeActiveCtx()
     const p = http2Fetch(`${url}/v1/messages`, { method: "POST", body: "{}", signal: foldedReaperSignal(ctx) })
 
     const unhandled = await withUnhandledWatch(async () => {
-      await waitUntil(() => ctx.durationMs > 50, { label: "ctx to exceed maxAge" })
-      manager._runReaperOnce()
-      manager._runReaperOnce() // second pass — ctx already settled + removed from active, no-op
+      forceFail(ctx)
+      forceFail(ctx) // second pass — ctx already settled + removed from active, no-op
       ctx.reapInFlight() // extra direct call — idempotent (lifecycleAbort already aborted)
       expect(ctx.settled).toBe(true)
       expect(ctx.lifecycleSignal.aborted).toBe(true)
-      expect(failEvents()).toBe(1) // exactly one terminal fail despite multiple reaper passes
+      expect(failEvents()).toBe(1) // exactly one terminal fail despite multiple force-fail passes
       await expect(p).rejects.toThrow(/stale-request reaper/i)
     })
 

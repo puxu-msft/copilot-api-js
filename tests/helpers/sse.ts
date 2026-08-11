@@ -82,7 +82,7 @@ export function createSseResponseThenAbort(chunks: Array<string>, clientAbort: A
  * Build a streaming `Response` that emits `chunks` verbatim, then — on the consumer's NEXT read —
  * BLOCKS forever without ending or erroring the body. Unlike {@link createSseResponseThenAbort} it
  * aborts NOTHING itself: the test drives the terminal event on its own schedule (e.g. abort a
- * `ctx.lifecycleSignal` to simulate a stale-reaper / request-deadline force-fail mid-stream), then
+ * `ctx.lifecycleSignal` to simulate a stale-reaper / client-request-deadline force-fail mid-stream), then
  * asserts the guard's next read throws the matching provenance error (`StreamReaperCancelError` /
  * `StreamDispatchCancelError`). The forever-pending pull makes the reaper abort deterministically
  * win the `raceIteratorNext`, with no timers.

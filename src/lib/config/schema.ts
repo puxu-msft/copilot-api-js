@@ -905,7 +905,13 @@ export const HistoryConfigSchema = z
      * JS timer ceiling (2^31-1 ms): a larger delay does not wait longer, it
      * wraps to ~1ms and would make every healthy start report a deadline.
      */
-    startup_deadline_ms: z.number().int().min(0).max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms").nullable().optional(),
+    startup_deadline_ms: z
+      .number()
+      .int()
+      .min(0)
+      .max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms")
+      .nullable()
+      .optional(),
     raw_capture: nullableSection(
       z
         .object({
@@ -1090,14 +1096,21 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled; bundled default 0). */
-    stale_request_max_age: nullableNonnegativeInt(),
     /**
-     * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
-     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled and
-     * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
+     * Hard total-duration deadline (seconds) for one CLIENT request, enforced by a precise
+     * per-request timer. Measured from admission and NOT reset by retries or hedged candidates, so
+     * it bounds the whole client-visible operation. 0 = disabled and is the bundled default so
+     * legitimate unbounded thinking is never terminated by elapsed time.
      */
-    request_deadline: nullableNonnegativeInt(),
+    client_request_deadline: nullableNonnegativeInt(),
+    /**
+     * Hard total-duration deadline (seconds) for ONE upstream attempt, enforced by a per-dispatch
+     * timer. Restarts every attempt, so firing it aborts only that attempt and leaves the retry /
+     * hedge budget intact. Complements `response_header` (pre-header only) and `stream_idle` (gap
+     * between frames only), neither of which bounds an attempt that trickles bytes forever.
+     * 0 = disabled and is the bundled default.
+     */
+    upstream_request_deadline: nullableNonnegativeInt(),
   })
   .strict()
 

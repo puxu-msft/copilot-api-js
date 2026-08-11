@@ -775,21 +775,28 @@ export interface State {
   readonly pooledConnectionIdleTimeout: number
 
   /**
-   * Maximum age of an active request before the stale reaper forces it to fail (seconds).
-   * Requests exceeding this age are assumed stuck and cleaned up.
-   * 0 = disabled. Default: 600 (10 minutes).
+   * Hard total-duration deadline (seconds) for one CLIENT request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a precise per-request monotonic timer.
+   * Measured from context creation and NOT reset by retries or hedged candidates, so it caps the
+   * whole client-visible operation however many upstream attempts it takes. 0 = disabled, which
+   * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
+   *
+   * Sibling knob: {@link upstreamRequestDeadline} caps ONE upstream attempt, leaving the retry
+   * budget intact. This one is the outer bound; that one is the inner bound.
    */
-  readonly staleRequestMaxAge: number
+  readonly clientRequestDeadline: number
 
   /**
-   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
-   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
-   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
-   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
-   * ships an explicit value (an intentional product default; the stale reaper stays as the
-   * leak safety-net for anomalies that outlive the deadline).
+   * Hard total-duration deadline (seconds) for ONE upstream attempt (a single physical dispatch),
+   * enforced by a per-dispatch timer. Unlike {@link clientRequestDeadline} it restarts for every
+   * attempt, so firing it aborts just that attempt and leaves retry/hedge free to try again.
+   *
+   * Distinct from the two phase-scoped upstream guards: `responseHeaderTimeout` caps only the
+   * pre-header wait and `streamIdleTimeout` caps only the gap between frames, so an attempt that
+   * keeps trickling bytes forever escapes both. This is the total wall-clock cap for the attempt.
+   * 0 = disabled and is the bundled default.
    */
-  readonly requestDeadline: number
+  readonly upstreamRequestDeadline: number
 
   /**
    * Interval in seconds for refreshing the cached model list from Copilot.
@@ -1634,7 +1641,9 @@ export function setGenerationRuntimeConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
+  patch: Partial<
+    Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "clientRequestDeadline" | "upstreamRequestDeadline" | "modelRefreshInterval">
+  >,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
@@ -2010,8 +2019,8 @@ export function resetConfigManagedState(): void {
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
-    staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
-    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+    clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
+    upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setUpstreamTransportConfig({
@@ -2215,8 +2224,8 @@ const mutableState: MutableState = {
   modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
-  staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
-  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+  clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
+  upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,

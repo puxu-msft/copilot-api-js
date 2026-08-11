@@ -773,9 +773,9 @@ describe("P6-T2 generation coordinator", () => {
     const running = coordinator.runPrimary()
     await started
 
-    await coordinator.cancel("request-deadline")
+    await coordinator.cancel("client-request-deadline")
 
-    await expect(running).rejects.toThrow("request-deadline")
+    await expect(running).rejects.toThrow("client-request-deadline")
     expect([...recording.candidates.values()].map((row) => row.verdict)).toEqual(["cancelled"])
     expect([...recording.dispatches.values()].map((row) => row.verdict)).toEqual(["cancelled"])
   })

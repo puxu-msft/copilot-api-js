@@ -99,12 +99,12 @@ export function getReaperDiagnostics(): ReaperDiagnosticsSnapshot {
   }
 }
 
-/** Config-reload 时 timeout 字段 before/after diff(坐实 RC2 候选①:热重载是否改了阈值)。 */
+/** Config-reload 时 timeout 字段 before/after diff（坐实「热重载是否改了阈值」）。 */
 export interface TimeoutSnapshot {
-  staleRequestMaxAge: number
   responseHeaderTimeout: number
   streamIdleTimeout: number
-  requestDeadline?: number
+  clientRequestDeadline?: number
+  upstreamRequestDeadline?: number
 }
 
 let lastReloadDiff: { at: number; changed: Array<{ field: string; before: number; after: number }> } | undefined

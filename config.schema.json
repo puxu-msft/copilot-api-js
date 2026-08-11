@@ -2719,6 +2719,18 @@
                 }
               ]
             },
+            "startup_deadline_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 2147483647
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "raw_capture": {
               "anyOf": [
                 {
@@ -2931,7 +2943,7 @@
                 }
               ]
             },
-            "stale_request_max_age": {
+            "client_request_deadline": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -2943,7 +2955,7 @@
                 }
               ]
             },
-            "request_deadline": {
+            "upstream_request_deadline": {
               "anyOf": [
                 {
                   "type": "integer",

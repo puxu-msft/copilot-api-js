@@ -106,7 +106,7 @@ model_mappings:
 timeouts:
   stream_idle: 301
   response_header: 600
-  stale_request_max_age: 900
+  client_request_deadline: 900
 model_refresh_interval: 0
 history:
   raw_capture:
@@ -159,7 +159,7 @@ system_prompt_append: "append"
       timeouts: {
         stream_idle: 301,
         response_header: 600,
-        stale_request_max_age: 900,
+        client_request_deadline: 900,
       },
       model_refresh_interval: 0,
       history: {
@@ -462,7 +462,7 @@ model_refresh_interval: 600
       timeouts: {
         stream_idle: 301,
         response_header: 600,
-        stale_request_max_age: 900,
+        client_request_deadline: 900,
       },
       model_refresh_interval: 0,
       history: {
@@ -526,7 +526,7 @@ model_refresh_interval: 600
     expect(written).toContain("model_mappings:")
     expect(written).toContain("stream_idle: 301")
     expect(written).toContain("response_header: 600")
-    expect(written).toContain("stale_request_max_age: 900")
+    expect(written).toContain("client_request_deadline: 900")
     expect(written).toContain("model_refresh_interval: 0")
     expect(written).toContain("history:")
     expect(written).toContain("anthropic:")
@@ -539,7 +539,7 @@ model_refresh_interval: 600
 
     expect(state.responseHeaderTimeout).toBe(600)
     expect(state.streamIdleTimeout).toBe(301)
-    expect(state.staleRequestMaxAge).toBe(900)
+    expect(state.clientRequestDeadline).toBe(900)
     expect(state.modelRefreshInterval).toBe(0)
     expect(state.historyRawCaptureEnabled).toBe(false)
     expect(state.historyRawCaptureMaxObjectBytes).toBe(1048576)

@@ -34,6 +34,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { state } from "~/lib/state"
 import {
   //
   combineAbortSignals,
@@ -57,7 +58,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     env: RequestEnvelope,
     options?: TransportDispatchOptions,
   ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
-    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
+    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal), {
+      deadlineMs: state.upstreamRequestDeadline * 1000,
+    })
     // A4-1 made this handle the canonical owner of the dispatch. It stays optional here only because legacy/compat callers may still send without an options bag; when absent we record nothing rather than falling back to ambient attribution, which would blame the wrong dispatch under hedging.
     const dispatch = options?.dispatch
     const headers = Object.fromEntries(wire.headers.entries())

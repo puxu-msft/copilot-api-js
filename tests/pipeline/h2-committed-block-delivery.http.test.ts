@@ -66,7 +66,6 @@ describe.each([true, false])("H2 terminal error after a committed block, on the 
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
-      staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       errorShapingEnabled,

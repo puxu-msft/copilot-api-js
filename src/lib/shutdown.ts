@@ -231,8 +231,6 @@ export interface ShutdownDeps {
   closeTokenRuntimeFn?: () => Promise<void>
   closeAllClientsFn?: () => void
   getClientCountFn?: () => number
-  /** Request context manager (for stopping stale reaper during shutdown) */
-  contextManager?: { stopReaper: () => void }
   /** Generation observability finalization barrier. Production uses the request manager registry. */
   drainModelOperationFinalizationsFn?: () => Promise<void>
   /** Stop pre-context History admission and reject queued operations in Step 1. */
@@ -397,14 +395,6 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // Fire-and-forget: Steps 1–3 do not immediately force-close observer sockets.
   // The force-close boundary and final completion notification are awaited.
   setPhaseFireAndForget("stopping")
-
-  // Stop stale context reaper before drain (avoid racing with drain logic)
-  try {
-    const ctxMgr = deps?.contextManager ?? getRequestContextManager()
-    ctxMgr.stopReaper()
-  } catch {
-    // Context manager may not be initialized in tests or early shutdown
-  }
 
   // Stop maintenance producers, but keep every request dependency live until the
   // accepted-operation registry drains. In-flight work may still need a token refresh,

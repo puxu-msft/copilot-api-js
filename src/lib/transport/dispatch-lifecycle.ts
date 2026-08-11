@@ -4,7 +4,11 @@ import type {
   UpstreamDispatchLifecycle,
 } from "~/lib/pipeline/types"
 
-import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+import {
+  //
+  cancellationAbortError,
+  UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON,
+} from "~/lib/error/cancellation-reason"
 
 export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   readonly signal: AbortSignal
@@ -24,16 +28,27 @@ function abortReason(reason?: string): DOMException {
   return cancellationAbortError("dispatch-cancel", reason ?? "The operation was aborted.")
 }
 
+export interface DispatchLifecycleOptions {
+  /**
+   * Wall-clock cap for this ONE upstream attempt (`timeouts.upstream_request_deadline`, ms).
+   * 0/undefined = disabled and nothing is armed. On fire the dispatch is aborted with an
+   * `upstream-request-deadline` cause and torn down like any other disposal — the owning
+   * candidate's retry/hedge budget is untouched, so this bounds the attempt, not the request.
+   */
+  readonly deadlineMs?: number
+}
+
 /**
  * Own one HTTP-style physical dispatch without owning the pooled connection.
  * Cancellation reaches the fetch/body stream; disposal closes only the body iterator.
  */
-export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchLifecycleOwner {
+export function createDispatchLifecycle(externalSignal?: AbortSignal, options?: DispatchLifecycleOptions): DispatchLifecycleOwner {
   const controller = new AbortController()
   let activeIterator: AsyncIterator<unknown> | undefined
   let settled = false
   let cleanupPromise: Promise<void> | undefined
   let disposalPromise: Promise<DispatchDisposalResult> | undefined
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
   let resolveQuiesced!: () => void
   let rejectQuiesced!: (error: unknown) => void
   const quiesced = new Promise<void>((resolve, reject) => {
@@ -44,9 +59,16 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
   void quiesced.catch(() => {})
   let onExternalAbort = (): void => {}
 
+  const clearDeadline = (): void => {
+    if (deadlineTimer === undefined) return
+    clearTimeout(deadlineTimer)
+    deadlineTimer = undefined
+  }
+
   const complete = (error?: unknown, failed = false): void => {
     if (settled) return
     settled = true
+    clearDeadline()
     externalSignal?.removeEventListener("abort", onExternalAbort)
     if (failed) rejectQuiesced(error)
     else resolveQuiesced()
@@ -91,6 +113,22 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
   }
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true })
   if (externalSignal?.aborted) onExternalAbort()
+
+  // Per-attempt hard deadline. Abort FIRST with our own tagged error so the cause survives:
+  // `dispose` → `cancel` only aborts when the signal is still unaborted, so it will not overwrite
+  // this tag with the generic `dispatch-cancel` one. `unref` keeps it from holding the process up.
+  const deadlineMs = options?.deadlineMs ?? 0
+  if (deadlineMs > 0) {
+    deadlineTimer = setTimeout(() => {
+      deadlineTimer = undefined
+      if (settled || controller.signal.aborted) return
+      controller.abort(
+        cancellationAbortError("upstream-request-deadline", `Upstream attempt exceeded ${deadlineMs / 1000}s (${UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON})`),
+      )
+      void dispose(UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON).catch(() => {})
+    }, deadlineMs)
+    ;(deadlineTimer as unknown as { unref?: () => void }).unref?.()
+  }
 
   return {
     signal: controller.signal,

@@ -228,7 +228,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     // we already gave up on from opening a second upstream dispatch. Deleting the gate
     // leaves every connection-primitive cause test green, so this is where it has to be caught.
     const lifecycle = new AbortController()
-    lifecycle.abort(cancellationAbortError("request-deadline", "request_deadline"))
+    lifecycle.abort(cancellationAbortError("client-request-deadline", "client_request_deadline"))
     const transports: Array<string> = []
     const env = makeEnv(transports, undefined, lifecycle.signal)
     const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
@@ -246,7 +246,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     expect(httpCalls).toBe(0)
     expect(transports).toEqual(["upstream-ws"])
     // …and the boundary can still tell WHICH clock ended it, through the WS wrapper's cause chain.
-    expect(getCancellationCause(error)).toBe("request-deadline")
+    expect(getCancellationCause(error)).toBe("client-request-deadline")
   })
 
   test("the first-event watchdog keeps its TimeoutError identity in the fallback's cause chain", async () => {

@@ -28,10 +28,9 @@ import type {
   ScopedPublisher,
 } from "~/lib/observability"
 
-import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
+import { CLIENT_REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
 import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
 import { getHistoryAdmissionController } from "~/lib/history/worker/registry"
-import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { state } from "~/lib/state"
 
 import type {
@@ -113,15 +112,6 @@ export interface RequestContextManager {
   /** Drain every pending canonical finalizer and surface any registered delivery/canonical lifecycle failure. */
   drainLifecycleFailures(): Promise<void>
 
-  /** Start periodic cleanup of stale active contexts */
-  startReaper(): void
-
-  /** Stop the reaper (for shutdown/cleanup) */
-  stopReaper(): void
-
-  /** Run a single reaper scan (exposed for testing) */
-  _runReaperOnce(): void
-
   /**
    * TEST-ONLY: current size of the internal `lifecycleFailureBarrier` map. Exists so a test can
    * mechanically prove the barrier's storage is bounded by tracked-operation lifetime (evicted at
@@ -149,7 +139,7 @@ export interface RequestContextManagerOptions {
    */
   publisher?: ScopedPublisher<"request">
   /**
-   * Whether to arm a per-request hard-deadline timer (`state.requestDeadline`) on `create()`.
+   * Whether to arm a per-request hard-deadline timer (`state.clientRequestDeadline`) on `create()`.
    * Default true. The capturing manager (dry-run inspection) passes false so an inspected ctx
    * never leaves a dangling deadline timer / force-fails a throwaway context (RFC C4b inspection
    * exemption).
@@ -173,7 +163,6 @@ export function peekRequestContextManager(): RequestContextManager | null {
 }
 
 export function resetRequestContextManagerForTests(options?: RequestContextManagerOptions): RequestContextManager {
-  _manager?.stopReaper()
   _manager = createRequestContextManager(options)
   return _manager
 }
@@ -188,10 +177,9 @@ export type CapturedRequestEvent = Extract<ObservabilityEvent, { kind: `request.
  * never surfaces as a real one. Returns `fn`'s result + the captured events (feature/pipeline-info
  * side-channel diagnostics).
  *
- * Side-effect-free isolation (RFC §11): the temp manager's reaper is NEVER started
- * (`createRequestContextManager` doesn't auto-start it), so there's no timer to leak; the saved
- * manager is restored by reference WITHOUT `stopReaper()` (unlike `resetRequestContextManagerForTests`,
- * which would kill the production reaper). Caller must serialize concurrent dry-runs — the swap is a
+ * Side-effect-free isolation (RFC §11): the temp manager arms NO deadline timers
+ * (`armDeadlineTimers: false`), so an inspected ctx can never leave a dangling timer behind or be
+ * force-failed after the swap window closes. Caller must serialize concurrent dry-runs — the swap is a
  * process-global window; concurrent REAL requests during it route their `request.*` events into the
  * capture array (lost from the bus), so don't run during heavy traffic.
  */
@@ -242,33 +230,6 @@ export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promis
 
 // ─── Factory ───
 
-/**
- * Cap on the reaper scan interval: a scan misses stale work for at most
- * `interval` ms, so clamp so a maxAge of hours doesn't mean a scan-every-many-
- * minutes cadence that delays operator-visible failures.
- */
-export const REAPER_INTERVAL_MAX_MS = 60_000
-/**
- * Floor on the reaper scan interval: every scan walks all active contexts, so
- * don't scan faster than this even when maxAge is tiny (e.g. 1s in tests).
- */
-export const REAPER_INTERVAL_MIN_MS = 250
-
-/**
- * Derive the reaper scan interval (ms) from `staleRequestMaxAge` (seconds).
- * Scanning every `maxAge / 3` keeps worst-case detection latency under ~1.33 ×
- * maxAge, clamped to [MIN, MAX]; `maxAge ≤ 0` (disabled) returns MAX. Derived
- * from `staleRequestMaxAge` alone — no extra knob to set inconsistently.
- *
- * Exported as a pure, parameterized function so the /3 formula and both clamp
- * edges get direct boundary regression coverage (DI-7).
- */
-export function computeReaperIntervalMs(staleRequestMaxAgeSec: number): number {
-  const derived = Math.floor((staleRequestMaxAgeSec * 1000) / 3)
-  if (derived <= 0) return REAPER_INTERVAL_MAX_MS
-  return Math.max(REAPER_INTERVAL_MIN_MS, Math.min(REAPER_INTERVAL_MAX_MS, derived))
-}
-
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
   // Operation/finalization registry: populated alongside activeContexts, sealed at logical settle,
@@ -285,11 +246,12 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   const lifecycleFailureBarrier = new Map<string, { error: unknown }>()
   const publisher = options?.publisher
   const armDeadlineTimers = options?.armDeadlineTimers ?? true
-  // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
-  // LATE — RC2), each request gets a precise monotonic timer armed at create() for
-  // `state.requestDeadline` seconds. On fire it applies the SAME cancel+settle as the reaper
-  // (reapInFlight → fail), but ON TIME regardless of scan cadence / config reload / suspend
-  // recovery jitter. Cleared on settle. 0 = disabled (byte-identical to the reaper-only path).
+  // Per-request hard-deadline timers: each accepted request gets ONE precise timer armed at
+  // create() for `state.clientRequestDeadline` seconds, which on fire cancels + settles the whole
+  // request (reapInFlight → fail). It replaced the periodic stale reaper outright (2026-08-11):
+  // the reaper measured the SAME quantity (age since create) and took the SAME action, but via a
+  // process-wide scan that fired up to ~1.33× late and could not tell a config reload apart from
+  // a suspend. Cleared on settle; 0 = disabled and nothing is armed at all.
   const deadlineTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   function clearDeadlineTimer(id: string): void {
@@ -297,98 +259,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
     if (t) {
       clearTimeout(t)
       deadlineTimers.delete(id)
-    }
-  }
-
-  // ─── Stale Request Reaper ───
-
-  let reaperTimer: ReturnType<typeof setInterval> | null = null
-  // Reaper tick timing (RC2 diagnostics — see reaper-diagnostics.ts). Frozen interval is
-  // captured at startReaper; last-tick wall + monotonic clocks let us distinguish a
-  // config-reload cadence mismatch / process-or-WSL suspend from event-loop blocking.
-  let reaperFrozenIntervalMs = 0
-  let lastTickWallMs: number | undefined
-  let lastTickMonoMs: number | undefined
-
-  /** Single reaper scan — force-fail contexts exceeding maxAge */
-  function runReaperOnce() {
-    // Tick diagnostics FIRST (records every scan, incl. disabled/empty ones, so drift is
-    // observable regardless of whether anything was reaped). Pure observation — no behavior change.
-    const actualAt = Date.now()
-    const nowMono = performance.now()
-    const scheduledAt = lastTickWallMs !== undefined ? lastTickWallMs + reaperFrozenIntervalMs : actualAt
-    const monotonicGapMs = lastTickMonoMs !== undefined ? nowMono - lastTickMonoMs : reaperFrozenIntervalMs
-    const wallGapMs = lastTickWallMs !== undefined ? actualAt - lastTickWallMs : reaperFrozenIntervalMs
-    lastTickWallMs = actualAt
-    lastTickMonoMs = nowMono
-    const scanStartMono = nowMono
-
-    const maxAgeMs = state.staleRequestMaxAge * 1000
-    if (maxAgeMs <= 0) {
-      recordReaperTick({
-        scheduledAt,
-        actualAt,
-        scanDurationMs: performance.now() - scanStartMono,
-        activeCount: activeContexts.size,
-        liveMaxAgeSec: state.staleRequestMaxAge,
-        frozenIntervalMs: reaperFrozenIntervalMs,
-        monotonicGapMs,
-        wallGapMs,
-      })
-      return // disabled
-    }
-
-    for (const [id, ctx] of activeContexts) {
-      if (ctx.durationMs > maxAgeMs) {
-        consola.warn(
-          `[context] Force-failing stale request ${id}`
-            + ` (endpoint: ${ctx.endpoint}`
-            + `, model: ${ctx.originalRequest?.model ?? "unknown"}`
-            + `, stream: ${ctx.originalRequest?.stream ?? "?"}`
-            + `, state: ${ctx.state}`
-            + `, age: ${Math.round(ctx.durationMs / 1000)}s`
-            + `, max: ${state.staleRequestMaxAge}s)`,
-        )
-        // Give the reaper teeth (缺陷④): cancel the in-flight upstream fetch / stream
-        // via the lifecycle signal — the transport folds it into the fetch (cancels a
-        // pre-response header-wait) and the stream guard (a mid-stream reap reaches a
-        // live client as a `reaper-cancel` → `stream-error` → error frame). `fail()`
-        // stays as the terminal-state record + safety net for the no-active-consumer
-        // edge; the `settled` guard dedups with the handler's own settle.
-        ctx.reapInFlight()
-        ctx.fail(
-          ctx.originalRequest?.model ?? "unknown",
-          new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`),
-          undefined,
-          { attribution: { category: "reaper", code: "stale-context-reaper" } },
-        )
-      }
-    }
-    recordReaperTick({
-      scheduledAt,
-      actualAt,
-      scanDurationMs: performance.now() - scanStartMono,
-      activeCount: activeContexts.size,
-      liveMaxAgeSec: state.staleRequestMaxAge,
-      frozenIntervalMs: reaperFrozenIntervalMs,
-      monotonicGapMs,
-      wallGapMs,
-    })
-  }
-
-  function startReaper() {
-    if (reaperTimer) return // idempotent
-    if (state.staleRequestMaxAge <= 0) return // explicitly disabled — no timer at all
-    reaperFrozenIntervalMs = computeReaperIntervalMs(state.staleRequestMaxAge)
-    lastTickWallMs = undefined
-    lastTickMonoMs = undefined
-    reaperTimer = setInterval(runReaperOnce, reaperFrozenIntervalMs)
-  }
-
-  function stopReaper() {
-    if (reaperTimer) {
-      clearInterval(reaperTimer)
-      reaperTimer = null
     }
   }
 
@@ -544,21 +414,21 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       // (`cancelReason=request_deadline`, operationSignal abort), then records the timeout terminal.
       // This fires ON TIME via a per-request timer (bypasses RC2's late scan); `unref` prevents it
       // from keeping the process alive. fail records the terminal outcome (settled-guard dedups).
-      if (armDeadlineTimers && state.requestDeadline > 0) {
+      if (armDeadlineTimers && state.clientRequestDeadline > 0) {
         const timer = setTimeout(() => {
           deadlineTimers.delete(ctx.id)
           if (ctx.settled) return
           consola.warn(
-            `[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
+            `[context] Request ${ctx.id} exceeded hard deadline ${state.clientRequestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
           )
-          ctx.cancel(REQUEST_DEADLINE_CANCEL_REASON)
+          ctx.cancel(CLIENT_REQUEST_DEADLINE_CANCEL_REASON)
           ctx.fail(
             ctx.originalRequest?.model ?? "unknown",
-            new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`),
+            new Error(`Request exceeded hard deadline of ${state.clientRequestDeadline}s (client_request_deadline)`),
             undefined,
-            { attribution: { category: "timeout", code: "request_deadline" } },
+            { attribution: { category: "timeout", code: "client_request_deadline" } },
           )
-        }, state.requestDeadline * 1000)
+        }, state.clientRequestDeadline * 1000)
         ;(timer as unknown as { unref?: () => void }).unref?.()
         deadlineTimers.set(ctx.id, timer)
       }
@@ -625,9 +495,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       }
     },
 
-    startReaper,
-    stopReaper,
-    _runReaperOnce: runReaperOnce,
     _lifecycleFailureBarrierSize: () => lifecycleFailureBarrier.size,
   }
 }

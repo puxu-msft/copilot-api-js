@@ -16,21 +16,21 @@ import {
 
 import { waitUntil } from "../helpers/wait-until"
 
-// C4b: a per-request HARD deadline (`state.requestDeadline`) enforced by a precise per-request
+// C4b: a per-request HARD deadline (`state.clientRequestDeadline`) enforced by a precise per-request
 // timer — fires ON TIME regardless of the periodic stale-reaper scan cadence (which fires late,
 // RC2). On fire it applies the same cancel(reapInFlight) + settle(fail) as the reaper.
 
-describe("request_deadline hard total-duration cap (C4b)", () => {
+describe("client_request_deadline hard total-duration cap (C4b)", () => {
   let origDeadline: number
   beforeEach(() => {
-    origDeadline = state.requestDeadline
+    origDeadline = state.clientRequestDeadline
   })
   afterEach(() => {
-    setStateForTests({ requestDeadline: origDeadline })
+    setStateForTests({ clientRequestDeadline: origDeadline })
   })
 
-  test("a per-request timer cancels + fails a request that outlives request_deadline", async () => {
-    setStateForTests({ requestDeadline: 0.05 })
+  test("a per-request timer cancels + fails a request that outlives client_request_deadline", async () => {
+    setStateForTests({ clientRequestDeadline: 0.05 })
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })
@@ -44,13 +44,13 @@ describe("request_deadline hard total-duration cap (C4b)", () => {
     // Cancel got teeth: lifecycleSignal aborted (reapInFlight) so an in-flight fetch/backoff stops.
     expect(ctx.lifecycleSignal.aborted).toBe(true)
     expect(ctx.cancelled).toBe(true)
-    expect(ctx.cancelReason).toBe("request_deadline")
+    expect(ctx.cancelReason).toBe("client_request_deadline")
     // No longer tracked as active.
     expect(manager.activeCount).toBe(0)
   })
 
-  test("request_deadline=0 disables the timer (request is NOT force-failed)", async () => {
-    setStateForTests({ requestDeadline: 0 })
+  test("client_request_deadline=0 disables the timer (request is NOT force-failed)", async () => {
+    setStateForTests({ clientRequestDeadline: 0 })
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })
@@ -62,7 +62,7 @@ describe("request_deadline hard total-duration cap (C4b)", () => {
   })
 
   test("inspection manager (armDeadlineTimers:false) never arms a deadline (dry-run exemption)", async () => {
-    setStateForTests({ requestDeadline: 0.05 })
+    setStateForTests({ clientRequestDeadline: 0.05 })
     const manager = createRequestContextManager({ armDeadlineTimers: false })
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })
@@ -73,7 +73,7 @@ describe("request_deadline hard total-duration cap (C4b)", () => {
   })
 
   test("settling before the deadline clears the timer (no post-settle force-fail)", async () => {
-    setStateForTests({ requestDeadline: 0.05 })
+    setStateForTests({ clientRequestDeadline: 0.05 })
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })

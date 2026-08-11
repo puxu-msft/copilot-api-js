@@ -93,7 +93,7 @@ describe("fast-retry hedge policy", () => {
     expect(frozen.evaluate(context({ totalDispatches: 16 })).reason).toBe("total-dispatch-budget-exhausted")
   })
 
-  test("requires enough absolute request-deadline budget and treats zero timeout as disabled", () => {
+  test("requires enough absolute client-request-deadline budget and treats zero timeout as disabled", () => {
     expect(policy({ requestDeadlineAtMs: 910_000 }).evaluate(context())).toMatchObject({ eligible: false, reason: "insufficient-deadline-budget" })
     expect(policy({ requestDeadlineAtMs: 910_001 }).evaluate(context()).eligible).toBe(true)
     expect(policy({ requestDeadlineAtMs: 0 }).evaluate(context()).eligible).toBe(true)
