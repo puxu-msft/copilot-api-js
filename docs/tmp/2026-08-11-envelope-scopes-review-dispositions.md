@@ -25,9 +25,30 @@
 
 它自报的**未覆盖形态**（是「没扫」，不是「无发现」）：①类型正确但值取错来源（AST 只查键不查值来源）②假体本就该有却从未有的字段 ③非 envelope 形状对象内部的键丢失 ④断言语义强度变弱（只数了 `expect(` 计数）⑤逐 cell 的运行时字节对照 ⑥`ui/`、`ui-v4/` 与 DESIGN.md 之外的文档。
 
-## 一条本轮实测坐实的环境归因（不是回归）
+## 一条环境归因（不是回归）——附原始输出与**明确的可复核边界**
 
-`test:backend` 首轮 21 条红全部落在 History 子系统（`history/{search,worker,v3}`、`diagnostics/durable-writer`）。**没有当作「既有失败」挥手放过**：单跑同样红（排除并行污染）→ 读实际错误是 `options.index.generation is not a function`（`src/lib/history/search/daemon.ts:561`）→ Rust 侧该方法存在、TS 侧 2026-08-08 引入、Rust 源最后改动 2026-08-09，而磁盘上的 `.node` 构建于 **8 月 6 日 20:08**——预构建 native 产物比源码旧。`bun run build:history-search` 重建后该文件 22 pass / 0 fail。归因是实测转绿，不是结构推断。
+`test:backend` 首轮 21 条红全部落在 History 子系统（`history/{search,worker,v3}`、`diagnostics/durable-writer`）。没有当作「既有失败」挥手放过，逐步取证如下。
+
+**可从仓库独立复核的部分**：
+
+- `src/lib/history/search/daemon.ts` 调用 `options.index.generation()`；该调用由 `7a99a254`（2026-08-08）引入 —— `git log -1 -S"generation()" -- src/lib/history/search/daemon.ts`。
+- Rust 侧确实导出该方法：`native/history-search/src/lib.rs` 的 `pub async fn generation(&self)`。
+- `native/history-search/*.node` 是 **gitignored 构建产物**（`git check-ignore -v native/history-search/copilot_history_search.node`），因此它不受版本控制、也不随 checkout 更新。
+
+**当时实测的原始输出**（命令与计数逐字摘录，日志本身在 job 临时目录、不随仓库保留）：
+
+| 时刻 | 命令 | 结果 |
+|---|---|---|
+| 重建前 | `bun test tests/history/search/daemon.it.test.ts` | `10 pass / 12 fail`，失败点 9 次 `TypeError: options.index.generation is not a function. (In 'options.index.generation()', 'options.index.generation' is undefined)` |
+| 重建前 | `bun run test:backend` | `7931 tests · 7910 pass · 21 fail` |
+| 重建 | `bun run build:history-search` | rc=0 |
+| 重建后 | `bun test tests/history/search/daemon.it.test.ts` | `22 pass / 0 fail` |
+| 重建后 | `bun run test:backend` | `7931 tests · 7931 pass · 0 fail` |
+
+**不可复核、按未验证标注的部分**（独立评审指出，已采纳）：旧产物的构建时间「2026-08-06 20:08」来自当时的 `ls -la` 观测，而该文件已被重建覆盖且不在版本库中，**此刻无法再独立取证**。因此严格说：上表证明的是「重建产物 → 该批失败消失」这个**时间上的先后与共变**，加上「调用的符号 2026-08-08 才引入、而产物早于源码」这个当时观测；把它称作已坐实的因果，超出了留存证据能支撑的强度。
+
+**与本次重构的关系不受上述削弱影响**：这批失败落在 `src/lib/history/**`，而本轮改动的文件集（`git show --name-only` 逐个 commit）与之不相交，且 `src/lib/history/search/daemon.ts` 从未被本轮触碰。
+
 
 
 ## 未采纳
