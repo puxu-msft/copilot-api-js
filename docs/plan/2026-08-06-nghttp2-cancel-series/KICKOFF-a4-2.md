@@ -1,10 +1,31 @@
 # KICKOFF — A4-2：把 H2 stream 终止观测接到显式 dispatch 并落进 History
 
-> 本文是**派发件**，不是计划。范围与验收的最终权威是 [`docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`](../2026-08-06-history-read-path-and-h2-diagnostics.md) 的 A4 节；进度与批次状态的权威是 [`HANDOVER.md`](HANDOVER.md) §B.5.2。**本文与它们冲突时以它们为准**，但下面「已完成的对账」一节记录的是**它们写作之后才查清的代码现状**，那部分以本文为准（并请顺手回填计划）。
+> 本文是**派发件**，不是计划，**也不是任何东西的权威**。范围与验收的权威是 [`docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`](../2026-08-06-history-read-path-and-h2-diagnostics.md) 的 A4 节；批次与进度状态的权威是 [`HANDOVER.md`](HANDOVER.md) §B.5.2。**冲突一律以它们为准。**
+>
+> 下面第 2 节记录的是它们写作之后才查清的代码现状。**这些现状不改变冻结 A4 的范围**——它们只是执行时会撞到的事实。⚠️ **发现现状与冻结计划冲突时（§0.1 与 §2.1 各有一处），正确动作是把 disposition 写回计划／HANDOVER 并取得裁决，不是让本文默默覆盖它们。** 本文对范围的任何"归入 A4-3"之类说法，都要以那份 disposition 落地后为准；在此之前它们是**待裁决的提议**。
 
 ## 0. 一句话任务
 
-生产路径上，H2 流的终止观测（`TransportTerminationSnapshot`）**已经被算出来、然后被丢掉**。本批次把它接到 A4-1 建好的显式 `DispatchHandle` 上，落进最终持久 History record，并用确定性 h2c 双控证明它能区分 **peer RST_STREAM(CANCEL)** 与 **local abort**。
+生产路径上，H2 流的终止观测（`TransportTerminationSnapshot`）**已经被算出来、然后被丢掉**。本批次把它接到 A4-1 建好的显式 `DispatchHandle` 上，落进最终持久 History record，并用确定性 h2c 双控证明它能区分**本地取消**与**其它终止**。
+
+## 0.1 ⚠️ 先读这条：生产 runtime 可能根本观测不到 peer RST——这需要裁决，不要自行绕过
+
+**本仓已有一条明确记载**——`tests/transport/http2-client.it.test.ts` 里 "mid-stream truncation detection is NOT unit-testable under Bun" 那条 NOTE（按 `rg -n 'NOT unit-testable under Bun'` 定位）：
+
+> Bun 的 `node:http2` 客户端对**任何**中途终止都交付 `response → data → end → close`（**`rstCode=0`**）——干净的 server `RST_STREAM` 与整条连接掉线**表现完全一样**，即一个合成的干净 `end`。`error` / `close-before-end` 这两条 backstop **只在 Node（兼容 runtime）下**才会触发。
+
+⚠️ **这条记载的证据强度要如实看待**：NOTE 自称 "verified, exp/upstream-models-hang/"，但**该目录在本仓不存在、git 历史里也从未存在过**（`git log --all -- 'exp/upstream-models-hang'` 为空）。所以它是一条**详细但无法从仓库复现**的二手记载。**按 `verifying-authoritative-claims`：当作高优先级线索，开工时亲自实测一遍再据以决策，不要直接当既成事实引用。**
+
+**若复核成立，它直接冲击 A4 的中心目标。** A4 要「机械区分 peer CANCEL 与 local abort」，而在 Bun 上 **peer 那一侧的信号会被 runtime 抹掉**：`rstCode` 恒为 0、终止落成 `end`。届时可推出的分工是：
+
+- **local abort 仍然可区分** —— 它在本地观测，不依赖对端帧（`local-cancel` + `localCancel.source`）。
+- **peer RST_STREAM(CANCEL) 在 Bun 上不可正向识别** —— 它与「干净结束」「连接掉线」三者同形。
+
+**复核不成立（即 Bun 现版本其实能给出 peer 信号）同样是重要结论**，请一并如实记录——那意味着这条 NOTE 已过时，应当就地修正它。
+
+**这不是本批次可以自行处置的范围问题**，它可能使冻结计划 A4 与 Phase B「裁决取消发起方」的前提在生产 runtime 上部分不成立。**开工第一步是把它作为发现上报、请求裁决**，可选方向（不要自己挑）：① 接受「只能正向识别 local、其余归入未知」并相应改写 A4 与 Phase B 的判据；② 在 Node 兼容 runtime 上单独取证；③ 换一个能看到原始帧的观测点。
+
+🚫 **明令禁止的做法**：把「没观测到 local-cancel」当成「所以是 peer CANCEL」写进实现或断言。那是用缺失证据推出结论，正是本仓 `missing-evidence-counted-as-zero` 那条教训；它会让 History 言之凿凿地给出一个 runtime 根本没提供的结论。
 
 ## 1. 环境与硬门
 
@@ -15,9 +36,11 @@
 - 提交用显式 pathspec，conventional commits，不加模型署名。
 - 进度文件（多语义提交／需试错时必须先建）：`docs/tmp/2026-08-09-a4-2-progress-<slug>.md`。
 
-## 2. 已完成的对账（**不要重查**，直接用）
+## 2. 已完成的对账（**代码结构部分不要重查**，直接用）
 
-这一节是 2026-08-09 实测的代码现状。计划写于 2026-08-06，此后 `http2-client.ts` 已被多次改动（重取：`git log --oneline --since=2026-08-06 -- src/lib/transport/http2-client.ts`），**计划对本批次的描述已部分过时**。
+这一节记录的是 2026-08-09 **亲自跑命令核实过的代码结构现状**（符号存在性、调用链、接线缺口），可以直接采信。**注意它与 §0.1 的性质不同**：§0.1 那条是**未复核的二手 runtime 行为记载**，必须实测；本节是已核实的静态事实。
+
+计划写于 2026-08-06，此后 `http2-client.ts` 已被多次改动（重取：`git log --oneline --since=2026-08-06 -- src/lib/transport/http2-client.ts`），**计划对本批次的描述已部分过时**。
 
 ### 2.1 最重要的一条：观测层已经存在，缺的只是接线
 
@@ -28,7 +51,12 @@
 - `localCancel: { source: "body-cancel" | "post-response-signal-abort" | "other-local" | null; reason }`
 - `error: { code, message }`（都是有界文本 `BoundedObservationText`）
 - `trailers` / `physicalClose`: `ObservationAtSnapshot`
-- `goaway: GoawaySnapshot`（含 `errorCode`、`lastStreamID`、`lastStreamIdOrder`、`opaqueDataLength`、`evidence`，以及 `GoawayProtocolViolation`）
+- `goaway: GoawaySnapshot`（类型上含 `errorCode`、`lastStreamID`、`lastStreamIdOrder`、`opaqueDataLength`、`evidence`，以及 `GoawayProtocolViolation`）
+
+⚠️ **两条限定，别被类型的丰富度骗了：**
+
+1. **生产上这个 GOAWAY 快照恒为空。** `runHttp2Fetch` 传的是 `createLocalTerminationCommitPort()`（`http2-client.ts:1151`），其默认源 `createDefaultGoawaySnapshotSource()`（`http2-termination.ts:56`）**无条件返回 `availability: "not-observed-before-snapshot"` + 空 events**。真正的 GOAWAY 帧另有其人：`session.on("goaway", retire)`（`http2-client.ts:583`）只把 session 退休，**没有喂给 ledger**。所以「记录 GOAWAY code/lastStreamID」**在本批次不可达**，除非把 ledger 接线一并做掉——而那属于 A4-3。
+2. **快照里没有原始 `opaqueData`**，只有 `opaqueDataLength` 与 `evidence`（摘要/字节数）。若 A4 的判据需要原始字节，那是一条要单独提出的扩展，不是现成的。
 
 配套已存在：`http2-goaway-ledger.ts`、`http2-termination.ts`、测试 `tests/transport/http2-termination.unit.test.ts` 与 `tests/transport/http2-client.it.test.ts`（后者已有真实 h2 server 与 `/termination`、`/termination-trailers` 路由）。
 
@@ -81,9 +109,10 @@ http-transport 的 send(wire, env, options{dispatch})      src/lib/transport/htt
 
 - **A｜直接承载**：诊断的 `data` 就放 `TransportTerminationSnapshot`（或其投影），不新建并行类型。省一份实现，天然不会漂移；代价是 History 的诊断 schema 被传输层的类型形状绑住。
 - **B｜新建 `H2StreamDiagnostic`，从快照投影**：History 侧有自己的稳定契约，传输层可独立演化；代价是**两份 schema 要手工保持同步**——本仓已有「同一件事写两遍、其中一遍弱一档」的账（见 backlog 里 overlay/Tantivy 双实现那条）。
-- **C｜折中**：诊断顶层放少量稳定标量（`firstObservedSignal`、`rstCode`、`streamId`、`headersReceived`），完整快照原样放在 `data` 里。
+- **C｜稳定标量 + 完整快照**：诊断顶层放少量稳定标量（`firstObservedSignal`、`rstCode`、`streamId`、`headersReceived`），完整快照原样放在 `data` 里。代价是同一标量存两处，要有一处是派生的。
+- **D｜证据存 artifact，诊断只留引用**：把完整终止／GOAWAY 证据存成**有类型、带版本**的 History artifact/payload（arena 已经是内容寻址的），dispatch diagnostic 只保留稳定引用 + 摘要标量。它同时避开了 A 的「History 契约被 transport 类型绑住」和 C 的「同一标量双写」，也更贴 detail/export 与证据保留的需要；代价是多一层间接，查询要先解引用。
 
-**我的推荐是 C**：稳定的判据字段独立于传输层类型（查询与断言用它们），完整快照按 `richest-data-flow` 原样留存不裁剪。但**这是推荐不是结论**，请按 CLAUDE.md 的 `necessity-claim-must-be-falsifiable` 把三条都摆给裁决方。
+**四条都要摆给裁决方，并逐项按这些判据比较**：A4 的 detail/export 需求、`richest-data-flow`（完整存不裁剪）、schema 演进成本、查询/断言便利、证据长期保留。**我倾向 D 或 C，但这是推荐不是结论**，按 CLAUDE.md 的 `necessity-claim-must-be-falsifiable` 与 `one-option-or-the-best-option` 走。
 
 ⚠️ 无论选哪条，**别把 H2 连接身份塞进 `sessionId`**：那是客户端 conversation 维度（`EntrySummary.sessionId` 在 `src/lib/history/core-types.ts`、`HistoryEntry.sessionId` 在 `src/lib/history/types.ts`），与 H2 session 是两个身份域。
 
@@ -109,20 +138,23 @@ http-transport 的 send(wire, env, options{dispatch})      src/lib/transport/htt
 
 | 场景 | 期望 |
 |---|---|
-| 正常 end | 记录 `firstObservedSignal: "end"`，无 RST |
-| peer `RST_STREAM(CANCEL)` | 对端 `stream.close(NGHTTP2_CANCEL)`；记录 peer 侧 rstCode，**不得**被标成 local |
-| local abort | 本地 `req.close(NGHTTP2_CANCEL)` 或 body cancel；记录 `firstObservedSignal: "local-cancel"` + `localCancel.source`，**不得**被标成 peer |
-| GOAWAY | 记录 errorCode / lastStreamID；**不得**误归给无关 sibling stream |
-| 无诊断消费者时 | 行为与接线前逐字节一致（诊断不改行为） |
+| 正常 end | 记录 `firstObservedSignal: "end"` |
+| local abort（body cancel） | `firstObservedSignal: "local-cancel"` + `localCancel.source`，**不得**落成 `end` |
+| local abort（post-response signal abort） | 同上，且 `localCancel.source` 与上一行**可区分** |
+| 对端中途终止（Bun） | **按 §0.1，先实测它到底落成什么**，把实测值写进断言；**禁止**断言它等于 peer CANCEL |
+| 无诊断消费者时 | 行为与接线前一致（诊断不改行为） |
+
+**GOAWAY 不在本批验收内**——理由见 §2.1 限定 1（生产快照恒空，ledger 未接线），归 A4-3。
 
 ⚠️ **`stream.destroy(error)` 不预设 code 时属于 INTERNAL_ERROR／destruction 分支，不能用来制造 peer CANCEL**（计划已写明，这里重述是因为最容易搞错）。
 
-⚠️ **上表故意没有写死 peer-RST 场景下 `firstObservedSignal` 应该等于什么。** 本会话只读了 `TransportTerminationSnapshot` 的类型定义，**没有实跑**确认各场景下它取哪个值——按「别跨一条你没读过的缝规定行为」，写一个我没验证过的期望值比留白更坏。**先用 `tests/transport/http2-client.it.test.ts` 已有的 h2 server 跑一遍、把四个场景的实际取值记下来，再据此写断言**；若发现实际语义与「区分发起方」的需要对不上（例如 peer RST 与某类 local 落到同一个值），那本身就是一条要上报的发现，不要靠加字段绕过去。
+⚠️ **上表故意没有写死各场景下 `firstObservedSignal` 的取值。** 本会话只读了 `TransportTerminationSnapshot` 的类型定义，**没有实跑**——按「别跨一条你没读过的缝规定行为」，写一个我没验证过的期望值比留白更坏。**先实测、把四个场景的实际取值记下来，再据此写断言**。**若实测确认对端终止与干净 end 同形（§0.1 预期如此），那不是「测试写不出来」，而是一条必须上报的能力缺口**——如实记录，不要靠加字段或反向推断绕过去。
 
 **变异对照（必做，且要核对红的原因）：**
 
 - 删掉／错绑 `dispatch` → 目标 History 断言必须红。
-- 把 local-cancel 与 peer-RST 的分类**对调** → 对应两条断言必须**各自**红。这条是本批次的核心判别力：只验「有记录」没有判别力（A4-1 已经踩过一次——归属断言在变异下仍绿）。
+- 把 **local-cancel 与「其它终止」的分类对调** → 对应断言必须**各自**红。这条是本批次的核心判别力：只验「有记录」没有判别力（A4-1 已经踩过一次——归属断言在变异下仍绿）。
+- 把两种 `localCancel.source` 互换 → 区分它们的那条断言必须红。
 - 变异后**确认失败来自目标机制**，不是旁路断言。
 - 恢复变异用**重新编辑**，不要 `git checkout` 整文件；恢复后 `git status` + `git diff` 复核为空。
 

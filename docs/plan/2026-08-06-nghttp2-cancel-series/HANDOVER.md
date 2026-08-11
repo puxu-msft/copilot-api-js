@@ -275,7 +275,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 | 批次 | 内容 | 状态（@ `7f7a0730`） |
 |---|---|---|
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
-| A4-2 | `H2StreamDiagnostic` schema + `onTransportDiagnostic` 发射 + 经既有 `AttemptDiagnostic` 持久化 | 未开始 |
+| A4-2 | `H2StreamDiagnostic` schema + `onTransportDiagnostic` 发射 + 经既有 `AttemptDiagnostic` 持久化 | 未开始；派发件见 [`KICKOFF-a4-2.md`](KICKOFF-a4-2.md)，**开工前先处置上面两条待裁决事项** |
 | A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | 未开始 |
 | A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
@@ -289,6 +289,13 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 ⚠️ **第 3 条为空不能单独证明「未开始」**——它只证明这几个**拼写**不存在，换个命名的等价实现照样为空。**只要第 2 条有输出，就必须去读那些提交的源码再下判断**，别拿空 grep 收工。（这正是本仓 `freeze-hit-set-not-zero-hits` 与「否定性结论不自证」那条教训的实例。）
 
 **A4-1 的验收证据**（测于 `7f7a0730`，命令可重跑）：`bun run typecheck` 绿；`bun run test:backend` 0 fail；判别性断言做过变异对照——把实现换成 sibling 的 `selectGenerationAttempt` + 写当前 attempt 的写法后，`records a diagnostic against the named dispatch without moving the ambient current attempt` 精确转红在「ambient 游标未被移动」那条断言上（**归属断言在变异下仍绿**，故它单独没有判别力）。**未做**：独立 reviewer／verifier 与 merged-state review——按下方验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批次一次。
+
+### ⚠️ A4-2 派发件对账查出的两条待裁决事项（2026-08-09，登记于此以免只活在派发件里）
+
+派发件 [`KICKOFF-a4-2.md`](KICKOFF-a4-2.md) 写作前做了一次计划↔代码对账，查出两条**与冻结 A4 的表述冲突**的代码现状。按 `no-silently-cut-but-defer`，它们登记为**待裁决**，**未**自行改写 A4 范围：
+
+1. **【可能动摇 A4 与 Phase B 的中心目标】生产 runtime 可能观测不到 peer RST。** `tests/transport/http2-client.it.test.ts` 有一条明确记载（"mid-stream truncation detection is NOT unit-testable under Bun"）：Bun 的 `node:http2` 对**任何**中途终止都交付 `end`／`rstCode=0`，干净 server `RST_STREAM` 与连接掉线同形；`error`/`close-before-end` 只在 Node 兼容 runtime 下触发。⚠️ **证据强度须如实标注**：该 NOTE 自称 "verified, exp/upstream-models-hang/"，但**该目录不存在、git 历史中也从未存在**（`git log --all -- 'exp/upstream-models-hang'` 为空），故这是一条**无法从仓库复现的二手记载**，须先实测复核。**若复核成立，推论是**：local abort 仍可正向识别，**peer CANCEL 在 Bun 上不可正向识别**，从而 A4「机械区分 peer CANCEL 与 local abort」与 Phase B「裁决取消发起方」的前提在生产 runtime 上**部分不成立**。**待裁决方向**（不由执行方自选）：①接受「只能正向识别 local，其余归未知」并改写 A4/Phase B 判据；②在 Node 兼容 runtime 上单独取证；③换一个能看到原始帧的观测点。🚫 **绝不允许**把「没观测到 local-cancel」当成「所以是 peer CANCEL」——那是拿缺失证据当结论。
+2. **【范围归属】GOAWAY 在 A4-2 不可达。** 生产 `runHttp2Fetch` 传 `createLocalTerminationCommitPort()`，其默认源无条件返回空 GOAWAY 快照；真正的 `session.on("goaway", …)` 只做 session retire，未喂 ledger。且快照只有 `opaqueDataLength`／`evidence`，**无原始 `opaqueData`**。**提议**把 GOAWAY ledger 接线归入 A4-3，并在计划里就「是否需要原始 opaqueData」补一句 disposition。**在裁决前，A4-2 的验收不含 GOAWAY。**
 
 验收边界：最终持久 record 是 oracle；peer CANCEL 与 local abort 可机械区分；session 事件不误归 sibling；诊断不改变 transport 行为；目标缺陷 mutation 转红、正确样本保持绿；独立 reviewer／verifier 与 merged-state review 在同一最终 commit 上闭合。HTTP/2 注入按 Node 官方语义：对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`，本地 `req.close(NGHTTP2_CANCEL)` 注入 local abort，并核对两端 `rstCode`／事件序列；`stream.destroy(error)` 未预设 code 时属于 INTERNAL_ERROR／destruction 分支，不用于制造 peer CANCEL。
 
