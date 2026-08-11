@@ -113,7 +113,8 @@ export function createQuarantineProactiveFilter(deps?: QuarantineProactiveFilter
       const payload = env.attempt.body as MessagesPayload
       const { messages, changed } = stripAllThinkingIfQuarantined(payload.messages, env.ctx.sessionId, env.ctx.agentId, deps?.store)
       if (!changed) return { env, changed: false }
-      // review M1: env.with() is the only immutable-update method (NOT a bare spread).
+      // Write through `writeAttempt`, never a bare spread — `view` is a getter re-derived from
+      // `attempt.body`, and the copy would stop sharing the request/candidate scope objects.
       return { env: writeAttempt(env, { body: { ...payload, messages } }), changed: true }
     },
   }

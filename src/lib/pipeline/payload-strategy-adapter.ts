@@ -13,7 +13,7 @@
  *   - `handle(error, env)` synthesizes a `RetryContext` from per-request closure
  *     state (the stable `originalPayload` baseline, `model`, `maxRetries`) + a
  *     shared `attempt` counter, runs the payload strategy `handle(error, env.body, ctx)`,
- *     then folds the payload action back: `retry.payload`/`prepareHints` → `env.with(...)`,
+ *     then folds the payload action back: `retry.payload`/`prepareHints` → `writeAttempt(env, ...)`,
  *     `abort` → `{ kind: "abort" }`.
  *   - `action.meta` (e.g. unsupported-beta's
  *     `probedBetas`) is attached to the returned env-action's `meta` (NOT fired

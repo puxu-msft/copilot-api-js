@@ -2,7 +2,7 @@
  * v4 payload→envelope strategy adapter unit tests.
  *
  * Drives `adaptPayloadStrategy` with a mock payload `RetryStrategy<TPayload>`,
- * asserting the action mapping (retry → env.with(body/prepareHints), abort →
+ * asserting the action mapping (retry → writeAttempt(env, {body,prepareHints}), abort →
  * {kind:"abort"}), meta attached to the env-action (C0-②, not fired immediately),
  * onResolved meta forwarding into the payload ResolvedContext, the shared attempt
  * counter, and waitMs/learning passthrough. Also a light check that
@@ -44,7 +44,7 @@ function makeEnv(body: P): RequestEnvelope {
 const ERR = { type: "network_error", message: "boom" } as unknown as ApiError
 
 describe("adaptPayloadStrategy", () => {
-  test("retry: maps payload → env.with(body) + prepareHints, passes waitMs/learning", async () => {
+  test("retry: maps payload → writeAttempt(env, {body}) + prepareHints, passes waitMs/learning", async () => {
     const payloadStrategy: PayloadRetryStrategy<P> = {
       name: "mock",
       canHandle: () => true,
