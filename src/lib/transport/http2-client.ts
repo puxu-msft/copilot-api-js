@@ -559,12 +559,37 @@ function clearIdleTimer(entry: H2SessionEntry): void {
   }
 }
 
-/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
-function releaseReservation(entry: H2SessionEntry): void {
+/**
+ * Give back one slot on `entry` and re-run the consequences of a session becoming less busy.
+ *
+ * The four steps travel together and must not be split: the count drop is what makes the session eligible for reclaim, reaching zero is what arms the idle reaper, and a freed slot is what a capacity-blocked waiter is sleeping on. Dropping any one of them strands either the session or the waiter.
+ */
+function releaseSessionSlot(entry: H2SessionEntry): void {
   entry.activeStreamCount -= 1
   maybeReclaimRetiringSession(entry)
   if (entry.activeStreamCount === 0) armIdleTimer(entry)
   wakeOriginSlotWaiter(entry.origin) // a slot on this origin just freed → let a capped waiter retry
+}
+
+/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
+function releaseReservation(entry: H2SessionEntry): void {
+  releaseSessionSlot(entry)
+}
+
+/**
+ * The slot owned by ONE live stream, releasable at most once.
+ *
+ * Today the normal `close` path is the only releaser and is guaranteed to fire once, so exactly-once is currently unobservable — but it is guarded by construction rather than by argument because A4-4's force-dispose path releases the same slot when a stream refuses to close. Two independent releasers on one counter is exactly how capacity accounting drifts: a double release makes the pool believe it has a slot it does not, and the drift is silent until the cap starts admitting streams it should have queued.
+ *
+ * The counter has no floor of its own, so the idempotence has to live here.
+ */
+function createStreamSlotRelease(entry: H2SessionEntry): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    releaseSessionSlot(entry)
+  }
 }
 
 /**
@@ -1303,16 +1328,13 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     })
     // activeStreamCount bookkeeping: the stream now owns the reservation acquired
     // above. Node guarantees `close` fires exactly once per h2 stream regardless of
-    // outcome (normal end / RST / abort before or after headers) — this single
-    // platform-guaranteed event releases the reservation exactly once, without
-    // hand-decrementing on every distinct termination path below (global
-    // constraint #3). PATH 1 (the sole path once the stream exists).
+    // outcome (normal end / RST / abort before or after headers) — but the release is
+    // routed through an exactly-once primitive rather than resting on that guarantee,
+    // so the force-dispose path can share it without double-counting the same slot.
+    const releaseStreamSlot = createStreamSlotRelease(entry)
     req.once("close", () => {
       termination.observePhysicalClose()
-      entry.activeStreamCount -= 1
-      maybeReclaimRetiringSession(entry)
-      if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
-      wakeOriginSlotWaiter(entry.origin) // a stream slot freed → session reusable → let a capped waiter retry
+      releaseStreamSlot()
       init.onStreamClosed?.()
       resolveRequestClosed()
     })
