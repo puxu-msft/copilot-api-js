@@ -12,7 +12,7 @@
 - Batch 1b 已在 `d3b4ac77` 落地主线：所有生产模型 operation 在 parse／dispatch 前经有界 History admission；terminal publication由单一owner发布；pending／acknowledged-recent／DB overlay覆盖list／stats／sessions／status；shutdown在首次operation registry快照前stop admission并drain pre-context handoff。
 - 最新主线的History V3四字段持久化重试契约已同步到Worker wire：`src/lib/history/persist-retry-config.ts`是`maxAttempts/backoffMs/maxBackoffMs/maxTotalMs`唯一类型owner，V3 store与Worker protocol复用它；initialize protocol拒绝缺失或负值cap。
 - Task 2a正式计划与kickoff已同步：真实semantic backend必须用非默认`maxBackoffMs`和injectable delay证明每次等待上限被消费，删除字段传递的mutation必须变红；当前没有把尚不存在的backend消费测试冒充已实现。
-- 活文档：`docs/DESIGN.md`的History架构行；执行权威：`docs/plan/2026-08-07-history-persistence-worker.md`；下一批入口：`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`；评审处置：`docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md`；完成历史：`docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`。
+- 活文档：`docs/DESIGN.md`的History架构行；执行权威：`docs/history-persistence-worker/plan.md`；下一批入口：`docs/history-persistence-worker/plan-kickoff.md`；评审处置：`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-review-dispositions.md`；完成历史：`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-progress-impl-1b.md`。
 
 ## 验收证据
 
@@ -32,21 +32,21 @@
 
 - **全部 fast-forward 均已由用户执行并落地**（共五次，随共享 `master` 前进逐次进行）：交付内容的最后一个合并点 `4c30e6eb` 在 `master@58f4c45d` 祖先中，`22c8e08b`（reviewed-plan anchor）亦然。**本报告与临时清单自身的修订提交每次都会再次领先 `master`**，按上方状态行的判定命令核，不写死待合数字。
 - **安装位置复验（从共享 checkout `/home/xp/src/copilot-api-js` 实跑，`pwd -P` 已确认）**：
-  - reviewed-plan blob 门：`22c8e08b` 与 `master` 两侧 `docs/plan/2026-08-07-history-persistence-worker.md` 的 blob 同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`，PASS。
+  - reviewed-plan blob 门：`22c8e08b` 与 `master` 两侧 `docs/history-persistence-worker/plan.md` 的 blob 同为 `fe26b74feae99b7e72ef67f3cfadbe993a89122c`，PASS。
   - `bun run typecheck`：通过。
   - 11 文件目标集：**89 pass／0 fail**、287 expect、3.57s。
   - 候选 13 条净路径：共享检出工作区文件与 `master` 同路径内容逐条 md5 相等 → 无未提交残留。
   - 三处无关 WIP（`config.yaml`、`start.bat`、`docs/plan/2026-07-28-session-closeout-skill-review-claude.md`）与 `master` 版本均不相同 → WIP 完整保留，fast-forward 未触及。
 - 本会话的 worktree 隔离护栏拒绝对共享检出执行 git 写操作与 `git status`，故 fast-forward 由用户执行；工作区洁净度改用「工作区文件内容 vs `master` blob 内容」逐条 md5 比对取证。**该替代方法的诚实边界**：它覆盖内容差异与文件缺失，但**不覆盖** file mode 变化、regular file↔symlink 类型变化、以及「已 staged 但工作区内容又被改回」这类只在 index 层可见的状态；也**不枚举**候选路径以外的未追踪文件。因此它回答的是「这13条路径的内容是否与 `master` 一致」，不是 `git status` 的全部语义。上表最后一条复验命令保留了真正的 `git status`，供在共享检出直接复跑。
 - 未推送、未创建PR、未发布任何ref或artifact。**该结论的取证范围限于本仓库与 GitHub 可观测表面**（终审 reviewer 独立复核：`git branch -r --contains HEAD`、`git tag --points-at HEAD`、联网 `git ls-remote --heads --tags origin` 对 `922b741b` 与分支名筛选均零命中；`gh pr list --state all --head worktree-history-worker-batch-1b-resume` 返回 `[]`）。Git 无法穷尽所有外部系统，故不宣称超出该范围的绝对否定。
-- 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/plan/2026-08-07-history-persistence-worker-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。**清理条件按 branch／worktree 分开，不共用一个门**——完整裁决见「分支与 worktree 归宿」节：branch 等 `master` ancestry；worktree 只受 clean／current-HEAD reachable／owned 三条约束，与 `master` ancestry 无关。
+- 本会话不删除worktree或分支；`worktree-history-worker-batch-1b-resume`及其worktree仅保留作短期取证与本收尾的恢复源。**Task 2a 不得在该分支或该worktree继续**：按`docs/history-persistence-worker/plan-kickoff.md`必须从最终`master`新建独立branch／worktree，并新建`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-progress-impl-2a.md`；Batch 1b progress已停止更新，不得复用其写入权或旧基线。**清理条件按 branch／worktree 分开，不共用一个门**——完整裁决见「分支与 worktree 归宿」节：branch 等 `master` ancestry；worktree 只受 clean／current-HEAD reachable／owned 三条约束，与 `master` ancestry 无关。
 - 碰撞集在 fast-forward 前于 `0ecbca65` 基线重算为 0：候选净路径13条，其中10条在共享检出中存在且与 `master` 内容 md5 相等，另3条（`src/lib/history/persist-retry-config.ts`、本报告、临时清单）在共享检出中不存在且无未追踪文件占位；三处无关 WIP 均不在这13条内。fast-forward 后的实测结果与该预测一致。
 
 ## 临时证据
 
-- 清单：`docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md`。**评审链（按时间，当前 verdict 以最后一份为准）**：`docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md`（**第 1–2 轮，历史件**，其「0 major、可定稿」结论已被第 3 轮推翻，**不得当作当前终审**）→ `docs/tmp/2026-08-08-batch-1b-closeout-final-review.md`（第 3 轮，4 major）→ `docs/tmp/2026-08-08-batch-1b-closeout-review-round4.md`（第 4 轮，3 major）→ `docs/tmp/2026-08-08-batch-1b-closeout-review-round5.md`（**第 5 轮，M1／M2／M3 三专项全部闭合，0 blocker／0 major、判可定稿——当前 verdict 以此为准**）。
+- 清单：`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-temp-manifest.md`。**评审链（按时间，当前 verdict 以最后一份为准）**：`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-closeout-review-final.md`（**第 1–2 轮，历史件**，其「0 major、可定稿」结论已被第 3 轮推翻，**不得当作当前终审**）→ `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-final-review.md`（第 3 轮，4 major）→ `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round4.md`（第 4 轮，3 major）→ `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round5.md`（**第 5 轮，M1／M2／M3 三专项全部闭合，0 blocker／0 major、判可定稿——当前 verdict 以此为准**）。
 - `$CLAUDE_JOB_DIR/tmp`在最终closeout review前重新冻结为56项路径；逐项记录绝对路径、类型、用途、持久接收者、最终动作和清理前置。初版54项清单在生成后又新增提交消息与共享index快照，事实视角reviewer据此判major；本版已纳入两项并禁止再创建新路径。
-- **临时证据的安全性不依赖清理时机，而依赖「长期价值已先行落进已提交的持久接收者」。** 56项每一项的接收者见清单逐行：测试／构建／mutation 原始输出 → 已提交的 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md` 证据摘要；提交消息输入 → 对应的本地 Git commit；三方对账副本 → 已提交的 `tests/infra/entry-test-discovery-baseline.json` 与 B3/B4 处置记录；本轮评审结论 → 本报告与上方评审链的各轮报告本身。**因此 Claude job 目录的自动清理在任何时刻发生都不会删除唯一副本。**
+- **临时证据的安全性不依赖清理时机，而依赖「长期价值已先行落进已提交的持久接收者」。** 56项每一项的接收者见清单逐行：测试／构建／mutation 原始输出 → 已提交的 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-progress-impl-1b.md` 与 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-review-dispositions.md` 证据摘要；提交消息输入 → 对应的本地 Git commit；三方对账副本 → 已提交的 `tests/infra/entry-test-discovery-baseline.json` 与 B3/B4 处置记录；本轮评审结论 → 本报告与上方评审链的各轮报告本身。**因此 Claude job 目录的自动清理在任何时刻发生都不会删除唯一副本。**
 - **诚实边界（终审 reviewer 判 major 并修正）**：harness 的 job 自动清理是**本会话不可控的生命周期事件**，它不读取 Git ancestry，因此**任何「清理必须晚于某个 Git 门」的说法都没有执行接缝、不成立**。此前本报告把「确认收尾提交在 `master` 祖先」写成清理前置，是把不可控事件写成受控门——已改正。`master` ancestry 的正确职责只有一个：作为**分支**「可宣告集成完成、可删 branch」的门。**它不是 worktree 的清理门**（Round 4 判 major：worktree 只受 clean／current-HEAD reachable／owned 约束，见「分支与 worktree 归宿」节），也不是临时证据的清理门。若将来确需强制 temp cleanup 晚于某事件，需要一个可显式 hold job 生命周期并经过验证的外部机制，本轮产物没有这种机制。
 - 本会话未手工删除任何临时文件（避免通配符误删与跨会话误伤），56项全部保留。冻结门与逐路径复核条件见清单头部，已按终审 D1 裁决补齐附加条件。初次冻结 6,568,459 bytes → 终审前重枚举 6,568,699 bytes → fast-forward 落地后重枚举仍为 56 项、6,568,699 bytes；240 bytes 差异全部来自 `shared-main-index.terminal-review.snapshot` 按最新共享 index 重新快照，已逐路径复核其类型、用途、receiver 与最终动作均未变。
 - **归档价值逐类审计（2026-08-08 收尾时应用户要求执行，结论：无一项需归档）**。不依据清单自述，逐类实际打开核验：entry baseline 三方副本 3 项（接收者=已提交 baseline＋B3/B4 处置）；测试／构建／lint／mutation 日志 10 项（摘要在已提交 progress 与 dispositions）；提交消息输入 20 项（消息已在 `master` 提交内）；路径／提交清单 4 项（可由 git 再生）；mutation patches 2 项（dispositions 已记变异内容与变红观测）；WIP／恢复 patches 4 项（**实测已全部落进 `master`**，一份为空）；perf 转录大纲 1 项（源 jsonl 31MB 完好在盘，可再生）；ws 探针日志 4 项（结果由 `17c05e59`／`db16510e` 承接）；共享 index 快照 7 项（已被 `master` 取代）。
@@ -77,7 +77,7 @@
 - **交付内容（Batch 1b 实现、plan、kickoff、测试）：已全部集成主线，无尚待动作。** 权威判据是 `git merge-base --is-ancestor 4c30e6eb master`。
 - **收尾流程本身：未闭环。** 契约 17 stage 现只剩**一个根阻断点**（stage 8 原为第二个，已由独立裁决判定满足），按 `requires` 传播使 2–17 均受阻于它（详见阶段表）：
   1. **`freeze_truth` 未达成** —— 契约要求逐个 repository／worktree 跑 `git status --short --branch`，**共享主树因隔离护栏本会话查不了**。解阻动作：在共享检出直接跑 `cd /home/xp/src/copilot-api-js && git --no-optional-locks status --short --branch`。**这一项本会话无法自行关闭。**
-  2. ~~`review_temp_manifest` 未达成~~ —— **已满足**，由未卷入的独立裁决者判定（`docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`）：第 1–2 轮全量评审（`43ffac97`）之后清单**无任何 disposition 行变化**，唯一表格字段变动是 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正由第 4 轮独立复算确认。⚠️ **裁决书同时纠正了我的措辞**——期间另有顶部状态的事实性改写，故「全部改动只有数值订正」按字面不成立；结论成立是因为**无一行 disposition 变化**，不是因为「只改了一个数」。
+  2. ~~`review_temp_manifest` 未达成~~ —— **已满足**，由未卷入的独立裁决者判定（`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-stage8-adjudication.md`）：第 1–2 轮全量评审（`43ffac97`）之后清单**无任何 disposition 行变化**，唯一表格字段变动是 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正由第 4 轮独立复算确认。⚠️ **裁决书同时纠正了我的措辞**——期间另有顶部状态的事实性改写，故「全部改动只有数值订正」按字面不成立；结论成立是因为**无一行 disposition 变化**，不是因为「只改了一个数」。
   3. ~~`review_closeout_final` 未闭环~~ —— **已闭环**：第 3 轮 4 major、第 4 轮 3 major 全部采纳整改，第 5 轮逐条专项复审 M1／M2／M3 均闭合，**0 blocker／0 major、判可定稿**。
   4. ~~本报告与清单、各轮评审报告的最后一笔修订需由用户执行一次 fast-forward~~ —— **已落地**，判定命令见状态行。⚠️ **实际以 merge commit（`9d506fc1`）落地，不是 fast-forward**：交出命令与用户执行之间 peer 又推进了 `master`，`--ff-only` 被拒。**「可 fast-forward」是提交那一刻的性质，不是交付承诺**——教训记在 [[worktree-isolated-session-merging-into-shared-master]]。合并后已对账 `git diff --stat HEAD master -- docs/tmp docs/memory`，唯一差异是 peer 新增两份文件，本轮内容零丢失。
 
@@ -118,7 +118,7 @@
 | 5 | `archive_docs` | ✅ | ⛔ 受阻（1） | 本轮无待归档 plan／实验产物；已删项目 skill 的自验日志由 peer 归档至 `docs/archive/` |
 | 6 | `reconcile_live_docs` | ✅ | ⛔ 受阻（1） | 三处指向已删项目 skill 的陈旧指针已修（含一处**活指针**） |
 | 7 | `discover_nonfile_candidates` | ✅ | ⛔ 受阻（1） | 首轮列 2 条，reviewer 独立枚举补出整批；三轮双向对账后 diff 为空，共 12 条 |
-| 8 | `review_temp_manifest` | ✅ 已满足 | ⛔ 受阻（1） | **原标 ❌，经独立裁决改正**（`docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`）：清单在第 1–2 轮全量评审（`43ffac97`，56 行 0/0）后**无任何 disposition 行变化**——唯一表格字段变动是第 54 条 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正又由第 4 轮独立复算确认。**裁决由未卷入者作出，非本会话自判** |
+| 8 | `review_temp_manifest` | ✅ 已满足 | ⛔ 受阻（1） | **原标 ❌，经独立裁决改正**（`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-stage8-adjudication.md`）：清单在第 1–2 轮全量评审（`43ffac97`，56 行 0/0）后**无任何 disposition 行变化**——唯一表格字段变动是第 54 条 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes；该订正又由第 4 轮独立复算确认。**裁决由未卷入者作出，非本会话自判** |
 | 9 | `clean_temp` | — 未执行 | ⛔ 受阻（1） | **零删除**，56 项全留交 harness 回收；动作根本没发生，故不宣告达成 |
 | 10 | `resolve_branch` | ✅ | ⛔ 受阻（1） | 见上节：branch keep；worktree 三条前置齐备、去留交用户 |
 | 11 | `draft_terminal_report` | ✅ | ⛔ 受阻（1） | 即本文件 |
@@ -126,7 +126,7 @@
 | 13 | `verify_installed_location` | ✅ | ⛔ 受阻（1） | 从共享 checkout 实跑（`pwd -P` 已确认）：blob 门 PASS、typecheck 通过、目标集 89 pass／0 fail |
 | 14 | `recommend_assets` | ✅ | ⛔ 受阻（1） | 见「可复用资产」节五条 |
 | 15 | `update_terminal_report` | ✅ | ⛔ 受阻（1） | 按第 3、4 轮 major 整改 |
-| 16 | `review_closeout_final` | ✅ 已闭环 | ⛔ 受阻（1） | 第 3 轮 4 major、第 4 轮 3 major、**第 5 轮 M1／M2／M3 逐条闭合，0 blocker／0 major、判可定稿**（`docs/tmp/2026-08-08-batch-1b-closeout-review-round5.md`）。**评审动作本身已完成**，但契约达成仍待 1／8 解阻 |
+| 16 | `review_closeout_final` | ✅ 已闭环 | ⛔ 受阻（1） | 第 3 轮 4 major、第 4 轮 3 major、**第 5 轮 M1／M2／M3 逐条闭合，0 blocker／0 major、判可定稿**（`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round5.md`）。**评审动作本身已完成**，但契约达成仍待 1／8 解阻 |
 | 17 | `report_terminal` | ❌ | ❌ 未达成；⛔ 受阻（1） | `requires: [review_closeout_final]`；**本文件不是终态交付件** |
 
 **最终验证证据（每项标注新跑／复用，锚到 commit）**：
@@ -155,26 +155,26 @@
 - **[major] D1 冻结门放宽（裁决：成立但需附加条件）** —— **已采纳**。原文只要求「说明字节来源」，守不住真正的不变量。reviewer 构造的 false-green 反例成立：`history-worker-batch-1b-wip.patch` 路径不变却被覆写为含未提交新修复时，旧措辞会放行，而 job cleanup 会删掉唯一 WIP 副本。已在清单头部改为两层判据：路径人口／路径名变化 → 整表重生成；路径集合不变而内容变化 → **逐条变化路径做语义复核**（type／用途／长期价值／receiver／最终动作），patch、原始证据、恢复副本、报告草稿不得凭同路径放行。同时保留 reviewer 认定的 false-red 事实：本轮 240 bytes 同路径重拍语义未变，旧门要求整表重审确属过严。
 - **[major] D2 清理前置链存在断口（裁决：成立）** —— **已采纳**。Git 顺序门约束不了 harness 的 job 自动清理：评审通过后、收尾提交进入 `master` 祖先前，session 正常结束／崩溃／平台回收都会触发清理，而「不得允许」没有执行接缝。已把可控门与不可控事件分开：所有长期价值在冻结时即已进入**已提交**的持久接收者，故清理何时发生都不删唯一副本；`master` ancestry 只保留为**分支**集成完成门。**不再声称 Git 门能禁止 harness 清理。**
 
-**第 3 轮（收尾纪律，4 major，全部采纳）** —— 报告 `docs/tmp/2026-08-08-batch-1b-closeout-final-review.md`
+**第 3 轮（收尾纪律，4 major，全部采纳）** —— 报告 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-final-review.md`
 
 - **[major] 阶段表不完整** —— **已采纳**：原表只列 9 行且合并了若干项，漏 `draft_terminal_report`／`verify_installed_location`／`recommend_assets`／`update_terminal_report`／`report_terminal` 五个 stage。现按契约逐个列 17 行。
 - **[major] `resolve_branch` 裁决理由不成立** —— **已采纳**：`git branch --contains` 证明 HEAD 由持久 branch ref 可达，删 worktree 不删 branch。我把「branch 未进 `master`」当成了「worktree HEAD 不可达」。现 branch 与 worktree 分开裁决。
 - **[major] 终态断言互相矛盾** —— **已采纳**：「尚待动作：无」与阶段表三个 ❌、复验清单第 6 条互相否定。现拆成交付内容／收尾流程两层。
 - **[major] 清单行 73 字节数陈旧** —— **已采纳**：431277 → 431517，56 行求和 6,568,699，与磁盘一致（第 4 轮独立复算确认）。
 
-**第 4 轮（整改复审，3 major，全部采纳）** —— 报告 `docs/tmp/2026-08-08-batch-1b-closeout-review-round4.md`
+**第 4 轮（整改复审，3 major，全部采纳）** —— 报告 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round4.md`
 
 - **[major] `requires` 传播仍错** —— **已采纳**。我把「动作发生」当成「契约达成」：stage 1 部分、stage 8 未达成，按 `requires` 图应连带阻断 2–17，而表里 2–7、9–15 全标 ✅。**这正是第 3 轮同一条 major 的残留形态**——补全了 stage 集合，却没补依赖语义。现改为「动作／证据」+「契约达成」双列，并显式标出两个根阻断点与解阻路径。
 - **[major] worktree 清理门跨章节残留矛盾 + 可达锚点陈旧** —— **已采纳**。`resolve_branch` 节改对了，但「Git、发布与工作树状态」「临时证据」「复验清单第 6 条」三处仍把 `master` ancestry 当 worktree 清理门，三处均已改；`head_reachable` 的写死锚点 `9a6226b6` 改为动态命令 `git branch --contains HEAD`（实测 `b98fe5bb` 命中）。
 - **[major] 旧评审仍被称「终审报告」、未闭合却写「全额整改」** —— **已采纳**。「临时证据」节的单一「终审报告」指针改为按时间排序的**评审链**并标注第 1–2 轮为历史件、其「可定稿」已被推翻；复验清单第 5 条改为四轮口径；本节补齐第 3、4 轮逐条 disposition（此前只有 D1／D2）。
 
-**第 5 轮（M1／M2／M3 专项复审，1 major，已采纳；三条全部闭合）** —— 报告 `docs/tmp/2026-08-08-batch-1b-closeout-review-round5.md`
+**第 5 轮（M1／M2／M3 专项复审，1 major，已采纳；三条全部闭合）** —— 报告 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round5.md`
 
 - **[major] `requires` 传播仍不完整（M1 专项）** —— **已采纳**。stage 8／16／17 只写了各自的**直接缺口**（`❌ 未达成`），漏了它们**同时**经依赖链受根阻断点阻断：stage 8 的前置 4／7 均受阻于 1；16／17 经 15 继承 1 与 8。只写直接缺口会读成「把这一项补了就清」，而事实是补了也不会立刻达成。已在「契约达成」列并列写出两种状态，并加了一段列读法说明。整改提交 `d924de98`；reviewer 独立复核传播逐条相符、表格结构完好（19 行＝表头＋分隔＋17 数据行、每行 5 列、编号 1–17 连续）。
 - **M2 闭合** —— reviewer 全文扫描确认无第四处把 `master` ancestry 施加给 worktree；`head_reachable` 的动态命令在 `HEAD=d924de98` 实跑命中持久 branch，文中残留的 `b98fe5bb`／`9a6226b6` 已明确标为历史实测、不承担当前判定。
 - **M3 闭合** —— reviewer 逐条对照第 3、4 轮报告，disposition 的问题对象／影响／整改方向均相符、无遗漏错配；「终审处置」→「评审处置」的改名无残留悬空引用；`全额整改` 一词仅用于第 1 轮两条且由第 2 轮 0 major 支持。
 
-**stage 8 独立裁决（用户合并后补做）** —— 裁决书 `docs/tmp/2026-08-08-batch-1b-stage8-adjudication.md`
+**stage 8 独立裁决（用户合并后补做）** —— 裁决书 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-batch-1b-stage8-adjudication.md`
 
 - **裁决：`review_temp_manifest` 已满足**，原 ❌ 标记陈旧。**这个判断刻意不由本会话作出**——我是被判方，自己给自己摘 ❌ 正是最该被怀疑的动作，故派**未卷入此前任何一轮**的裁决者独立核，且明确要求它「宁可判未满足，别为了让流程好看而放行」。
 - 依据：canonical 只规定「增删或改变任何 disposition」使旧 verdict 作废；独立 diff 证明第 1–2 轮全量评审（`43ffac97`）之后 56 条路径的 type／用途／receiver／最终动作／清理前置**全未变**，唯一表格字段变动为第 54 条 `bytes 431277→431517`，而 canonical 列举的 disposition 字段不含 bytes（它是磁盘事实校验值，不是决定保留／删除的门）；该订正又经第 4 轮独立重算 56 行总和 `6568699` 确认。
@@ -183,7 +183,7 @@
 
 ## 复验命令
 
-均从共享 checkout 执行，可复跑：
+均从共享 checkout 执行，可复跑。**下面是当时原样跑过的命令，未改写**；但 plan 已于 2026-08-11 由 `docs/plan/2026-08-07-history-persistence-worker.md` 迁到 `docs/history-persistence-worker/plan.md`，所以第 3 条今天会失败——`master:` 那一侧要换成新路径，`22c8e08b:` 那一侧保持旧路径（该提交时文件确实在那里）。
 
 ```bash
 cd /home/xp/src/copilot-api-js && git rev-parse master

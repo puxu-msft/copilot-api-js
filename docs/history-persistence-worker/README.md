@@ -6,22 +6,27 @@
 
 ## 常驻文档
 
+**目录分两层**：本层放**还在用的**（规格、计划、下一批的输入）；[archive-2026-08-11/](archive-2026-08-11/) 放**已完成批次**（0/1a、1b、2a、2b）的进度文件与评审／收尾报告。归档只是位置变了，内容一字未改，仍是那些批次的证据来源。
+
 | 文件 | 是什么 |
 |---|---|
 | [spec.md](spec.md) | 行为规格（冻结契约）。实现与它冲突时先停下核对，不自行改动 |
 | [plan.md](plan.md) | 分批实施计划。**批次是否完成看标题下的 `状态：` 行，不看复选框**——原因写在文件开头 |
 | [plan-kickoff.md](plan-kickoff.md) | 起一轮执行用的 kick-off 提示词 |
 
-## 批次执行记录（按时间）
+## 批次执行记录（按时间，全部已归档）
 
 进度文件记的是 git 记不下的三样：剩余项及验收、在途意图、已作废路线。
 
 | 批次 | 进度文件 | 评审与收尾 |
 |---|---|---|
-| Batch 0 / 1a | [2026-08-07-history-worker-progress-impl-1.md](2026-08-07-history-worker-progress-impl-1.md) | [1a 复评](2026-08-08-history-worker-batch-1a-rereview.md) |
-| Batch 1b | [2026-08-08-history-worker-progress-impl-1b.md](2026-08-08-history-worker-progress-impl-1b.md) | [处置表](2026-08-08-history-worker-batch-1b-review-dispositions.md) · [收尾终审](2026-08-08-history-worker-batch-1b-closeout-review-final.md) · [终稿报告](2026-08-08-history-worker-batch-1b-terminal-report.md) · [临时清单](2026-08-08-history-worker-batch-1b-temp-manifest.md) |
-| Batch 2a | [2026-08-08-history-worker-progress-impl-2a.md](2026-08-08-history-worker-progress-impl-2a.md) | — |
-| Batch 2b | [2026-08-09-history-worker-progress-impl-2b.md](2026-08-09-history-worker-progress-impl-2b.md) | [GPT 评审](2026-08-09-batch2b-review-gpt.md) · [假绿专项](2026-08-09-batch2b-review-testing.md) · [收尾报告](2026-08-10-batch2b-closeout.md) · [对账](2026-08-10-batch2b-closeout-review-reconciliation.md) · [目录绑定审计](2026-08-10-batch2b-closeout-review-cwd-audit.md) · [临时清单](2026-08-10-batch2b-closeout-tmp-manifest.md) |
+| Batch 0 / 1a | [2026-08-07-history-worker-progress-impl-1.md](archive-2026-08-11/2026-08-07-history-worker-progress-impl-1.md) | [1a 复评](archive-2026-08-11/2026-08-08-history-worker-batch-1a-rereview.md) |
+| Batch 1b | [2026-08-08-history-worker-progress-impl-1b.md](archive-2026-08-11/2026-08-08-history-worker-progress-impl-1b.md) | [处置表](archive-2026-08-11/2026-08-08-history-worker-batch-1b-review-dispositions.md) · [收尾终审](archive-2026-08-11/2026-08-08-history-worker-batch-1b-closeout-review-final.md) · [终稿报告](archive-2026-08-11/2026-08-08-history-worker-batch-1b-terminal-report.md) · [临时清单](archive-2026-08-11/2026-08-08-history-worker-batch-1b-temp-manifest.md) |
+| Batch 1b 收尾评审（多轮） | — | [终审](archive-2026-08-11/2026-08-08-batch-1b-closeout-final-review.md) · [Round 4](archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round4.md) · [Round 5](archive-2026-08-11/2026-08-08-batch-1b-closeout-review-round5.md) · [stage8 裁决](archive-2026-08-11/2026-08-08-batch-1b-stage8-adjudication.md) |
+| Batch 2a | [2026-08-08-history-worker-progress-impl-2a.md](archive-2026-08-11/2026-08-08-history-worker-progress-impl-2a.md) | — |
+| Batch 2b | [2026-08-09-history-worker-progress-impl-2b.md](archive-2026-08-11/2026-08-09-history-worker-progress-impl-2b.md) | [GPT 评审](archive-2026-08-11/2026-08-09-batch2b-review-gpt.md) · [假绿专项](archive-2026-08-11/2026-08-09-batch2b-review-testing.md) · [收尾报告](archive-2026-08-11/2026-08-10-batch2b-closeout.md) · [对账](archive-2026-08-11/2026-08-10-batch2b-closeout-review-reconciliation.md) · [目录绑定审计](archive-2026-08-11/2026-08-10-batch2b-closeout-review-cwd-audit.md) · [临时清单](archive-2026-08-11/2026-08-10-batch2b-closeout-tmp-manifest.md) |
+
+**读归档里的评审报告时注意**：它们是**当时那一刻**的判断，内容按纪律原样冻结、不回改。里面的 `file:line` 引用指向当时的行号，被引文件后续若有增删就会漂；把它们当线索，不当当前事实。判**现在**是什么样，回到 [../DESIGN.md](../DESIGN.md)。
 
 ## 计划对账（2026-08-10）
 

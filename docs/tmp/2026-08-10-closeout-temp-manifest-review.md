@@ -41,3 +41,14 @@ RELEASE_DELETION: NO
 ### 本轮结论
 
 终态“全部保留”本身：**YES**。但其文档表述目前：**NO（需修复上列 2 项 major）**；缺少的是对未核验 carrier 的诚实降级，以及把 113 改为“05:26 的历史测量”或停止写入后重取、而非冒充当前盘点。
+
+
+## `bb52fa8a` 终态改写复评
+
+[核验通过] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md:3-6,36-44` — 载体列已明确降级为未验证主张，且八行处置统一为“本轮不删；载体主张未逐项复核”；文首逐类点名未复核的脚本、日志、中间快照、提交信息输入，并明禁将该列用作删除凭据。即使第四列仍保留原声称，其解释边界和处置不再从其推导删除结论，未见剩余洗白路径。
+
+[major] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md:30` — 虽然读数序列已正确标为历史测量，后文仍写“这 **113 个文件**”并断言“内容有载体的那些已经在仓库里、没有载体的只有 `incident-manifest.zst` 一个”；这既把过时的 113 重新冒充当前集合，又重新采用刚被降级的未逐项核验 carrier 主张 — 本轮 `rg` 复核定位到该残留 — 修复建议：改为“当时盘点的 113 个文件”并删除 carrier／唯一性全称；保留“当前值须重算、全部不删”即可。
+
+[核验通过] `/home/xp/.claude/jobs/36fcb851/tmp/incident-manifest.zst` — “重取路径失效、blob 是唯一副本”的降级如实 — 本轮两次独立 HTTP 探针均得到 `GET /history/api/entries/req_1786064856101_137/export` = `404 Not Found`，同时 `GET /history/api/entries?limit=1` = `200 OK`；`docs/API.md:126-127` 的契约把未知 id 规定为 404。blob 仍存在，实测 541,965 bytes。
+
+[blocker] `/home/xp/.claude/jobs/36fcb851/tmp/incident-manifest.zst` — “先留在 job 临时目录，等用户裁决”不能单独构成保全：hard constraint 只禁止本会话主动清理，不能阻止 job/session 生命周期或外部清理先删除唯一副本；该目录不是用户批准的 durable store — 修复建议：立刻向用户取得一项明确裁决：指定私有、非 job 的持久路径并授权**复制**（不移动、不提交）该 blob，复制后比对 SHA-256 且保留原件；或用户明确选择删除/不保留。未获该裁决前不应结束可能回收该 job 的会话，也不得自行复制、提交或删除真实数据。
