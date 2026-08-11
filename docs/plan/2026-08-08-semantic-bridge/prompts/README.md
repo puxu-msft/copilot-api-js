@@ -21,10 +21,12 @@
 | C0.1 共享 SDK oracle | [c0-1.md](c0-1.md) | 无 | — | 否（纯测试） |
 | C0.2 缺陷语料 + G2 wire golden | [c0-2.md](c0-2.md) | C0.1 | — | 否（纯测试） |
 | C0.3 mutation registry | [c0-3.md](c0-3.md) | C0.2 | — | 否（纯文档） |
+| **C0.4 真实上游接受性探针**（RFC §17，v2） | 待写 | 无（与代码无依赖） | 可与 C1–C4 并行 | 否（只产 `exp/`） |
 | C1.1 ledger 类型与 declare | [c1-1.md](c1-1.md) | C0 | — | 否 |
 | C1.2 三层 terminal | [c1-2.md](c1-2.md) | C1.1 | — | 否 |
 | C1.3 snapshot/fork/property | [c1-3.md](c1-3.md) | C1.2 | — | 否 |
-| C2.1 config snapshot | [c2-1.md](c2-1.md) | C1 | — | 否 |
+| **C1.4 双平面 disposition**（RFC §4.1，v2）**← 下一片** | 待写 | C1.3 | — | 否 |
+| C2.1 config snapshot | [c2-1.md](c2-1.md) | C1（**含 C1.4**） | — | 否 |
 | C2.2 lineage、policy resolver、boundary 状态机 | [c2-2.md](c2-2.md) | C2.1 | — | 否 |
 | C2.3 delivery authority | [c2-3.md](c2-3.md) | C2.2 | — | 否（只加记录层） |
 | C3.1 observation stage + 冲突 producer | [c3-1.md](c3-1.md) | C2.3 | — | 否 |
@@ -48,9 +50,9 @@
 C0.1 → C0.2 → C0.3
                 │
                 ▼
-        C1.1 → C1.2 → C1.3          [纯状态机，严格串行]
-                        │
-                        ▼
+        C1.1 → C1.2 → C1.3 → C1.4   [纯状态机 + 双平面 disposition，严格串行]
+                                │
+                                ▼
         C2.1 → C2.2 → C2.3          [lineage、boundary 状态机、authority，严格串行]
                         │
                         ▼
@@ -72,6 +74,8 @@ C0.1 → C0.2 → C0.3
                        C10
                         ▼
                 C11.1 → C11.2
+
+C0.4 (真实上游接受性探针，RFC §17) ──前置门──▶ C5.1/5.2 与 C7.1/7.2
 ```
 
 **C3.4 是四组并行的共同前置**：`json-value-validator` 被 C6.1 与 C7.1 **共同**消费（RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」）。四组**都从 C3.4 之后起分支**，此时 validator 已在基线里 —— 这样才不会出现「C7 要用 C6 尚未创建的文件」的倒置。

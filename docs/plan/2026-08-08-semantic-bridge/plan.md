@@ -2,7 +2,7 @@
 
 > **⚠️ 2026-08-11「快做快合」裁决改变了本文的执行方式。** 用户当日裁决放弃 SDD 与 TDD（见 CLAUDE.md「工作节奏：快做快合」）。因此本文里**每片的 `Mutation` 小节、以及「每条不变量各一条违反路径用例」这类穷举式测试要求，一律不再作为执行门**——它们记录的是设计意图，不是必须逐条产出的交付物。测试只写**主路径**与**实际报错过的路径**。**仍然有效**的是：任务 DAG 与依赖顺序、锚点表、每 commit invariant（中间态不得半坏）、以及 RFC 作为契约权威。已按旧口径完成的 C0 与 C1 不回头精简。
 >
-> **进度**：C0.1／C0.2／C0.3 与 C1.1／C1.2／C1.3 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。下一片：C2.1。
+> **进度**：C0.1／C0.2／C0.3 与 C1.1／C1.2／C1.3 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。下一片：**C1.4**（RFC v2 新增的双平面 disposition；它是 C2.1 的直接前置，见任务 DAG）。**C0.4**（真实上游接受性探针）与代码无依赖，可并行开跑，须在 C5／C7 前收口。
 >
 > **权威 spec**：[docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted，五轮对抗评审收口）。
 > **决策依据**：[ADR 2026-08-08 protocol-neutral reasoning exchange](../../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)；收窄的既有决策 [ADR 2026-07-14 lossless-per-pair bridge](../../decisions/2026-07-14-lossless-per-pair-bridge.md)。
@@ -246,7 +246,7 @@ C0.4 (真实上游接受性探针，RFC §17) ──前置门──▶ C5.1/5.2 
 
 **v2 新增的两片（授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)）**：
 
-- **C1.4 双平面 disposition** —— 落 RFC §4.1。**必须在 C2 之前**：它给 `SemanticItem` 加必填字段，C2 及之后都消费该类型契约，越晚改动面越大。C1.1–C1.3 已落地，此刻正是最便宜的时刻。
+- **C1.4 双平面 disposition** —— 落 RFC §4.1。**必须在 C2 之前**，但理由不是「C2 已在消费它」（C2 尚未落地）：而是**趁消费者尚未扩散先做类型 retrofit**。落点是 `PerOutputItemState`——实测 `SemanticItem` 全仓零构造点零消费点，只改它等于空操作。
 - **C0.4 真实上游接受性探针** —— 落 RFC §17。**与代码无依赖，可立即并行开跑**，但**必须在 C5／C7 之前收口**：它裁决 §6.1 的两类 server-tool record 取哪一种作默认。
 
 **串行硬约束**：C1→C2→C3 严格串行（后者消费前者的类型契约），**C1.4 并入这条链，是 C2.1 的直接前置**。**C3.4 是 C4–C7 全部四组的共同前置** —— `json-value-validator` 被 C6.1（structured output）与 C7.1（carrier canonical JSON）**共同**消费，RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」，两处必须是**同一份**实现。C8.0 必须在 C8.1/C8.2 之前（emitter 消费的 ledger 得先有人喂）。C8.3 必须在单一集成态吸收 C4–C7 全部语义。C9→C10 串行，以便每次 cutover 独立证明可达性并可单方向回滚。**C0.4 是 C5 与 C7 的前置门**，但不阻塞 C1–C4。
@@ -488,34 +488,41 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Files**
 - Modify `src/lib/pipeline/semantic/types.ts`
 - Modify `src/lib/pipeline/semantic/ledger.ts`
-- Modify `tests/pipeline/semantic/ledger-property.unit.test.ts`（按实际破坏面）
+- Modify `tests/pipeline/semantic/ledger-property.unit.test.ts`、`tests/pipeline/semantic/ledger-terminal.unit.test.ts`（按实际破坏面）
 
 **Interfaces**
-- Produces：`PresentationDisposition`、`ContinuationDisposition`、`ItemDisposition`；`SemanticItem` **五个臂**各新增必填 `disposition: ItemDisposition`。
-- `ContinuationRecord` 按 RFC §6.1 的定义引入**类型**（含受限 `ResponsesServerToolItemType` 集合）；其编解码与 provenance 校验由 C7.1／C7.2 落地，**本片不实现 carrier**。
+- Produces：`PresentationDisposition`、`ContinuationDisposition`、`ItemDisposition`。
+- `ContinuationRecord` 按 RFC §6.1 的定义引入**类型**（含受限 `ResponsesServerToolItemType` 集合）；编解码与 provenance 校验由 C7.1／C7.2 落地，**本片不实现 carrier**。
+
+`[hard]` **落点是 `PerOutputItemState`，不是只改 `SemanticItem`。** 实测：全仓 `rg -n 'SemanticItem' src/ tests/ packages/ scripts/` **只命中它自己的定义**（`types.ts:148`），零构造点零消费点——**只给 `SemanticItem` 加必填字段，typecheck 产出 0 个诊断**，那是看起来在干活的空操作。真实状态载体是 `PerOutputItemState`：给它加必填 disposition，编译器只报一个真实生产构造点 `ledger.ts` 的 `declareItem()`；若进一步要求终结时携带 disposition，则报约 15 处现有 finish fixture（集中在两份 ledger 测试）。**两个类型都要带该字段**，但工作面在前者。
+
+`[hard]` **disposition 由 mapper／policy 侧提供，reducer 只保存与校验，绝不自行裁决。** 实测 `finishItem()`（`ledger.ts`）当前只拿得到 `{ key, terminal }`，`LedgerUpdate` 的 `finish-item` 亦然；而 `native`／`carrier`／`rejected` 的判定依赖 **target protocol、目标 identity、policy 与 carrier record**——这些是 C2／C5／C7 才建立的事实。让 reducer 在终结时「填充」disposition 等于逼它凭 source 侧信息猜 target 侧结论，**必然猜错**：一律填 `rejected` 直接违反 §4.1 的 `[hard]`，一律填 `none` 违反 server-tool 规则。
+接线取二选一：在 `finish-item` 上增加必填 `disposition`，或新增先于终结的 `set-item-disposition` update。**reducer 只校验与 target 无关的通用不变量**：drop 只能 `none`／`rejected`、`opaque` 存在时不得为 `none`、presentation 降级不得自动导出 `continuation: rejected`。
 
 **Steps**
 1. 加三个类型；`ContinuationDisposition` 四个 kind 齐全（`none`／`native`／`carrier`／`rejected`）。
-2. 给 `SemanticItem` **五个**臂加必填 `disposition`（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。**先跑一次 `bun run typecheck` 取真实破坏面，编译错误集合就是本片的工作清单**——不要预估。
-3. **同文件写入类型层守卫**（这是本片的承重交付物，不是测试）：
+2. 给 `PerOutputItemState` 与 `SemanticItem` 加必填 `disposition`；按上面二选一改 `LedgerUpdate` 的接线。**先跑 `bun run typecheck` 取真实破坏面，编译错误集合就是工作清单**——不要预估。
+3. **同文件写入类型层守卫**（承重交付物，不是测试）。实测可用形式如下，**已验过它在 `noUnusedLocals: true` 下存活**：
 
    ```ts
-   type AllArmsCarryDisposition = [SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false
-   const _assertAllArmsCarryDisposition: true = true satisfies AllArmsCarryDisposition
+   type Assert<T extends true> = T
+   export type _AllItemsCarryDisposition = Assert<
+     [PerOutputItemState] extends [{ disposition: ItemDisposition }] ? true : false
+   >
    ```
 
-   `[hard]` **必须写成非分布式（方括号包裹）。** 实测：分布式写法会分配到各臂再取并集，`true | never` 仍是 `true`，**拦不住**；而**只靠必填字段也拦不住**——仅在联合里新增一个缺该字段的臂，tsc `--strict` **零报错**，只有消费者无条件访问该字段时才报 `TS2339`。
-4. reducer 在 item 终结时填充 disposition。`kind: "drop"` 的 item，其 `continuation` 只能是 `none` 或 `rejected`。
-5. reasoning 既有 `visible`／`opaque` **保持不变**，但同样填 `disposition`；`opaque` 存在时 `continuation.kind` 不得为 `none`（两者不得互相矛盾）。
-6. **源为 Responses 的 server-tool item，其 `continuation` 不得为 `none`**——只能是 `carrier` 或带具名 reason 的 `rejected`。`none` 的含义是「经判定不存在跨轮状态」，不是省事的默认值。
+   `[hard]` **三处都不能省**：①方括号包裹使其**非分布式**（分布式会分配到各臂再取并集，`true | never` 仍是 `true`，拦不住）；②**必填字段本身拦不住新增臂**——实测仅在联合里新增一个缺该字段的臂，tsc `--strict` **零报错**，只有消费者无条件访问时才报 `TS2339`；③用 `Assert<T extends true>` 型别名而非 `const`，否则 `noUnusedLocals` 会拒掉它。缺字段时报 `TS2344`。
+4. reducer 保存 disposition，并校验上述与 target 无关的通用不变量。
+5. reasoning 既有 `visible`／`opaque` **保持不变**，同样带 disposition；`opaque` 存在时 `continuation.kind` 不得为 `none`。
+6. **源为 Responses 的 server-tool item，其 `continuation` 不得为 `none`**——只能是 `carrier` 或带具名 reason 的 `rejected`。`none` 的含义是「经判定不存在跨轮状态」，不是省事的默认值。**该判定由 mapper 侧做**，本片只留校验位。
 
-**Commit invariant**：仍无生产调用者（C1 全程不改 production writer）；本片**不**引入任何 carrier 编解码。
+**Commit invariant**：仍无生产调用者（C1 全程不改 production writer）；本片**不**引入任何 carrier 编解码，**也不**在 reducer 里做任何 target-dependent 裁决。
 
 **Verify**：`bun run typecheck` + `bun test tests/pipeline/semantic/`。
 
-**判别力（按「快做快合」，不是穷举变异清单）**：本片只有两处判据值得亲手确认它真的会红，因为它们正是本片存在的理由——
-- 把第 3 步的断言改成分布式写法 → 必须**不再**拦住缺字段的臂（证明方括号是承重的，而非装饰）；
-- 让 reducer 在 `presentation.kind === "degraded"` 时顺手把 `continuation` 填成 `rejected` → 必须有用例变红（§4.1 那条 `[hard]`：展示降级不授权续接丢失）。
+**判别力（按「快做快合」，不是穷举变异清单）**：只确认两处，因为它们正是本片存在的理由——
+- 把第 3 步的断言改成分布式写法（去掉方括号）→ 必须**不再**拦住缺字段的臂（证明方括号承重，非装饰）；
+- 让 reducer 在 `presentation.kind === "degraded"` 时顺手把 `continuation` 填成 `rejected` → 必须有用例变红（§4.1 那条 `[hard]`）。
 
 其余分支按项目现行节奏，只测主路径与实际报错过的路径。
 
@@ -1182,6 +1189,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 | §3.3 Reasoning Exchange Envelope 七条不变量 | C1.1（类型）／C7.1-7.2（carrier 与 provenance；**不变量 4 跨协议 redacted 在 C7.2 第 6 步**）／C8.0a-8.0b（ingest 侧 redacted 不伪造明文）／G4（不变量 7） |
 | §3.4 boundary 状态转移 | **C2.2 第 5 步（边界状态机不变量：单次声明、ID 命名空间分离、多跳有序 segments、无全局布尔）**／C2.3（authorityPhase 与两支 pre-commit retain） |
 | §4 核心类型契约与 ledger invariants | C1.1／C1.2／C1.3（**三类载体的 authoritative done**）／C3.1 第 7 步（三类冲突 observation 的 producer） |
+| **§4.1 双平面 item disposition（v2）** | **C1.4**（类型 + 类型层守卫 + reducer 通用校验）；target-dependent 的实际取值由 C5／C7 的 mapper／policy 侧填入 |
 | §5 ordered-turn request model | C4.1／C4.2 |
 | §6 config snapshot／lineage／policy／authority | C2.1／C2.2／C2.3 |
 | §6.1 carrier v2 wire grammar | C3.4（共享 validator）／C7.1 |
@@ -1197,6 +1205,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 | §13 性能与资源 | C1.3（复杂度与内存）／C8.3（shadow 限测试与显式调试） |
 | §14 失败处理 | C1.2（typed 拒绝）／C3.4 + C6.1-6.2（fail-closed）／C7.1（fail-closed decoder） |
 | §16 实施前门 | 本 plan 即其产物；用户 2026-08-08 已授权协调实施，plan 定稿后不再询问是否开始 C0。**kickoff 提示词按阶段增量产出，见下方裁决记录** |
+| **§17 真实上游接受性探针（v2）** | **C0.4**（取证），结论回填 §6.1 默认 record；作为 **C5.1／5.2 与 C7.1／7.2 的前置门** |
 
 ### 对 RFC 的两处显式化（不是改动其冻结契约）
 
@@ -1218,9 +1227,9 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 **RFC §16 原文要求**：「实施计划必须把 C0–C11 拆成可直接派给独立 implementer 的小片，并为每片定义进度文件、commit invariant、测试、mutation 和 review 闭环。」
 
-**已满足**：plan.md 为**全部 30 片**逐片给出 Files／Interfaces／Steps／Commit invariant／Verify／Mutation；进度文件协议见 `progress/README.md`；review 闭环见本节与 C11.2。按字面读，§16 列举的五样每片都有。
+**已满足**：plan.md 为**每一片**逐片给出 Files／Interfaces／Steps／Commit invariant／Verify（Mutation 小节自 2026-08-11「快做快合」裁决后不再是执行门）；进度文件协议见 `progress/README.md`；review 闭环见本节与 C11.2。按字面读，§16 列举的五样每片都有。片数复算：`rg -c '^### C[0-9]' docs/plan/2026-08-08-semantic-bridge/plan.md`。
 
-**当前状态**：`prompts/` 下已写 **C0.1–C3.4 共十片**；C4 及之后（15 片）标为「待写」。
+**当前状态**：`prompts/` 下已写的片复算：`ls docs/plan/2026-08-08-semantic-bridge/prompts/ | rg -c '^c[0-9]'`；尚未写的按下方裁决**在推进到该片前展开**。（此处原先焊死了「共十片」「15 片待写」等值，已按 `anchor-numbers-to-commits` 换成复算命令——那些值在 v2 新增 C0.4／C1.4 后即已过期。）
 
 **评审意见（第 2 轮，契约对齐 reviewer）**：坚持要求全部补齐。理由是「plan 定稿产物应当已经为每片提供可直接派发的 kickoff；『分派前再写』是未来流程门，不满足**当前交付物**的完整性」。它同时抓到一个我确实写错的事实（导航称已就绪而 `c3-4.md` 当时不存在），该事实错误已修复 —— c3-4.md 已补写。
 
