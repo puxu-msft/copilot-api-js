@@ -40,6 +40,7 @@ import {
   combineAbortSignals,
   guardSseIterable,
 } from "~/lib/stream"
+import { createDispatchDiagnosticSink } from "~/lib/transport/dispatch-diagnostic-sink"
 import { createDispatchLifecycle } from "~/lib/transport/dispatch-lifecycle"
 import { physicalTransportFromSend } from "~/lib/transport/physical-transport"
 import { sendUpstreamHttp } from "~/lib/transport/send"
@@ -64,6 +65,12 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     let resolveStreamClosed!: () => void
     const streamClosed = new Promise<void>((resolve) => {
       resolveStreamClosed = resolve
+    })
+    // Every diagnostic about this dispatch goes through one gate. Forced teardown claims exclusive
+    // authorship and then seals, so a listener that fires afterwards cannot contradict the record with
+    // a report about a stream we already abandoned.
+    const diagnosticSink = createDispatchDiagnosticSink((diagnostic) => {
+      if (dispatch) env.ctx.recordGenerationDispatchDiagnostic(dispatch, diagnostic)
     })
     // A4-1 made this handle the canonical owner of the dispatch. It stays optional here only because legacy/compat callers may still send without an options bag; when absent we record nothing rather than falling back to ambient attribution, which would blame the wrong dispatch under hedging.
     const dispatch = options?.dispatch
@@ -103,18 +110,46 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
             closed: streamClosed,
             graceMs: state.generationCleanupGraceSec * 1000,
             onTimeout: () => {
-              // Record BEFORE forcing: this is the diagnosis of a stream that would not close, and it
-              // must survive even if the forced teardown below goes badly.
-              if (dispatch) {
-                env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+              // Claim sole authorship for the teardown story. `null` means someone already owns it (or
+              // the record is sealed), in which case narrating anyway would interleave two accounts.
+              const owner = diagnosticSink.beginForcing()
+              if (owner === null) return
+              void (async () => {
+                const graceMs = state.generationCleanupGraceSec * 1000
+                // Written BEFORE forcing: this is the diagnosis of a stream that would not close, and it
+                // must survive even if the forced teardown below goes badly.
+                owner.write({
                   kind: "transport.h2.barrier_timeout",
                   // A stream that ignores its teardown grace is a genuine fault, not an observation.
                   severity: "warning",
-                  message: "h2 stream did not close within the teardown grace; forcing RST_CANCEL and reclaiming its pool slot",
-                  data: { graceMs: state.generationCleanupGraceSec * 1000 },
+                  message: "h2 stream did not close within the teardown grace; forcing RST_CANCEL",
+                  data: { graceMs },
                 })
-              }
-              control.forceClose()
+                try {
+                  const outcome = await control.forceClose()
+                  if (!outcome.streamClosed) {
+                    owner.write({
+                      kind: "transport.h2.close_missing",
+                      severity: "error",
+                      message: "h2 stream never closed after RST_CANCEL; its pool slot was reclaimed without a confirmed close",
+                      data: { graceMs },
+                    })
+                  }
+                  if (outcome.sessionEvicted) {
+                    owner.write({
+                      kind: "transport.h2.forced_session_dispose",
+                      // Siblings were taken down with the connection; that cost is recorded, not hidden.
+                      severity: "error",
+                      message: "destroyed the pooled h2 session carrying an unclosable stream",
+                      data: outcome.sessionEvicted,
+                    })
+                  }
+                } finally {
+                  // Sealed even if forcing threw: the record is final either way, and a late `close`
+                  // arriving now describes a stream we already gave up on.
+                  owner.seal()
+                }
+              })()
             },
           }),
         // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
@@ -122,7 +157,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         ...(dispatch && {
           dispatch,
           onTermination: (snapshot) => {
-            env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+            // Through the gate: once forced teardown has claimed the record, a termination snapshot is
+            // describing a stream we already gave up on and must not overwrite that account.
+            diagnosticSink.write({
               kind: "transport.h2.termination",
               // Purely observational: the stream already ended, and how it ended is not by itself a failure — a local cancel is often the correct outcome of a hedge race.
               severity: "info",

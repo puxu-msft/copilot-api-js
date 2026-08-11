@@ -121,6 +121,12 @@ const EXEMPT: Record<string, string> = {
   recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
   // Injection setter remains available to tests that install explicit fakes. The fixture does not reset it through this table: merely clearing the pointer would leak a live Worker, so the fixture calls the owning `releaseHistoryPersistenceRuntime()` explicitly — and BEFORE `resetTestRuntime()`, because releasing after the rebuild disarms the runtime the next test is about to use (see tests/history/worker/fixture-persistence-survives-teardown.it.test.ts).
   setHistoryPersistenceRuntimeForTests: "runtime injector — owned reset called explicitly by the fixture before resetTestRuntime, not via RESETTERS",
+  // Drives the forced-eviction bookkeeping against a live pooled session. It owns no module-global of
+  // its own: everything it touches (the sessions map, retiringSessions) is the h2 pool, which is torn
+  // down centrally by the ALREADY-registered closeHttp2Sessions. It exists because the production
+  // branch that calls it is unreachable from a loopback test — the client's own req.close() resolves
+  // the stream locally, so the public path always takes "closed in time".
+  evictSessionForTests: "action hook — mutates only the h2 pool, which closeHttp2Sessions (registered) resets",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {

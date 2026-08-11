@@ -150,6 +150,30 @@ const pending = new Map<string, Promise<H2SessionEntry>>()
 let poolEpoch = 0
 /** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
 let currentGeneration = 0
+/**
+ * Destroy the pooled session carrying a stream that would not close, and report what it cost.
+ *
+ * A connection holding an unkillable stream cannot be handed to the next request, so it leaves the pool for good. Its siblings die with it — that is the real price of the eviction, so it is counted and returned rather than quietly absorbed.
+ *
+ * Exported for tests only via {@link evictSessionForTests}: the branch that calls it is effectively unreachable from a loopback test, because the client's own `req.close()` resolves the stream locally so the public path always takes the "closed in time" branch. Testing the destructive bookkeeping directly is honest; asserting it through a path that never gets there would not be.
+ */
+function evictUnclosableSession(entry: H2SessionEntry): { sessionId: string; affectedStreams: number } {
+  // Counted AFTER this stream's own slot was released, so it is strictly the siblings that suffer.
+  const affectedStreams = Math.max(0, entry.activeStreamCount)
+  // Belt and braces, and the braces are load-bearing: `destroy()` below normally removes the entry for
+  // us via the session's own close → dispose path, but on an ALREADY-destroyed session it is a no-op
+  // that emits nothing, and then this explicit removal is the only thing keeping a dead connection out
+  // of the routable pool. (Measured: skipping only this line still passes; skipping both does not.)
+  removeSessionEntry(entry)
+  retiringSessions.delete(entry)
+  try {
+    entry.session.destroy()
+  } catch {
+    // Already gone; the pool bookkeeping above is what actually mattered.
+  }
+  return { sessionId: entry.sessionId, affectedStreams }
+}
+
 /** Monotonic within the process — never reused, so a session id in History always names one physical connection. */
 let nextSessionSequence = 0
 /**
@@ -1015,6 +1039,19 @@ export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.Cl
 }
 
 /**
+ * Test-only: run the forced-eviction bookkeeping against a live pooled session, named by the id the
+ * status snapshot reports. Throws if no such session is pooled, so a test cannot silently assert
+ * against nothing.
+ */
+export function evictSessionForTests(sessionId: string): { sessionId: string; affectedStreams: number } {
+  for (const arr of sessions.values()) {
+    for (const entry of arr) if (entry.sessionId === sessionId) return evictUnclosableSession(entry)
+  }
+  for (const entry of retiringSessions) if (entry.sessionId === sessionId) return evictUnclosableSession(entry)
+  throw new Error(`no pooled h2 session with id ${sessionId}`)
+}
+
+/**
  * Test-only: shorten (or restore) the TLS connect/handshake deadline so the
  * timeout→teardown path — the one that produced the "[http2] TLS connect timeout
  * after 10000ms" whole-server crash — is fast and deterministic to exercise
@@ -1338,24 +1375,32 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // routed through an exactly-once primitive rather than resting on that guarantee,
     // so the force-dispose path can share it without double-counting the same slot.
     const releaseStreamSlot = createStreamSlotRelease(entry)
+    let streamClosed = false
     // A physical stream now exists on a pooled session, so a caller may arm teardown waits that only
     // this path can satisfy. Announced before any close listener so an immediate close cannot beat it.
     init.onStreamOpened?.({
-      forceClose: () => {
+      forceClose: async () => {
         try {
           // CANCEL is the honest code here: we are abandoning our own stream, not reporting a fault.
           req.close(http2.constants.NGHTTP2_CANCEL)
         } catch {
           // Already destroyed/closed — the slot release below is what actually matters.
         }
-        // A short tail for the peer to answer the RST. If it does, `close` releases the slot and this
-        // timer's release is a no-op; if it does not, we reclaim the slot anyway rather than leaking
-        // pool capacity to a stream that will never close. Exactly-once makes both orders safe.
-        const tail = setTimeout(releaseStreamSlot, FORCED_TEARDOWN_TAIL_MS)
-        tail.unref()
+        // A short tail for the peer to answer the RST. The long wait already happened upstream of here.
+        await new Promise<void>((resolve) => {
+          const tail = setTimeout(resolve, FORCED_TEARDOWN_TAIL_MS)
+          tail.unref()
+        })
+        if (streamClosed) return { streamClosed: true, sessionEvicted: null }
+
+        // The stream ignored an RST it was explicitly sent. It will never close, so its slot has to be
+        // reclaimed regardless — exactly-once makes a later `close` a no-op rather than a second decrement.
+        releaseStreamSlot()
+        return { streamClosed: false, sessionEvicted: evictUnclosableSession(entry) }
       },
     })
     req.once("close", () => {
+      streamClosed = true
       termination.observePhysicalClose()
       releaseStreamSlot()
       init.onStreamClosed?.()
