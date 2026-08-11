@@ -5,6 +5,11 @@
 - **裁决人**：用户（本会话直接裁决）
 - **相关**：推翻 [spec/2026-08-07-lossless-graceful-shutdown-drain.md](../spec/2026-08-07-lossless-graceful-shutdown-drain.md) 的**不变量 4**；[lifecycle.md](../lifecycle.md)「优雅关闭」「优雅重启」；skill `process-lifecycle-shutdown`；guard 处置记录 [tmp/2026-08-10-third-tier-signal-guard-dispositions.md](../tmp/2026-08-10-third-tier-signal-guard-dispositions.md)；同源 ADR [vacuum-gated-on-lock-contention](2026-08-10-vacuum-gated-on-lock-contention.md)
 
+> **2026-08-11 事实订正（本裁决未被推翻，仅其引用的机制已改名／删除）。** 下文正文按当时状态写作，保留原样以存档；读者按现状对照时注意三点：
+> ① `timeouts.request_deadline` 已改名为 `timeouts.client_request_deadline`，并新增了 attempt 作用域的 `timeouts.upstream_request_deadline`（烧完只中止一次上游尝试、不消耗 retry 预算）。所以正文「生产上是空的」那条**取决于运行实例是否设了新键**，须实测而非引用此处。
+> ② 周期式 stale reaper 已删除（与 `client_request_deadline` 同量同动作、只是最坏晚约 1.33 倍）；正文「`abandonDrain` 走的是 stale reaper 与 `request_deadline` 已经在用的同一组原语」中，`reapInFlight()` + `fail()` 这组原语**依然是它**，只是今天 `reapInFlight()` 的唯一生产驱动者就是 `abandonDrain` 自己。
+> ③ 正文第 45 行点名的「取消信号通道仍伪装成 timeout」这条**尚未闭合**：客户端可见文案已从自相矛盾的「stale-request reaper 0s」改成「operator-abandoned drain」，但 `CancellationCause` 标签仍写死 `stale-reaper`。因此正文那句 **「在那条闭合前，不得声称第二档的终态『绝不被读成 timeout』」仍然有效**。
+
 ## 背景
 
 2026-08-07 的 incident 里，三个正常工作的长请求在同一秒被 `Server is shutting down` 杀掉——`graceful_wait` 到期后 shutdown 用进程级 `AbortSignal` 中止了所有剩余 operation。随后的无损排空改造（`04e6ecb1` / `c6a5f72c` / `d254d8ae`）删掉了 `shutdown.graceful_wait`、`shutdown.abort_wait` 与整套自动 abort 设施，并立下不变量：**shutdown 不以任何固定时间值终止 operation**。
