@@ -70,16 +70,20 @@ function runTwoSignalHarness(fixture?: string, env: Record<string, string | unde
   })
 }
 
-test("real foreground SIGINT: first starts graceful shutdown, second exits immediately", () => {
+test("real foreground SIGINT: first drains, second abandons the drain without exiting, third escapes", () => {
   const proc = runTwoSignalHarness()
   const stderr = new TextDecoder().decode(proc.stderr)
   expect(proc.exitCode, stderr).toBe(0)
 
-  const result = JSON.parse(new TextDecoder().decode(proc.stdout)) as { firstAlive: boolean; exitCode: number; output: string }
+  const result = JSON.parse(new TextDecoder().decode(proc.stdout)) as { firstAlive: boolean; tier2Alive: boolean; exitCode: number; output: string }
   expect(result.firstAlive).toBe(true)
+  // The load-bearing new assertion, on a real process: the SECOND signal does not kill it. Only the third does.
+  expect(result.tier2Alive).toBe(true)
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("graceful shutdown started")
-  expect(result.output).toContain("Press Ctrl+C again to exit immediately")
+  // Scope of this layer, stated so it is not read as more: this fixture holds `gracefulShutdown` on a promise that never resolves, so the process never reaches the drain. It proves that a real process, on a real TTY, SELECTS tier 2 on the second signal and survives it — and that tier 2 says so honestly when there is no drain to abandon, rather than printing a flush it never performed. Actual drain abandonment is proven at the component layer, which can inject a drain source.
+  expect(result.output).toContain("Second termination signal")
+  expect(result.output).toContain("the drain has not started yet")
 }, 14_000)
 
 test("two-signal PTY preserves READY observation through delayed child startup", () => {

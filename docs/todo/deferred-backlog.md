@@ -1458,3 +1458,32 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **判据已就位**：`tests/pipeline/i9-followup-midblock-error.http.test.ts` 断言的是**正确目标**（不重试 + 不泄漏半块），已按仓库既有惯用法 `describe.skip` + `[GATED — requires Task 4 owner cutover: ...]` 前缀，并登记进 `tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped`。做 Task 4 的人去掉 `.skip` 即可验收。**改进建议（未采纳，留证据）**：独立评审实测本仓 bun 1.3.14 下 `test.failing` 会在用例转绿时判红并提示 `Remove .failing`，即**自解除**，优于永远等人想起来的 `describe.skip`；未采纳是因为它在 JUnit / discovery 基线口径下的表现**未验证**，且本仓无先例。
 - **触发条件（值得做）**：① 执行 Task 4；② 有人报告 Anthropic 流在上游过载时被重复请求；③ 顺手改 `acceptTerminal` 或 buffered 终态排空时。
 - **发现方**：Task 37 接缝复审第二、三轮（`gpt-souls:reviewer` 定位形态，主会话实现并撤回，`reviewer` 独立复核撤回与归属判定）。
+
+## 可配的 shutdown drain 放弃预算（默认 0＝无界）尚未实现（2026-08-10，三档信号契约落地时显式留下）
+
+- **根因 / 现状**：用户 2026-08-10 裁决三档信号契约时，同时裁决保留一个**可配、默认 0（＝无界）**的自动放弃预算——到点时执行与第二档信号相同的动作（中止残余 in-flight + 照常 finalize）。三档信号本身已落地（ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md)），**这个预算旋钮没有**。
+- **为何暂缓**：默认值是 0，语义即「关闭」，所以缺它**不改变任何现有行为**——操作者按第二次 Ctrl+C 已经能得到全部能力。本轮优先交付核心档位与其守护。**这不是静默削减**：按 `no-silently-cut-but-defer` 在此登记并已在交付报告中向用户点名。
+- **若做需改什么**：① 新增 config 键（注意 `config.schema.json` 只由 `.describe()` 生成、改 TSDoc 是 no-op）；② `packages/foundation/src/state.ts` + `state-defaults.ts` 加字段；③ `gracefulShutdown` 的 drain 循环里挂一个到点触发 `abandonDrain` 的定时器（`unref`），并在 finalize 前清除；④ 测试须覆盖「0＝永不触发」这一默认路径，否则等于没测默认行为。
+- **⚠️ 命名与论证的注意事项**：`shutdown.graceful_wait` / `abort_wait` 是被 spec `2026-08-07-lossless-graceful-shutdown-drain` **明确删除**的，理由是「保留这些字段会错误暗示 shutdown 仍拥有请求终止 deadline」。新键必须在命名与文档上讲清它是**操作者预设的放弃点**（等价于「替我按第二次」），而不是 shutdown 自己的时限，否则就是把被否决的东西改个名字放回来。
+- **发现方**：三档信号契约实现（主会话，2026-08-10）。
+
+## history 读写分离：主程序只 append 写，读/搜索/聚合全部外移 sidecar（2026-08-10，用户裁决的后续方向）
+
+- **背景**：用户 2026-08-10 提出「为每个 pid 建独立 history db」，理由是新旧进程可能争抢、且搜索已不属主程序范围。核实结论分两半——**搜索确实已外移**（`history-search-daemon` 是独立 CLI sidecar，**readonly** tail 主库、自维护 Tantivy 索引、经 UDS 提供查询，故它**不是写竞争的一方**）；**但读没有外移**：`/history/api/{entries,entries/{id},stats,sessions,export}` 全部是主进程内同步读同一个库（`src/lib/history/state.ts:126`）。
+- **本轮已做的那一半**：overlap 期的锁争抢按靶向修**缩小了窗口**——见 ADR [startup VACUUM 按锁竞争 gate](../decisions/2026-08-10-vacuum-gated-on-lock-contention.md)。**注意它没有消除争抢**：该判据采样的是「此刻有没有别人持着事务」，一个已开库但恰好空闲的前任进程会被放行。用户裁决为「**先解决争抢，后推进读写分离**」，故本条是后半段，也是真正消除它的那一半。
+- **为何 per-pid 不是正确的切分键**：① pid 会被 OS 重用；② 重启频繁 → 库文件无限增殖且无回收策略；③「哪个 pid 写的」对读者没有语义，没人会按 pid 查历史。**按 boot session 或日期更好**——`bootTime` 已在 pidfile 里，且目录中已有 `history-v3-260809.db` 这种按日期切分的先例。
+- **理想架构**：主程序只做 append-only 写（可按 boot session／日期分片），读/搜索/聚合全部由 sidecar 承担并跨分片聚合。这一次能同时解决三件事：单库膨胀（归档库达 **13.9 GB**）、VACUUM 独占锁、跨进程写竞争。
+- **若做需改什么**：① 读路径改跨分片聚合——`/entries` 的 keyset 分页与 `/stats` 的聚合跨库是主要复杂度；② 分片的创建/滚动/归档/保留策略；③ sidecar 需要能发现并索引多个分片（当前 `--db-path` 只接单个文件）；④ 与既有 `lifecycle.md`「overlap 共享状态安全」各条重新对账。
+- **注意与既有裁决的关系**：`lifecycle.md` 有一条「为何不把 history/telemetry 拆成独立持久化服务」的既有裁决（理由：overlap 写竞争有界罕见、拆服务要为富 payload 定义 IPC wire 协议、读侧全是进程内同步读）。**本条与那条不同**——它不动 SQLite 嵌入式读写，只改**分片布局与读的归属**；但推进前必须显式对照那条裁决，说明差异，避免无意中推翻它。
+- **触发条件（值得做）**：① 库再次长到 GB 量级；② 观测到 overlap 期真实的 `SQLITE_BUSY` 或写丢失；③ 转向多进程/多 worker 常驻并发 serving。
+- **发现方**：用户提案 + 主会话核实（2026-08-10）。
+
+## `reapInFlight()` 把取消成因写死成 `stale-reaper`，第二档信号的客户端因此看到 504「stale-request reaper」（2026-08-10，三档信号契约评审发现）
+
+- **根因 / 现状**：`src/lib/context/request.ts:1125` 的 `reapInFlight()` **无参数**，内部写死 `cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")`。消费者 `src/lib/error/forward.ts:573` 据此把 `stale-reaper` 与 `request-deadline` 一起归入「我方时钟到点」，产出 **504** 且文案为 `Request cancelled by our own clock (stale-request reaper ${state.staleRequestMaxAge}s)`。
+- **为什么这是缺陷而不只是文案瑕疵**：终态有**两条独立的 provenance 通道**——`fail()` 的 `attribution` 与取消信号的 `CancellationCause`。三档信号契约把前者修对了（`shutdown`／`operator-abandoned-drain`），**后者仍在撒谎**：操作者放弃 drain 与「请求超时」是完全不同的事件，而客户端和日志只看得到后者。直接违反 user-rule `abort-provenance-tag-at-source-not-guess-at-boundary`（成因应在产生点打标签）。**并且 `stale_request_max_age` 现在默认 0**，所以实际文案会是「stale-request reaper 0s」——一个自相矛盾的读数：宣称某个时钟到点了，而那个时钟根本没开。
+- **本轮 commit message 的更正**：`feat(shutdown): make the second termination signal abandon the drain, not the process` 里写的「终态永远不会被读成 timeout」**只对了一半**——`fail()` 的 attribution 对了，取消通道没有。以本条为准。
+- **为何暂缓**：修它要动 `reapInFlight` 的签名（加 cause 参数）、`CancellationCause` 联合类型加成员、`forward.ts` 的分流表加分支，并逐个核对既有 4 个 cause 的消费者；改动面明显超出「让第二档信号不杀进程」这一轮，混进来会让本轮的因果链变糊。**这不是静默削减**：按 `no-silently-cut-but-defer` 登记于此并已向用户点名。
+- **若做需改什么**：① `reapInFlight(cause: CancellationCause = "stale-reaper")`（留默认值，避免一次性改动全部现有调用点）；② `packages/foundation/src/error/cancellation-reason.ts:35` 的 `CancellationCause` 加 `operator-abandoned-drain`；③ `src/lib/error/forward.ts:573` 把新成因分流出去——它**不该是 504**，操作者主动关机更接近 503，且文案不得提「我方时钟」；④ `src/lib/shutdown.ts` 的 `abandonDrain` 传入新 cause；⑤ 正控：注入「传错 cause」的变异，断言客户端可观测的 status 与文案变红——**只断言内部字段不够**，这个缺陷的全部危害都在客户端可观测面上。
+- **触发条件（值得做）**：① 任何一次真实使用第二档信号后，去查 History／客户端日志时被那句 reaper 文案误导；② 下次触碰 `forward.ts` 的取消分流表或 `CancellationCause` 时顺手做。
+- **发现方**：三档信号契约的独立评审（`reviewer`，2026-08-10），主会话已逐个打开引用位置复核属实。
