@@ -10,16 +10,28 @@
  * gets to fill in a missing child or skip one.
  *
  * Three levels settle independently — part, item, response — and a level never settles the level below it on its owner's behalf. `finish-item` with an open part is rejected outright rather than tidied up, because "the parent finished, so the child must have" is exactly the inference that produced the flattened reasoning items.
+ *
+ * Records are replaced, never mutated. That is what makes {@link SemanticLedger.snapshot},
+ * {@link SemanticLedger.fork} and the {@link LedgerTransition} feed cheap and safe at once: anything
+ * already handed out is immutable, so it is shared rather than copied, and a later `apply` cannot
+ * reach back into it.
  */
 
 import type {
   //
-  ItemKind,
   LedgerSnapshot,
+  LedgerTransition,
+} from "./snapshot"
+import type {
+  //
+  ItemKey,
+  ItemKind,
   LedgerUpdate,
+  PartKey,
   PartKind,
   PartState,
   PerOutputItemState,
+  ResponseTerminal,
 } from "./types"
 
 /**
@@ -83,56 +95,57 @@ const PART_KINDS_BY_ITEM_KIND = new Map<ItemKind, ReadonlySet<PartKind>>([
   ["degraded-text", new Set<PartKind>(["text"])],
 ])
 
-/** Internal accumulation record. Structurally assignable to the readonly {@link PerOutputItemState}. */
-type MutablePart = PartState & { textDeltas: Array<string>; authoritativeText?: string; terminal?: PartState["terminal"] }
-
-type MutableItem = Omit<PerOutputItemState, "argumentDeltas" | "outputDeltas" | "parts"> & {
-  argumentDeltas: Array<string>
-  outputDeltas: Array<string>
-  parts: Map<PartState["key"], MutablePart>
-  authoritativeArguments?: string
-  authoritativeOutput?: string
-  opaque?: PerOutputItemState["opaque"]
-  reasoningVisibleKind?: PerOutputItemState["reasoningVisibleKind"]
-  terminal?: PerOutputItemState["terminal"]
-}
-
 export interface SemanticLedger {
   /** Apply one transition, or throw {@link LedgerInvariantError} and leave state untouched. */
   apply: (update: LedgerUpdate) => void
-  /** A detached copy of the current state. Mutating the ledger afterwards does not change a snapshot already handed out. */
+  /** The whole ledger at this instant, detached from later writes. What the non-stream emitter reads. */
   snapshot: () => LedgerSnapshot
   /**
-   * A ledger seeded with this one's current state and isolated from it afterwards.
+   * Every accepted transition after `sequence`, in order. What the stream emitter reads: it keeps the
+   * last sequence it rendered and asks for the rest, which is also how it can tell "nothing new" from
+   * "I missed one". Pass `0` for the whole feed.
+   */
+  transitionsSince: (sequence: number) => ReadonlyArray<LedgerTransition>
+  /**
+   * A ledger continuing this one's history and isolated from it afterwards.
    *
    * Fallback and hedge candidates each need their own continuation of the same history: RFC §4 forbids sharing a mutable ledger across them, because a losing candidate would otherwise write into the winner's state.
    */
   fork: () => SemanticLedger
 }
 
-type LedgerSeed = { items: Map<PerOutputItemState["key"], MutableItem>; responseTerminal?: LedgerSnapshot["responseTerminal"] }
+type LedgerSeed = {
+  items: Map<ItemKey, PerOutputItemState>
+  responseTerminal?: ResponseTerminal
+  transitions: Array<LedgerTransition>
+}
 
 export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
-  const items = seed?.items ?? new Map<PerOutputItemState["key"], MutableItem>()
+  const items = seed?.items ?? new Map<ItemKey, PerOutputItemState>()
   /** Part keys are unique per response, not per item, so `append-part-text` carries only the part key. */
-  const partOwner = new Map<PartState["key"], PerOutputItemState["key"]>()
+  const partOwner = new Map<PartKey, ItemKey>()
   for (const item of items.values()) for (const partKey of item.parts.keys()) partOwner.set(partKey, item.key)
-  let responseTerminal: LedgerSnapshot["responseTerminal"] = seed?.responseTerminal
+  const transitionLog: Array<LedgerTransition> = seed?.transitions ?? []
+  let responseTerminal: ResponseTerminal | undefined = seed?.responseTerminal
 
-  const requireItem = (key: PerOutputItemState["key"]): MutableItem => {
+  const record = (update: LedgerUpdate, changed: Omit<LedgerTransition, "sequence" | "update">): void => {
+    transitionLog.push({ sequence: transitionLog.length + 1, update, ...changed })
+  }
+
+  const requireItem = (key: ItemKey): PerOutputItemState => {
     const item = items.get(key)
     if (!item) throw new LedgerInvariantError(LEDGER_ERROR_CODES.unknownItem, `no item declared for key ${key}`)
     return item
   }
 
   /** Every mutation goes through here: a settled item is settled, whatever the decoder still has to say. */
-  const requireOpenItem = (key: PerOutputItemState["key"]): MutableItem => {
+  const requireOpenItem = (key: ItemKey): PerOutputItemState => {
     const item = requireItem(key)
     if (item.terminal) throw new LedgerInvariantError(LEDGER_ERROR_CODES.itemAlreadyTerminal, `item ${key} is already ${item.terminal.kind}`)
     return item
   }
 
-  const requireOpenPart = (key: PartState["key"]): { item: MutableItem; part: MutablePart } => {
+  const requireOpenPart = (key: PartKey): { item: PerOutputItemState; part: PartState } => {
     const itemKey = partOwner.get(key)
     if (itemKey === undefined) throw new LedgerInvariantError(LEDGER_ERROR_CODES.unknownPart, `no part declared for key ${key}`)
     const item = requireItem(itemKey)
@@ -143,7 +156,32 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
     return { item, part }
   }
 
-  const declareItem = (update: Extract<LedgerUpdate, { type: "declare-item" }>): void => {
+  /** Replace an item wholesale. Nothing in this module writes through an existing record. */
+  const putItem = (item: PerOutputItemState): PerOutputItemState => {
+    items.set(item.key, item)
+    return item
+  }
+
+  /** Replace one part inside its item, producing new records for both. */
+  const putPart = (item: PerOutputItemState, part: PartState): { item: PerOutputItemState; part: PartState } => ({
+    item: putItem({ ...item, parts: new Map(item.parts).set(part.key, part) }),
+    part,
+  })
+
+  const requireCallItem = (key: ItemKey): PerOutputItemState => {
+    const item = requireOpenItem(key)
+    if (!CALL_KINDS.has(item.kind)) throw new LedgerInvariantError(LEDGER_ERROR_CODES.argumentsNotApplicable, `${item.kind} item ${key} has no arguments`)
+    return item
+  }
+
+  const requireResultItem = (key: ItemKey): PerOutputItemState => {
+    const item = requireOpenItem(key)
+    if (!RESULT_KINDS.has(item.kind))
+      throw new LedgerInvariantError(LEDGER_ERROR_CODES.resultOutputNotApplicable, `${item.kind} item ${key} has no result output`)
+    return item
+  }
+
+  const declareItem = (update: Extract<LedgerUpdate, { type: "declare-item" }>): PerOutputItemState => {
     if (items.has(update.key)) throw new LedgerInvariantError(LEDGER_ERROR_CODES.duplicateItemDeclare, `item ${update.key} was already declared`)
 
     // Metadata is mutually exclusive by kind, and required on the kind that owns it. A call without a `callId`/`name` can never be replayed by the client, so it is rejected at declare time rather than surfacing later as an emitter that silently drops the item.
@@ -162,7 +200,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
       throw new LedgerInvariantError(LEDGER_ERROR_CODES.metadataKindMismatch, `${update.kind} item ${update.key} may carry neither call nor result metadata`)
     }
 
-    items.set(update.key, {
+    return putItem({
       key: update.key,
       segmentId: update.segmentId,
       source: update.source,
@@ -177,7 +215,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
     })
   }
 
-  const declarePart = (update: Extract<LedgerUpdate, { type: "declare-part" }>): void => {
+  const declarePart = (update: Extract<LedgerUpdate, { type: "declare-part" }>): { item: PerOutputItemState; part: PartState } => {
     if (partOwner.has(update.key)) throw new LedgerInvariantError(LEDGER_ERROR_CODES.duplicatePartDeclare, `part ${update.key} was already declared`)
     const item = requireOpenItem(update.itemKey)
 
@@ -196,27 +234,14 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
       }
     }
 
-    item.parts.set(update.key, { key: update.key, itemKey: update.itemKey, kind: update.kind, sourceIndex: update.sourceIndex, textDeltas: [] })
     partOwner.set(update.key, update.itemKey)
-  }
-
-  const requireCallItem = (key: PerOutputItemState["key"]): MutableItem => {
-    const item = requireOpenItem(key)
-    if (!CALL_KINDS.has(item.kind)) throw new LedgerInvariantError(LEDGER_ERROR_CODES.argumentsNotApplicable, `${item.kind} item ${key} has no arguments`)
-    return item
-  }
-
-  const requireResultItem = (key: PerOutputItemState["key"]): MutableItem => {
-    const item = requireOpenItem(key)
-    if (!RESULT_KINDS.has(item.kind))
-      throw new LedgerInvariantError(LEDGER_ERROR_CODES.resultOutputNotApplicable, `${item.kind} item ${key} has no result output`)
-    return item
+    return putPart(item, { key: update.key, itemKey: update.itemKey, kind: update.kind, sourceIndex: update.sourceIndex, textDeltas: [] })
   }
 
   /**
    * `finish-item` never settles a child on the item's behalf. That is the whole defect this ledger exists to stop: an emitter that assumed "the item is done, so its nested parts must be done" is how a reasoning item with a still-open second summary part got emitted as if it had one.
    */
-  const requireAllPartsTerminal = (item: MutableItem): void => {
+  const requireAllPartsTerminal = (item: PerOutputItemState): void => {
     for (const part of item.parts.values()) {
       if (!part.terminal) {
         throw new LedgerInvariantError(LEDGER_ERROR_CODES.openChildPart, `item ${item.key} cannot terminate while part ${part.key} is still open`)
@@ -225,7 +250,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
   }
 
   /** A part that carries no authoritative text contributes nothing derivable — a settled item may not be built out of delta fragments. */
-  const hasDerivableText = (item: MutableItem): boolean => {
+  const hasDerivableText = (item: PerOutputItemState): boolean => {
     for (const part of item.parts.values()) {
       if (part.terminal?.kind !== "discarded" && part.authoritativeText !== undefined) return true
     }
@@ -233,7 +258,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
   }
 
   /** The kind-specific authority gate for a `complete` item: every kind names the value it may not be complete without. */
-  const requireAuthoritativeValues = (item: MutableItem): void => {
+  const requireAuthoritativeValues = (item: PerOutputItemState): void => {
     if (CALL_KINDS.has(item.kind)) {
       if (item.authoritativeArguments === undefined) {
         throw new LedgerInvariantError(
@@ -273,7 +298,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
     }
   }
 
-  const finishItem = (update: Extract<LedgerUpdate, { type: "finish-item" }>): void => {
+  const finishItem = (update: Extract<LedgerUpdate, { type: "finish-item" }>): PerOutputItemState => {
     const item = requireOpenItem(update.key)
     requireAllPartsTerminal(item)
 
@@ -294,10 +319,10 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
       requireAuthoritativeValues(item)
     }
 
-    item.terminal = update.terminal
+    return putItem({ ...item, terminal: update.terminal })
   }
 
-  const finishResponse = (terminal: NonNullable<LedgerSnapshot["responseTerminal"]>): void => {
+  const finishResponse = (terminal: ResponseTerminal): void => {
     for (const item of items.values()) {
       if (!item.terminal) {
         throw new LedgerInvariantError(LEDGER_ERROR_CODES.itemNotTerminal, `response cannot terminate while item ${item.key} is still open`)
@@ -323,23 +348,24 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
 
     switch (update.type) {
       case "declare-item": {
-        declareItem(update)
+        record(update, { item: declareItem(update) })
         return
       }
 
       case "declare-part": {
-        declarePart(update)
+        record(update, declarePart(update))
         return
       }
 
       case "append-part-text": {
-        const { part } = requireOpenPart(update.key)
-        part.textDeltas.push(update.delta)
+        const { item, part } = requireOpenPart(update.key)
+        record(update, putPart(item, { ...part, textDeltas: [...part.textDeltas, update.delta] }))
         return
       }
 
       case "append-arguments": {
-        requireCallItem(update.key).argumentDeltas.push(update.delta)
+        const item = requireCallItem(update.key)
+        record(update, { item: putItem({ ...item, argumentDeltas: [...item.argumentDeltas, update.delta] }) })
         return
       }
 
@@ -349,12 +375,13 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
         if (item.authoritativeArguments !== undefined) {
           throw new LedgerInvariantError(LEDGER_ERROR_CODES.duplicateAuthoritativeValue, `item ${update.key} already has authoritative arguments`)
         }
-        item.authoritativeArguments = update.arguments
+        record(update, { item: putItem({ ...item, authoritativeArguments: update.arguments }) })
         return
       }
 
       case "append-result-output": {
-        requireResultItem(update.key).outputDeltas.push(update.delta)
+        const item = requireResultItem(update.key)
+        record(update, { item: putItem({ ...item, outputDeltas: [...item.outputDeltas, update.delta] }) })
         return
       }
 
@@ -363,7 +390,7 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
         if (item.authoritativeOutput !== undefined) {
           throw new LedgerInvariantError(LEDGER_ERROR_CODES.duplicateAuthoritativeValue, `item ${update.key} already has authoritative output`)
         }
-        item.authoritativeOutput = update.output
+        record(update, { item: putItem({ ...item, authoritativeOutput: update.output }) })
         return
       }
 
@@ -374,25 +401,25 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
         if (item.reasoningVisibleKind !== undefined) {
           throw new LedgerInvariantError(LEDGER_ERROR_CODES.duplicateReasoningMetadata, `item ${update.key} already has reasoning metadata`)
         }
-        item.reasoningVisibleKind = update.visibleKind
-        if (update.opaque) item.opaque = update.opaque
+        record(update, { item: putItem({ ...item, reasoningVisibleKind: update.visibleKind, ...(update.opaque ? { opaque: update.opaque } : {}) }) })
         return
       }
 
       case "finish-part": {
-        const { part } = requireOpenPart(update.key)
-        if (update.text !== undefined) part.authoritativeText = update.text
-        part.terminal = update.terminal
+        const { item, part } = requireOpenPart(update.key)
+        const settled: PartState = { ...part, ...(update.text === undefined ? {} : { authoritativeText: update.text }), terminal: update.terminal }
+        record(update, putPart(item, settled))
         return
       }
 
       case "finish-item": {
-        finishItem(update)
+        record(update, { item: finishItem(update) })
         return
       }
 
       case "finish-response": {
         finishResponse(update.terminal)
+        record(update, { responseTerminal: update.terminal })
         return
       }
 
@@ -403,23 +430,16 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
     }
   }
 
-  /** Deep enough that nothing a caller holds can be changed by a later `apply`: the maps and the delta arrays are rebuilt, and every value below them is immutable by contract. */
-  const copyItems = (): Map<PerOutputItemState["key"], MutableItem> =>
-    new Map(
-      [...items].map(([key, item]) => [
-        key,
-        {
-          ...item,
-          argumentDeltas: [...item.argumentDeltas],
-          outputDeltas: [...item.outputDeltas],
-          parts: new Map([...item.parts].map(([partKey, part]) => [partKey, { ...part, textDeltas: [...part.textDeltas] }])),
-        },
-      ]),
-    )
-
   return {
     apply,
-    snapshot: () => ({ items: copyItems(), ...(responseTerminal ? { responseTerminal } : {}) }),
-    fork: () => createSemanticLedger({ items: copyItems(), ...(responseTerminal ? { responseTerminal } : {}) }),
+    // Only the map is rebuilt; the records inside are already immutable, so they are shared.
+    snapshot: () => ({ items: new Map(items), ...(responseTerminal ? { responseTerminal } : {}) }),
+    transitionsSince: (sequence) => transitionLog.slice(Math.max(sequence, 0)),
+    fork: () =>
+      createSemanticLedger({
+        items: new Map(items),
+        transitions: [...transitionLog],
+        ...(responseTerminal ? { responseTerminal } : {}),
+      }),
   }
 }

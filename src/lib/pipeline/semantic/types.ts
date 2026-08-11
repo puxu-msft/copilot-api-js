@@ -202,18 +202,6 @@ export type ResponseTerminal =
   | Readonly<{ kind: "failed"; error: unknown; usage?: unknown; provenance: "wire-terminal" | "eof" | "abort" | "preflight-reject" }>
   | Readonly<{ kind: "cancelled"; reason: string; usage?: unknown; provenance: "abort" | "driver-cancel" }>
 
-/**
- * The read view of a ledger. Parts hang off their owning item rather than sitting in a second
- * top-level map, so there is no way to observe a part whose item you cannot also see.
- *
- * C1.1 returns a view over live state; C1.3 replaces the implementation with a structurally-shared
- * immutable snapshot and adds `fork()`. The shape does not change.
- */
-export type LedgerSnapshot = Readonly<{
-  items: ReadonlyMap<ItemKey, PerOutputItemState>
-  responseTerminal?: ResponseTerminal
-}>
-
 /* ---------------------------------------------------------------------------------------------- *
  * Reducer input
  * ---------------------------------------------------------------------------------------------- */
