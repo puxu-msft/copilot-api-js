@@ -329,7 +329,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 ### A4-2 实施记录（2026-08-11）
 
-**分支** `worktree-a4-h2-diagnostics`，基于 `f2a44579`。**已提交、未合并、未推送。**
+**分支** `worktree-a4-h2-diagnostics`（已合并进本地 `master` 并删除），基于 `f2a44579`。**未推送。** 判定当前是否仍在主线：`git merge-base --is-ancestor 61acc9f0 master && echo landed`。
 
 | commit | 内容 |
 |---|---|
@@ -346,9 +346,9 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 **验收状态**：`bun run typecheck` 绿；改动文件 `bunx eslint --no-cache` 干净；`bun run test:backend` **7776 pass / 0 fail**（跑了两轮：首轮撞 baseline 那条既有红，修掉后次轮 0 fail；中间一轮 `hooks/loader.unit.test.ts` 因 shard 崩溃假红，单跑 8/8 通过）。**未做**：独立 reviewer／verifier 与 merged-state review —— 按本节验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批一次。
 
-**未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。
+**未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。（**这是 A4-2 交付当时的快照**；其中除 `EntrySummary.transportFailure` 外**均已于 2026-08-11 完成**，且「未新增对外字段」一句对 A4-3 已被证否——见上面那条更正。）
 
-### A4-3 实施记录（2026-08-11，部分完成）
+### A4-3 实施记录（2026-08-11，已完成）
 
 **分支** `worktree-a4-3-session-diagnostics`，基于 `aaace65e`。
 
@@ -386,9 +386,9 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 `docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
 
-**未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
+**未做、仍属 A4-5**：`EntrySummary.transportFailure`。（写这句时 teardown barrier、`open → forcing → sealed`、exactly-once `releaseStreamSlot()` 三项尚未开始，**现均已于 2026-08-11 完成**，见下方实施记录。）⚠️ **本节其后关于「`docs/API.md` 未改、未新增对外字段」的说法对 A4-3 已被证否**，见上面那条更正。
 
-### A4-4 实施记录（2026-08-11，部分完成）
+### A4-4 实施记录（2026-08-11，已完成）
 
 **分支** `worktree-a4-4-stream-slot`。
 
