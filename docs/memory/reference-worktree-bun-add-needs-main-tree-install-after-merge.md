@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
+description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules（隔离性探针假绿）而仓库外树零依赖（A/B 对照假红，先说清在测什么再选放置位置）、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
 metadata: 
   node_type: memory
   type: reference
