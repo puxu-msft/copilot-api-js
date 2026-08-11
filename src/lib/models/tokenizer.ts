@@ -9,6 +9,13 @@ import type {
 
 import type { Model } from "./client"
 
+import {
+  //
+  collapseLongRuns,
+  collapsibleTokens,
+  learnBytesPerToken,
+} from "./run-collapse"
+
 // ============================================================================
 // GPT Encoder Support
 // ============================================================================
@@ -26,7 +33,12 @@ type SupportedEncoding = keyof typeof ENCODING_MAP
 
 /** Encoder interface for tokenization */
 interface Encoder {
-  encode: (text: string) => Array<number>
+  /**
+   * Token count of `text`, shaped as `{ length }` because every call site in this file consumes only `.length`.
+   *
+   * Narrowed from `Array<number>` deliberately: the run-collapse path below derives part of the count arithmetically and has no token ids to hand back, and fabricating an array to satisfy a contract nobody reads would be pure waste on exactly the largest inputs.
+   */
+  encode: (text: string) => { length: number }
 }
 
 /** Cache loaded encoders to avoid repeated imports */
@@ -122,8 +134,22 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
   // Wrap encode to disable special token checks.
   // gpt-tokenizer defaults to disallowedSpecial='all', which throws on
   // tokens like <|im_start|> that appear in tool_result content.
+  const rawEncode = (text: string): number => rawModule.encode(text, { disallowedSpecial: new Set() }).length
+
+  // Every counting site in this file funnels through this one function, so collapsing long single-character runs HERE fixes all of them at once and changes no call site.
+  // Why it is needed at all: BPE is O(n²) on such a run — 60KB of spaces costs ~3.5s where 60KB of English costs ~9ms — and that is inherent to the algorithm, not to this library (`tiktoken`'s Rust build measures the same curve; see `exp/tokenizer-bench/`). Measured on the live server, this is what blocks the event loop for seconds at a time, which in turn delays the SIGUSR2 handler and keeps a shutting-down process accepting requests.
+  const ratios = new Map<string, number | undefined>()
   const encoder: Encoder = {
-    encode: (text: string) => rawModule.encode(text, { disallowedSpecial: new Set() }),
+    encode: (text: string) => {
+      const { remainder, removedTokens } = collapseLongRuns(text, (run) => {
+        // One probe per (encoding, character), cached: the rate is a property of the pair, not of this run.
+        if (!ratios.has(run.char)) ratios.set(run.char, learnBytesPerToken(run.char, rawEncode))
+        const bytesPerToken = ratios.get(run.char)
+        // `undefined` means the probe found this character does NOT tokenize at a constant rate, so there is no rate to derive from and the run has to be encoded for real.
+        return bytesPerToken === undefined ? { tokens: 0, chars: 0 } : collapsibleTokens(run.length, bytesPerToken)
+      })
+      return { length: rawEncode(remainder) + removedTokens }
+    },
   }
 
   encodingCache.set(encoding, encoder)
