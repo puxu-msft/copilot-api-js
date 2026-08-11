@@ -16,7 +16,7 @@ import { makeSseSink } from "~/lib/pipeline/client-sink"
 
 /** Minimal fake SSEStreamingApi — writeSSE resolves immediately. */
 function fakeStream() {
-  return { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeSseSink>[0]
+  return { write: () => Promise.resolve() } as unknown as Parameters<typeof makeSseSink>[0]
 }
 
 describe("client-sink onFirstRealContent", () => {

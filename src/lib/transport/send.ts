@@ -19,24 +19,16 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
+import type {
+  //
+  ParsedSseFrame,
+  ParsedSseIdField,
+} from "~/lib/transport/parsed-sse-frame"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
-import {
-  //
-  HTTPError,
-  isAbortError,
-} from "~/lib/error"
-import {
-  //
-  captureHttpHeaders,
-  createResponseHeaderTimeoutSignal,
-} from "~/lib/fetch-utils"
-import {
-  //
-  getShutdownSignal,
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
+import { HTTPError } from "~/lib/error"
+import { captureHttpHeaders } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
@@ -52,8 +44,8 @@ import { upstreamFetch } from "./upstream-fetch"
  * that pre-consumer window. This wrapper closes the raw body directly until the
  * decoder has started; afterwards it delegates to the decoder's own return path.
  */
-export function ownedResponseEvents(response: Response): AsyncIterable<ServerSentEventMessage> {
-  type EventMessage = ServerSentEventMessage
+export function ownedResponseEvents(response: Response): AsyncIterable<ParsedSseFrame> {
+  type EventMessage = ParsedSseFrame
   const decoded = parseOwnedSse(response)[Symbol.asyncIterator]()
   let started = false
   let closePromise: Promise<IteratorResult<EventMessage>> | undefined
@@ -81,50 +73,81 @@ export function ownedResponseEvents(response: Response): AsyncIterable<ServerSen
   }
 }
 
-/** SSE decoder matching the previous fetch-event-stream field semantics while owning reader cleanup. */
-async function* parseOwnedSse(response: Response): AsyncGenerator<ServerSentEventMessage> {
+/**
+ * WHATWG-compatible SSE decoder that owns reader cleanup.
+ *
+ * The event-stream interpretation algorithm requires pending data without a
+ * terminating blank line to be discarded at EOF, rather than flushed.
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+ */
+async function* parseOwnedSse(response: Response): AsyncGenerator<ParsedSseFrame> {
   if (!response.body) return
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let text = ""
   let naturalEnd = false
-  let event: ServerSentEventMessage | undefined
+  let dataBuffer = ""
+  let sawDataField = false
+  let eventType = ""
+  let retry: number | undefined
+  let lastEventIdBuffer = ""
+  let lastEventIdString = ""
+  let idField: ParsedSseIdField = { kind: "absent" }
 
-  const consumeLine = (line: string): ServerSentEventMessage | undefined => {
+  const resetEventBuffers = () => {
+    dataBuffer = ""
+    sawDataField = false
+    eventType = ""
+    retry = undefined
+    idField = { kind: "absent" }
+  }
+
+  const consumeLine = (line: string): ParsedSseFrame | undefined => {
     if (line.length === 0) {
-      const completed = event
-      event = undefined
+      lastEventIdString = lastEventIdBuffer
+      if (!sawDataField) {
+        resetEventBuffers()
+        return undefined
+      }
+
+      const message: ServerSentEventMessage & { id: string } = {
+        data: dataBuffer.slice(0, -1),
+        id: lastEventIdString,
+      }
+      if (eventType) message.event = eventType
+      if (retry !== undefined) message.retry = retry
+      const completed: ParsedSseFrame = { kind: "parsed-sse", message, idField }
+      resetEventBuffers()
       return completed
     }
+
     const colon = line.indexOf(":")
-    // Match the prior parser: comments (`:...`) and colon-less lines are ignored.
-    if (colon <= 0) return undefined
-    const field = line.slice(0, colon)
-    const value = line.slice(colon + 1).replace(/^\s*/, "")
+    const field = colon === -1 ? line : line.slice(0, colon)
+    let value = colon === -1 ? "" : line.slice(colon + 1)
+    if (value.startsWith(" ")) value = value.slice(1)
     switch (field) {
       case "data": {
-        event ??= {}
-        event.data = event.data ? `${event.data}\n${value}` : value
+        sawDataField = true
+        dataBuffer += `${value}\n`
         break
       }
       case "event": {
-        event ??= {}
-        event.event = value
+        eventType = value
         break
       }
       case "id": {
-        event ??= {}
-        const numeric = Number(value)
-        event.id = String(numeric) === value ? numeric : value
+        if (!value.includes("\0")) {
+          lastEventIdBuffer = value
+          idField = { kind: "present", value }
+        }
         break
       }
       case "retry": {
-        event ??= {}
-        event.retry = Number(value) || undefined
+        if (/^\d+$/.test(value)) retry = Number(value)
         break
       }
       default: {
-        // Unknown SSE fields are ignored, matching the previous parser.
+        // Unknown SSE fields and comments are ignored.
         break
       }
     }
@@ -204,17 +227,6 @@ export interface SendUpstreamHttpParams {
   reaperSignal?: AbortSignal
   /** Candidate/dispatch-local cancellation signal (loser cancellation / force disposal). */
   dispatchSignal?: AbortSignal
-  /**
-   * When true, a fetch abort that {@link isShutdownCausedAbort} attributes to OUR
-   * shutdown is rewritten to a retryable `HTTPError` 529 (overloaded), so the client
-   * backs off and retries against the restarted instance — parity with the legacy
-   * Anthropic client (client.ts:132-145). Off by default: every other caller (CC /
-   * Responses / Gemini) re-throws the ORIGINAL AbortError object unchanged, preserving
-   * its stack/identity/reason for the existing abort classification. A client-disconnect
-   * abort NEVER becomes 529 (explicit guard), and neither does a reaper / hard-deadline
-   * cancellation that merely happened during the drain. The Anthropic v4 transport opts in.
-   */
-  rewriteShutdownAbort?: boolean
   /** Best-effort HTTP/2 response-trailers sink (h2 path only); the driver wires it to `ctx.setOutboundResponseTrailers`. */
   onTrailers?: (trailers: Record<string, string>) => void
 }
@@ -228,83 +240,24 @@ export interface SendUpstreamHttpParams {
  * attached on opaque 400s.
  */
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
-  const {
-    endpointPath,
+  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, reaperSignal, dispatchSignal } = params
+
+  // Fold request-owned lifecycle cancellation into the fetch. The response-header
+  // deadline is passed separately so it is disarmed before body consumption. Shutdown
+  // contributes no signal because the first process signal must not cancel accepted work.
+  const fetchSignal = combineAbortSignals(clientAbortSignal, reaperSignal, dispatchSignal)
+
+  // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
+  // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
+  // has no built-in clock; timeouts come from the dispatcher's Agent.
+  const response = await upstreamFetch(`${copilotBaseUrl(state)}${endpointPath}`, {
+    method: "POST",
     headers,
-    body,
-    stream,
-    errorLabel,
-    modelId,
-    diagnosticsTools,
-    headersCapture,
-    clientAbortSignal,
-    reaperSignal,
-    dispatchSignal,
-    rewriteShutdownAbort,
-  } = params
-
-  // Fold the stable shutdown signal into the fetch signal for BOTH streaming and non-streaming
-  // requests so a Phase 3 abort interrupts the (long) header-wait (RFC RC1). The old
-  // `stream ? undefined` exclusion was WRONG for the delayed-commit pre-response window: a
-  // streaming request marked `streaming` can still be blocked in the pre-header fetch (`await p`)
-  // where the stream-body guard does NOT yet exist, so shutdown could not reach it — the request
-  // hung until Phase 4 force-close (observed 2026-07-12: Phase3 abort ineffective for 120s). The
-  // stream-body guard still folds shutdown for the streamed body post-header (both aborting on
-  // shutdown is idempotent). A shutdown-abort rewritten to a retryable 529 (below) is prevented
-  // from spawning a new attempt by the driver's attempt-boundary cancel gate (RC1+RC3 atomic).
-  // `clientAbortSignal` and `reaperSignal` (ctx.lifecycleSignal) are always folded too.
-  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), getShutdownSignal(), clientAbortSignal, reaperSignal, dispatchSignal)
-
-  let response: Response
-  try {
-    // upstreamFetch routes through undici + our keepalive/timeout dispatcher (see
-    // upstream-fetch.ts). The Bun-only `{ timeout: false }` guard is gone — undici
-    // has no built-in clock; timeouts come from the dispatcher's Agent.
-    response = await upstreamFetch(`${copilotBaseUrl(state)}${endpointPath}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: fetchSignal,
-      ...(params.onTrailers && { onTrailers: params.onTrailers }),
-    })
-  } catch (error) {
-    // rewriteShutdownAbort (Anthropic v4 transport opt-in): an abort CAUSED BY OUR
-    // SHUTDOWN becomes a retryable 529 (overloaded) — parity with the legacy Anthropic
-    // client (client.ts:132-145) — so the client backs off and retries against the
-    // restarted instance. Every other caller, and every other abort cause, re-throws the
-    // ORIGINAL error object unchanged (preserving stack/identity/reason for the boundary
-    // classification downstream).
-    //
-    // The gate is CAUSAL, not temporal: `isShutdownCausedAbort` matches the Phase 3 abort
-    // reason object itself and `pool-closed` marks our own pool teardown. A plain
-    // "are we shutting down?" flag would be wrong — a request cancelled during the
-    // drain by the stale reaper or the hard deadline is not a shutdown, and neither is
-    // a client that hung up in that window (hence the explicit client-signal guard,
-    // which the old `getShutdownSignal().aborted` form was missing).
-    //
-    // The fetch signal's own reason is the second probe: a transport that synthesizes a
-    // fresh AbortError instead of surfacing `signal.reason` would otherwise lose the
-    // provenance. `fetchSignal.reason` is the FIRST aborted source's reason (AbortSignal.any
-    // semantics), so this cannot mistake a reaper/deadline cancel for a shutdown.
-    if (
-      rewriteShutdownAbort
-      && error instanceof Error
-      && isAbortError(error)
-      && !clientAbortSignal?.aborted
-      && (isShutdownCausedAbort(error) || (fetchSignal?.aborted === true && isShutdownCausedAbort(fetchSignal.reason)))
-    ) {
-      throw new HTTPError(
-        SHUTDOWN_ABORT_MESSAGE,
-        529,
-        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
-        modelId,
-        undefined,
-        undefined,
-        error,
-      )
-    }
-    throw error
-  }
+    body: JSON.stringify(body),
+    signal: fetchSignal,
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
+    ...(params.onTrailers && { onTrailers: params.onTrailers }),
+  })
 
   // Capture HTTP headers for history (before error check — capture even on failure)
   if (headersCapture) {

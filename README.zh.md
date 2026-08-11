@@ -191,7 +191,7 @@ gemini -p "hello"
 
 推荐默认值以**包根目录的 [`config.yaml`](config.yaml)** 形式随 npm 发布。你的个人覆盖文件位于 `~/.local/share/copilot-api/config.yaml`。运行时**生效配置 = bundled defaults 深合并 user overrides**（同一 key 下 user 优先）：
 
-- 顶层嵌套段（`anthropic`、`history`、`shutdown`、`openai-responses`、`rate_limiter`）：按字段合并。
+- 顶层嵌套段（`anthropic`、`history`、`openai-responses`、`rate_limiter`）：按字段合并。
 - 自由形式 map（`model_overrides`、`anthropic.efforts_overrides` 等）：按 key 合并。
 - `model_preference`：按 family 替换（未提供的 family 保留 bundled 默认）。
 - 数组与标量:user 提供时整体替换。
@@ -216,7 +216,6 @@ gemini -p "hello"
 - `rate_limiter.*` — 重试间隔、请求间隔、恢复超时、连续成功阈值。**需要重启。**
 - `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — 完整的 system prompt 修改管道（line 或 regex 替换，可选 `model` 过滤）。
 - `history.raw_capture.*` — 可选独立 raw CAS；默认关闭，可热重载 store generation。
-- `shutdown.graceful_wait` / `shutdown.abort_wait` — 关闭排空时长。
 - `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — 网络相关旋钮。
 - `proxy` — 出站代理 URL。**需要重启。**
 

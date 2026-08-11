@@ -94,7 +94,7 @@ description: 当在 copilot-api-js 做大型（≥1000 行）/多 commit 结构�
 - 自己一路实现的小重构**不需要**三层——直接 RFC + 主线实现。三层是「分派给多人/多会话」才值得的开销。
 - **battle-tested > hand-rolled（丢渲染壳、保算法核）**：byte-critical 迁移类 phase（如响应改写迁 registry）的 plan 必给 **factory 锚点表**——**复用现有算法核、不重写**。范围明确/算法性的叶子层（行+词 diff、解析、日期运算）用成熟库（如 UI block-diff 引擎 L3 叶子用 jsdiff `diffLines`/`diffWordsWithSpace`/`diffJson`），只**丢弃渲染包装层**（`diff2html` → 自己的主题渲染），**保留算法核心**（`diff`）；只有库表达不了的领域层（L1/L2/L4 按 role/type/offsetMs 对齐）才自建。别过度套「不引第三方 / 自己造」本能——手搓久经验证的算法是得不偿失的虚假节省。phase prompt 必带 golden-fixture-pre-capture gate（§4）+ commit-invariants（§2）。
 - DAG 必须显式标注：哪些 phase 因 byte-critical 顺序契约**不可并行**（如「原子迁一组改写」不能逐条拆），哪些格式独立可并行但共改同一文件需排合并序。
-- 收尾 phase 固定含 whole-domain audit + 文档同步 + 用决策数据重走遗留 open question（见 CLAUDE.md `scope-ambiguity-then-ask`、skill `session-closeout`），而非自动启动下一 Stage。
+- 收尾 phase 固定含 whole-domain audit + 文档同步 + 用决策数据重走遗留 open question（见 CLAUDE.md `scope-ambiguity-then-ask`、user-level skill `closing-a-development-session`），而非自动启动下一 Stage。
 - `git mv` 重组已有扁平文档时，记得修相对路径引用（`../`/`../../` 随目录深度变）并核验解析。
 - 不要把 rfc/spec/plan/prompt 混在一个扁平目录或单文件里——用户明确要求分层（2026-06-20）。
 

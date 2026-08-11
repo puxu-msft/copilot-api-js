@@ -109,7 +109,7 @@ function makeStaleCtx(): { manager: ReturnType<typeof createRequestContextManage
 }
 
 /** Fold the ctx lifecycle (reaper) signal into a fetch signal EXACTLY as the transport does
- *  (send.ts:109 `combineAbortSignals(createResponseHeaderTimeoutSignal(), …, reaperSignal)`). We fold a SECOND
+ *  (`sendUpstreamHttp` folds shutdown/client/reaper/dispatch while passing responseHeaderTimeoutMs separately). We fold a SECOND
  *  (never-firing) signal so `combineAbortSignals` takes its `AbortSignal.any()` MULTI-source path
  *  (prod's shape) — a single-arg fold returns the signal verbatim (fast-path) and would skip the
  *  `any()` composite, leaving "reaper-abort穿透 AbortSignal.any" as untested static inference. */

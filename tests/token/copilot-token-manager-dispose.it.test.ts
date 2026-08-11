@@ -27,6 +27,7 @@ import {
   autoRestoreFetch,
   setFetchMock,
 } from "../helpers/mock-fetch"
+import { autoRestoreState } from "../helpers/state-fixture"
 
 /** A GitHubTokenManager stand-in — only refresh() is reachable (401 path), unused here. */
 const fakeGithubTokenManager = {
@@ -39,6 +40,7 @@ function copilotTokenBody(refreshIn = 3600) {
 
 describe("CopilotTokenManager.dispose", () => {
   autoRestoreFetch()
+  autoRestoreState()
 
   test("initialize arms a refresh timer", async () => {
     setFetchMock(async () => new Response(copilotTokenBody(), { status: 200, headers: { "content-type": "application/json" } }))

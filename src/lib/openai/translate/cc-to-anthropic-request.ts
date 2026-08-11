@@ -152,7 +152,9 @@ export function translateChatCompletionsToAnthropic(payload: ChatCompletionsPayl
  */
 function toolMessageToResultBlock(message: Message): ToolResultBlockParam | undefined {
   if (!message.tool_call_id) {
-    consola.warn(`[CC→Anthropic] dropping tool result with no tool_call_id (would produce an unmatched empty tool_use_id → GHC 400): ${ccContentToText(message.content).slice(0, 120)}`)
+    consola.warn(
+      `[CC→Anthropic] dropping tool result with no tool_call_id (would produce an unmatched empty tool_use_id → GHC 400): ${ccContentToText(message.content).slice(0, 120)}`,
+    )
     return undefined
   }
   return {

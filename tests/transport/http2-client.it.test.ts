@@ -30,6 +30,7 @@ import {
   setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 import { waitUntil } from "../helpers/wait-until"
 
@@ -39,6 +40,61 @@ const serverSessions = new Set<http2.ServerHttp2Session>()
 
 type Handler = (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void
 let handler: Handler
+
+type AbortListener = Parameters<AbortSignal["addEventListener"]>[1]
+type AbortAddOptions = Parameters<AbortSignal["addEventListener"]>[2]
+type AbortRemoveOptions = Parameters<AbortSignal["removeEventListener"]>[2]
+
+interface ListenerTrackingSignal extends AbortSignal {
+  markHeadersResolved(): void
+  readonly postResponseAdds: number
+  readonly postResponseRemoves: number
+}
+
+function trackPostResponseAbortListeners(controller: AbortController): ListenerTrackingSignal {
+  const activeAbortListeners = new Set<AbortListener>()
+  const postResponseListeners = new Set<AbortListener>()
+  let postResponseRemoves = 0
+
+  const facade = {
+    get aborted() {
+      return controller.signal.aborted
+    },
+    get reason() {
+      return controller.signal.reason
+    },
+    throwIfAborted() {
+      controller.signal.throwIfAborted()
+    },
+    addEventListener(type: string, listener: AbortListener, options?: AbortAddOptions) {
+      if (!listener) return
+      if (type === "abort") activeAbortListeners.add(listener)
+      controller.signal.addEventListener(type, listener, options)
+    },
+    removeEventListener(type: string, listener: AbortListener, options?: AbortRemoveOptions) {
+      if (!listener) return
+      if (type === "abort") {
+        activeAbortListeners.delete(listener)
+        if (postResponseListeners.delete(listener)) postResponseRemoves += 1
+      }
+      controller.signal.removeEventListener(type, listener, options)
+    },
+    dispatchEvent(event: Event) {
+      return controller.signal.dispatchEvent(event)
+    },
+    markHeadersResolved() {
+      for (const listener of activeAbortListeners) postResponseListeners.add(listener)
+    },
+    get postResponseAdds() {
+      return postResponseListeners.size + postResponseRemoves
+    },
+    get postResponseRemoves() {
+      return postResponseRemoves
+    },
+  }
+
+  return facade as ListenerTrackingSignal
+}
 
 beforeEach(async () => {
   server = http2.createServer()
@@ -93,6 +149,80 @@ describe("http2-client", () => {
     expect(await res.text()).toBe("not found")
   })
 
+  test("upstreamFetch disarms the header deadline before a delayed HTTP2 body", async () => {
+    let releaseBody!: () => void
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      void bodyGate.then(() => stream.end("late"))
+    }
+    let streamClosed = 0
+
+    const response = await upstreamFetch("https://fixture.invalid/late", {
+      responseHeaderTimeoutMs: 1000,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    releaseBody()
+    expect(await response.text()).toBe("late")
+    await waitUntil(() => streamClosed === 1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("natural HTTP2 end detaches the post-response abort listener", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/natural-end`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    expect(await response.text()).toBe("ok")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("post-header abort detaches its listener after the HTTP2 stream closes", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("held")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/post-header-abort`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    controller.abort(new DOMException("client disconnected", "AbortError"))
+    await response.body?.cancel("release reader")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
   test("streams the body incrementally via response.body (ReadableStream)", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200, "content-type": "text/event-stream" })
@@ -113,6 +243,7 @@ describe("http2-client", () => {
 
   test("body cancel resolves after the owned h2 stream closes while a sibling keeps using the pooled session", async () => {
     let localStreamClosed = false
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
     handler = (stream, headers) => {
       if (headers[":path"] === "/cancel") {
         stream.respond({ ":status": 200, "content-type": "text/event-stream" })
@@ -123,13 +254,21 @@ describe("http2-client", () => {
       stream.end("sibling-ok")
     }
 
-    const cancelled = await http2Fetch(`${url}/cancel`, { onStreamClosed: () => (localStreamClosed = true) })
+    const cancelled = await http2Fetch(`${url}/cancel`, {
+      onStreamClosed: () => (localStreamClosed = true),
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
     const sibling = await http2Fetch(`${url}/sibling`, {})
     expect(await sibling.text()).toBe("sibling-ok")
 
     await cancelled.body!.cancel("test disposal")
 
     expect(localStreamClosed).toBe(true)
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "body-cancel", reason: { value: "test disposal" } },
+    })
     // A new sibling still succeeds on the pool after the owned stream was cancelled.
     const after = await http2Fetch(`${url}/sibling`, {})
     expect(await after.text()).toBe("sibling-ok")
@@ -236,6 +375,27 @@ describe("http2-client", () => {
     expect(localStreamClosed).toBe(true)
   })
 
+  test("post-response signal abort records its own local-cancel source", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("partial")
+    }
+    const abort = new AbortController()
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    await http2Fetch(`${url}/post-response-abort`, {
+      signal: abort.signal,
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
+
+    abort.abort(new DOMException("post response", "AbortError"))
+    await waitUntil(() => snapshots.length === 1)
+
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "post-response-signal-abort", reason: { value: "post response" } },
+    })
+  })
+
   // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller
   // stopped awaiting it — e.g. its await chain settled via another route) must
   // NOT surface as a process-level unhandledRejection. Without the defensive
@@ -279,6 +439,46 @@ describe("http2-client", () => {
     const p = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
     setTimeout(() => ac.abort(), 30)
     await expect(p).rejects.toThrow(/abort/i)
+  })
+
+  test("reports an immutable first-terminal snapshot before late physical close", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      schemaVersion: 1,
+      firstObservedSignal: "end",
+      headersReceived: true,
+      physicalClose: "not-observed-before-snapshot",
+      goaway: {
+        availability: "not-observed-before-snapshot",
+        events: [],
+        protocolViolation: { availability: "none" },
+      },
+    })
+  })
+
+  test("termination observes trailers even without a separate trailers callback", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 }, { waitForTrailers: true })
+      stream.on("wantTrailers", () => stream.sendTrailers({ "x-fact": "present" }))
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination-trailers`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].trailers).toBe("observed-before-snapshot")
   })
 
   test("captures HTTP/2 response trailers via onTrailers (after body, before end)", async () => {

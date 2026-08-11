@@ -2,11 +2,11 @@
  * Component tests for graceful shutdown.
  *
  * Covers:
- * - State management (getIsShuttingDown, getShutdownSignal, waitForShutdown)
+ * - State management (getIsShuttingDown, waitForShutdown)
  * - formatActiveRequestsSummary
  * - drainActiveRequests
- * - 4-step orchestration (stop ingress → drain → abort → force close)
- * - two-signal contract (first starts graceful shutdown, second exits immediately)
+ * - lossless orchestration (stop ingress → drain → finalize)
+ * - three-tier signal contract (first starts graceful shutdown; the second abandons the drain but still finalizes; the third exits immediately)
  * - Middleware integration (503 rejection during shutdown)
  * - Error resilience (server.close failures)
  */
@@ -20,11 +20,18 @@ import {
   spyOn,
   test,
 } from "bun:test"
+import { Hono } from "hono"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
+import { resetHistoryAdmissionLifecycleForTests } from "~/lib/history/worker/http-admission"
 import { createBus } from "~/lib/observability"
+import {
+  //
+  observabilityMiddleware,
+  shutdownConnectionCloseMiddleware,
+} from "~/lib/observability/middleware"
 import {
   //
   getUpstreamWsManager,
@@ -37,7 +44,6 @@ import {
   formatActiveRequestsSummary,
   getIsShuttingDown,
   getShutdownPhase,
-  getShutdownSignal,
   gracefulShutdown,
   handleShutdownSignal,
   setShutdownPublisher,
@@ -45,7 +51,6 @@ import {
 } from "~/lib/shutdown"
 import { registerTerminal } from "~/lib/tui/terminal-coordinator"
 
-import { FakeClock } from "../helpers/fake-clock"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
 
@@ -55,12 +60,11 @@ import { createMockTracker } from "../helpers/mock-tracker"
 
 afterEach(() => {
   _resetShutdownState()
+  resetHistoryAdmissionLifecycleForTests()
 })
 
-/** Shared fast-timing overrides to avoid real 20s/120s waits */
+/** Shared fast polling overrides for deterministic tests. */
 const FAST_TIMING = {
-  gracefulWaitMs: 100,
-  abortWaitMs: 100,
   drainPollIntervalMs: 10,
   drainProgressIntervalMs: 50_000, // suppress progress logs during tests
 } as const
@@ -69,11 +73,12 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
   return {
     tracker: createMockTracker(),
     server: createMockServer(),
-    rateLimiter: null,
-    stopTokenRefreshFn: mock(() => {}),
+    closeTokenRuntimeFn: mock(async () => {}),
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
     drainModelOperationFinalizationsFn: mock(async () => {}),
+    stopHistoryAdmissionFn: mock(() => {}),
+    drainHistoryAdmissionFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     shutdownDiagnosticLoggingFn: mock(async () => {}),
@@ -99,25 +104,6 @@ describe("getIsShuttingDown", () => {
   test("stays true after shutdown completes (prevents race with late requests)", async () => {
     await gracefulShutdown("SIGINT", createNoopDeps())
     expect(getIsShuttingDown()).toBe(true)
-  })
-})
-
-describe("getShutdownSignal", () => {
-  test("returns a stable, non-aborted AbortSignal before shutdown", () => {
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-    expect(signal.aborted).toBe(false)
-  })
-
-  test("returns AbortSignal after shutdown begins", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    const signal = getShutdownSignal()
-    expect(signal).toBeInstanceOf(AbortSignal)
-  })
-
-  test("signal is NOT aborted when no active requests (Phase 2/3 skipped)", async () => {
-    await gracefulShutdown("SIGINT", createNoopDeps())
-    expect(getShutdownSignal().aborted).toBe(false)
   })
 })
 
@@ -418,7 +404,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 1 active request(s)")
+    expect(result).toContain("Waiting for 1 accepted operation(s)")
     expect(result).toContain("POST /v1/messages claude-sonnet-4")
     expect(result).toContain("streaming")
   })
@@ -444,7 +430,7 @@ describe("formatActiveRequestsSummary", () => {
     ] as unknown as Array<RequestContext>
 
     const result = formatActiveRequestsSummary(requests)
-    expect(result).toContain("Waiting for 2 active request(s)")
+    expect(result).toContain("Waiting for 2 accepted operation(s)")
     expect(result).toContain("claude-sonnet-4")
     expect(result).toContain("gpt-4o")
   })
@@ -472,50 +458,28 @@ describe("formatActiveRequestsSummary", () => {
 // ============================================================================
 
 describe("drainActiveRequests", () => {
-  test("returns 'drained' immediately when no active requests", async () => {
-    const tracker = createMockTracker()
-    const result = await drainActiveRequests(1000, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("drained")
+  test("resolves immediately when no accepted operations remain", async () => {
+    await expect(drainActiveRequests(createMockTracker(), { pollIntervalMs: 10, progressIntervalMs: 50_000 })).resolves.toBeUndefined()
   })
 
-  test("returns 'drained' when requests complete within timeout", async () => {
+  test("resolves when accepted operations complete", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     setTimeout(() => tracker._clearRequests(), 30)
 
-    const result = await drainActiveRequests(500, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("drained")
+    await expect(drainActiveRequests(tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })).resolves.toBeUndefined()
   })
 
-  test("returns 'timeout' when requests exceed timeout", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist beyond timeout
-
-    const result = await drainActiveRequests(50, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
-    expect(result).toBe("timeout")
-  })
-
-  test("polls at configured interval", async () => {
+  test("keeps polling until the accepted operation disappears", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
-    setTimeout(() => tracker._clearRequests(), 30)
+    const originalGetActive = tracker.getActive
+    tracker.getActive = mock(() => {
+      if (tracker.getActive.mock.calls.length >= 5) tracker._clearRequests()
+      return originalGetActive()
+    }) as typeof tracker.getActive
 
-    await drainActiveRequests(200, tracker, { pollIntervalMs: 10, progressIntervalMs: 50_000 })
+    await drainActiveRequests(tracker, { pollIntervalMs: 1, progressIntervalMs: 50_000 })
 
-    // Should have polled multiple times (not just once)
-    expect(tracker.getActive.mock.calls.length).toBeGreaterThan(1)
-  })
-
-  test("returns 'aborted' when phase is externally escalated", async () => {
-    const tracker = createMockTracker([{ status: "executing" }])
-    const abortController = new AbortController()
-    setTimeout(() => abortController.abort(), 20)
-
-    const result = await drainActiveRequests(500, tracker, {
-      pollIntervalMs: 10,
-      progressIntervalMs: 50_000,
-      abortSignal: abortController.signal,
-    })
-
-    expect(result).toBe("aborted")
+    expect(tracker.getActive.mock.calls.length).toBeGreaterThanOrEqual(5)
   })
 })
 
@@ -527,12 +491,6 @@ describe("Phase 1: immediate actions", () => {
   test("sets isShuttingDown immediately", async () => {
     await gracefulShutdown("SIGINT", createNoopDeps())
     expect(getIsShuttingDown()).toBe(true)
-  })
-
-  test("calls stopTokenRefresh", async () => {
-    const stopFn = mock(() => {})
-    await gracefulShutdown("SIGINT", createNoopDeps({ stopTokenRefreshFn: stopFn }))
-    expect(stopFn).toHaveBeenCalledTimes(1)
   })
 
   test("calls closeAllClients when WebSocket clients exist", async () => {
@@ -547,11 +505,31 @@ describe("Phase 1: immediate actions", () => {
     expect(closeFn).not.toHaveBeenCalled()
   })
 
-  test("calls rejectQueued on rate limiter", async () => {
-    const mockLimiter = { rejectQueued: mock(() => 2) }
+  test("preserves request dependencies until accepted operations drain", async () => {
+    const tracker = createMockTracker([{ status: "streaming" }])
+    const closeTokenRuntime = mock(async () => {})
+    const shutdown = gracefulShutdown(
+      "SIGINT",
+      createNoopDeps({
+        tracker,
+        closeTokenRuntimeFn: closeTokenRuntime,
+      }),
+    )
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ rateLimiter: mockLimiter }) as any)
-    expect(mockLimiter.rejectQueued).toHaveBeenCalledTimes(1)
+    await Bun.sleep(20)
+    const observedDuringDrain = {
+      phase: getShutdownPhase(),
+      closeTokenRuntimeCalls: closeTokenRuntime.mock.calls.length,
+    }
+
+    tracker._clearRequests()
+    await shutdown
+
+    expect(observedDuringDrain).toEqual({
+      phase: "draining",
+      closeTokenRuntimeCalls: 0,
+    })
+    expect(closeTokenRuntime).toHaveBeenCalledTimes(1)
   })
 
   test("calls contextManager.stopReaper in Phase 1", async () => {
@@ -571,133 +549,52 @@ describe("Phase 1: immediate actions", () => {
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(server.close).toHaveBeenCalledWith(false)
   })
+
+  test("closes the listener before anything that can await", async () => {
+    // Ordering invariant, not an incidental detail. `_isShuttingDown = true` makes the observability middleware answer 503; closing the listener is what stops us being handed connections at all.
+    // Anything awaited in between is a window where we still accept connections only to reject them — and under SO_REUSEPORT during a `--restart` takeover the kernel is splitting new connections between us and the successor, so a share of them fail here instead of being served next door.
+    // The window used to span `drainAdmissionHandoffs()` and, on the SIGUSR2 handoff path specifically, the negotiation/calibration persistence I/O.
+    const order: Array<string> = []
+    const server = { close: mock(async () => void order.push("close-listener")) }
+    const stopHistoryAdmissionFn = mock(() => void order.push("stop-admission"))
+    const drainHistoryAdmissionHandoffsFn = mock(async () => void order.push("drain-handoffs"))
+
+    await gracefulShutdown("SIGINT", createNoopDeps({ server, stopHistoryAdmissionFn, drainHistoryAdmissionHandoffsFn }))
+
+    expect(order).toEqual(["close-listener", "stop-admission", "drain-handoffs"])
+  })
 })
 
 // ============================================================================
-// Phase 2: Natural drain
+// Lossless drain
 // ============================================================================
 
-describe("Phase 2: natural drain", () => {
-  test("skipped entirely when no active requests", async () => {
-    const tracker = createMockTracker()
+describe("lossless drain", () => {
+  test("completes immediately when no accepted operations remain", async () => {
+    await gracefulShutdown("SIGINT", createNoopDeps({ tracker: createMockTracker() }))
+    expect(getShutdownPhase()).toBe("stopped")
+  })
+
+  test("waits until accepted operations complete", async () => {
+    const tracker = createMockTracker([{ status: "streaming" }])
+    setTimeout(() => tracker._clearRequests(), 30)
+
     await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
 
-    // No abort signal fired (Phases 2/3 skipped)
-    expect(getShutdownSignal().aborted).toBe(false)
+    expect(getShutdownPhase()).toBe("stopped")
   })
 
-  test("completes when requests drain within gracefulWaitMs", async () => {
-    const clock = new FakeClock()
-    clock.install()
-    try {
-      const tracker = createMockTracker([{ status: "streaming" }])
-      setTimeout(() => tracker._clearRequests(), 30)
-
-      const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-      await clock.advance(30)
-      await shutdown
-
-      // Should NOT have aborted (drained naturally in Phase 2)
-      expect(getShutdownSignal().aborted).toBe(false)
-    } finally {
-      clock.restore()
-    }
-  })
-})
-
-// ============================================================================
-// Phase 3: Abort signal + extended wait
-// ============================================================================
-
-describe("Phase 3: abort signal", () => {
-  test("abort signal fires when Phase 2 times out", async () => {
+  test("never force-closes the listener", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
-
-    // Request persists through Phase 2, then clears in Phase 3
-    let phase2Done = false
-    const origGetActive = tracker.getActive
-    tracker.getActive = mock(() => {
-      const result = origGetActive()
-      if (result.length > 0 && phase2Done) {
-        // Once abort signal has fired, clear requests
-        tracker._clearRequests()
-        return []
-      }
-      return result
-    }) as any
-
-    // Monitor the abort signal to detect Phase 3 transition
-    const shutdownPromise = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-
-    // Poll until abort signal fires (Phase 2 → Phase 3 transition)
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownSignal()?.aborted) {
-          phase2Done = true
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    await shutdownPromise
-
-    // Abort signal was fired (Phase 3 was entered)
-    expect(getShutdownSignal().aborted).toBe(true)
-  })
-
-  test("completes when requests drain after abort signal", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-
-    // Requests persist through Phase 2, then clear shortly after Phase 3 begins
-    let abortFired = false
-    const origGetActive = tracker.getActive
-    tracker.getActive = mock(() => {
-      const result = origGetActive()
-      if (result.length > 0 && abortFired) {
-        tracker._clearRequests()
-        return []
-      }
-      return result
-    }) as any
-
-    const shutdownPromise = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
-
-    // Wait for abort signal to fire
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownSignal()?.aborted) {
-          abortFired = true
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    await shutdownPromise
-
-    expect(getShutdownSignal().aborted).toBe(true)
-  })
-})
-
-// ============================================================================
-// Phase 4: Force close
-// ============================================================================
-
-describe("Phase 4: force close", () => {
-  test("calls server.close(true) when requests persist through Phase 2 and 3", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist through all phases
     const server = createMockServer()
+    const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
+    await Bun.sleep(20)
+    expect(server.close.mock.calls).toEqual([[false]])
 
-    // server.close(false) in Phase 1, server.close(true) in Phase 4
-    expect(server.close).toHaveBeenCalledTimes(2)
-    expect(server.close.mock.calls[0]).toEqual([false])
-    expect(server.close.mock.calls[1]).toEqual([true])
-    // Abort signal was fired in Phase 3
-    expect(getShutdownSignal().aborted).toBe(true)
+    tracker._clearRequests()
+    await shutdown
+    expect(server.close.mock.calls).toEqual([[false]])
   })
 })
 
@@ -716,19 +613,67 @@ describe("error resilience", () => {
     await gracefulShutdown("SIGINT", createNoopDeps({ server }))
     expect(getIsShuttingDown()).toBe(true)
   })
+})
 
-  test("completes even if server.close(true) throws in Phase 4", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear
-    let callCount = 0
-    const server = {
-      close: mock(async (_force?: boolean) => {
-        callCount++
-        if (callCount === 2) throw new Error("force close failed")
-      }),
-    }
+// ============================================================================
+// Middleware integration — ingress rejection during shutdown
+// ============================================================================
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker, server }))
+describe("ingress rejection during shutdown", () => {
+  // Mirrors the registration order in src/server.ts: the connection-close rule is outermost, the config/token middleware sits between it and observabilityMiddleware, and only the innermost one owns the 503 body.
+  // Composing the real order matters — testing observabilityMiddleware alone would miss that the middleware ahead of it can reject first, which is exactly the gap this suite exists to hold shut.
+  function appLikeProduction() {
+    const app = new Hono()
+    app.onError((error, c) => c.json({ error: String(error) }, 503))
+    app.use(shutdownConnectionCloseMiddleware())
+    app.use(async (c, next) => {
+      // Stands in for `applyConfigToState()` / `ensureValidCopilotToken()` in src/server.ts, which await and can throw.
+      if (c.req.path === "/pre-gate-failure") throw new Error("token refresh failed")
+      await next()
+    })
+    app.use(observabilityMiddleware())
+    app.post("/v1/messages", (c) => c.json({ ok: true }))
+    return app
+  }
+
+  test("serves normally until shutdown begins", async () => {
+    // Positive control: without it, a stack that rejected unconditionally, or tagged every response, would still pass the assertions below.
+    const res = await appLikeProduction().request("/v1/messages", { method: "POST" })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("connection")).toBeNull()
+  })
+
+  test("leaves failures alone while the server is healthy", async () => {
+    // Second control, the other direction: the rule is scoped to shutdown, not to failure. A 503 outside shutdown must not evict the client's pooled connection.
+    const res = await appLikeProduction().request("/pre-gate-failure", { method: "POST" })
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBeNull()
+  })
+
+  test("rejects with 503 and asks the client to drop the connection", async () => {
+    // `Connection: close` is what lets a pooled keep-alive client migrate to the successor during a `--restart` takeover: without it the client's retry reuses the socket it already holds to this dying process and lands right back here.
+    // Observed 2026-08-09: clients were still receiving this 503 more than seven minutes into a handoff, and History has no entries for any of it — the rejection is answered before a RequestContext exists, so the outage cannot show up in our own records.
+    // Verified against undici, the HTTP stack Claude Code uses: it opens a fresh connection per request when the response carries this header, and reuses the socket when it does not.
+    // The other half of that incident — a listener that had not been closed yet — is guarded separately by "closes the listener before anything that can await" above.
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    const res = await appLikeProduction().request("/v1/messages", { method: "POST" })
+
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBe("close")
+    expect(res.headers.get("retry-after")).toBe("1")
+    expect(await res.json()).toMatchObject({ error: { message: "Server is shutting down" } })
+  })
+
+  test("closes the connection even when the rejection happens before the shutdown gate", async () => {
+    // The config/token middleware runs ahead of observabilityMiddleware and awaits; if it throws during shutdown the response comes from `server.onError` and never reaches the gate's 503 branch.
+    // That path was reproduced returning a header-less 503, which is why the rule lives at the outermost layer instead of on the one branch where the problem was first noticed.
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    const res = await appLikeProduction().request("/pre-gate-failure", { method: "POST" })
+
+    expect(res.status).toBe(503)
+    expect(res.headers.get("connection")).toBe("close")
   })
 })
 
@@ -736,8 +681,8 @@ describe("error resilience", () => {
 // Signal escalation
 // ============================================================================
 
-describe("two-signal contract", () => {
-  test("broken terminal feedback cannot prevent the second signal from exiting", async () => {
+describe("three-tier signal contract", () => {
+  test("broken terminal feedback cannot prevent the escape signal from exiting", async () => {
     const unregister = registerTerminal({
       state: () => {
         throw new Error("broken terminal")
@@ -756,6 +701,8 @@ describe("two-signal contract", () => {
 
     try {
       const shutdownPromise = handleShutdownSignal("SIGINT", { gracefulShutdownFn: () => heldShutdown, exitFn })
+      // Tier 2 (abandon the drain), then tier 3 (the hard escape). The invariant under test is unchanged by the retiering: a terminal that throws on every write must not be able to hold the process hostage.
+      void handleShutdownSignal("SIGINT", { exitFn })
       void handleShutdownSignal("SIGINT", { exitFn })
 
       expect(exitFn).toHaveBeenCalledWith(130)
@@ -766,7 +713,195 @@ describe("two-signal contract", () => {
     }
   })
 
-  test("second signal during request drain exits immediately", async () => {
+  test("second signal during request drain abandons the drain but still finalizes", async () => {
+    const tracker = createMockTracker([{ status: "executing" }])
+    const exitFn = mock((_code: number) => {})
+    const closeHistory = mock(async () => {})
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, shutdownHistoryFn: closeHistory })),
+      exitFn,
+    })
+
+    expect(shutdownPromise).toBeDefined()
+    expect(getIsShuttingDown()).toBe(true)
+
+    // Tier 2: the operator stops waiting for the drain — but NOT for durability.
+    void handleShutdownSignal("SIGINT", { exitFn })
+
+    // It must terminate in-flight work through the request-level primitives...
+    expect(tracker._reapInFlight).toHaveBeenCalledTimes(1)
+    expect(tracker._fail).toHaveBeenCalledTimes(1)
+    // ...tagging provenance at the source, so the terminal reads as an operator decision rather than as a timeout.
+    expect(tracker._fail.mock.calls[0]?.[3]).toMatchObject({ attribution: { category: "shutdown", code: "operator-abandoned-drain" } })
+    // ...and it must NOT exit. That is the whole difference from tier 3.
+    expect(exitFn).not.toHaveBeenCalled()
+
+    await shutdownPromise
+
+    // The point of this tier: persistence still ran, so the fast path is not a lossy one.
+    expect(closeHistory).toHaveBeenCalled()
+  })
+
+  test("an already-settled operation still finalizing is left alone, and is not counted as terminated", async () => {
+    // The shape the drain is usually LEFT HOLDING at the end. `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (`src/lib/context/manager.ts`), so a request that reached its terminal but whose History/delivery/canonical work is still running stays visible in the registry.
+    // Two things must hold, and neither is free: tier 2 must not touch it (`reapInFlight()` would abort a lifecycle signal that the running finalization may be using — that would destroy the persistence this tier exists to preserve), and it must not be reported as terminated (`fail()` early-returns on a settled ctx, so counting it would tell the operator we killed something we did not).
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker([
+      { id: "live", status: "executing" },
+      { id: "finalizing", status: "executing", settled: true, releasesOnSettle: false },
+    ])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      // Only the live one was terminated — the settled one was skipped entirely, not merely no-op'd.
+      expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["live"])
+      expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["live"])
+
+      const text = banner.join("")
+      expect(text).toContain("terminated 1 in-flight request(s)")
+      // The count alone would be a half-truth: the drain is still held, and the operator has to know that before deciding whether to press again.
+      expect(text).toContain("1 already-settled operation(s) still persisting")
+      expect(text).not.toContain("now flushing")
+
+      // Tier 3 remains the escape for exactly this shape.
+      void handleShutdownSignal("SIGINT", { exitFn })
+      expect(exitFn).toHaveBeenCalledWith(130)
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("tier 2 before the drain has started says so instead of claiming it terminated anything", async () => {
+    // `stopping` also covers the awaits that run BEFORE the drain (`drainAdmissionHandoffs`, the handoff freezes). There is no drain source to reach yet, and this tier cannot unblock those — so the banner must not promise a flush it is not going to deliver.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const exitFn = mock((_code: number) => {})
+    let finishShutdown!: () => void
+    const heldShutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve
+    })
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", { gracefulShutdownFn: () => heldShutdown, exitFn })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      const text = banner.join("")
+      expect(text).toContain("the drain has not started yet")
+      expect(text).not.toContain("now flushing")
+      expect(exitFn).not.toHaveBeenCalled()
+
+      finishShutdown()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("tier 2 deliberately leaves lightweight operations alone", async () => {
+    // count_tokens / embeddings are `LightweightInFlightOperation` — read-only descriptors with no cancellation surface — so tier 2 skips them by design and the third signal is their escape.
+    // Without this test the skip is unpinned: dropping the `"operationId" in operation` guard sends the call into tier 2's catch block, which logs a warning and moves on, leaving every other assertion green.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker()
+    tracker._setActiveMixed([{ id: "generation" }], ["lightweight-a", "lightweight-b"])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      // The generation context, and only it. The lightweight stubs carry working primitives precisely so that reaching them would show up here.
+      expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["generation"])
+      expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["generation"])
+      // Skipping them does not make them disappear: they still HOLD the drain, so the banner must name them and must not promise a flush.
+      const text = banner.join("")
+      expect(text).toContain("terminated 1 in-flight request(s)")
+      expect(text).toContain("2 lightweight operation(s) that have no cancellation surface")
+      expect(text).not.toContain("now flushing")
+      expect(text).not.toContain("already-settled")
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("with only lightweight operations left, tier 2 does not claim it is flushing", async () => {
+    // The gap an independent reviewer found in the first version of this banner: with nothing terminable in the registry the counts are all zero, so the message read "terminated 0 in-flight request(s), now flushing" — while the drain was in fact still blocked by the very operations this tier refuses to touch. Zero reached must never render as progress.
+    const banner: Array<string> = []
+    const unregister = registerTerminal({
+      state: () => undefined as never,
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: (chunk: string) => {
+        banner.push(chunk)
+      },
+    })
+    const tracker = createMockTracker()
+    tracker._setActiveMixed([], ["lightweight-only"])
+    const exitFn = mock((_code: number) => {})
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", {
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      const text = banner.join("")
+      expect(text).toContain("terminated 0 in-flight request(s)")
+      expect(text).toContain("1 lightweight operation(s) that have no cancellation surface")
+      expect(text).not.toContain("now flushing")
+      expect(exitFn).not.toHaveBeenCalled()
+
+      tracker._clearRequests()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("third signal during request drain is the hard escape", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
     const exitFn = mock((_code: number) => {})
 
@@ -775,16 +910,10 @@ describe("two-signal contract", () => {
       exitFn,
     })
 
-    expect(shutdownPromise).toBeDefined()
-    expect(getIsShuttingDown()).toBe(true)
+    void handleShutdownSignal("SIGINT", { exitFn })
+    expect(exitFn).not.toHaveBeenCalled()
 
-    // The second signal is the global escape hatch. It does not advance one
-    // internal step at a time and must not wait for the request drain.
-    void handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
-      exitFn,
-    })
-
+    void handleShutdownSignal("SIGINT", { exitFn })
     expect(exitFn).toHaveBeenCalledTimes(1)
     expect(exitFn).toHaveBeenCalledWith(130)
 
@@ -792,7 +921,7 @@ describe("two-signal contract", () => {
     await shutdownPromise
   })
 
-  test("second signal exits even before the graceful task enters its first step", async () => {
+  test("signals arriving before the graceful task enters its first step are still counted", async () => {
     const exitFn = mock((_code: number) => {})
     let finishShutdown!: () => void
     const heldShutdown = new Promise<void>((resolve) => {
@@ -804,6 +933,8 @@ describe("two-signal contract", () => {
       exitFn,
     })
 
+    // The race this guards: a signal landing before the async task has run a single step must still advance the tier, never be dropped.
+    void handleShutdownSignal("SIGINT", { exitFn })
     void handleShutdownSignal("SIGINT", { exitFn })
 
     expect(exitFn).toHaveBeenCalledWith(130)
@@ -812,7 +943,7 @@ describe("two-signal contract", () => {
     await shutdownPromise
   })
 
-  test("second SIGTERM uses the conventional forced-exit status", async () => {
+  test("the escape SIGTERM uses the conventional forced-exit status", async () => {
     const exitFn = mock((_code: number) => {})
     let finishShutdown!: () => void
     const heldShutdown = new Promise<void>((resolve) => {
@@ -825,51 +956,10 @@ describe("two-signal contract", () => {
     })
 
     void handleShutdownSignal("SIGTERM", { exitFn })
+    void handleShutdownSignal("SIGTERM", { exitFn })
     expect(exitFn).toHaveBeenCalledWith(143)
 
     finishShutdown()
-    await shutdownPromise
-  })
-
-  test("second signal during force close exits immediately", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist through all phases to reach Phase 4
-    const exitFn = mock((_code: number) => {})
-
-    // Make server.close(true) slow so Phase 4 lasts long enough to test
-    let resolveForceClose: () => void
-    const forceCloseBarrier = new Promise<void>((r) => {
-      resolveForceClose = r
-    })
-    const server = {
-      close: mock(async (force?: boolean) => {
-        if (force) await forceCloseBarrier
-      }),
-    }
-
-    const shutdownPromise = handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, server })),
-      exitFn,
-    })
-
-    // Wait for Phase 4 to be reached
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownPhase() === "forcing") {
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    // Send the second signal while the automatic force-close step is blocked.
-    void handleShutdownSignal("SIGINT", { exitFn })
-
-    expect(exitFn).toHaveBeenCalledWith(130)
-
-    // Clean up — release force close barrier and let shutdown complete
-    resolveForceClose!()
-    tracker._clearRequests()
     await shutdownPromise
   })
 
@@ -918,17 +1008,19 @@ describe("two-signal contract", () => {
     expect(exitFn).not.toHaveBeenCalled()
   })
 
-  test("the four internal steps advance automatically after one signal", async () => {
+  test("one signal advances from ingress stop through lossless drain automatically", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     const server = createMockServer()
-
-    await handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) =>
-        gracefulShutdown(signal, createNoopDeps({ tracker, server, gracefulWaitMs: 10, abortWaitMs: 10, drainPollIntervalMs: 2 })),
+    const shutdown = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, server })),
     })
 
-    expect(getShutdownSignal().aborted).toBe(true)
-    expect(server.close.mock.calls).toEqual([[false], [true]])
+    await Bun.sleep(20)
+    expect(getShutdownPhase()).toBe("draining")
+    expect(server.close.mock.calls).toEqual([[false]])
+
+    tracker._clearRequests()
+    await shutdown
     expect(getShutdownPhase()).toBe("stopped")
   })
 })
@@ -938,68 +1030,26 @@ describe("two-signal contract", () => {
 // ============================================================================
 
 describe("upstream WebSocket cleanup", () => {
-  test("graceful path (drain succeeds) still closes upstream WS connections", async () => {
-    // Materialize a manager; spy on closeAll/stopNew. The shutdown path must
-    // release these connections even on the drain-success early-return —
-    // otherwise GHC-side connection quota leaks until process GC.
+  test("closes upstream WS only after accepted operations drain", async () => {
     const manager = getUpstreamWsManager()
     const closeAllSpy = spyOn(manager, "closeAll")
     const stopNewSpy = spyOn(manager, "stopNew")
+    const tracker = createMockTracker([{ status: "streaming" }])
 
     try {
-      await gracefulShutdown("SIGINT", createNoopDeps())
+      const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
+      await Bun.sleep(20)
 
-      expect(stopNewSpy).toHaveBeenCalledTimes(1)
-      // Was previously called 0 times on this path — finalize() now guarantees it.
+      expect(stopNewSpy).not.toHaveBeenCalled()
+      expect(closeAllSpy).not.toHaveBeenCalled()
+
+      tracker._clearRequests()
+      await shutdown
+      expect(stopNewSpy).not.toHaveBeenCalled()
       expect(closeAllSpy).toHaveBeenCalledTimes(1)
     } finally {
       closeAllSpy.mockRestore()
       stopNewSpy.mockRestore()
-      resetUpstreamWsManagerForTests()
-    }
-  })
-
-  test("force-close path closes upstream WS BEFORE downstream server (avoid EPIPE noise)", async () => {
-    const manager = getUpstreamWsManager()
-    const closeAllSpy = spyOn(manager, "closeAll")
-
-    const callOrder: Array<string> = []
-    closeAllSpy.mockImplementation(() => {
-      callOrder.push("upstream.closeAll")
-    })
-
-    const server = createMockServer()
-    const originalClose = server.close
-    server.close = mock(async (force?: boolean) => {
-      callOrder.push(`server.close(force=${force ?? false})`)
-      return originalClose.call(server, force)
-    })
-
-    // Tracker reports a stuck request so we reach Phase 4 force-close.
-    const tracker = createMockTracker([{ id: "stuck", state: "executing", resolvedModel: "x" }])
-
-    try {
-      await gracefulShutdown(
-        "SIGINT",
-        createNoopDeps({
-          tracker,
-          server,
-          // Tight timing to fall through Phase 2 → Phase 3 → Phase 4.
-          gracefulWaitMs: 20,
-          abortWaitMs: 20,
-          drainPollIntervalMs: 5,
-        }),
-      )
-
-      // Upstream WS must be closed BEFORE the downstream force-close, otherwise
-      // in-flight forwarders push data into a dead socket → EPIPE noise + delay.
-      const upstreamIdx = callOrder.indexOf("upstream.closeAll")
-      const forceCloseIdx = callOrder.indexOf("server.close(force=true)")
-      expect(upstreamIdx).toBeGreaterThanOrEqual(0)
-      expect(forceCloseIdx).toBeGreaterThanOrEqual(0)
-      expect(upstreamIdx).toBeLessThan(forceCloseIdx)
-    } finally {
-      closeAllSpy.mockRestore()
       resetUpstreamWsManagerForTests()
     }
   })

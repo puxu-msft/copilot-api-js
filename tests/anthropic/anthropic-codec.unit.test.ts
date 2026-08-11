@@ -58,7 +58,6 @@ describe("anthropic codec — identity S2/S6", () => {
 describe("anthropic codec — formatError (Anthropic-shaped, double-typed)", () => {
   const cases: Array<[ClassifiedStreamError, string, string]> = [
     ["idle-timeout", "timeout_error", "Stream idle timeout"],
-    ["shutdown", "overloaded_error", "Server is shutting down"],
     ["client-abort", "api_error", "Client disconnected"],
     ["other", "api_error", "Stream error"],
   ]

@@ -51,6 +51,7 @@ import { generateId } from "~/lib/utils"
 
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../../helpers/state-fixture"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 // Snapshot global state once and restore after every test — the `replayFromHistory` describe block
 // below seeds the module-global history store (in-flight map + memory-backed SQLite), matching the
@@ -58,7 +59,7 @@ import { autoRestoreState } from "../../helpers/state-fixture"
 autoRestoreState()
 
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true, 200)
 })
 
@@ -134,7 +135,7 @@ describe("streamOf", () => {
 
 describe("mockAnthropicMessage — independent oracle (Anthropic stream accumulator)", () => {
   test("reconstructs the given text and sees a mandatory message_stop terminator", async () => {
-    const s = mockAnthropicMessage("hello world")
+    const s: import("~/lib/pipeline/types").UpstreamStream<import("~/lib/pipeline/types").UpstreamFrame> = mockAnthropicMessage("hello world")
     const acc = createAnthropicStreamAccumulator()
 
     for await (const frame of s.frames) {
@@ -150,7 +151,7 @@ describe("mockAnthropicMessage — independent oracle (Anthropic stream accumula
   })
 
   test("every frame's event line matches its own JSON body's type field (real Anthropic wire convention)", async () => {
-    const s = mockAnthropicMessage("hi")
+    const s: import("~/lib/pipeline/types").UpstreamStream<import("~/lib/pipeline/types").UpstreamFrame> = mockAnthropicMessage("hi")
     for await (const frame of s.frames) {
       expect(frame.event).toBe(parseAnthropicFrame(frame).type)
     }
@@ -159,7 +160,7 @@ describe("mockAnthropicMessage — independent oracle (Anthropic stream accumula
 
 describe("mockCcChunks — independent oracle (OpenAI stream accumulator)", () => {
   test("reconstructs the given text and a stop finish_reason", async () => {
-    const s = mockCcChunks("hello cc")
+    const s: import("~/lib/pipeline/types").UpstreamStream<import("~/lib/pipeline/types").UpstreamFrame> = mockCcChunks("hello cc")
     const acc = createOpenAIStreamAccumulator()
 
     for await (const frame of s.frames) {
@@ -172,7 +173,7 @@ describe("mockCcChunks — independent oracle (OpenAI stream accumulator)", () =
   })
 
   test("is tagged hook-mock and carries no event line (real CC/OpenAI wire has none)", async () => {
-    const s = mockCcChunks("x")
+    const s: import("~/lib/pipeline/types").UpstreamStream<import("~/lib/pipeline/types").UpstreamFrame> = mockCcChunks("x")
     expect(readOrigin(s)).toBe("hook-mock")
     for await (const frame of s.frames) expect(frame.event).toBeUndefined()
   })
@@ -216,7 +217,7 @@ describe("mockGeminiResponse — independent oracle (source CC accumulator + res
   })
 
   test("is tagged hook-mock and carries no event line (Gemini SSE has none)", async () => {
-    const s = mockGeminiResponse("x")
+    const s: import("~/lib/pipeline/types").UpstreamStream<import("~/lib/pipeline/types").UpstreamFrame> = mockGeminiResponse("x")
     expect(readOrigin(s)).toBe("hook-mock")
     for await (const frame of s.frames) expect(frame.event).toBeUndefined()
   })

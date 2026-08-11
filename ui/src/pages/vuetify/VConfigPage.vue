@@ -74,9 +74,6 @@ const autoCacheControl = nestedField("anthropic", "auto_cache_control", true)
 const normalizeCallIds = nestedField("openai_responses", "normalize_call_ids", true)
 const upstreamWebSocket = nestedField("openai_responses", "upstream_ws", false)
 
-const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
-const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
-
 const historySuccessLimit = nestedField("history", "success_limit", null)
 const historyFailureLimit = nestedField("history", "failure_limit", null)
 const historyReaperInterval = nestedField("history", "reaper_interval", null)
@@ -147,7 +144,7 @@ function setTopLevel<K extends keyof EditableConfig>(key: K, value: EditableConf
 }
 
 function setNested<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, value: NonNullable<EditableConfig[P]>[K]): void {
   const config = ensureConfig()
@@ -169,7 +166,7 @@ function topLevelField<K extends keyof EditableConfig>(key: K, fallback: NonNull
 }
 
 function nestedField<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, fallback: NonNullable<EditableConfig[P]>[K]) {
   return computed({
@@ -385,24 +382,6 @@ function nestedField<
               v-model="modelRefreshInterval"
               label="Model Refresh Interval"
               description="Refresh the cached model list in the background. Set to 0 to disable."
-              suffix="s"
-              :min="0"
-            />
-          </ConfigSection>
-
-          <ConfigSection
-            title="Shutdown"
-            description="Graceful shutdown timings for in-flight request handling."
-          >
-            <ConfigNumber
-              v-model="shutdownGracefulWait"
-              label="Graceful Wait"
-              suffix="s"
-              :min="0"
-            />
-            <ConfigNumber
-              v-model="shutdownAbortWait"
-              label="Abort Wait"
               suffix="s"
               :min="0"
             />

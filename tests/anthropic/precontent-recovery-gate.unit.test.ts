@@ -9,7 +9,7 @@ import type { PostCommitAbortKind } from "~/routes/messages/post-commit-error"
 
 import { HTTPError } from "~/lib/error"
 import { tagTransportError } from "~/lib/error/transport-reason"
-import { StreamShutdownError } from "~/lib/stream"
+import { StreamRequestCancelError } from "~/lib/stream"
 import {
   //
   classifyPreContentRecoveryFailure,
@@ -90,7 +90,7 @@ describe("shouldAttemptPreContentRecovery", () => {
     })
     expect(classify(tagTransportError(new Error("h2 pre-response close"), "pre-response-close"))).toEqual({ kind: "network-error" })
     expect(classify(new HTTPError("bad request", 418, ""))).toEqual({ kind: "http-error", errorType: "bad_request" })
-    expect(classify(new StreamShutdownError())).toEqual({ kind: "abort", abortKind: "shutdown" })
+    expect(classify(new StreamRequestCancelError())).toEqual({ kind: "abort", abortKind: "request-cancel" })
   })
 
   test("all tagged upstream hedge members retain network-error recovery eligibility", () => {
@@ -110,7 +110,7 @@ describe("shouldAttemptPreContentRecovery", () => {
   })
 
   test.each([
-    ["abort", { error: new StreamShutdownError(), source: "upstream-transport" as const }],
+    ["abort", { error: new StreamRequestCancelError(), source: "upstream-transport" as const }],
     ["bad request", { error: new HTTPError("bad request", 418, ""), source: "upstream-transport" as const }],
     ["codec", { error: new Error("codec failure"), source: "codec-render" as const }],
   ])("mixed hedge aggregate with %s member fails closed", (_name, disqualifying) => {
@@ -163,7 +163,6 @@ describe("shouldAttemptPreContentRecovery", () => {
   })
 
   for (const abortKind of [
-    "shutdown",
     "header-timeout",
     "request-deadline",
     "reaper-cancel",

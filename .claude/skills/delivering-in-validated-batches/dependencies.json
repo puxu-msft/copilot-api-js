@@ -31,10 +31,10 @@
       "relative_path": "adopting-agent-findings/SKILL.md"
     },
     {
-      "name": "session-closeout",
-      "frontmatter_name": "session-closeout",
-      "scope": "project",
-      "relative_path": ".claude/skills/session-closeout/SKILL.md"
+      "name": "closing-a-development-session",
+      "frontmatter_name": "closing-a-development-session",
+      "scope": "user",
+      "relative_path": "closing-a-development-session/SKILL.md"
     }
   ]
 }

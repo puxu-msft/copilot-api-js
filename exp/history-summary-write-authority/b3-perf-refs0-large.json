@@ -1,0 +1,630 @@
+{
+  "scope": "B3 performance observation; no acceptance threshold",
+  "environment": {
+    "runtime": "Bun 1.3.14",
+    "platform": "linux",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "arch": "x64",
+    "hostname": "CPC-puxu-WC402E",
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "cpuCount": 16,
+    "commit": "bc5f6065c106c8e8740a2f78caa5deccbcf4725c"
+  },
+  "matrix": {
+    "rows": 512,
+    "refCount": 0,
+    "payloadBytes": 262144,
+    "rounds": 15,
+    "warmups": 3
+  },
+  "ddl": "\nCREATE TABLE operations(operation_id TEXT PRIMARY KEY, format_version INTEGER NOT NULL, manifest_digest TEXT NOT NULL, manifest_payload BLOB NOT NULL, manifest_epoch INTEGER NOT NULL);\nCREATE TABLE evidence(digest TEXT PRIMARY KEY, payload BLOB NOT NULL, entity_epoch INTEGER NOT NULL);\nCREATE TABLE operation_refs(operation_id TEXT NOT NULL, sequence INTEGER NOT NULL, evidence_digest TEXT NOT NULL, expected_entity_epoch INTEGER NOT NULL, PRIMARY KEY(operation_id,sequence));\nCREATE TABLE operation_integrity(operation_id TEXT PRIMARY KEY, validated_manifest_epoch INTEGER NOT NULL, validated_manifest_digest TEXT NOT NULL, status TEXT NOT NULL);\nCREATE TABLE summaries(operation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, created_at INTEGER NOT NULL, token_count INTEGER NOT NULL, summary_text TEXT NOT NULL, projection_status TEXT NOT NULL);\nCREATE TABLE ready_marker(singleton INTEGER PRIMARY KEY, ready INTEGER NOT NULL);\nINSERT INTO ready_marker VALUES(1,1);\nCREATE INDEX idx_summaries_ready_created ON summaries(projection_status,created_at DESC,operation_id);\nCREATE INDEX idx_summaries_session_ready ON summaries(session_id,projection_status,operation_id);\nCREATE INDEX idx_operations_integrity_cover ON operations(operation_id,format_version,manifest_epoch,manifest_digest);\nCREATE INDEX idx_integrity_cover ON operation_integrity(operation_id,status,validated_manifest_epoch,validated_manifest_digest);\nCREATE INDEX idx_evidence_epoch_cover ON evidence(digest,entity_epoch);\n",
+  "querySql": {
+    "get": {
+      "baseline": "SELECT s.operation_id,s.session_id,s.created_at,s.token_count,s.summary_text FROM summaries s WHERE s.operation_id=? AND s.projection_status='ready'",
+      "integrity": "SELECT s.operation_id,s.session_id,s.created_at,s.token_count,s.summary_text FROM summaries s JOIN operations o INDEXED BY idx_operations_integrity_cover USING(operation_id) JOIN operation_integrity i INDEXED BY idx_integrity_cover USING(operation_id) JOIN ready_marker m ON m.singleton=1 WHERE s.operation_id=? AND s.projection_status='ready' AND m.ready=1 AND i.status='valid' AND o.format_version BETWEEN 1 AND 3 AND i.validated_manifest_epoch=o.manifest_epoch AND i.validated_manifest_digest=o.manifest_digest AND NOT EXISTS(SELECT 1 FROM operation_refs r LEFT JOIN evidence e INDEXED BY idx_evidence_epoch_cover ON e.digest=r.evidence_digest WHERE r.operation_id=o.operation_id AND(e.digest IS NULL OR e.entity_epoch<>r.expected_entity_epoch))"
+    },
+    "list": {
+      "baseline": "SELECT s.operation_id,s.session_id,s.created_at,s.token_count,s.summary_text FROM summaries s INDEXED BY idx_summaries_ready_created WHERE s.projection_status='ready' ORDER BY s.created_at DESC,s.operation_id LIMIT 50",
+      "integrity": "SELECT s.operation_id,s.session_id,s.created_at,s.token_count,s.summary_text FROM summaries s INDEXED BY idx_summaries_ready_created JOIN operations o INDEXED BY idx_operations_integrity_cover USING(operation_id) JOIN operation_integrity i INDEXED BY idx_integrity_cover USING(operation_id) JOIN ready_marker m ON m.singleton=1 WHERE s.projection_status='ready' AND m.ready=1 AND i.status='valid' AND o.format_version BETWEEN 1 AND 3 AND i.validated_manifest_epoch=o.manifest_epoch AND i.validated_manifest_digest=o.manifest_digest AND NOT EXISTS(SELECT 1 FROM operation_refs r LEFT JOIN evidence e INDEXED BY idx_evidence_epoch_cover ON e.digest=r.evidence_digest WHERE r.operation_id=o.operation_id AND(e.digest IS NULL OR e.entity_epoch<>r.expected_entity_epoch)) ORDER BY s.created_at DESC,s.operation_id LIMIT 50"
+    },
+    "session": {
+      "baseline": "SELECT count(*) AS count,sum(s.token_count) AS tokens FROM summaries s INDEXED BY idx_summaries_session_ready WHERE s.session_id=? AND s.projection_status='ready'",
+      "integrity": "SELECT count(*) AS count,sum(s.token_count) AS tokens FROM summaries s INDEXED BY idx_summaries_session_ready JOIN operations o INDEXED BY idx_operations_integrity_cover USING(operation_id) JOIN operation_integrity i INDEXED BY idx_integrity_cover USING(operation_id) JOIN ready_marker m ON m.singleton=1 WHERE s.session_id=? AND s.projection_status='ready' AND m.ready=1 AND i.status='valid' AND o.format_version BETWEEN 1 AND 3 AND i.validated_manifest_epoch=o.manifest_epoch AND i.validated_manifest_digest=o.manifest_digest AND NOT EXISTS(SELECT 1 FROM operation_refs r LEFT JOIN evidence e INDEXED BY idx_evidence_epoch_cover ON e.digest=r.evidence_digest WHERE r.operation_id=o.operation_id AND(e.digest IS NULL OR e.entity_epoch<>r.expected_entity_epoch))"
+    },
+    "stats": {
+      "baseline": "SELECT count(*) AS count,sum(s.token_count) AS tokens FROM summaries s WHERE s.projection_status='ready'",
+      "integrity": "SELECT count(*) AS count,sum(s.token_count) AS tokens FROM summaries s JOIN operations o INDEXED BY idx_operations_integrity_cover USING(operation_id) JOIN operation_integrity i INDEXED BY idx_integrity_cover USING(operation_id) JOIN ready_marker m ON m.singleton=1 WHERE s.projection_status='ready' AND m.ready=1 AND i.status='valid' AND o.format_version BETWEEN 1 AND 3 AND i.validated_manifest_epoch=o.manifest_epoch AND i.validated_manifest_digest=o.manifest_digest AND NOT EXISTS(SELECT 1 FROM operation_refs r LEFT JOIN evidence e INDEXED BY idx_evidence_epoch_cover ON e.digest=r.evidence_digest WHERE r.operation_id=o.operation_id AND(e.digest IS NULL OR e.entity_epoch<>r.expected_entity_epoch))"
+    }
+  },
+  "results": {
+    "get": {
+      "resultEquality": true,
+      "repeatsPerSample": 500,
+      "explain": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH s USING INDEX sqlite_autoindex_summaries_1 (operation_id=?)",
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "samples": [
+        {
+          "round": 0,
+          "order": "integrity-baseline",
+          "baselineUs": 3.901952,
+          "integrityUs": 7.040442,
+          "deltaUs": 3.1384899999999996
+        },
+        {
+          "round": 1,
+          "order": "integrity-baseline",
+          "baselineUs": 3.699284,
+          "integrityUs": 6.332196,
+          "deltaUs": 2.6329119999999997
+        },
+        {
+          "round": 2,
+          "order": "integrity-baseline",
+          "baselineUs": 3.556634,
+          "integrityUs": 6.068703999999999,
+          "deltaUs": 2.5120699999999996
+        },
+        {
+          "round": 3,
+          "order": "baseline-integrity",
+          "baselineUs": 4.086818,
+          "integrityUs": 5.861032,
+          "deltaUs": 1.7742139999999997
+        },
+        {
+          "round": 4,
+          "order": "baseline-integrity",
+          "baselineUs": 2.976632,
+          "integrityUs": 5.616148,
+          "deltaUs": 2.639516
+        },
+        {
+          "round": 5,
+          "order": "integrity-baseline",
+          "baselineUs": 3.3417600000000003,
+          "integrityUs": 8.053994,
+          "deltaUs": 4.712233999999999
+        },
+        {
+          "round": 6,
+          "order": "integrity-baseline",
+          "baselineUs": 3.277538,
+          "integrityUs": 7.064452,
+          "deltaUs": 3.7869140000000003
+        },
+        {
+          "round": 7,
+          "order": "baseline-integrity",
+          "baselineUs": 3.133486,
+          "integrityUs": 5.70518,
+          "deltaUs": 2.5716940000000004
+        },
+        {
+          "round": 8,
+          "order": "integrity-baseline",
+          "baselineUs": 6.60289,
+          "integrityUs": 6.707726,
+          "deltaUs": 0.10483599999999971
+        },
+        {
+          "round": 9,
+          "order": "baseline-integrity",
+          "baselineUs": 6.5214620000000005,
+          "integrityUs": 6.510858,
+          "deltaUs": -0.010604000000000724
+        },
+        {
+          "round": 10,
+          "order": "integrity-baseline",
+          "baselineUs": 3.731494,
+          "integrityUs": 6.37221,
+          "deltaUs": 2.640716
+        },
+        {
+          "round": 11,
+          "order": "baseline-integrity",
+          "baselineUs": 4.2220640000000005,
+          "integrityUs": 6.098516,
+          "deltaUs": 1.8764519999999996
+        },
+        {
+          "round": 12,
+          "order": "integrity-baseline",
+          "baselineUs": 3.8239259999999997,
+          "integrityUs": 7.169686,
+          "deltaUs": 3.34576
+        },
+        {
+          "round": 13,
+          "order": "baseline-integrity",
+          "baselineUs": 3.2023099999999998,
+          "integrityUs": 5.437488,
+          "deltaUs": 2.2351780000000003
+        },
+        {
+          "round": 14,
+          "order": "baseline-integrity",
+          "baselineUs": 3.49261,
+          "integrityUs": 5.70758,
+          "deltaUs": 2.21497
+        }
+      ],
+      "summaryUsPerExecution": {
+        "baselineMedian": 3.699284,
+        "integrityMedian": 6.332196,
+        "pairedDeltaMedian": 2.5716940000000004
+      }
+    },
+    "list": {
+      "resultEquality": true,
+      "repeatsPerSample": 100,
+      "explain": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "samples": [
+        {
+          "round": 0,
+          "order": "integrity-baseline",
+          "baselineUs": 67.1743,
+          "integrityUs": 156.34123000000002,
+          "deltaUs": 89.16693000000002
+        },
+        {
+          "round": 1,
+          "order": "integrity-baseline",
+          "baselineUs": 44.93658,
+          "integrityUs": 129.81503,
+          "deltaUs": 84.87845000000002
+        },
+        {
+          "round": 2,
+          "order": "baseline-integrity",
+          "baselineUs": 61.51734,
+          "integrityUs": 117.29069,
+          "deltaUs": 55.77335
+        },
+        {
+          "round": 3,
+          "order": "integrity-baseline",
+          "baselineUs": 59.50864,
+          "integrityUs": 120.31874,
+          "deltaUs": 60.810100000000006
+        },
+        {
+          "round": 4,
+          "order": "baseline-integrity",
+          "baselineUs": 67.41139,
+          "integrityUs": 142.57245999999998,
+          "deltaUs": 75.16106999999998
+        },
+        {
+          "round": 5,
+          "order": "baseline-integrity",
+          "baselineUs": 39.96486,
+          "integrityUs": 103.14178,
+          "deltaUs": 63.176919999999996
+        },
+        {
+          "round": 6,
+          "order": "integrity-baseline",
+          "baselineUs": 68.62162,
+          "integrityUs": 163.60775,
+          "deltaUs": 94.98613000000002
+        },
+        {
+          "round": 7,
+          "order": "integrity-baseline",
+          "baselineUs": 53.212540000000004,
+          "integrityUs": 118.74391,
+          "deltaUs": 65.53137
+        },
+        {
+          "round": 8,
+          "order": "baseline-integrity",
+          "baselineUs": 54.622980000000005,
+          "integrityUs": 95.41866999999999,
+          "deltaUs": 40.795689999999986
+        },
+        {
+          "round": 9,
+          "order": "integrity-baseline",
+          "baselineUs": 52.82242,
+          "integrityUs": 119.00399,
+          "deltaUs": 66.18157
+        },
+        {
+          "round": 10,
+          "order": "integrity-baseline",
+          "baselineUs": 76.64082,
+          "integrityUs": 106.19901,
+          "deltaUs": 29.558189999999996
+        },
+        {
+          "round": 11,
+          "order": "baseline-integrity",
+          "baselineUs": 66.09554,
+          "integrityUs": 172.62766,
+          "deltaUs": 106.53211999999999
+        },
+        {
+          "round": 12,
+          "order": "baseline-integrity",
+          "baselineUs": 48.5811,
+          "integrityUs": 103.33312,
+          "deltaUs": 54.752019999999995
+        },
+        {
+          "round": 13,
+          "order": "integrity-baseline",
+          "baselineUs": 64.21596,
+          "integrityUs": 137.09661,
+          "deltaUs": 72.88065
+        },
+        {
+          "round": 14,
+          "order": "integrity-baseline",
+          "baselineUs": 71.78732000000001,
+          "integrityUs": 176.20076999999998,
+          "deltaUs": 104.41344999999997
+        }
+      ],
+      "summaryUsPerExecution": {
+        "baselineMedian": 61.51734,
+        "integrityMedian": 120.31874,
+        "pairedDeltaMedian": 66.18157
+      }
+    },
+    "session": {
+      "resultEquality": true,
+      "repeatsPerSample": 200,
+      "explain": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_session_ready (session_id=? AND projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "samples": [
+        {
+          "round": 0,
+          "order": "integrity-baseline",
+          "baselineUs": 12.5504,
+          "integrityUs": 65.74494,
+          "deltaUs": 53.19454
+        },
+        {
+          "round": 1,
+          "order": "integrity-baseline",
+          "baselineUs": 7.150720000000001,
+          "integrityUs": 53.197535,
+          "deltaUs": 46.046815
+        },
+        {
+          "round": 2,
+          "order": "integrity-baseline",
+          "baselineUs": 10.209670000000001,
+          "integrityUs": 47.254185,
+          "deltaUs": 37.044515
+        },
+        {
+          "round": 3,
+          "order": "integrity-baseline",
+          "baselineUs": 11.170475,
+          "integrityUs": 58.600215,
+          "deltaUs": 47.429739999999995
+        },
+        {
+          "round": 4,
+          "order": "integrity-baseline",
+          "baselineUs": 10.687325000000001,
+          "integrityUs": 63.507239999999996,
+          "deltaUs": 52.819914999999995
+        },
+        {
+          "round": 5,
+          "order": "integrity-baseline",
+          "baselineUs": 9.544465,
+          "integrityUs": 71.536235,
+          "deltaUs": 61.99177
+        },
+        {
+          "round": 6,
+          "order": "baseline-integrity",
+          "baselineUs": 8.513645,
+          "integrityUs": 48.506074999999996,
+          "deltaUs": 39.99243
+        },
+        {
+          "round": 7,
+          "order": "baseline-integrity",
+          "baselineUs": 14.584535,
+          "integrityUs": 51.06487,
+          "deltaUs": 36.480335
+        },
+        {
+          "round": 8,
+          "order": "baseline-integrity",
+          "baselineUs": 8.78923,
+          "integrityUs": 50.73827,
+          "deltaUs": 41.94904
+        },
+        {
+          "round": 9,
+          "order": "baseline-integrity",
+          "baselineUs": 8.46863,
+          "integrityUs": 41.5009,
+          "deltaUs": 33.032270000000004
+        },
+        {
+          "round": 10,
+          "order": "integrity-baseline",
+          "baselineUs": 9.517959999999999,
+          "integrityUs": 55.291185,
+          "deltaUs": 45.773225
+        },
+        {
+          "round": 11,
+          "order": "baseline-integrity",
+          "baselineUs": 9.79054,
+          "integrityUs": 57.94001,
+          "deltaUs": 48.14947
+        },
+        {
+          "round": 12,
+          "order": "baseline-integrity",
+          "baselineUs": 9.641,
+          "integrityUs": 48.649125,
+          "deltaUs": 39.008125
+        },
+        {
+          "round": 13,
+          "order": "baseline-integrity",
+          "baselineUs": 9.94209,
+          "integrityUs": 68.181195,
+          "deltaUs": 58.239105
+        },
+        {
+          "round": 14,
+          "order": "baseline-integrity",
+          "baselineUs": 11.341025,
+          "integrityUs": 57.953015,
+          "deltaUs": 46.61199
+        }
+      ],
+      "summaryUsPerExecution": {
+        "baselineMedian": 9.79054,
+        "integrityMedian": 55.291185,
+        "pairedDeltaMedian": 46.046815
+      }
+    },
+    "stats": {
+      "resultEquality": true,
+      "repeatsPerSample": 100,
+      "explain": {
+        "baseline": {
+          "details": [
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": false,
+          "evidenceCoveringIndex": false,
+          "correlatedRefsScan": false,
+          "refsIndexSearch": false,
+          "tempBtree": false
+        },
+        "integrity": {
+          "details": [
+            "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH s USING INDEX idx_summaries_ready_created (projection_status=?)",
+            "SEARCH o USING COVERING INDEX idx_operations_integrity_cover (operation_id=? AND format_version>? AND format_version<?)",
+            "CORRELATED SCALAR SUBQUERY 1",
+            "SEARCH r USING INDEX sqlite_autoindex_operation_refs_1 (operation_id=?)",
+            "SEARCH e USING COVERING INDEX idx_evidence_epoch_cover (digest=?) LEFT-JOIN",
+            "SEARCH i USING COVERING INDEX idx_integrity_cover (operation_id=? AND status=? AND validated_manifest_epoch=? AND validated_manifest_digest=?)"
+          ],
+          "manifestPayloadNamed": false,
+          "operationsCoveringIndex": true,
+          "evidenceCoveringIndex": true,
+          "correlatedRefsScan": true,
+          "refsIndexSearch": true,
+          "tempBtree": false
+        }
+      },
+      "samples": [
+        {
+          "round": 0,
+          "order": "integrity-baseline",
+          "baselineUs": 117.67358,
+          "integrityUs": 731.8124799999999,
+          "deltaUs": 614.1388999999999
+        },
+        {
+          "round": 1,
+          "order": "integrity-baseline",
+          "baselineUs": 115.5059,
+          "integrityUs": 673.90548,
+          "deltaUs": 558.39958
+        },
+        {
+          "round": 2,
+          "order": "integrity-baseline",
+          "baselineUs": 141.93511999999998,
+          "integrityUs": 701.6451,
+          "deltaUs": 559.70998
+        },
+        {
+          "round": 3,
+          "order": "baseline-integrity",
+          "baselineUs": 101.31749,
+          "integrityUs": 645.67471,
+          "deltaUs": 544.35722
+        },
+        {
+          "round": 4,
+          "order": "baseline-integrity",
+          "baselineUs": 98.7547,
+          "integrityUs": 559.6060500000001,
+          "deltaUs": 460.8513500000001
+        },
+        {
+          "round": 5,
+          "order": "integrity-baseline",
+          "baselineUs": 130.71251,
+          "integrityUs": 633.56297,
+          "deltaUs": 502.85045999999994
+        },
+        {
+          "round": 6,
+          "order": "integrity-baseline",
+          "baselineUs": 205.72046,
+          "integrityUs": 825.67362,
+          "deltaUs": 619.95316
+        },
+        {
+          "round": 7,
+          "order": "baseline-integrity",
+          "baselineUs": 160.52283,
+          "integrityUs": 847.49672,
+          "deltaUs": 686.97389
+        },
+        {
+          "round": 8,
+          "order": "baseline-integrity",
+          "baselineUs": 123.04437,
+          "integrityUs": 677.54024,
+          "deltaUs": 554.4958700000001
+        },
+        {
+          "round": 9,
+          "order": "baseline-integrity",
+          "baselineUs": 115.52927000000001,
+          "integrityUs": 685.3554300000001,
+          "deltaUs": 569.8261600000001
+        },
+        {
+          "round": 10,
+          "order": "integrity-baseline",
+          "baselineUs": 99.27673,
+          "integrityUs": 670.30223,
+          "deltaUs": 571.0255
+        },
+        {
+          "round": 11,
+          "order": "baseline-integrity",
+          "baselineUs": 108.44229,
+          "integrityUs": 639.8447199999999,
+          "deltaUs": 531.40243
+        },
+        {
+          "round": 12,
+          "order": "baseline-integrity",
+          "baselineUs": 99.78787,
+          "integrityUs": 730.96317,
+          "deltaUs": 631.1753
+        },
+        {
+          "round": 13,
+          "order": "baseline-integrity",
+          "baselineUs": 128.52189,
+          "integrityUs": 754.51175,
+          "deltaUs": 625.98986
+        },
+        {
+          "round": 14,
+          "order": "baseline-integrity",
+          "baselineUs": 107.72609,
+          "integrityUs": 735.0183000000001,
+          "deltaUs": 627.2922100000001
+        }
+      ],
+      "summaryUsPerExecution": {
+        "baselineMedian": 115.52927000000001,
+        "integrityMedian": 685.3554300000001,
+        "pairedDeltaMedian": 569.8261600000001
+      }
+    }
+  },
+  "boundary": [
+    "Timings are local in-memory PoC observations, not production benchmarks.",
+    "EXPLAIN naming a covering index is the no-payload-read oracle; manifest_payload is not selected.",
+    "Correlated refs subquery executes per candidate summary row in the integrity shape."
+  ]
+}

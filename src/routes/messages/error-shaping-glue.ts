@@ -44,9 +44,8 @@ import {
   forwardError,
   isAbortError,
 } from "~/lib/error"
-import { state } from "~/lib/state"
-
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+import { state } from "~/lib/state"
 
 /** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
 export function errorShapingConfigFromState(): ErrorShapingConfig {

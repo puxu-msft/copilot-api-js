@@ -13,6 +13,7 @@ import {
   makeReconcilingSink,
   reconcileLiveFrame,
 } from "~/lib/anthropic/live-reconcile"
+import { anthropicWireFrameType } from "~/lib/anthropic/wire-frame-type"
 import {
   //
   getDownstreamDeliverySession,
@@ -37,13 +38,8 @@ export interface StagedDirectRecoveryBatch {
 }
 
 function isRecoveryAnchorTerminus(frame: ClientFrame): boolean {
-  if (typeof frame.data !== "string") return false
-  try {
-    const type = (JSON.parse(frame.data) as { type?: unknown }).type
-    return type === "content_block_start" || type === "message_delta" || type === "message_stop" || type === "error"
-  } catch {
-    return false
-  }
+  const type = anthropicWireFrameType(frame)
+  return type === "content_block_start" || type === "message_delta" || type === "message_stop" || type === "error"
 }
 
 /** Stage a complete direct recovery without reading owner-owned anchor state. */

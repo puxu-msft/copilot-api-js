@@ -8,6 +8,13 @@ import {
   type SqliteDatabase,
 } from "~/lib/sqlite/driver"
 
+import {
+  //
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+  peekHistoryReadDatabase,
+} from "./read-connection"
+
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
  * bun:sqlite on Bun, node:sqlite on Node — so callers see a single class.
@@ -47,49 +54,69 @@ let openedPath: string | null = null
 export function openDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:" && db && openedPath === dbPath) return db
   if (db) closeDatabase()
+  // Assign only after a successful open, so a rejected artifact leaves the
+  // singleton null rather than pointing at a handle we already closed.
+  const opened = openOwnedHistoryDatabase(dbPath)
+  db = opened
+  openedPath = dbPath
+  return opened
+}
 
+/**
+ * Open a fully-initialized V3 write handle that the CALLER owns — same sequence as
+ * {@link openDatabase} (owner check, WAL/pragmas, startup reclamation, planner seed)
+ * but WITHOUT touching the module singleton.
+ *
+ * This is what the History persistence Worker uses: the Worker thread owns its own
+ * handle and must not publish it through a process-global accessor, because the
+ * write-first migration stage deliberately keeps a *separate* main-thread readonly
+ * connection (`read-connection.ts`) alive at the same time. Routing both through one
+ * singleton would silently make "which handle am I holding" depend on module-load
+ * order across two threads.
+ */
+export function openOwnedHistoryDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   }
   const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
-  db = createDatabase(dbPath)
-  openedPath = dbPath
+  const database = createDatabase(dbPath)
+  // The WHOLE initialization sequence is guarded, not just the owner check. Before this
+  // opener existed, a half-initialized handle was already published to the module
+  // singleton and `closeDatabase()` could still reach it; an owned handle has no such
+  // second owner, so a throwing PRAGMA would strand the file descriptor and its SQLite
+  // locks with nobody left holding a reference.
   try {
-    assertV3Owner(db, existed, dbPath)
+    assertV3Owner(database, existed, dbPath)
+    // auto_vacuum MUST be set before ANY other write to the new file — switching
+    // to WAL first initializes the DB header and locks auto_vacuum at mode 0
+    // (verified empirically). Set on the still-empty file, it makes
+    // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
+    // maintenance tick's incremental_vacuum reclaims from the first tick. On an
+    // existing DB this is a no-op until a full VACUUM runs (handled by
+    // maybeVacuumOnStartup).
+    database.exec("PRAGMA auto_vacuum = INCREMENTAL;")
+    database.exec("PRAGMA journal_mode = WAL;")
+    database.exec("PRAGMA synchronous = NORMAL;")
+    database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    database.exec("PRAGMA foreign_keys = ON;")
+    // History V3 is the sole persistence implementation (History V2 removal
+    // Phase 4a) — there is now only ONE open path, unconditionally, for every
+    // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
+    // used to fall through to the V2 schema branch because it never matched the
+    // `history-v3.db` basename check).
+    //
+    // DB-health (Phase 4b): V2's row-level "存活共享库跳过" liveness gate is still deliberately NOT adopted, and its reasoning still holds — V3's `v3_operations` only ever stores terminal (committed) rows, with no pending/executing/streaming concept, so there is no "another process may still be writing an in-flight row" risk to defer around (plan §6 / §4b).
+    //
+    // That reasoning was, however, applied to the wrong hazard. What a VACUUM has to defer around is not the STATE OF ANY ROW but the LOCK: it holds an exclusive write lock for as long as it takes to rewrite the whole file, which during a restart overlap starves the predecessor's writes past their 5s busy_timeout.
+    // `maybeVacuumOnStartup` therefore carries its own gate, keyed on live connections rather than on row state — see the probe there.
+    maybeVacuumOnStartup(database, dbPath)
+    seedAnalyzeIfNeeded(database)
   } catch (err) {
-    db.close()
-    db = null
-    openedPath = null
+    database.close()
     throw err
   }
-  // auto_vacuum MUST be set before ANY other write to the new file — switching
-  // to WAL first initializes the DB header and locks auto_vacuum at mode 0
-  // (verified empirically). Set on the still-empty file, it makes
-  // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
-  // maintenance tick's incremental_vacuum reclaims from the first tick. On an
-  // existing DB this is a no-op until a full VACUUM runs (handled by
-  // maybeVacuumOnStartup).
-  db.exec("PRAGMA auto_vacuum = INCREMENTAL;")
-  db.exec("PRAGMA journal_mode = WAL;")
-  db.exec("PRAGMA synchronous = NORMAL;")
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
-  db.exec("PRAGMA foreign_keys = ON;")
-  // History V3 is the sole persistence implementation (History V2 removal
-  // Phase 4a) — there is now only ONE open path, unconditionally, for every
-  // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
-  // used to fall through to the V2 schema branch because it never matched the
-  // `history-v3.db` basename check).
-  //
-  // DB-health (Phase 4b): unlike the retired V2 open path, there is no
-  // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
-  // stores terminal (committed) rows, with no pending/executing/streaming
-  // concept, so there is no "another process may still be writing an in-flight
-  // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
-  // gate is deliberately NOT adopted from V2). Both run unconditionally.
-  maybeVacuumOnStartup(db, dbPath)
-  seedAnalyzeIfNeeded(db)
   if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
-  return db
+  return database
 }
 
 /**
@@ -188,17 +215,36 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
           + `a one-time startup VACUUM will block briefly and needs ~equal temp disk. For a very large DB consider offline 'sqlite3 history.db "VACUUM;"'.`,
       )
     }
-    // VACUUM cannot run inside a transaction. Checkpoint+truncate the WAL first
-    // to shrink it and reduce lock contention with any overlapping connection.
-    database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
+    // Probe for lock contention BEFORE committing to a VACUUM.
+    // A TRUNCATE checkpoint wants the same exclusive moment a VACUUM then holds for far longer, so a non-zero `busy` is the cheapest available answer to "can I get that moment right now?".
+    // Unlike a pidfile check this works identically on all three run paths — bare / systemd / pm2 — including the supervisor ones that deliberately write no pidfile, which are exactly the paths where an overlap is guaranteed by design.
+    // This matters most during a graceful-restart overlap: the successor opens the db while the predecessor is still serving at FULL SPEED (it has not even been sent the handoff signal yet — that comes later, at `notifyReady`), and a VACUUM here would hold the write lock far past the 5s `busy_timeout` the predecessor's writes are given, turning its in-flight persistence into SQLITE_BUSY failures.
+    // SCOPE — do not read this as "is another process using the db?". Measured, one condition varied at a time: no peer -> `{busy:0,log:0,checkpointed:0}`; peer connection OPEN but holding NO transaction -> `busy:0`, i.e. LET THROUGH; peer holding a read transaction -> `{busy:1,log:1,checkpointed:0}`; peer transaction committed -> back to `busy:0`. A non-empty WAL is a second necessary condition: with nothing to truncate the checkpoint is trivially `busy:0`.
+    // So this NARROWS the hazard window rather than closing it — an idle-at-this-instant predecessor is let through and can resume writing mid-VACUUM. It is kept because the cost is ~zero (the call already happened for WAL shrink) and it cannot misfire destructively: a false `busy` only defers reclamation to a later start. Closing the window for real needs the read/write split (see docs/todo/deferred-backlog.md).
+    // Probe with a ZERO busy_timeout: we want the answer now, not after the 5s the rest of this connection is configured to wait. A probe that blocked for the full busy_timeout on every overlapping start would itself be the regression (measured: it makes the open path hang 5s and times out the covering test).
+    // The restore MUST be in a finally: `.get()` can throw outright under lock contention (measured: `SQLiteError`, not always a populated `busy` column), and the outer catch below swallows it — leaving this process's main History connection permanently at busy_timeout=0, where every later concurrent write fails instantly instead of waiting.
+    let checkpoint: { busy?: number } | null = null
+    try {
+      database.exec("PRAGMA busy_timeout = 0;")
+      checkpoint = database.prepare("PRAGMA wal_checkpoint(TRUNCATE);").get() as { busy?: number } | null
+    } finally {
+      database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+    }
+    if (checkpoint?.busy) {
+      consola.info(
+        `[history/sqlite] skipping the startup VACUUM of ${dbPath}: another connection is holding a transaction (graceful-restart overlap). `
+          + `Reclamation runs on a later start, once this process has the database to itself.`,
+      )
+      return
+    }
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
     // VACUUM rewrote the ENTIRE db into the -wal file (WAL mode), so the -wal now
     // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
     // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
-    // the -wal file; only TRUNCATE reclaims its bytes on disk. We are still
-    // single-connection at startup (server not yet listening) so TRUNCATE takes
-    // its exclusive moment uncontended and shrinks the -wal back to zero. Without
+    // the -wal file; only TRUNCATE reclaims its bytes on disk. The probe above
+    // established that we hold this database alone, so TRUNCATE gets its
+    // exclusive moment uncontended and shrinks the -wal back to zero. Without
     // this the multi-GB WAL persists on disk indefinitely.
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
@@ -283,6 +329,8 @@ export function isDatabaseOpen(): boolean {
 
 export function closeDatabase(): void {
   if (!db) return
+  // Symmetric counterpart to `openInMemoryDatabase`, which PUBLISHES this singleton as the process-wide read handle. Closing it without withdrawing that publication leaves a closed handle installed, and the next `getHistoryReadDatabase()` hands it to a query that dies with "Cannot use a closed database" — far from here, in code that did nothing wrong. Only withdraw OUR publication: a readonly handle opened by `initHistory` belongs to it, not to us.
+  if (peekHistoryReadDatabase() === db) detachHistoryReadDatabaseForTests()
   try {
     db.close()
   } catch (err: unknown) {
@@ -292,7 +340,15 @@ export function closeDatabase(): void {
   openedPath = null
 }
 
-/** For tests: open an in-memory db. */
+/**
+ * For tests: open an in-memory db.
+ *
+ * Also publishes it as the process-wide READ handle. Since the Batch 2b cutover the app's query paths resolve `getHistoryReadDatabase()`, not this singleton, so a test that populates an in-memory database and then exercises a query would otherwise read through a handle that was never installed. The two handles are deliberately the same object here: an in-memory database belongs to exactly one connection, so there is no second one to open, and these tests are asserting SQL rather than the read/write split.
+ */
 export function openInMemoryDatabase(): Database {
-  return openDatabase(":memory:")
+  // The previously published handle is this same singleton, which `openDatabase` is about to close; detach rather than close, or the close below runs twice.
+  detachHistoryReadDatabaseForTests()
+  const database = openDatabase(":memory:")
+  installHistoryReadDatabase(database)
+  return database
 }

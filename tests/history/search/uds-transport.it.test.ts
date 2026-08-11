@@ -28,6 +28,7 @@ import {
   beforeAll,
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import fs from "node:fs"
@@ -57,6 +58,25 @@ import { primeUdsConnectForBunTest } from "../../helpers/prime-uds-for-bun-test"
 // is coincidental, not a guarantee; make the requirement explicit instead of
 // relying on it.
 beforeAll(primeUdsConnectForBunTest)
+
+// File-level budget, per the B-class rule frozen in
+// docs/tmp/2026-08-08-load-sensitive-test-dispositions.md: the larger of 10x this file's slowest
+// isolated case and 3x its worst observed sharded time, rounded up to the 30/60s tier. Two
+// independent sessions measured those -- 524ms and 849ms isolated, 5057.89ms and 5211ms sharded --
+// so 30s clears both bounds either way. That doc also verified setDefaultTimeout does not leak to
+// sibling files sharing the shard's process.
+//
+// Note the two budgets here do different jobs and are NOT nested. The client deadlines a case
+// passes in (see the fragmentation case) are set far above any plausible transfer time so a slow
+// but progressing transfer never silently returns [] -- query() never throws, so its own deadline
+// is indistinguishable from a wrong answer. This harness budget is the one that stops a wedged
+// test. Do not read the larger client number as the effective limit.
+//
+// This does not rescue the A-class case at "missing sidecar queried from INSIDE a Bun.serve
+// request handler under load": docs/plan/2026-07-28-state-to-foundation/HANDOVER.md:417-421
+// measured that one still timing out at 30012ms, because it starves on spawn under 16-way
+// parallelism rather than merely running long. More time is not its fix.
+setDefaultTimeout(30_000)
 
 const tmpDirs: Array<string> = []
 function freshSocketPath(): string {
@@ -436,6 +456,14 @@ describe("UDS client never-throw contract (crash-safety-critical)", () => {
 })
 
 describe("length-prefix fragmentation over a REAL socket (not just the in-memory decoder)", () => {
+  // 50 x 300KB across a real socket is genuine I/O work, and the oracle here is
+  // reassembly, never elapsed time. Sharing a machine with 15 other shards pushed
+  // this past both bun's 5s default test budget AND the client's 5s
+  // DEFAULT_QUERY_TIMEOUT_MS -- and the second one fails silently, because query()
+  // never throws: it resolved to [] and the assertion reported "expected 50,
+  // received 0", which reads like a reassembly bug rather than a deadline. The
+  // harness budget is the file-level one above; the client deadline is named here.
+  // Do not shrink the payload instead; the multi-segment size is the thing under test.
   test("a large multi-segment response reassembles correctly", async () => {
     const socketPath = freshSocketPath()
     const bigContent = "y".repeat(300_000)
@@ -444,13 +472,28 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     cleanupServers.push(server)
     await server.listen()
 
-    const client = createHistorySearchUdsClient({ socketPath })
+    // Budget belongs to the CLIENT here, not to bun. `client.query` has a never-throw contract
+    // (uds-client.ts:155-158): any failure — including its own `queryTimeoutMs` — returns []. With
+    // the 5s default and a ~15MB payload (50 x 300KB), contention makes the client give up and this
+    // assertion then reads `Received length: 0`, NOT a timeout. Measured: raising only bun's
+    // per-test budget to 120s still failed exactly that way, so the per-test budget was never the
+    // binding constraint. Overriding the client timeouts here is a fixture parameter; production
+    // defaults are untouched.
+    const client = createHistorySearchUdsClient({ socketPath, connectTimeoutMs: 30_000, queryTimeoutMs: 120_000 })
     const rows = await client.query("q", undefined, 50)
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)
     expect(rows[49]?.operationId).toBe(`${bigContent}-49`)
   })
 })
+
+// `DEFAULT_PING_TIMEOUT_MS` is 300ms because `/api/status` wants a fast answer
+// for the common "not installed" case. That is a production choice, not a test
+// oracle: the two tests below assert a POSITIVE outcome, so inheriting 300ms
+// makes a loaded machine read as "the sidecar did not answer". They pass an
+// explicit budget. The absent-sidecar test in between keeps the default on
+// purpose -- fast failure is exactly what it measures.
+const PING_TEST_TIMEOUT_MS = 20_000
 
 describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — unlike query(), DOES distinguish success/failure)", () => {
   test("a running, reachable sidecar -> { reachable: true }", async () => {
@@ -459,7 +502,7 @@ describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — u
     cleanupServers.push(server)
     await server.listen()
 
-    const result = await pingHistorySearchUdsClient(socketPath)
+    const result = await pingHistorySearchUdsClient(socketPath, PING_TEST_TIMEOUT_MS)
     expect(result.reachable).toBe(true)
     expect(result.error).toBeUndefined()
     expect(result.latencyMs).toBeGreaterThanOrEqual(0)
@@ -484,7 +527,7 @@ describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — u
     cleanupServers.push(server)
     await server.listen()
 
-    await pingHistorySearchUdsClient(socketPath)
+    await pingHistorySearchUdsClient(socketPath, PING_TEST_TIMEOUT_MS)
     // The wire request itself still round-trips through the real search callback
     // (the "cheap" guarantee comes from the NATIVE side's own short-circuit, see
     // native/history-search/src/lib.rs's search_blocking -- this test's injected

@@ -61,6 +61,7 @@ import {
 } from "~/lib/pipeline/driver"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
 
@@ -175,7 +176,7 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
 function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+    write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
@@ -245,7 +246,11 @@ function buildAnchoredSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
     lastInjectResult = did
     return did
   }
-  const sink = makeDeliverySseSink(stream, { wireState, legacyAnchorMirror: anchorState, heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+  const sink = makeDeliverySseSink(stream, {
+    wireState,
+    legacyAnchorMirror: anchorState,
+    heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor },
+  })
   sinkHolder.current = sink
   void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }

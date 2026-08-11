@@ -1,6 +1,6 @@
 ---
 name: feedback-backend-flakiness-must-sendmessage-resume-no-alternatives
-description: 瞬时后端抖动与 context-window 终态必须分流，方法归 global rule 与 session-closeout
+description: 瞬时后端抖动与 context-window 终态必须分流，方法归 global rule 与 user-level skill writing-handover-docs
 metadata:
   node_type: memory
   type: feedback
@@ -15,6 +15,6 @@ metadata:
 
 **Why:** 关键不是失败次数，而是平台给出的机制证据。把瞬时错误误作终态会无谓重派或提前放弃；把容量终态误作瞬时错误会无限空转。
 
-**How to apply:** 错误分类、`SendMessage` 强制路径、不得因 ROI 停止恢复，以及 context-window 接力例外，只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 与项目 skill `session-closeout` §6b。
+**How to apply:** 错误分类、`SendMessage` 强制路径、不得因 ROI 停止恢复，以及 context-window 接力例外，只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 与项目 skill user-level skill `writing-handover-docs` §6b。
 
 **Related:** [[feedback-resume-agent-always-sendmessage-never-agent-tool]] [[reference-subagent-transcript-5mib-gate-blocks-resume]] [[feedback-user-alignment-confirms-direction-not-detail-optimality]]

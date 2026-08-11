@@ -96,8 +96,8 @@ describe("API endpoints smoke (migrated from e2e-ui/api-endpoints.pw.ts)", () =>
     expect(body).toHaveProperty("useUpstreamCountTokens")
     expect(body).toHaveProperty("responseHeaderTimeout")
     expect(body).toHaveProperty("streamIdleTimeout")
-    expect(body).toHaveProperty("shutdownGracefulWait")
-    expect(body).toHaveProperty("shutdownAbortWait")
+    expect(body).not.toHaveProperty("shutdownGracefulWait")
+    expect(body).not.toHaveProperty("shutdownAbortWait")
 
     expect(typeof body.useUpstreamCountTokens).toBe("boolean")
     expect(typeof body.responseHeaderTimeout).toBe("number")

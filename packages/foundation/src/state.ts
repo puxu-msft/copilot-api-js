@@ -775,20 +775,6 @@ export interface State {
   readonly pooledConnectionIdleTimeout: number
 
   /**
-   * Shutdown Phase 2 timeout in seconds.
-   * Wait for in-flight requests to complete naturally before sending abort signal.
-   * Default: 60.
-   */
-  readonly shutdownGracefulWait: number
-
-  /**
-   * Shutdown Phase 3 timeout in seconds.
-   * After abort signal, wait for handlers to wrap up before force-closing.
-   * Default: 120.
-   */
-  readonly shutdownAbortWait: number
-
-  /**
    * Maximum age of an active request before the stale reaper forces it to fail (seconds).
    * Requests exceeding this age are assumed stuck and cleaned up.
    * 0 = disabled. Default: 600 (10 minutes).
@@ -1593,10 +1579,6 @@ export function onTelemetryConfigChange(listener: () => void): () => void {
   return () => telemetryConfigListeners.delete(listener)
 }
 
-export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
-  updateState(patch)
-}
-
 /**
  * Set the upstream-hook declarative config (`hooksUpstreamModule` / `hooksEnabled`). Declarative
  * only — never triggers a module (re)load itself; that happens at startup (`start.ts`) or via a
@@ -2043,10 +2025,6 @@ export function resetConfigManagedState(): void {
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
     softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
-  setShutdownConfig({
-    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  })
   setHooksConfig({
     hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
     hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
@@ -2237,8 +2215,6 @@ const mutableState: MutableState = {
   modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
-  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
   requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,

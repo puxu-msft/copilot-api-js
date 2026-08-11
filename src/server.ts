@@ -16,7 +16,11 @@ import type { ErrorWireFormat } from "./lib/error"
 
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
-import { observabilityMiddleware } from "./lib/observability/middleware"
+import {
+  //
+  observabilityMiddleware,
+  shutdownConnectionCloseMiddleware,
+} from "./lib/observability/middleware"
 import {
   //
   classifyUnknownEndpoint,
@@ -123,6 +127,10 @@ export function createServer() {
   // drain traffic; a failing liveness probe triggers a pod restart). Also stays
   // 200 during graceful shutdown since it sits ahead of the shutdown gate.
   server.get("/health/liveness", (c) => c.json({ status: "alive" }))
+
+  // Outermost ingress rule: anything we reject while shutting down tells the client to drop the connection.
+  // Registered BEFORE the config/token middleware below because that middleware's awaits are themselves a rejection path during shutdown — see shutdownConnectionCloseMiddleware's doc comment.
+  server.use(shutdownConnectionCloseMiddleware())
 
   // Config hot-reload: re-apply config.yaml settings before each request.
   // loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.

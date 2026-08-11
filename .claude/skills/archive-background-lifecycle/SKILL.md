@@ -13,7 +13,7 @@ Archive 是**可恢复后台维护**，不是 shutdown durability。History term
 - T1 compact：一个 session generation。把当前 session 可见 entry 写入不可变 T1 seal file，发布文件后在一个 archive transaction 更新 locators；旧 generation 仅在 DB 证明零引用后删除。
 - T2 seal：一个 session generation。发布不可变 T2 seal file，随后在一个 archive transaction 写 manifest、清 T1 locator、删 T1 head。
 
-**停止点只能在 unit 提交后。** 不在 SQLite transaction 中、不在 temp file 写到一半时、不在 manifest/locator 之前响应 graceful stop。第二个终止信号仍由进程 lifecycle 直接强退，Archive 不拦截。
+**停止点只能在 unit 提交后。** 不在 SQLite transaction 中、不在 temp file 写到一半时、不在 manifest/locator 之前响应 graceful stop。后续终止信号由进程 lifecycle 分档处置（第二个放弃 drain 但仍走完 durability barrier，第三个才强退——见 skill `process-lifecycle-shutdown`），Archive 不拦截其中任何一档。
 
 ## 2. 正确 shutdown 顺序
 

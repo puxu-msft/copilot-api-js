@@ -118,6 +118,8 @@ describe("RequestContext generation recorder lifecycle", () => {
     expect(terminal?.attempts[0]).toMatchObject({
       reason: "retry:unsupported-beta-retry",
     })
+    expect(terminal?.attempts[0]?.error).toMatchObject({ message: "unsupported beta" })
+    expect(terminal?.dispatches[0]?.error).toMatchObject({ message: "unsupported beta" })
     expect(terminal?.attempts[0]?.effectiveRequest?.payload).toMatch(/^payload:/)
     expect(terminal?.attempts[0]?.upstreamRequest?.payload).toMatch(/^payload:/)
     expect(terminal?.attempts[0]?.upstreamResponse?.frames).toHaveLength(1)

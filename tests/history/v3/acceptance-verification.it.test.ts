@@ -62,6 +62,8 @@ import {
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
 
+import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
+
 beforeEach(() => {
   closeDatabase()
   openInMemoryDatabase()
@@ -259,16 +261,16 @@ describe("History V3 Acceptance — 功能完整性", () => {
 
     // 先发布一个记录
     const record1 = createTerminalRecord({ id: "before-subscribe", kind: "generation" })
-    publishModelOperationTerminal(record1)
+    publishModelOperationTerminal(historyTerminalPublication(record1))
 
     // 动态添加订阅者
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      received.push(record)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      received.push(publication.record)
     })
 
     // 发布第二个记录
     const record2 = createTerminalRecord({ id: "after-subscribe", kind: "generation" })
-    publishModelOperationTerminal(record2)
+    publishModelOperationTerminal(historyTerminalPublication(record2))
 
     await drainModelOperationTerminalSubscribers()
 
@@ -314,8 +316,8 @@ describe("History V3 Acceptance — 功能完整性", () => {
       sessionId: "session-a",
     })
 
-    publishModelOperationTerminal(record1)
-    publishModelOperationTerminal(record2)
+    publishModelOperationTerminal(historyTerminalPublication(record1))
+    publishModelOperationTerminal(historyTerminalPublication(record2))
 
     // 按 ID 查询
     const byId = getRecentModelOperationTerminal("recent-1")

@@ -79,6 +79,24 @@ describe("translateResponsesResponseToCC", () => {
     })
   })
 
+  test("omits null cache-write details from the non-streaming CC usage projection", () => {
+    const translated = translateResponsesResponseToCC({
+      id: "resp_null_cache",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "gpt-5",
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3, input_tokens_details: { cache_write_tokens: null } },
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    } as never)
+
+    expect(translated.usage).toEqual({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 })
+  })
+
   test("keeps refusal text unwrapped and maps incomplete content_filter", () => {
     const translated = translateResponsesResponseToCC({
       id: "resp_2",

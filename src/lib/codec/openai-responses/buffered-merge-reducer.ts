@@ -1,9 +1,8 @@
-import type {
-  //
-  BufferedFlushContext,
-  ClientFrame,
-} from "~/lib/pipeline/types"
+import type { BufferedFlushContext } from "~/lib/pipeline/buffered-flush"
+import type { SseFrame } from "~/lib/stream"
 import type { ResponsesOutputItem } from "~/types/api/openai-responses"
+
+type ClientFrame = SseFrame
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 

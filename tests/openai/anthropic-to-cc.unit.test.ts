@@ -77,17 +77,18 @@ describe("translateAnthropicResponseToCC — tool_use", () => {
 
   test("text + tool_use fold into ONE choice (content + tool_calls coexist)", () => {
     const cc = translateAnthropicResponseToCC(
-      anthropicResponse(
-        [block({ type: "text", text: "Let me check." }), block({ type: "tool_use", id: "toolu_z", name: "z", input: { a: 1 } })],
-        { stop_reason: "tool_use" },
-      ),
+      anthropicResponse([block({ type: "text", text: "Let me check." }), block({ type: "tool_use", id: "toolu_z", name: "z", input: { a: 1 } })], {
+        stop_reason: "tool_use",
+      }),
     )
     expect(cc.choices[0].message.content).toBe("Let me check.")
     expect(cc.choices[0].message.tool_calls).toHaveLength(1)
   })
 
   test("tool_use id passes through verbatim", () => {
-    const cc = translateAnthropicResponseToCC(anthropicResponse([block({ type: "tool_use", id: "toolu_verbatim", name: "f", input: {} })], { stop_reason: "tool_use" }))
+    const cc = translateAnthropicResponseToCC(
+      anthropicResponse([block({ type: "tool_use", id: "toolu_verbatim", name: "f", input: {} })], { stop_reason: "tool_use" }),
+    )
     expect(cc.choices[0].message.tool_calls?.[0].id).toBe("toolu_verbatim")
   })
 })
@@ -154,7 +155,9 @@ describe("translateAnthropicResponseToCC — stop_reason → finish_reason", () 
 
 describe("translateAnthropicResponseToCC — usage", () => {
   test("input/output tokens → prompt/completion + total", () => {
-    const cc = translateAnthropicResponseToCC(anthropicResponse([block({ type: "text", text: "x" })], { usage: { input_tokens: 100, output_tokens: 40 } as never }))
+    const cc = translateAnthropicResponseToCC(
+      anthropicResponse([block({ type: "text", text: "x" })], { usage: { input_tokens: 100, output_tokens: 40 } as never }),
+    )
     expect(cc.usage).toEqual({ prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 })
   })
 

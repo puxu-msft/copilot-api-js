@@ -24,11 +24,6 @@ import {
   gapSurfaceForPath,
   recordAbortProvenanceGap,
 } from "~/lib/observability/abort-provenance-gaps"
-import {
-  //
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
@@ -566,13 +561,6 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     if (clientSignal?.aborted) {
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
       return finalizeErrorDelivery(c, helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
-    }
-    if (isShutdownCausedAbort(error)) {
-      // Our own shutdown cancelled it. 529 (overloaded) is retryable, so the client backs
-      // off and lands on the restarted instance — same contract as the send layer's
-      // `rewriteShutdownAbort`, applied here for the callers that don't opt into it.
-      consola.warn(`[shutdown] Cancelled in-flight ${c.req.method} ${c.req.path} during shutdown`)
-      return finalizeErrorDelivery(c, helpers.defaultError(SHUTDOWN_ABORT_MESSAGE, true, 529), 529 as ContentfulStatusCode)
     }
     if (error.name === "TimeoutError") {
       // The response-header watchdog itself fired (`AbortSignal.timeout` → TimeoutError,

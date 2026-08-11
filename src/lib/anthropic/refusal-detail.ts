@@ -18,7 +18,7 @@ export interface RefusalDetail {
 /** Read a `string | null | undefined` field, flagging any other type as malformed. */
 function readNullableString(bag: Record<string, unknown>, key: string): { value: string | null | undefined; invalid: boolean } {
   const raw = bag[key]
-  if (raw === undefined || raw === null) return { value: raw as null | undefined, invalid: false }
+  if (raw === undefined || raw === null) return { value: raw, invalid: false }
   if (typeof raw !== "string") return { value: undefined, invalid: true }
   // An empty category is malformed (upstream expresses "unmapped" as `null`, not `""`) — keep the
   // verbatim value for diagnostics but flag it so it never reads as a named category.

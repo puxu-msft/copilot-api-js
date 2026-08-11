@@ -34,6 +34,7 @@ import { streamSSE } from "hono/streaming"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -69,6 +70,7 @@ import {
   //
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -118,6 +120,10 @@ import {
 const MAX_LEARNING_RETRIES = 32
 
 export async function handleResponsesV4(c: Context): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleResponsesV4Admitted(c, historyReservation))
+}
+
+async function handleResponsesV4Admitted(c: Context, historyReservation: HistoryReservation): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
@@ -168,6 +174,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

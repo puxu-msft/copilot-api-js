@@ -7,7 +7,11 @@ import {
 } from "hono/types"
 
 import { forwardError } from "~/lib/error"
-import { observabilityMiddleware } from "~/lib/observability/middleware"
+import {
+  //
+  observabilityMiddleware,
+  shutdownConnectionCloseMiddleware,
+} from "~/lib/observability/middleware"
 import { registerHttpRoutes } from "~/routes"
 import { registerOpenApiDocs } from "~/routes/openapi"
 import { readinessCheck } from "~/server"
@@ -45,6 +49,9 @@ export function createFullTestApp(opts?: { preMiddleware?: MiddlewareHandler }) 
 
   app.get("/health", readinessCheck)
   app.get("/health/readiness", readinessCheck)
+
+  // Mirrors src/server.ts: registered ahead of `preMiddleware`, because `preMiddleware` occupies the config/token slot (see this function's doc comment) and production puts this rule outside that slot — a throw in there is itself a shutdown rejection path.
+  app.use(shutdownConnectionCloseMiddleware())
 
   // Mirrors src/server.ts:137 — the production observability safety-net that drives a ctx
   // to its terminal state from `c.res.status` when the handler didn't finalize it itself

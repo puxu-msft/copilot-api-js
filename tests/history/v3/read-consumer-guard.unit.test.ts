@@ -13,7 +13,8 @@ const source = (path: string): string => readFileSync(join(ROOT, path), "utf8")
 describe("History V3 read-consumer cutover guard", () => {
   test("sessions facade has no V2 query, aggregate, stats, or delete dependency", () => {
     const text = source("src/lib/history/sessions.ts")
-    expect(text).not.toMatch(/sqlite\/(read|sessions-agg|stats|write)/)
+    // The retired V2 modules were `sqlite/{read,sessions-agg,stats,write}`, and the specifier must END there — the closing quote is what distinguishes them from a longer name that merely starts the same way. Without it this rejected `sqlite/read-connection`, the main thread's readonly handle introduced by the Batch 2b Worker cutover, which is the opposite of what the guard is for.
+    expect(text).not.toMatch(/sqlite\/(read|sessions-agg|stats|write)["']/)
     // Guard the retired V2 APIs without rejecting the intentionally same-named
     // V3 summary-store query. Module provenance distinguishes the contracts;
     // a bare identifier regex cannot and produced a false red here.
@@ -31,7 +32,8 @@ describe("History V3 read-consumer cutover guard", () => {
       "src/routes/responses/conversation-rebuild.ts",
     ]) {
       const text = source(path)
-      expect(text).not.toMatch(/history\/sqlite\/(read|sessions-agg|stats)/)
+      // Same segment-terminator reasoning as the sessions guard above: reject the retired V2 modules, not every specifier that starts with their name.
+      expect(text).not.toMatch(/history\/sqlite\/(read|sessions-agg|stats)["']/)
       expect(text).toMatch(/~\/lib\/history/)
     }
   })

@@ -178,6 +178,10 @@ describe("classifyError", () => {
     ["ordinary 408", '{"error":{"code":"request_timeout","message":"Request deadline exceeded"}}'],
     ["matching code with another message", '{"error":{"code":"user_request_timeout","message":"Generation timed out"}}'],
     ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
+    ["plain-text body", "Timed out reading request body."],
+    ["malformed JSON body", '{"error":'],
+    ["missing error object", '{"code":"user_request_timeout","message":"Timed out reading request body."}'],
+    ["non-string message", '{"error":{"code":"user_request_timeout","message":408}}'],
   ])("keeps %s as bad_request", (_label, body) => {
     const result = classifyError(new HTTPError("Request timeout", 408, body))
 
@@ -881,15 +885,6 @@ describe("forwardError", () => {
     // response headers" for ANY such abort — a claim with no evidence behind it (2026-07-28:
     // a 609ms request blamed on a 900s timeout).
     expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
-  })
-
-  test("shutdown-caused abort → retryable 529, not 503/504", () => {
-    const { ctx, getLastJson } = createMockContextWithSignal(false)
-    const e = tagTransportError(makeAbortError(), "pool-closed")
-    forwardError(ctx, e)
-    const { data, status } = getLastJson()
-    expect(status).toBe(529)
-    expect(JSON.stringify(data)).toContain("shutting down")
   })
 
   test("hard request-deadline cancel → 504 naming the deadline, not the header timeout", () => {

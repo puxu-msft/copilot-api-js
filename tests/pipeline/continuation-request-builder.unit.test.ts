@@ -1,8 +1,16 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
 import type { ContinuationRequestBuilder } from "~/lib/pipeline/continuation-request-builder"
 
-import { getContinuationBuilder, registerContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
+import {
+  //
+  getContinuationBuilder,
+  registerContinuationBuilder,
+} from "~/lib/pipeline/continuation-request-builder"
 
 test("unregistered format returns undefined (caller degrades to partial-degrade)", () => {
   expect(getContinuationBuilder("gemini")).toBeUndefined()

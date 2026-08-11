@@ -1,5 +1,20 @@
-import { createHash, randomUUID } from "node:crypto"
-import { closeSync, constants, linkSync, openSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+  //
+  createHash,
+  randomUUID,
+} from "node:crypto"
+import {
+  //
+  closeSync,
+  constants,
+  linkSync,
+  openSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import path from "node:path"
 
 const RECEIPT_KEYS = [
@@ -92,7 +107,7 @@ export interface EntryEvidenceReceiptV1Expected {
 export interface EntryEvidenceReceiptValidation {
   valid: boolean
   receipt?: EntryEvidenceReceiptV1
-  errors: string[]
+  errors: Array<string>
 }
 
 function isSha(value: unknown, length: number): value is string {
@@ -166,7 +181,7 @@ export function validateEntryEvidenceReceiptV1(raw: string, expected: EntryEvide
   const parsed = parseEntryEvidenceReceiptV1(raw)
   if (!parsed.valid || parsed.receipt === undefined) return parsed
   const receipt = parsed.receipt
-  const errors: string[] = []
+  const errors: Array<string> = []
   const canonicalTree = (() => {
     try {
       return realpathSync(expected.tree)
@@ -177,12 +192,12 @@ export function validateEntryEvidenceReceiptV1(raw: string, expected: EntryEvide
   const canonicalManifest = canonicalRegularFile(receipt.manifest_path)
   const canonicalExpectedManifest = canonicalRegularFile(expected.manifestPath)
   if (
-    canonicalTree === undefined ||
-    canonicalManifest === undefined ||
-    canonicalExpectedManifest === undefined ||
-    canonicalManifest !== canonicalExpectedManifest ||
-    canonicalManifest === canonicalTree ||
-    canonicalManifest.startsWith(`${canonicalTree}${path.sep}`)
+    canonicalTree === undefined
+    || canonicalManifest === undefined
+    || canonicalExpectedManifest === undefined
+    || canonicalManifest !== canonicalExpectedManifest
+    || canonicalManifest === canonicalTree
+    || canonicalManifest.startsWith(`${canonicalTree}${path.sep}`)
   )
     errors.push("manifest_path is invalid for tree")
   if (receipt.entry_sha !== expected.entrySha) errors.push("entry_sha differs from expected entry")

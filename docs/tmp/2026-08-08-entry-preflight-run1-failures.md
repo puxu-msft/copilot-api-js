@@ -1,0 +1,100 @@
+# Entry preflight run 1 failures and fixes
+
+## Scope and failed evidence
+
+Entry candidate `14974488ef4a881a9fc2f15bb105f67e5f80e1bc` was measured from `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover` with the frozen T0.0f producer. The first batch wrote the disk manifest plus run-01 log/JUnit/runtime/skip artifacts under `/home/xp/.claude/jobs/bf526911/tmp/entry-evidence-A-14974488-run1`, then exited 5 before aggregate publication. `evidence-manifest.json` was absent, so no pointer P was created and T0.0d did not start.
+
+The original `run-01.log` reports `16 shards · 7259 tests · 7258 pass · 1 fail · 7259 executed · 30 skipped`. The failing test was `tests/e2e-client/precontent-recovery.it.test.ts` case `ready-live ping recovery yields one coherent SDK message`: the real Anthropic SDK request timed out after the test’s fixed 5-second wall-clock budget under the 16-shard load.
+
+The producer’s immediate stderr said `reported no tests`. That diagnosis was separately wrong: `baseline-runs.sh` selected the last line containing `parallel-test`; the newer `[parallel-test] artifacts=...` line follows the count summary, so the parser discarded the real `7259 tests / 1 fail` summary.
+
+## Fix 1: summary parsing
+
+`baseline-runs.sh` now selects the structured count summary shape containing shards, tests, pass, fail, executed, and skipped fields. It no longer treats a later artifact-location line as the summary.
+
+`tests/infra/capture-entry-evidence.unit.test.ts` runs the real shell script in a temporary Git repository with a fake runner that emits a count summary followed by an artifacts line:
+
+- runner rc 0: wrapper rc 0 and `tests seen: 10`;
+- runner rc 7: wrapper remains red, preserves `tests seen: 10`, reports `run 01 exited 7`, and does not claim `reported no tests`.
+
+The exact mutation restoring the old broad `grep 'parallel-test' | tail -1` selector makes the success control fail at the target exit-code assertion. Restoring the exact patch returns the focused tests to green.
+
+## Fix 2: deterministic SDK recovery timing
+
+The test remains a genuine client e2e: a real `@anthropic-ai/sdk` client calls the in-process localhost proxy and `.finalMessage()` remains the oracle for parse/fold behavior. The SDK timeout stays 5 seconds.
+
+The ready-live scenarios no longer use an uncontrolled real `setTimeout(20)`. They wait until the primary upstream call is reached and install `FakeClock` in selective mode: only the proxy's exact 1ms commit/heartbeat business timers are intercepted, while the SDK's 5-second request deadline and localhost I/O timers remain on real wall time. The test then advances those business timers deterministically before releasing the primary failure. A separate 30-second Bun test watchdog is only an escape hatch for a wedged harness. `finally` and `afterEach` both restore the clock so ordinary rejection and watchdog interruption cannot leak timer state into another test.
+
+A dedicated 50ms SDK negative control uses an abort-aware never-responding upstream fake. It proves the selective business clock still lets the real SDK deadline fire as `APIConnectionTimeoutError`, while the fake mirrors the real abort protocol so teardown can settle. The exact mutation setting `preContentRecovery.enabled=false` makes all three ready-live SDK scenarios fail with the real SDK surfacing the stream `APIError`. Restoring the exact patch returns the suite to green.
+
+## Verification at `fc570601` and after the first merge
+
+### Before merging master, at `fc570601`
+
+Scoped to the `entry-preflight-fixes` worktree based on `14974488ef4a881a9fc2f15bb105f67e5f80e1bc` plus the then-uncommitted review-fix diff:
+
+- `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 14 pass, 0 fail;
+- `bun test tests/pipeline/client-sink.unit.test.ts`: 29 pass, 0 fail;
+- `bun test tests/e2e-client/precontent-recovery.it.test.ts --rerun-each=10`: 70 pass, 0 fail;
+- `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail;
+- `bun run typecheck`: exit 0;
+- `bun run test:backend`: 3 fail, all `TimeoutError` under 16 shards, all green in isolation.
+
+Those three were never this fix's doing and never real assertion failures: the CAS byte-ratio test held a 15s budget and took 20.87s, and two validator tests held bun's 5000ms default and were killed at 5.37s and 6.16s. Master had already fixed both files while this branch sat on the old entry — `b9954a39` gave `store-performance` `setDefaultTimeout(60_000)` and `a6be256a` gave `validate-entry-evidence` `setDefaultTimeout(30_000)` — so the merge below resolved all three without a line from this branch.
+
+### After merging master
+
+`ebe4a292` merged master into this branch and `9403dc90` carries the follow-up fixes. Master had independently fixed the same summary-selector defect in `fe65adea`; the reconciliation keeps this branch's fully anchored grammar and drops master's fallback to the last runner-mentioning line, because behind a strict primary that fallback reinstates the artifacts-line selection the fix removed.
+
+The merged run then turned one more test red twice: `uds-transport.it` "a large multi-segment response reassembles correctly" was inheriting two separate 5s deadlines. Bun's default test budget killed it at 5.04s; raising that exposed the client's own `DEFAULT_QUERY_TIMEOUT_MS`, which fails silently because `query()` never throws — the blown deadline resolved to `[]` and the assertion read `expected 50, received 0`, which looks like a reassembly bug. Re-review then found the same shape twice more in that file, at the two ping tests that inherit a 300ms `DEFAULT_PING_TIMEOUT_MS`. All three are fixed, and the file now carries a file-level budget derived from the rule frozen in `docs/tmp/2026-08-08-load-sensitive-test-dispositions.md` rather than a number picked by hand.
+
+`docs/todo/deferred-backlog.md` did already list this test under its "撞 5000ms 默认超时" category — but only on master, and only from a commit later than the one this branch had merged when that claim was first written here, so it was not true of this tree at the time. The second merge brought it in, and that entry now records the closure plus the separate axis these three instances share: the deadline's SOURCE, not the criterion's nature. That distinction earns its own line because the failure signature differs — a harness timeout says so, an inherited one surfaces as a content assertion and cannot be found by grepping the log for `timeout`.
+
+## Two defects that would have failed T0.0f outright
+
+Both were found by invoking the backend the way the producer invokes it — `REQUIRE_TEST_ARTIFACTS=1` with an exported artifact dir — rather than the way a developer does. Neither is load-sensitive; both fail every time.
+
+The discovery baseline had drifted. Seven native-gated cases added since it was last frozen (three in `overlay-index-agreement`, three in `daemon`, one in `search-rest-cutover`) skip in a tree without `native/history-search/*.node`, and the frozen `allowed_skipped` did not list them, so `assertSkippedMultiset` would have raised and the producer would have exited 5 with no manifest. It is re-frozen from a real run: 36 entries to 43, `files` and `minimum_executed` untouched. The floor deliberately stays at 7360 against an observed 7377 — `cutover-plan.md` §0.4f forbids deriving it from the run it gates, and it passes as it stands.
+
+Building the native artifact instead would have made this worse. 27 of the 36 frozen entries carry `reason: "native-unavailable"` (the rest are 8 `whole-suite-skip` and 1 `todo`), so the baseline was frozen in a native-absent tree; a native-present run turns those 27 into `missing`, which the comparator rejects just as firmly.
+
+The summary fixture also inherited `PARALLEL_TEST_ARTIFACT_DIR` and `REQUIRE_TEST_ARTIFACTS` from the environment, so under the producer it took the artifact-transfer branch and failed two of its own cases. The sibling harness in the same file already sanitises those and explains why.
+
+Neither would have announced itself early: the producer runs all fifteen invocations before reconciling any of them, so a deterministic drift costs the whole batch first. `scripts/parallel-test.ts` now compares the run's skip multiset against the frozen baseline and prints what differs — warning only, backend tier only, reusing the production parser and identity key, and wrapped so an unparsable baseline can never take the run down with it. That key had three copies (two private ones in the producer, one in the schema module); it now has one exported definition.
+
+The warning is not redundant with the guard that already exists. `entry-evidence-schema.unit.test.ts` checks the baseline's `files` against a disk glob, which is why a new test file cannot drift unnoticed — but nothing checked `allowed_skipped`, which is why seven native-gated skips did. The gap is structural rather than an omission: which cases skip is a runtime fact, decided by `skipIf` against a build artifact that may or may not be present, and a glob cannot see it. That is why the check belongs in the runner rather than in another unit guard. It also changes the coverage from one late check to two: `files` and `runner_git_blob` were already double-covered, statically here and by a `fail(4)` before the batch starts, while the skip multiset had exactly one check and it ran after all fifteen invocations.
+
+## Verification at `8cf8acd1`
+
+Measured at `8cf8acd1`; nothing after it changes code:
+
+- `bun test tests/infra/capture-entry-evidence.unit.test.ts`: 18 pass, 0 fail;
+- `bun test tests/infra/validate-entry-evidence.unit.test.ts`: 43 pass, 0 fail;
+- `bun test tests/infra/entry-evidence-schema.unit.test.ts`: 5 pass, 0 fail;
+- `bun test tests/infra/parallel-test-artifacts.unit.test.ts`: 11 pass, 0 fail;
+- `bun test tests/infra/test-discovery-matrix.unit.test.ts`: 5 pass, 0 fail;
+- `bun test tests/pipeline/client-sink.unit.test.ts`: 30 pass, 0 fail;
+- `bun test tests/e2e-client/precontent-recovery.it.test.ts`: 7 pass, 0 fail;
+- `bun test tests/history/search/uds-transport.it.test.ts`: 24 pass, 0 fail;
+- `bun run typecheck`: exit 0;
+- `bunx eslint` over every file this branch changed: exit 0;
+- `bun run test:backend` under the producer's own environment: 16 shards, 6836 pass, 0 fail, 7377 executed, 43 skipped, exit 0, and no baseline-staleness warning.
+
+The reporter's `tests` count is not the population authority, and this round is a good demonstration: successive backend runs reported 6211, 5502, 5693, 5151, 6836, 7374 and 6836 `tests`. `executed` is steadier but still not a constant: 7266 at `fc570601` plus its uncommitted diff, 7261 at `fc570601` itself as an independent reviewer measured it, and 7377 after the second merge. Anchor either number to a commit or do not quote it. `tests` counts the runner's scheduling units; T0.0f's file identity, skipped multiset and minimum executed floor remain the entry gate.
+
+## Failed evidence disposition and mandatory next step
+
+The entire `/home/xp/.claude/jobs/bf526911/tmp/entry-evidence-A-14974488-run1` batch is permanently diagnostic-only. Its run-01 must not count toward any future 15-run batch; none of its JUnit, runtime identity, skipped multiset, or disk manifest may be copied into a successful manifest. The old entry `14974488ef4a881a9fc2f15bb105f67e5f80e1bc` and its cutover worktree do not remain the entry after this fix lands.
+
+After `fc570601` and all follow-up review fixes are merged into master, the executor must read the resulting full master SHA as the new A, create a fresh execution worktree exactly at that A, and use a new empty tree-external OUT directory. The frozen producer must then generate a wholly new 15-run batch. Only that new manifest may be referenced by a new HANDOVER pointer commit P; only after A is proven an ancestor of P may the frozen validator produce the T0.0d receipt and T0.1 begin. The old run1, old A, and any partial artifacts are forbidden inputs to that chain.
+
+## Review findings disposition
+
+- Major 1 fixed: the summary selector is anchored to the complete `parallel-test.ts` grammar, including the sole optional crash clause and the terminal decimal-seconds field. Tests accept normal and crash summaries and reject pure artifacts, count-shaped forged suffixes, and truncated summaries.
+- Major 2 fixed: `FakeClock` now supports selective delay interception with default all-timer behavior preserved for existing callers. The SDK e2e intercepts only 1ms proxy business timers; a real-time SDK timeout control proves the 5-second client deadline is no longer frozen.
+- Major 3 fixed: the preceding disposition section permanently forbids run1, old A, and every partial artifact as inputs; it spells out merge→new A→fresh tree/OUT→new 15 runs→P→T0.0d→T0.1.
+
+## Structural smell disposition
+
+- `exp/inter-block-anchor-allocator/baseline-runs.sh:230`: text protocol parsing is a boundary smell, but the selected line is now a strict, fully anchored, tested producer grammar and the independent JUnit/runtime artifacts remain authoritative. Replacing the entire runner summary with another manifest would duplicate the existing artifact channel; no further mechanism is added in this fix.
+- `tests/e2e-client/precontent-recovery.it.test.ts`: the prior real-time sleep leaked scheduler load into a client-behavior oracle; the first fix over-corrected by globally freezing the third-party SDK deadline. Selective interception now keeps the real client boundary while controlling only proxy business timers.

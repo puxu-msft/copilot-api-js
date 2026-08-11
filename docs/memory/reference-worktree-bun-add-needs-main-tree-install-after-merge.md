@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
+description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules（隔离性探针假绿）而仓库外树零依赖（A/B 对照假红，先说清在测什么再选放置位置）、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
 metadata: 
   node_type: memory
   type: reference
@@ -37,6 +37,19 @@ metadata:
 - 判据：`ls <probe>/../node_modules` 沿路径向上逐级看，只要任一级存在就不是隔离的。
 - 同一次实测还证伪了另一条更常犯的推断：**用 grep/正则扫 import 语句来清点依赖是不可靠的**（多行 import 形式、Vue 模板语法都会骗过正则——我的扫描漏掉了 `diff`，却把 `:disabled=` 当成包名）。「这个项目需要哪些依赖」唯一可信的 oracle 是仓库外裸装裸跑。
 - 边界也要如实写：同一次实测里 `build`/`test` 在仓库外能跑，`typecheck` 不能（它经 `~backend/*` 拖入后端源码，后端自己的依赖装在仓库根）。别把不对称的结论压成一句「已独立」。
+
+### 第三方向的背面（2026-08-09 新增）：做 A/B 对照时，建在仓库外反而是错的
+
+**同一个旋钮，两个问题下的正确设置相反**，所以放置位置之前先说清「我在测什么」（同 [[feedback-pass-null-clean-not-self-validating]] 与 probe-depth 对齐那条的形状）：
+
+| 我要回答的问题 | worktree 该建在哪 | 建错了会怎样 |
+|---|---|---|
+| 这个子项目脱离宿主能不能自立 | **仓库外** | 建在仓库内 → 向上借到主树 node_modules → **假绿** |
+| 这批测试在 X 提交上是红是绿（A/B 对照） | **仓库内**（`.worktrees/`） | 建在仓库外 → 零 node_modules → **假红** |
+
+2026-08-09 实例：为判断 `test:backend` 的 28 条红是不是自己合出来的，我在 `$CLAUDE_JOB_DIR/tmp/ab-master` 建了 detached worktree 跑对照，得到 `0 pass / 4 fail / Ran 4 tests across 4 files [122ms]`。**差点据此断言「master 自己就是红的」**——真因是 `error: Cannot find module 'undici/index.js'`，四个文件全部加载失败，每个文件算 1 条“失败”。挪进 `.worktrees/ab-master` 重跑即 `24 pass / 20 skip / 0 fail`。
+
+**判据（比记住结论便宜）**：A/B 树里的失败若**数量恰好等于文件数、耗时在百毫秒量级、错误是 `Cannot find module`**，那是缺依赖不是缺陷。跑对照前先 `ls <worktree>/node_modules` 或直接看首条错误，别读失败计数。
 
 ## 第四方向（2026-07-29 新增）：验证命令实际落在哪棵树，委派消息说了不算
 

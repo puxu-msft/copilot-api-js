@@ -3,7 +3,6 @@ import {
   expect,
   test,
 } from "bun:test"
-
 import { readFileSync } from "node:fs"
 import { parse } from "yaml"
 

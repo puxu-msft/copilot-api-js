@@ -8,21 +8,20 @@ import {
   resolveResponseUsage,
   resolveStopReason,
 } from "./entry-view"
+import { toEntrySummary } from "./in-flight"
+import { requestBucket } from "./lifecycle-state"
 import {
   //
-  listInFlight,
-  toEntrySummary,
-} from "./in-flight"
-import { getHistory } from "./queries"
-import { getDatabase } from "./sqlite/connection"
-import { recordToEntrySummary } from "./v3/projection"
+  getHistory,
+  listHistoryOverlaySummaries,
+} from "./queries"
+import { getHistoryReadDatabase } from "./sqlite/read-connection"
 import { visitV3Summaries } from "./v3/store"
 import {
   //
-  isSummaryProjectionReady,
   queryPersistedStats,
+  withValidatedSummarySnapshot,
 } from "./v3/summary-store"
-import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
 function formatLocalTimestamp(ts: number): string {
   const date = new Date(ts)
@@ -44,42 +43,7 @@ function escapeCsvValue(value: unknown): string {
   return str
 }
 
-/** The one request-count bucket a summary belongs to. */
-export type RequestBucket = "success" | "failure" | "aborted" | "interrupted" | "none"
-
-/**
- * Assign a request to EXACTLY ONE count bucket. Mutual exclusivity is structural (a single return),
- * not four independent `if`s that could each fire.
- *
- * The REQUEST VERDICT is the authority. `responseSuccess` describes the UPSTREAM leg, and it is
- * deliberately `true` for a proxy-introduced failure — a suppressed contentless refusal or an
- * unrepairable tool_use, where the upstream really did deliver a complete 200 that the proxy then
- * re-judged. The previous `state === "completed" || responseSuccess === true` /
- * `state === "failed" || responseSuccess === false` pair incremented BOTH counters for one such
- * request, so success + failure could exceed the total. The leg is consulted ONLY as a fallback,
- * when the entry carries no terminal verdict at all.
- */
-export function requestBucket(summary: { state?: string; responseSuccess?: boolean }): RequestBucket {
-  switch (summary.state) {
-    case "completed": {
-      return "success"
-    }
-    case "failed": {
-      return "failure"
-    }
-    case "aborted": {
-      return "aborted"
-    }
-    case "interrupted": {
-      return "interrupted"
-    }
-    default: {
-      if (summary.responseSuccess === true) return "success"
-      if (summary.responseSuccess === false) return "failure"
-      return "none"
-    }
-  }
-}
+export { requestBucket } from "./lifecycle-state"
 
 export function getStats(): HistoryStats {
   const stats: HistoryStats = {
@@ -96,20 +60,16 @@ export function getStats(): HistoryStats {
     recentActivity: [],
     activeSessions: 0,
   }
-  const overlay = [
-    ...listInFlight().map((entry) => toEntrySummary(entry)),
-    ...listRecentModelOperationTerminals().map((record) => recordToEntrySummary(record)),
-  ]
+  const overlay = listHistoryOverlaySummaries()
   let totalDurationMs = 0
   const sessions = new Set<string>()
   const seen = new Set<string>()
-  const db = getDatabase()
-  const projectionReady = isSummaryProjectionReady(db)
-  if (projectionReady) {
-    const persisted = queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))])
-    Object.assign(stats, persisted.stats)
-    totalDurationMs = persisted.totalDurationMs
-    for (const sessionId of persisted.sessionIds) sessions.add(sessionId)
+  const db = getHistoryReadDatabase()
+  const persistedSnapshot = withValidatedSummarySnapshot(db, () => queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))]))
+  if (persistedSnapshot.ready) {
+    Object.assign(stats, persistedSnapshot.value.stats)
+    totalDurationMs = persistedSnapshot.value.totalDurationMs
+    for (const sessionId of persistedSnapshot.value.sessionIds) sessions.add(sessionId)
   }
   const consume = (summary: ReturnType<typeof toEntrySummary>): void => {
     if (seen.has(summary.id)) return
@@ -150,7 +110,7 @@ export function getStats(): HistoryStats {
     stats.endpointDistribution[summary.endpoint] = (stats.endpointDistribution[summary.endpoint] ?? 0) + 1
   }
   for (const summary of overlay) consume(summary)
-  if (!projectionReady) visitV3Summaries(consume)
+  if (!persistedSnapshot.ready) visitV3Summaries(consume)
   stats.averageDurationMs = stats.totalRequests === 0 ? 0 : totalDurationMs / stats.totalRequests
   stats.activeSessions = sessions.size
   return stats

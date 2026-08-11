@@ -17,13 +17,11 @@
  * The non-streaming path still renders + settles directly (no sink).
  *
  * P3 (block-level buffered retry, terminal-only): `chatCompletionsBufferedRetry` selects
- * `driver.runResponseBufferedSink` instead of `runResponseSink` — CC has no mid-stream block
- * boundary (deltas carry no structural terminator), so the commit predicate
- * (`ccCommitBoundaries`) is terminal-only: only an in-band upstream `error` frame is a
- * frame-level boundary; the real terminal commit is `sawMessageStop = () => acc.finishReason
- * !== ""`. The handler's post-loop `[DONE]` synthesis stays UNCHANGED and runs after the
- * buffered outcome resolves (the driver drops every upstream `[DONE]`, so `[DONE]` is always
- * handler-synthesized regardless of buffered/live routing).
+ * `driver.runResponseBufferedSink` instead of `runResponseSink`. CC has no mid-stream block
+ * boundary; the candidate adapter stages finish_reason and usage as response frames, then its
+ * finish producer emits one typed terminal. The grammar-derived compatibility projection drives
+ * buffered commit/error decisions. The handler's post-loop `[DONE]` synthesis remains after the
+ * buffered outcome resolves (the driver drops every upstream `[DONE]`).
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -35,6 +33,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -70,16 +69,17 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { applyConfigToState } from "~/lib/config/config"
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -92,6 +92,7 @@ import {
   restoreChatCompletionsToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -152,6 +153,10 @@ function restoreStreamToolNames(data: string | undefined, mapper: ToolNameMapper
 }
 
 export async function handleChatCompletionV4(c: Context): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleChatCompletionV4Admitted(c, historyReservation))
+}
+
+async function handleChatCompletionV4Admitted(c: Context, historyReservation: HistoryReservation): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
@@ -206,6 +211,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -290,12 +296,13 @@ type ChatCandidateResponseSnapshot =
       eventsIn: number
     }>
 
-const createChatCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
+export const createChatCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const mapper = input.env.ctx.toolNameMapper
   const startedAtMs = Date.now()
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createChatCompletionsDeliveryProtocolAdapter(),
       createState: () => ({
         anthropicAcc: createAnthropicStreamAccumulator(),
         diag: createUpstreamFrameDiagnostics(startedAtMs),
@@ -307,7 +314,7 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
         state.diag.observe(raw)
         if (!raw.data || raw.data === "[DONE]") return
         try {
-          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+          accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
         } catch (error) {
           consola.error("[ChatCompletions:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
         }
@@ -340,6 +347,14 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
       eventsIn: 0,
     }),
     onUpstreamFrame: (state, frame) => state.diag.observe(frame as ServerSentEventMessage),
+    finish(state, _renderer, rendererFrames) {
+      // streamError is assigned only while consuming an in-band wire `error` frame; the adapter
+      // already turned that frame into the one legal failed response terminal, so finish confirms drain.
+      if (state.acc.streamError !== undefined) return { kind: "complete", frames: [] }
+      if (state.acc.finishReason === "")
+        return { kind: "truncated", frames: rendererFrames, reason: "Upstream stream truncated before completion (no finish_reason)" }
+      return { kind: "valid-terminal-without-boundary", frames: rendererFrames, terminal: state.acc.finishReason }
+    },
     onRenderedFrame(state, frame) {
       state.bytesIn += frame.data?.length ?? 0
       state.eventsIn++
@@ -356,9 +371,6 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
       }
       return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
     },
-    sawMessageStop: (state) => state.acc.finishReason !== "",
-    sawUpstreamError: (state) => state.acc.streamError !== undefined,
-    commitBoundaries: (_state, frame) => ccCommitBoundaries(frame),
     onBufferedResolve(state, outcome, retries, meta) {
       if (outcome === "success" && retries === 0) return
       recordProtectStreamingOutcome(outcome, retries, meta)
@@ -474,13 +486,13 @@ interface PumpStreamingV4Options {
  *     `[DONE]`; passthrough AND via-responses both terminate with exactly one — P2.2-D2),
  *   - maps the outcome + its own accumulator to the terminal ctx state. An in-band upstream
  *     `error` frame (H2, `acc.streamError`) is a clean drain WITHOUT `finishReason` — the
- *     buffered path commits it via `sawUpstreamError` (see `ccCommitBoundaries`) instead of
+ *     buffered path commits it via the grammar-derived terminal/error projection instead of
  *     retrying it as a truncation; on BOTH buffered/live it fails via `acc.streamError` below,
  *     mirroring Anthropic/Responses' H2. The remaining failure paths are H3 (`stream-error`) /
  *     client-abort (`settled-abort`).
  *
  * P3 (block-level buffered retry, terminal-only): `resolveCcBufferedAndHeartbeat` selects
- * `driver.runResponseBufferedSink` (terminal-only commit — `ccCommitBoundaries` treats only an
+ * `driver.runResponseBufferedSink` (terminal-only commit — the adapter classifies an
  * in-band upstream `error` frame as a frame-level boundary; the real terminal commit is
  * `sawMessageStop = () => acc.finishReason !== ""`) instead of `runResponseSink`.
  *
@@ -545,7 +557,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         // Block-commit boundary (terminal-only degenerate case, P3 §3.1): CC has no mid-stream
-        // block structure, so `ccCommitBoundaries` only recognizes an in-band upstream `error`
+        // block structure, so only an in-band upstream `error` creates an early terminal
         // frame as a frame-level boundary — every content delta returns false. The real terminal
         // commit is `sawMessageStop` below (finish_reason on the last chunk).
         // H2 — a terminal upstream `error` frame (clean drain, no finish_reason). Committing it
@@ -560,6 +572,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const candidate = chatCandidateSnapshot(driver, upstream)
   if (candidate.kind !== "chat-completions") throw new Error("[ChatCompletions:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
+  if (outcome.kind === "complete" && outcome.finish?.kind === "valid-terminal-without-boundary" && acc.finishReason === "") {
+    acc.finishReason = outcome.finish.terminal
+  }
 
   if (outcome.kind === "delivery-finished") {
     recordForwarded()
@@ -618,7 +633,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // outcome.kind === "complete" — the upstream drained cleanly.
   if (acc.streamError) {
     // H2 — a TERMINAL upstream `error` frame reached the client as a real content frame:
-    // forwarded live, OR flushed by the buffered commit (`ccCommitBoundaries` / `sawUpstreamError`).
+    // forwarded live, OR flushed by the grammar-derived buffered terminal/error projection.
     // It drains cleanly (never a thrown error → outcome is `complete`) but never carries a
     // finish_reason — must be handled HERE, BEFORE the finish_reason truncation gate below (which
     // would otherwise misfire: a SECOND synthetic error frame double-terminating the stream, and

@@ -7,7 +7,6 @@ import {
   type ApiErrorType,
 } from "~/lib/error"
 import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
-import { isShutdownCausedAbort } from "~/lib/shutdown"
 import { classifyStreamError } from "~/lib/stream"
 
 import {
@@ -93,9 +92,6 @@ function classifyHedgeAggregate(
 function classifySinglePreContentRecoveryFailure(input: PreContentRecoveryFailureInput): PreContentRecoveryFailure {
   const { error, clientAborted, lifecycleSignal } = input
   switch (classifyStreamError(error)) {
-    case "shutdown": {
-      return { kind: "abort", abortKind: "shutdown" }
-    }
     case "client-abort": {
       return { kind: "abort", abortKind: "client-abort" }
     }
@@ -124,8 +120,7 @@ function classifySinglePreContentRecoveryFailure(input: PreContentRecoveryFailur
       throw new Error("unreachable stream classification")
     }
   }
-  if (error instanceof Error && (isAbortError(error) || isShutdownCausedAbort(error)))
-    return { kind: "abort", abortKind: classifyPostCommitAbort(clientAborted, lifecycleSignal, error) }
+  if (error instanceof Error && isAbortError(error)) return { kind: "abort", abortKind: classifyPostCommitAbort(clientAborted, lifecycleSignal, error) }
   const classified = classifyError(error)
   return classified.type === "network_error" ? { kind: "network-error" } : { kind: "http-error", errorType: classified.type }
 }
@@ -181,7 +176,6 @@ export function shouldAttemptPreContentRecovery(input: PreContentRecoveryGateInp
     case "abort": {
       switch (input.failure.abortKind) {
         case "client-abort":
-        case "shutdown":
         case "header-timeout":
         case "request-deadline":
         case "reaper-cancel":

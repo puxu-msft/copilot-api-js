@@ -26,6 +26,7 @@ const unconfiguredTerminalSink: HistoryTerminalSink = {
 let admission: HistoryAdmissionController | undefined
 let unsubscribeAdmissionCapacity: (() => void) | undefined
 let runtime: HistoryPersistenceRuntime | undefined
+let runtimeFactory: (() => HistoryPersistenceRuntime) | undefined
 
 export function getHistoryAdmissionController(): HistoryAdmissionController {
   if (admission) return admission
@@ -48,7 +49,7 @@ export function setHistoryAdmissionControllerForTests(value: HistoryAdmissionCon
 }
 
 export function getHistoryPersistenceRuntime(): HistoryPersistenceRuntime {
-  return (runtime ??= new HistoryPersistenceRuntimeImpl({ workerUrl: resolveHistoryWorkerUrl() }))
+  return (runtime ??= runtimeFactory ? runtimeFactory() : new HistoryPersistenceRuntimeImpl({ workerUrl: resolveHistoryWorkerUrl() }))
 }
 
 export function peekHistoryPersistenceRuntime(): HistoryPersistenceRuntime | undefined {
@@ -59,10 +60,24 @@ export function setHistoryPersistenceRuntimeForTests(value: HistoryPersistenceRu
   runtime = value
 }
 
-/** Shut down the registry-owned runtime before releasing its singleton reference. */
-export async function resetHistoryPersistenceRuntimeForTests(): Promise<void> {
+/**
+ * Decide what a LATER `getHistoryPersistenceRuntime()` constructs, rather than what it returns right now.
+ *
+ * `setHistoryPersistenceRuntimeForTests` installs one instance; that is not enough on its own, because a runtime is single-use — once shut down it never comes back, so anything that releases the singleton (a `historyDbPath` switch, a test that calls `shutdownHistory`) makes the registry build a replacement. Without this seam that replacement is a REAL Worker thread, silently, in the middle of a test run that asked for the in-process backend. Installed once by the test bootstrap; unset in production.
+ */
+export function setHistoryPersistenceRuntimeFactoryForTests(factory: (() => HistoryPersistenceRuntime) | undefined): void {
+  runtimeFactory = factory
+}
+
+/** Shut down the registry-owned runtime, releasing its singleton reference once the shutdown settles — successfully or not. */
+export async function releaseHistoryPersistenceRuntime(): Promise<void> {
   const current = runtime
   if (!current) return
-  await current.shutdown()
-  if (runtime === current) runtime = undefined
+  try {
+    // The reference stays visible for the duration of the shutdown on purpose: clearing it first would let a concurrent `getHistoryPersistenceRuntime()` construct a REPLACEMENT while this one is still closing, and for a moment two runtimes would each believe they own the semantic write connection.
+    await current.shutdown()
+  } finally {
+    // But it is cleared however the shutdown ends. A runtime is single-use, so one that failed to shut down is no more usable than one that succeeded — keeping it would hand the next caller an object that is dead either way, which is this registry's one unrecoverable state. The shutdown error still propagates; it just no longer takes the registry with it.
+    if (runtime === current) runtime = undefined
+  }
 }

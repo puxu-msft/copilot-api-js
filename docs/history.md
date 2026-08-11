@@ -77,7 +77,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - `v3_operation_summaries` — forward migration 001 建立的窄型产品读投影；ready marker 后 list 页／列表 total／sessions／stats 和 session 页选 ID 均走 typed SQL，不读取 `manifest_gz`。`/api/status` 总数则直接对 canonical `v3_operations` 做专用 `COUNT(*)`，同样不读 manifest，也不依赖 marker。001 兼容 trigger 与 bounded backfill 保证历史／旧写路径同步；pending／poisoned 通过 `/api/status.memory` 可见。停服 002 单源收敛尚未实现，故宽表旧列和兼容 fallback 当前仍保留。
 - ordered tracks / timeline chunks / 自包含 journal / 可重建 search 投影 —— 详见 skill。
 
-**写路径**：`v3/store.ts::commitPreparedOperation`/`enqueueModelOperation` + `runDrain`。写者由 `state.ts::initHistory` 订阅 `subscribeModelOperationTerminals` 单例驱动（生产不挂任何 sink——V3 终端持久化是 `initHistory` 内建）。
+**写路径**：`v3/store.ts::commitPreparedOperation`/`enqueueModelOperation` + `runDrain`。**Batch 2b（2026-08-09）起这些调用跑在 Worker 线程内**——`state.ts::initHistory` 仍订阅 `subscribeModelOperationTerminals`，但订阅回调只调 `admission.acceptTerminal()` 把 publication 交给 admission controller，由它投递 Worker runtime；主线程不再持有 semantic 写连接（架构守卫 `tests/architecture/history-worker-boundaries.unit.test.ts` 钉住这条）。生产仍不挂任何 sink。
 
 **内容寻址**：`canonicalize` + `digestBytes` 把语义等价的 payload/frame 归一后按内容哈希去重；搜索只索引 unique semantic object，operation membership 独立保存，权威 operation 不依赖搜索成功。
 
@@ -93,17 +93,17 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 **冲突不降级**：`commitPreparedOperation` 遇同 `operationId` 不同 revision/digest 抛 `V3OperationConflictError`——这是编程错误信号、**不**经 persist-guard，原样穿透到 `status.conflicts` 计数（`getHistoryPersistErrorStats()` 与 `status.conflicts` 是互不越界的两套计数器）。
 
-**drain-before-close**：终端总线单写者 + `drainV3Writer` 承担 drain-before-close 语义——`shutdownHistory` 在关库前排空未决写，不丢 drain 期间 settle 的请求（承接原 V2 async finalize 的 I4 语义，见 skill `persistence-async-invariants`）。
+**drain-before-close**：语义不变（`shutdownHistory` 在关库前排空未决写，不丢 drain 期间 settle 的请求；承接原 V2 async finalize 的 I4 语义，见 skill `persistence-async-invariants`），但 **Batch 2b 起承担它的机制换了**：`shutdownHistory` 先摘掉终端订阅 → `drainModelOperationTerminalSubscribers()` → `runtime.drain()`（等每个未 ACK 的持久化项在 Worker 侧到达终态）→ 释放 runtime → 关只读句柄。**不再有主线程的 `drainV3Writer` 可等**——写者已不在本线程，等一个本地队列证明不了任何东西真的落了盘。
 
 ## DB 维护（周期 tick）
 
-`src/lib/history/v3/maintenance.ts` 的 `startV3Maintenance`/`stopV3Maintenance`（挂 `state.ts::initHistory`/`shutdownHistory`，默认 300s）跑三件套：`incrementalVacuum`（还空间给 OS）+ `checkpointWal`（收回 WAL、缩短锁窗口、降 `SQLITE_BUSY`）+ `runOptimize`（`PRAGMA optimize` 刷新统计）。一次性启动动作在 `connection.ts::openDatabase` 尾部无条件跑：`maybeVacuumOnStartup`（freelist ratio≥25% 且 ≥64MB 可回收才触发 full VACUUM）+ `seedAnalyzeIfNeeded`（`sqlite_stat1` 不存在才首次 `ANALYZE`）。
+`src/lib/history/v3/maintenance.ts` 的 `startV3Maintenance`/`stopV3Maintenance`（默认 300s）跑三件套：`incrementalVacuum`（还空间给 OS）+ `checkpointWal`（收回 WAL、缩短锁窗口、降 `SQLITE_BUSY`）+ `runOptimize`（`PRAGMA optimize` 刷新统计）。**Batch 2b 起由 Worker 持有并驱动**——起于 `worker/backend.ts` 的 `initialize`（间隔随 start config 下发）、收口于 `stop-maintenance` 消息；主线程只保留 `stopHistoryBackgroundWork()` 这条转发（tick 全是写，只读句柄跑不了）。一次性启动动作在 `connection.ts::openDatabase` 尾部无条件跑，**同样在 Worker 线程内**：`maybeVacuumOnStartup`（freelist ratio≥25% 且 ≥64MB 可回收才触发 full VACUUM）+ `seedAnalyzeIfNeeded`（`sqlite_stat1` 不存在才首次 `ANALYZE`）。
 
 > **裁决记录**：V3 维护 tick **只保留 DB 维护半职责**，不采纳 V2 reaper 的「reclaim 存活行」半职责（V3 只落终态、无中间态行需回收），也不采纳 `hasLiveForeignOwner` 的「存活共享库跳过 VACUUM」门槛（V3 无并发写者风险维度——`v3_operations` 无「另一进程正在写自己的行」这个并发面）。详见 skill `history-sqlite-schema` DB-health 节。
 
 ## schema 迁移（Umzug forward-runner，hybrid）
 
-两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`V3_SCHEMA_SQL`），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations`，`state.ts::initHistory` 在 `V3_SCHEMA_SQL` exec 与 `recoverV3Journal` 之间跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本。当前 `MIGRATIONS` 登记 `001-operation-summary-projection`：事务内创建窄型 `v3_operation_summaries`、索引与 insert／summary-update／pin-update 三条兼容 trigger。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据层 never-throw 相反）。迁移使用 `sqlMigration(name, body)` 包 driver `transaction()`，使多语句 DDL all-or-nothing、防 partial-DDL wedge。002 停服收敛命令尚未实现；当前仍是保留宽表旧列和 trigger bridge 的兼容态。框架设计见 [spec/migration-framework-umzug.md](spec/migration-framework-umzug.md)，本轮实施边界见 [plan/2026-08-06-history-read-path-and-h2-diagnostics.md](plan/2026-08-06-history-read-path-and-h2-diagnostics.md)。
+两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`V3_SCHEMA_SQL`），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations`），已应用迁移名记进 `history_meta(schema_migrations)` 账本。**Batch 2b（2026-08-09）起这一串跑在 Worker 的 `initialize` 里**（open → `ensureV3Schema` → `applyForwardMigrations` → `recoverV3Journal`，顺序不变、只是换了线程）；主线程的只读句柄在这串完成之后才打开，读路径因此永远看到已迁移的 schema——**这是顺序保证，不是巧合**。当前 `MIGRATIONS` 登记 `001-operation-summary-projection`：事务内创建窄型 `v3_operation_summaries`、索引与 insert／summary-update／pin-update 三条兼容 trigger。**失败硬阻断**：迁移抛 → Worker `initialize` 失败 → `runtime.start()` reject → `initHistory` reject → 进程入口 `process.exit(1)`（半迁移 schema 比不启动危险，与数据层 never-throw 相反）。迁移使用 `sqlMigration(name, body)` 包 driver `transaction()`，使多语句 DDL all-or-nothing、防 partial-DDL wedge。002 停服收敛命令尚未实现；当前仍是保留宽表旧列和 trigger bridge 的兼容态。框架设计见 [spec/migration-framework-umzug.md](spec/migration-framework-umzug.md)，本轮实施边界见 [plan/2026-08-06-history-read-path-and-h2-diagnostics.md](plan/2026-08-06-history-read-path-and-h2-diagnostics.md)。
 
 ## REST API
 
@@ -130,7 +130,7 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 - **持久化** —— V3 只在请求**终结**时经终端总线落一条不可变 operation record。读取透明合并两源：REST 查询在前拼 in-flight、在后拼 V3 持久，按 `startedAt` DESC 排序、按 id 去重；`getEntry` 优先 in-flight，故 active 请求恒读内存全量。
 - `GET /history/api/entries?terminalOnly=true` 按 state 剔除 active 在飞行（pending/executing/streaming），只返回终态条目——给有独立 Live 泳道的消费者（ui-v4）用。过滤作用于 merge 后结果，故 `total`/游标分页保持正确。
 
-> **已知产品缺口（backlog）**：V3 终端总线只在 terminal 触发、无 ingress 阶段写入，故生产 History list 只显示已终结请求（进行中仅经 WS 实时可见、不落 V3）；这与 V2 的「请求一进来即 eager 落 pending head 行、崩溃留 `interrupted` 可发现记录」不同。取舍与「若做需改什么」见 [deferred-backlog.md](todo/deferred-backlog.md)（D-2 in-flight 可见性）。
+> **已知产品缺口（backlog）**：V3 终端总线只在 terminal 触发、无 ingress 阶段写入。在线时 REST list 合并内存 in-flight、WebSocket 也实时推送，列表可见性完整；但进程崩溃或被 SIGKILL 时，在途 operation 不落 V3、不会留下 `interrupted` 可发现记录。这与 V2 的「请求一进来即 eager 落 pending head 行、崩溃留 `interrupted` 可发现记录」不同。取舍与「若做需改什么」见 [deferred-backlog.md](todo/deferred-backlog.md)（D-2 崩溃可发现性）。
 
 ## Debug-pin（豁免语义）
 
@@ -154,7 +154,7 @@ History Web UI 是 ui-v4（React）应用，前端类型统一从后端 re-expor
 
 历史系统相关的边界项（非缺陷，记录以备后续决策）统一收敛到 [deferred-backlog.md](todo/deferred-backlog.md)，含：
 
-- **D-2 in-flight 可见性**——V3 终端总线只在 terminal 写入，进行中请求不落库、崩溃不留可发现记录（见上文「进行中 vs 持久化」）。
+- **D-2 崩溃可发现性**——在线 REST／WebSocket 可见内存 in-flight；V3 终端总线只在 terminal 写入，故进程崩溃时在途 operation 不落库、不留可恢复记录（见上文「进行中 vs 持久化」）。
 - **V3 projection 非承重字段缺口**——`requestBytes`/`responseBytes`/`max_tokens`/`temperature`/`thinking`/`effectiveSource.pipeline`/上游首包时序等字段已在 `HistoryEntry` 类型声明但 projection 尚未产出。
 
 > 客户端断连记 `aborted` 已统一覆盖**所有**流式 endpoint：Anthropic Messages 经 `processAnthropicStream`，其余（Chat Completions / Responses / Responses-WS / Gemini）经通用 `guardSseIterable`——两者均 shutdown 优先、client-abort 抛 `StreamClientAbortError`，handler 据此记 `aborted` 并跳过向已关闭流写错误帧。此机制在 stream/handler 层、与 history 存储无关，V3 下不变。

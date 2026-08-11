@@ -1,7 +1,7 @@
 # 上游传输 Provider 化 + Rust/napi-rs 实现 交接
 
 > **状态**：**草稿·评审中（已收到 2 BLOCKER + 7 MAJOR，正在处置）** —— 因「上下文将满」走 skill `session-closeout` §6 的紧急路径落盘。**过完评审闭环后必须改成正式状态**（见 T1）。
-> **核验基线**：`0a2e3bdf`（2026-08-03）——晚于此的 peer 提交可能已作废下面的结论。⚠️ **`0a2e3bdf` 是 peer 会话的提交**（inter-block anchor allocator 线），本轮最后一个自有提交是 `36dafc48`。
+> **核验基线**：`0a2e3bdf`（2026-08-03）——晚于此且触及相关路径／契约／测试基础设施、造成异常 merge／integration，或改变环境／版本／运行实例前提的 peer 提交可能影响下面的结论；无关 HEAD 前进本身不使证据失效。⚠️ **`0a2e3bdf` 是 peer 会话的提交**（inter-block anchor allocator 线），本轮最后一个自有提交是 `36dafc48`。
 > **工作区**：分支 `master`（**共享 worktree，有并发 peer 会话**）/ 无独立 worktree；**未提交改动与未追踪文件全部属于 peer**（`src/lib/*/tool-name-sanitize.ts`、`tests/*tool-name-sanitize*`、`docs/memory/*`、`docs/tmp/2026-08-03-*` 等）——**本轮零改动留在工作区，全部已提交**。
 > **已跑门禁**：`exp/napi-http-spike/run-all.sh` → exit 0（2026-08-03）；主会话独立复跑 h2 PING 探针 → `rustPings:5 / controlPings:1`（2026-08-03）。`bun run test:backend` / `typecheck` / `lint` **未跑**——本轮**零生产代码改动**，只有 `docs/` 与 `exp/`。
 
@@ -60,8 +60,8 @@
 
 ### T2 建 `docs/` 权威入口　【已裁决 —— skill §6 强制】
 
-- **要做什么**：在 [docs/DESIGN.md](../../DESIGN.md)「活的架构现状」表加一行 provider 化条目，状态标 `[wip]`，指向本交接与 spec。**只建一个权威落点**，其余文档只放短指针。
-- **验收判据**：**不是**「grep 到字符串」（那只证明字符存在）。判据是：① DESIGN.md「活的架构现状」表存在该行且状态为 `[wip]`；② 该行的相对链接 `docs/DESIGN.md` → spec、→ HANDOVER **实际可解析**（用 markdown link checker 或逐个 `test -f`）；③ 「上游 fetch / keepalive」行含指向该权威行的指针且**不复制状态事实**。
+- **要做什么**：在 [docs/DESIGN.md](../../DESIGN.md)「活的架构现状」表建立 provider 化的权威写入点，状态标 `[wip]`，指向本交接与 spec。其它相关文档可按各自读者语境完整复述并引用该权威行；复制 `[wip]`、owner、下一步、数字等易变状态时必须沿用同一核验基线并纳入同步检查，只有无法可靠同步的 high-churn 部分才缩成精确指针。
+- **验收判据**：**不是**「grep 到字符串」（那只证明字符存在）。判据是：① DESIGN.md「活的架构现状」表存在该权威行且状态为 `[wip]`；② 该行的相对链接 `docs/DESIGN.md` → spec、→ HANDOVER **实际可解析**（用 markdown link checker 或逐个 `test -f`）；③ 「上游 fetch / keepalive」等相关复述明确引用该权威行、语义一致，复制的易变状态携带同一基线；不能以“内容完整”为失败，也不能让它们成为独立状态写入点。
 - **鉴别力正控**：**待执行期正控**。
 - **证伪方式**：按 `docs/` 常规路径读进来的人读到的仍是旧方案（h2-only）⇒ 入口没建对。
 - **已知约束**：**不存在的条目不新造占位**。

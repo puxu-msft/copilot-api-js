@@ -18,7 +18,6 @@ import {
 } from "~/lib/history/state"
 import {
   //
-  drainV3Writer,
   resetV3WriterForTests,
   setV3CommitFailureInjectorForTests,
   setV3PersistRetryConfig,
@@ -32,7 +31,15 @@ import {
   settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
+import {
+  //
+  getHistoryAdmissionController,
+  peekHistoryPersistenceRuntime,
+} from "~/lib/history/worker/registry"
 import { setStateForTests } from "~/lib/state"
+
+import { historyTerminalPublication } from "../../helpers/history-terminal-publication"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 function terminalRecord(id: string) {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: Date.now() } })
@@ -51,9 +58,10 @@ function durabilityOf(id: string): EntrySummary["durability"] {
 beforeEach(async () => {
   resetModelOperationTerminalBusForTests()
   resetV3WriterForTests()
-  setStateForTests({ historyDbPath: ":memory:" })
-  await initHistory(true)
+  setStateForTests({ historyDbPath: historyTestDbPath() })
+  // Before `initHistory`: the Worker is handed its retry budget at `initialize`, so a budget set afterwards would reach no generation under test.
   setV3PersistRetryConfig({ maxAttempts: 1, backoffMs: 0 })
+  await initHistory(true)
 })
 
 afterEach(async () => {
@@ -62,7 +70,7 @@ afterEach(async () => {
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
   setStateForTests({ historyDbPath: "" })
-  setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 10 })
+  setV3PersistRetryConfig({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000 })
 })
 
 describe("recent terminal durability overlay", () => {
@@ -71,15 +79,17 @@ describe("recent terminal durability overlay", () => {
       throw new Error("forced permanent durability failure")
     })
     let observedDuringPublish: string | undefined
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      observedDuringPublish = durabilityOf(record.identity.operationId)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      observedDuringPublish = durabilityOf(publication.record.identity.operationId)
     })
 
     const record = terminalRecord("durability-failed")
-    publishModelOperationTerminal(record)
+    const reservation = await getHistoryAdmissionController().acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId(record.identity.operationId)
+    publishModelOperationTerminal(historyTerminalPublication(record))
     expect(observedDuringPublish).toBe("pending")
     await drainModelOperationTerminalSubscribers()
-    await drainV3Writer()
+    await peekHistoryPersistenceRuntime()?.drain()
     expect(durabilityOf(record.identity.operationId)).toBe("failed")
     unsubscribe()
   })
@@ -88,26 +98,30 @@ describe("recent terminal durability overlay", () => {
     resetModelOperationTerminalBusForTests()
     const older = terminalRecord("durability-generation-fence")
     const current = terminalRecord("durability-generation-fence")
-    publishModelOperationTerminal(older)
-    publishModelOperationTerminal(current)
+    const olderPublication = historyTerminalPublication(older)
+    const currentPublication = historyTerminalPublication(current)
+    publishModelOperationTerminal(olderPublication)
+    publishModelOperationTerminal(currentPublication)
 
-    settleRecentModelOperationDurability(older, "failed")
+    settleRecentModelOperationDurability(olderPublication, "failed")
     expect(getRecentModelOperationDurability(current.identity.operationId)).toBe("pending")
-    settleRecentModelOperationDurability(current, "persisted")
+    settleRecentModelOperationDurability(currentPublication, "persisted")
     expect(getRecentModelOperationDurability(current.identity.operationId)).toBeUndefined()
   })
 
   test("clears pending after the canonical operation is persisted", async () => {
     let observedDuringPublish: string | undefined
-    const unsubscribe = subscribeModelOperationTerminals((record) => {
-      observedDuringPublish = durabilityOf(record.identity.operationId)
+    const unsubscribe = subscribeModelOperationTerminals((publication) => {
+      observedDuringPublish = durabilityOf(publication.record.identity.operationId)
     })
 
     const record = terminalRecord("durability-persisted")
-    publishModelOperationTerminal(record)
+    const reservation = await getHistoryAdmissionController().acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId(record.identity.operationId)
+    publishModelOperationTerminal(historyTerminalPublication(record))
     expect(observedDuringPublish).toBe("pending")
     await drainModelOperationTerminalSubscribers()
-    await drainV3Writer()
+    await peekHistoryPersistenceRuntime()?.drain()
     expect(durabilityOf(record.identity.operationId)).toBeUndefined()
     unsubscribe()
   })

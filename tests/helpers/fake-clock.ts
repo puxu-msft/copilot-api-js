@@ -12,18 +12,52 @@ export class FakeClock {
   private origSet = globalThis.setTimeout
   private origClear = globalThis.clearTimeout
   private origNow = Date.now
+  /**
+   * Delays the caller chose NOT to fake, armed on the real host timer. Two properties this set
+   * relies on: an entry is removed when it fires ({@link install}) or when the caller clears it,
+   * and {@link restore} clears whatever is left, so a non-intercepted timer can never outlive the
+   * clock that armed it.
+   *
+   * The membership test in the patched `clearTimeout` is what keeps the two id spaces apart, and it
+   * works because Bun's `setTimeout` returns a `Timeout` OBJECT while faked ids are plain numbers:
+   * `Set.delete` uses SameValueZero and never coerces, so a fake id of `1` cannot cancel a real
+   * `Timeout` whose `valueOf()` is also `1` (verified by forcing exactly that alias). On a host
+   * where `setTimeout` returns a number instead — browser semantics — that separation disappears
+   * and this routing would need real tagging.
+   */
+  private realTimers = new Set<ReturnType<typeof setTimeout>>()
 
-  install(): void {
+  readonly realSetTimeout = this.origSet.bind(globalThis)
+
+  install(options: { intercept?: (delayMs: number) => boolean } = {}): void {
     this.now = 1_000_000
     this.nextId = 1
     this.timers.clear()
+    // Dropping references to real timers would orphan them: unlike the lazily-fired fake entries
+    // above, these are armed on the host and would go on firing into whatever test runs next,
+    // past a restore() that no longer knows about them.
+    for (const timer of this.realTimers) this.origClear(timer)
+    this.realTimers.clear()
     Date.now = () => this.now
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
+      const delayMs = ms || 0
+      if (options.intercept && !options.intercept(delayMs)) {
+        const id: ReturnType<typeof setTimeout> = this.origSet(() => {
+          this.realTimers.delete(id)
+          cb()
+        }, delayMs)
+        this.realTimers.add(id)
+        return id
+      }
       const id = this.nextId++
-      this.timers.set(id, { fireAt: this.now + (ms || 0), cb })
+      this.timers.set(id, { fireAt: this.now + delayMs, cb })
       return id as unknown as ReturnType<typeof setTimeout>
     }) as typeof setTimeout
     ;(globalThis as { clearTimeout: typeof clearTimeout }).clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+      if (this.realTimers.delete(id)) {
+        this.origClear(id)
+        return
+      }
       const e = this.timers.get(id as unknown as number)
       if (e) e.cleared = true
     }) as typeof clearTimeout
@@ -33,6 +67,8 @@ export class FakeClock {
     Date.now = this.origNow
     globalThis.setTimeout = this.origSet
     globalThis.clearTimeout = this.origClear
+    for (const timer of this.realTimers) this.origClear(timer)
+    this.realTimers.clear()
   }
 
   /**

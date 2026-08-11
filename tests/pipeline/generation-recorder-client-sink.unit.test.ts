@@ -16,7 +16,7 @@ function stubSseStream() {
   return {
     written,
     stream: {
-      async writeSSE(frame: Record<string, unknown>) {
+      async write(frame: Record<string, unknown>) {
         written.push(frame)
       },
     } as unknown as Parameters<typeof makeSseSink>[0],

@@ -49,8 +49,7 @@ export async function probeCandidateResponse<TCandidate>(input: ProbeCandidate<T
       const next = await iterator.next()
       if (next.done) return { kind: "terminal", candidate, bufferedFrames }
       if (next.value.data === "[DONE]") continue
-      const transformed = transformCandidateFrame(next.value, session)
-      if (!transformed) continue
+      const transformed = next.value
       bufferedFrames.push(transformed)
       if (session.boundary.result) {
         return {
@@ -82,14 +81,6 @@ function candidateFailureSource(error: unknown): Extract<ResponseFailureSource, 
   return isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
 }
 
-function transformCandidateFrame(frame: ClientFrame, session: CandidateResponseSession): ClientFrame | undefined {
-  try {
-    return session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(frame) : frame
-  } catch (error) {
-    throw asResponseCodecRenderError(error)
-  }
-}
-
 function shouldStopAfterCandidateFrame(frame: ClientFrame, session: CandidateResponseSession): boolean {
   try {
     return session.responseOpts.stopAfterFrame?.(frame) ?? false
@@ -107,8 +98,7 @@ function continueCandidateFrames(iterator: AsyncIterator<ClientFrame>, session: 
             const next = await iterator.next()
             if (next.done) return next
             if (next.value.data === "[DONE]") continue
-            const transformed = transformCandidateFrame(next.value, session)
-            if (!transformed) continue
+            const transformed = next.value
             if (shouldStopAfterCandidateFrame(transformed, session)) {
               await iterator.return?.()
               return { done: false, value: transformed }

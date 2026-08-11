@@ -1,6 +1,6 @@
 ---
 name: feedback-resume-agent-always-sendmessage-never-agent-tool
-description: 可恢复上下文用 SendMessage；明确 context-window 超限时停止原 agent并按 session-closeout 接力
+description: 可恢复上下文用 SendMessage；明确 context-window 超限时停止原 agent并按 user-level skill writing-handover-docs 的接力
 metadata:
   node_type: memory
   type: feedback
@@ -13,6 +13,6 @@ metadata:
 
 **Why:** 两类错误的表面都是 Agent failed，但机制相反：瞬时后端错误保留可调用上下文；context-window 400 说明同一历史已无法再次送入模型。
 
-**How to apply:** 可执行分流与接力协议只维护在 global rule `61-agent-collaboration`、`31-subagent-economics` 与项目 skill `session-closeout` §6b；本 memory 只保留事故与触发症状，不复述步骤。
+**How to apply:** 可执行分流与接力协议只维护在 global rule `61-agent-collaboration`、`31-subagent-economics` 与 user-level skill `writing-handover-docs` 的「容量终态」节；本 memory 只保留事故与触发症状，不复述步骤。
 
 **Related:** [[feedback-backend-flakiness-must-sendmessage-resume-no-alternatives]] [[reference-subagent-transcript-5mib-gate-blocks-resume]]

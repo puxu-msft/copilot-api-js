@@ -239,27 +239,46 @@ describe("createSerializedAsyncFn", () => {
     expect(parsed.n).toBe(49)
   })
 
-  test("without serialization, last-invoked write is NOT guaranteed to win (regression guard)", async () => {
-    // Documents the failure mode the helper exists to prevent. With raw
-    // atomicWriteJson and reverse-staggered delays (first call sleeps longest),
-    // the LAST-INVOKED call (n=2) is the FIRST to attempt the write, so an
-    // earlier-invoked but later-completing call's older snapshot can overwrite
-    // it. The key invariant is "last invocation is not guaranteed to win" —
-    // we deliberately don't pin which earlier value lands to keep the test
-    // resilient to CI scheduling jitter.
+  test("raw atomicWriteJson gives invocation order no authority: the first-invoked write lands last and wins", async () => {
+    // WHAT THIS IS FOR — a falsifiable statement, not a label: with raw `atomicWriteJson`, the
+    // bytes on disk are decided by PHYSICAL write order alone, so the last invocation has no claim
+    // on the final state. That is the property `createSerializedAsyncFn` exists to supply, and this
+    // case shows its absence concretely.
+    //
+    // WHAT IT DOES NOT DO — measured, so nobody over-values it: it has NO discriminating power of
+    // its own. Degrading `createSerializedAsyncFn` to a pass-through leaves it green 0/8 (that is
+    // caught by "serializes overlapping calls in invocation order", 8/8). Breaking replacement so a
+    // write never overwrites an existing file does redden it, but reddens `overwrites existing file
+    // atomically` and the 50-write case in the same run — and the former is the deterministic test
+    // written for exactly that. It is kept for what it demonstrates, not for what it alone catches.
+    //
+    // It previously said "last-invoked write is NOT guaranteed to win" and checked that with a
+    // single sample, `expect(n).not.toBe(2)`, under reverse-staggered sleeps. "Not guaranteed" means
+    // "sometimes loses", which one sample cannot express — its own comment conceded the outcome was
+    // scheduler-decided while asserting it deterministically, and it went red on a gate round with
+    // nothing broken. Now constructed with a gate and NO timers: the first-invoked call is held, the
+    // last-invoked call is awaited to completion, then the first is released. Physical order is
+    // fixed by construction, so the expectation is exact rather than "not 2".
     const target = path.join(workDir, "racing-raw.json")
-    const slowWrite = async (n: number, delayMs: number) => {
-      await new Promise((r) => setTimeout(r, delayMs))
-      await atomicWriteJson(target, { n })
-    }
+    let releaseFirst!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
 
-    await Promise.all([slowWrite(0, 30), slowWrite(1, 15), slowWrite(2, 0)])
+    const firstInvoked = (async () => {
+      await gate
+      await atomicWriteJson(target, { n: 0 })
+    })()
+    await atomicWriteJson(target, { n: 2 }) // invoked LAST, completes FIRST
 
-    const raw = await fs.readFile(target, "utf8")
-    const parsed = JSON.parse(raw) as { n: number }
-    // The slowest-scheduled call (n=0) finishes last and overwrites later-
-    // invoked calls. Loose assertion: not n=2 (which serialized version would
-    // guarantee). Allows n=0 or n=1 depending on scheduler.
-    expect(parsed.n).not.toBe(2)
+    // The later invocation really did land — without this, the final assertion could pass simply
+    // because n=2 was never written.
+    expect((JSON.parse(await fs.readFile(target, "utf8")) as { n: number }).n).toBe(2)
+
+    releaseFirst()
+    await firstInvoked
+
+    const parsed = JSON.parse(await fs.readFile(target, "utf8")) as { n: number }
+    expect(parsed.n).toBe(0)
   })
 })

@@ -19,7 +19,7 @@ import { isClientContentFrame } from "~/lib/pipeline/request-timing"
 import { shouldAttemptPreContentRecovery } from "~/routes/messages/precontent-recovery-gate"
 
 function productionDelivery(): { sink: ClientSink; session: NonNullable<ReturnType<typeof getDownstreamDeliverySession>> } {
-  const stream = { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+  const stream = { write: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   const sink = makeDeliverySseSink(stream, {
     isRealContentFrame: (frame) => isClientContentFrame(frame, "anthropic"),
   })

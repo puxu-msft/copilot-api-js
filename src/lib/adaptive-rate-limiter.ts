@@ -129,7 +129,7 @@ interface QueuedRequest<T> {
   /** Timestamp when request was enqueued */
   enqueuedAt: number
   /**
-   * Set by `rejectQueued()` (shutdown) before rejecting the caller. `processQueue` re-checks it
+   * Set by explicit queue cancellation before rejecting the caller. `processQueue` re-checks it
    * after the pre-execute sleep so an in-flight iteration that already picked this request does
    * NOT run its upstream work for a caller that was already rejected (RC4 orphan).
    */
@@ -276,7 +276,7 @@ export class AdaptiveRateLimiter {
     return { kind: "complete" }
   }
 
-  /** Reject only permit waiters. The legacy execute queue remains owned by rejectQueued(). */
+  /** Reject only permit waiters. The legacy execute queue has a separate explicit cancellation primitive. */
   rejectAdmissions(reason: unknown): number {
     const pending = this.admissionQueue.splice(0)
     for (const request of pending) {
@@ -738,9 +738,9 @@ export class AdaptiveRateLimiter {
 
       this.lastRequestTime = Date.now()
 
-      // RC4: rejectQueued() may have cancelled + rejected this request during the sleep above
-      // (it drains the queue + aborts the sleep). Re-check ownership before running upstream work —
-      // otherwise we execute for a caller that already got "Server shutting down".
+      // Explicit queue cancellation may have rejected this request during the sleep above.
+      // Re-check ownership before running upstream work, or the cancelled caller would still
+      // execute upstream work after receiving its terminal error.
       if (request.cancelled) continue
 
       try {
@@ -794,9 +794,8 @@ export class AdaptiveRateLimiter {
   }
 
   /**
-   * Reject all queued requests immediately.
-   * Called during shutdown Phase 1 to drain the queue so queued requests
-   * don't waste drain time. Returns the number of rejected requests.
+   * Explicitly reject all queued requests and return the rejected count.
+   * Process shutdown deliberately does not call this: queued requests are accepted work.
    */
   rejectQueued(): number {
     const count = this.queue.length

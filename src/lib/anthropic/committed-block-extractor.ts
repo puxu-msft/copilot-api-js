@@ -19,6 +19,8 @@ import type { CanonicalBlock } from "~/lib/pipeline/committed-blocks-ledger"
 import type { ClientFrame } from "~/lib/pipeline/types"
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
+
 import {
   //
   accumulateAnthropicStreamEvent,
@@ -37,7 +39,7 @@ export function extractAnthropicCommittedBlocks(frames: ReadonlyArray<ClientFram
     if (typeof frame.data !== "string") continue
     let event: StreamEvent
     try {
-      event = JSON.parse(frame.data) as StreamEvent
+      event = nameAnthropicEventFromWire(frame, JSON.parse(frame.data) as StreamEvent)
     } catch {
       continue // non-JSON (keepalive line / [DONE]) — not a stream event
     }

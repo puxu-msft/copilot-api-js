@@ -15,6 +15,7 @@ metadata:
 **How**：
 - 共享 worktree 最终提交**一律 `git commit -F msg -- <我的显式路径>`**（pathspec 取工作区、免疫 index 并发 race）。
 - **唯一例外**：做了 `git apply --cached`/`git add -p` 的**同文件 hunk 级过滤**时，必须用**无-pathspec** `git commit`（提交整个过滤后 index）；此时 race 无法两全，缩小窗口。
+  **那个「无法两全」2026-08-09 真的发生了，方向与上面相反**：我用 `git apply --cached` 只把自己那一行 MEMORY.md 暂存好、核验索引恰好 14 个文件，随即无-pathspec commit——**结果我的 commit 只有 13 个文件，MEMORY.md 不在里面**；那一行被 peer 在这几秒内的提交连同他们自己的改动一起带走了（`git log -S <关键词> -- <文件>` 指向 peer 的 commit）。**判定与处置**：内容已在主线、一行不少，这是**归属串了、不是数据丢失**——**不要**为了「把它挪回我的 commit」去改写 peer 的提交（那才是真的破坏）。识别方法：提交回显的 `N files changed` 与你核验过的暂存数对不上，就去 `git log -S` 查那行落在谁的 commit 里，别以为是自己漏暂存了。
 - 误提交恢复（本地未 push、`git log` 确认 HEAD 是我的无 peer 叠加）：`git reset --soft HEAD^`（不碰工作区）→ `git restore --staged <peer 文件>`（回工作树、peer 零丢失）→ pathspec `git commit -- <我的路径>` 重提。
 
 扩展 [[sed-touched-files-bundle-inflight-work]]（`git add <file>` 扫入在飞工作，本条讲 commit 更隐蔽）；user-level skill `git-preference:coordinating-a-shared-git-worktree` 的 Quick reference 未强调"pathspec 取工作区非 index"这层。

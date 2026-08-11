@@ -1,4 +1,7 @@
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+import type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
+
+export type { HistoryPersistRetryConfig } from "~/lib/history/persist-retry-config"
 
 export const HISTORY_WORKER_PROTOCOL_VERSION = 1 as const
 
@@ -31,8 +34,8 @@ export interface RawOperationAttachment {
 
 export type CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">
 
-export interface ModelOperationTerminalPublication {
-  readonly record: CanonicalModelOperationWireRecord
+export interface ModelOperationTerminalPublication<TRecord extends CanonicalModelOperationWireRecord = CanonicalModelOperationWireRecord> {
+  readonly record: TRecord
   readonly rawAttachment: RawOperationAttachment
 }
 
@@ -45,12 +48,6 @@ export interface HistoryWorkerRawConfig {
   readonly enabled: boolean
   readonly dbPath: string
   readonly maxObjectBytes: number
-}
-
-export interface HistoryPersistRetryConfig {
-  readonly maxAttempts: number
-  readonly backoffMs: number
-  readonly maxTotalMs?: number
 }
 
 export interface HistoryWorkerHotConfig {
@@ -70,6 +67,14 @@ export interface HistoryWorkerReady {
   readonly selectedDriver: HistorySqliteDriver
   readonly configRevision: number
   readonly rawTarget: RawTargetDescriptor
+  /**
+   * Journal rows this generation replayed at startup (spec §8.1 step 5).
+   *
+   * On the wire because a number the Worker computes and then drops is indistinguishable
+   * from never having run recovery at all — the whole startup step becomes unobservable,
+   * and no test can tell the two apart.
+   */
+  readonly recoveredJournalOperations: number
 }
 
 export interface HistoryDrainResult {
@@ -88,6 +93,12 @@ export interface HistoryWorkerStatus {
   readonly publishedRevision: number
   readonly restartsTotal: number
   readonly replaysTotal: number
+  /** Journal rows replayed by the CURRENT generation's startup recovery (spec §8.1 step 5). */
+  readonly recoveredJournalOperations: number
+  /** Crashes since the last `ready`; reset to 0 the moment a generation becomes ready. */
+  readonly consecutiveFailures: number
+  /** Epoch ms of the scheduled restart, present only while a restart is pending. */
+  readonly nextRetryAt?: number
   readonly staleMessagesTotal: number
   readonly duplicateAcksTotal: number
   readonly outcomeCallbackErrorsTotal: number
@@ -228,6 +239,21 @@ export function estimateHistoryEnvelopeBytes(envelope: HistoryOperationEnvelope)
   return bytes
 }
 
+/**
+ * Exit code the Worker uses to say "this startup failed, but trying again may work".
+ *
+ * Spec §7.1 routes ordinary crashes AND retryable startup errors through the automatic
+ * restart; only §7.2's permanent conditions may become irreversible `terminal-failed`.
+ * There is no protocol message for "retryable startup failure" — and there should not be,
+ * since `fatal` means terminal by definition — so the Worker expresses it the same way any
+ * other recoverable death is expressed: the thread exits, and the runtime restarts it.
+ *
+ * The runtime restarts on ANY non-zero exit and does not branch on this value; it exists so
+ * an operator reading logs can tell this death apart from a genuine crash. Do not build a
+ * routing contract on it without also making the runtime actually read it.
+ */
+export const HISTORY_WORKER_RETRYABLE_STARTUP_EXIT = 75
+
 export class HistoryWorkerProtocolError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -359,9 +385,8 @@ function assertHistoryWorkerStartConfig(value: unknown, label: string): asserts 
   assertObject(value.persistRetry, `${label}.persistRetry`)
   assertPositiveInteger(value.persistRetry.maxAttempts, `${label}.persistRetry.maxAttempts`)
   assertNonNegativeInteger(value.persistRetry.backoffMs, `${label}.persistRetry.backoffMs`)
-  if (value.persistRetry.maxTotalMs !== undefined) {
-    assertNonNegativeInteger(value.persistRetry.maxTotalMs, `${label}.persistRetry.maxTotalMs`)
-  }
+  assertNonNegativeInteger(value.persistRetry.maxBackoffMs, `${label}.persistRetry.maxBackoffMs`)
+  assertNonNegativeInteger(value.persistRetry.maxTotalMs, `${label}.persistRetry.maxTotalMs`)
 }
 
 function assertHistoryWorkerHotConfig(value: unknown, label: string): asserts value is HistoryWorkerHotConfig {
@@ -470,6 +495,7 @@ function assertHistoryWorkerReady(value: unknown, messageGeneration: number): as
     throw new HistoryWorkerProtocolError(`ready.ready.selectedDriver is invalid: ${String(value.selectedDriver)}`)
   }
   assertNonNegativeInteger(value.configRevision, "ready.ready.configRevision")
+  assertNonNegativeInteger(value.recoveredJournalOperations, "ready.ready.recoveredJournalOperations")
   assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
   if (value.rawTarget.configRevision !== value.configRevision) {
     throw new HistoryWorkerProtocolError("ready.ready.rawTarget.configRevision must match ready.ready.configRevision")

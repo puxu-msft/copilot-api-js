@@ -80,6 +80,8 @@ export class TelemetrySink {
         multiplier: event.ctx.multiplier,
         // Queue-wait distribution: time spent queued by the rate limiter before dispatch.
         queueWaitMs: entry.queueWaitMs,
+        // Independent History reservation wait; absent on management/dry-run requests.
+        historyAdmissionWaitMs: entry.historyAdmissionWaitMs,
         // Per-request thinking-block emptiness tally (single-point extraction from the recorded
         // upstream leg; feeds the thinkingBlocks* feature measures across every dimension).
         thinkingBlocks: extractThinkingBlockCounts(entry),

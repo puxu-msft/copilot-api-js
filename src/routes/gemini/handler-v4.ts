@@ -28,6 +28,7 @@ import type { GeminiCodec } from "~/lib/codec/gemini/codec"
 import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -66,6 +67,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import {
   //
@@ -77,10 +79,12 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -159,6 +163,20 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
+  return await withHistoryAdmission(
+    c.req.raw,
+    "generation",
+    async (historyReservation) => await runGeminiRequestAdmitted(c, geminiBody, modelId, stream, historyReservation),
+  )
+}
+
+async function runGeminiRequestAdmitted(
+  c: Context,
+  geminiBody: GenerateContentRequest,
+  modelId: string,
+  stream: boolean,
+  historyReservation: HistoryReservation,
+): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
   const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
@@ -179,6 +197,7 @@ async function runGeminiRequest(
       path: c.req.path,
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -221,13 +240,14 @@ const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (i
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createGeminiDeliveryProtocolAdapter(),
       createState: () => ({ anthropicAcc: createAnthropicStreamAccumulator(), diag: createUpstreamFrameDiagnostics(startedAtMs) }),
       onUpstreamFrame(state, frame) {
         const raw = frame as ServerSentEventMessage
         state.diag.observe(raw)
         if (!raw.data || raw.data === "[DONE]") return
         try {
-          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+          accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
         } catch (error) {
           consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
         }

@@ -23,7 +23,6 @@ import {
   //
   DEFAULT_MODEL_MAPPINGS,
   restoreStateForTests,
-  setStateForTests,
   snapshotStateForTests,
   state,
   type StateSnapshot,
@@ -109,9 +108,6 @@ timeouts:
   response_header: 600
   stale_request_max_age: 900
 model_refresh_interval: 0
-shutdown:
-  graceful_wait: 12
-  abort_wait: 34
 history:
   raw_capture:
     enabled: false
@@ -166,10 +162,6 @@ system_prompt_append: "append"
         stale_request_max_age: 900,
       },
       model_refresh_interval: 0,
-      shutdown: {
-        graceful_wait: 12,
-        abort_wait: 34,
-      },
       history: {
         raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
@@ -264,8 +256,8 @@ system_prompt_append: "append"
 # refresh comment
 model_refresh_interval: 600
 
-shutdown:
-  graceful_wait: 30
+timeouts:
+  response_header: 30
 `)
 
     const res = await app.request("/api/config/yaml", {
@@ -279,16 +271,16 @@ shutdown:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       model_refresh_interval: 300,
-      shutdown: {
-        graceful_wait: 30,
+      timeouts: {
+        response_header: 30,
       },
     })
 
     const written = await readConfig()
     expect(written).toContain("# refresh comment")
     expect(written).toContain("model_refresh_interval: 300")
-    expect(written).toContain("shutdown:")
-    expect(written).toContain("graceful_wait: 30")
+    expect(written).toContain("timeouts:")
+    expect(written).toContain("response_header: 30")
   })
 
   test("PUT /api/config/yaml writes unknown_endpoint_logging (regression: was silently dropped by mergeConfigIntoDocument)", async () => {
@@ -473,10 +465,6 @@ model_refresh_interval: 600
         stale_request_max_age: 900,
       },
       model_refresh_interval: 0,
-      shutdown: {
-        graceful_wait: 12,
-        abort_wait: 34,
-      },
       history: {
         raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
@@ -540,7 +528,6 @@ model_refresh_interval: 600
     expect(written).toContain("response_header: 600")
     expect(written).toContain("stale_request_max_age: 900")
     expect(written).toContain("model_refresh_interval: 0")
-    expect(written).toContain("shutdown:")
     expect(written).toContain("history:")
     expect(written).toContain("anthropic:")
     expect(written).toContain("context_editing_trigger: 200000")
@@ -554,8 +541,6 @@ model_refresh_interval: 600
     expect(state.streamIdleTimeout).toBe(301)
     expect(state.staleRequestMaxAge).toBe(900)
     expect(state.modelRefreshInterval).toBe(0)
-    expect(state.shutdownGracefulWait).toBe(12)
-    expect(state.shutdownAbortWait).toBe(34)
     expect(state.historyRawCaptureEnabled).toBe(false)
     expect(state.historyRawCaptureMaxObjectBytes).toBe(1048576)
     expect(state.stripReadToolResultTags).toBe(true)
@@ -652,24 +637,21 @@ model_refresh_interval: 600
 
   test("PUT /api/config/yaml deletes an entire nested scalar section when sent as null", async () => {
     await writeConfig(`
-shutdown:
-  graceful_wait: 30
-  abort_wait: 90
+timeouts:
+  response_header: 30
+  stream_idle: 90
 `)
-    setStateForTests({ shutdownGracefulWait: 30, shutdownAbortWait: 90 })
 
     const res = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        shutdown: null,
+        timeouts: null,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({})
-    expect(state.shutdownGracefulWait).toBe(60)
-    expect(state.shutdownAbortWait).toBe(120)
   })
 
   test("PUT /api/config/yaml keeps file unchanged when deleting an absent optional scalar", async () => {
@@ -725,32 +707,32 @@ anthropic:
 
   test("PUT /api/config/yaml deletes nested scalar child keys while preserving the container", async () => {
     await writeConfig(`
-shutdown:
-  graceful_wait: 30
-  abort_wait: 90
+timeouts:
+  response_header: 30
+  stream_idle: 90
 `)
 
     const res = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        shutdown: {
-          graceful_wait: null,
+        timeouts: {
+          response_header: null,
         },
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      shutdown: {
-        abort_wait: 90,
+      timeouts: {
+        stream_idle: 90,
       },
     })
 
     const written = await readConfig()
-    expect(written).toContain("shutdown:")
-    expect(written).toContain("abort_wait: 90")
-    expect(written).not.toContain("graceful_wait:")
+    expect(written).toContain("timeouts:")
+    expect(written).toContain("stream_idle: 90")
+    expect(written).not.toContain("response_header:")
   })
 
   test("PUT /api/config/yaml persists a hooks section instead of silently discarding it", async () => {

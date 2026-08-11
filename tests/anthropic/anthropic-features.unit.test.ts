@@ -539,7 +539,11 @@ describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to 
       expect(state.adaptiveThinkingModels).toEqual([])
       expect(modelHasAdaptiveThinking("claude-opus-4.6")).toBe(false)
       // …but metadata still drives it, and an explicit config override re-enables the fallback.
-      expect(modelHasAdaptiveThinking("claude-opus-4.6", { capabilities: { supports: { adaptive_thinking: true } } } as unknown as Parameters<typeof modelHasAdaptiveThinking>[1])).toBe(true)
+      expect(
+        modelHasAdaptiveThinking("claude-opus-4.6", { capabilities: { supports: { adaptive_thinking: true } } } as unknown as Parameters<
+          typeof modelHasAdaptiveThinking
+        >[1]),
+      ).toBe(true)
       setStateForTests({ adaptiveThinkingModels: ["claude-opus-4-6"] })
       expect(modelHasAdaptiveThinking("claude-opus-4.6")).toBe(true)
     } finally {

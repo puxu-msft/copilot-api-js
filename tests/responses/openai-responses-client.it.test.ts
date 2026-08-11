@@ -124,6 +124,7 @@ describe("responses client", () => {
     // which has no built-in timeout clock (unlike Bun's global fetch). So
     // `timeouts.response_header` stays the single source of truth, carried via the
     // abort signal on the request rather than a `timeout:false` flag.
+    setStateForTests({ responseHeaderTimeout: 600 })
     const fetchMock = setFetchMock(() =>
       Promise.resolve(
         new Response(

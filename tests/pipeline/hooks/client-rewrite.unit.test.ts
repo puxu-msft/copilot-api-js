@@ -20,17 +20,28 @@ import {
   stripSystemText,
 } from "~/lib/pipeline/hooks/client-rewrite"
 
-const TODO = /The TodoWrite tool hasn't been used recently\.( Consider using it\.)?/
+const TODO = /The TodoWrite tool hasn't been used recently\.(?: Consider using it\.)?/
 const REMINDER = "The TodoWrite tool hasn't been used recently. Consider using it."
 
 /** Minimal env stub: clientFormat + body + immutable `with`. */
 function env(clientFormat: string, body: unknown): RequestEnvelope {
-  return { clientFormat, body, with(patch: Partial<RequestEnvelope>) { return { ...this, ...patch } as RequestEnvelope } } as unknown as RequestEnvelope
+  return {
+    clientFormat,
+    body,
+    with(patch: Partial<RequestEnvelope>) {
+      return { ...this, ...patch } as RequestEnvelope
+    },
+  } as unknown as RequestEnvelope
 }
 
 describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () => {
   test("anthropic: drops a role:system TodoWrite message turn, keeps the rest, immutable", () => {
-    const body = { messages: [{ role: "system", content: REMINDER }, { role: "user", content: "hi" }] }
+    const body = {
+      messages: [
+        { role: "system", content: REMINDER },
+        { role: "user", content: "hi" },
+      ],
+    }
     const out = stripMessageBlock(env("anthropic", body), (t) => t.role === "system" && TODO.test(t.text))
     expect((out.body as typeof body).messages).toEqual([{ role: "user", content: "hi" }])
     expect(body.messages).toHaveLength(2) // original untouched (immutable)
@@ -38,14 +49,25 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
   })
 
   test("openai-cc: drops a role:system TodoWrite turn (array-content text projection)", () => {
-    const body = { messages: [{ role: "system", content: [{ type: "text", text: REMINDER }] }, { role: "user", content: "hi" }] }
+    const body = {
+      messages: [
+        { role: "system", content: [{ type: "text", text: REMINDER }] },
+        { role: "user", content: "hi" },
+      ],
+    }
     const out = stripMessageBlock(env("openai-cc", body), (t) => t.role === "system" && TODO.test(t.text))
     expect((out.body as typeof body).messages).toHaveLength(1)
     expect((out.body as typeof body).messages[0].role).toBe("user")
   })
 
   test("openai-responses: drops a matching input message item (input list, not messages)", () => {
-    const body = { instructions: "be terse", input: [{ type: "message", role: "system", content: [{ type: "input_text", text: REMINDER }] }, { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] }
+    const body = {
+      instructions: "be terse",
+      input: [
+        { type: "message", role: "system", content: [{ type: "input_text", text: REMINDER }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+      ],
+    }
     // responses text projection reads `content` array {type,text}; input_text has no `text` under our
     // messageText (type!=="text"), so match on role for this shape.
     const out = stripMessageBlock(env("openai-responses", body), (t) => t.role === "system")
@@ -54,7 +76,12 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
   })
 
   test("gemini: drops a matching contents turn (contents list + parts text projection)", () => {
-    const body = { contents: [{ role: "user", parts: [{ text: REMINDER }] }, { role: "user", parts: [{ text: "real" }] }] }
+    const body = {
+      contents: [
+        { role: "user", parts: [{ text: REMINDER }] },
+        { role: "user", parts: [{ text: "real" }] },
+      ],
+    }
     const out = stripMessageBlock(env("gemini", body), (t) => TODO.test(t.text))
     expect((out.body as typeof body).contents).toEqual([{ role: "user", parts: [{ text: "real" }] }])
   })

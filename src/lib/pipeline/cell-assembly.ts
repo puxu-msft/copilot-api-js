@@ -111,34 +111,78 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
   // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire).
   anthropic: (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicMessagesRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
-    return assertExhaustiveEndpoint(env.targetEndpoint)
+    switch (env.targetEndpoint) {
+      case ENDPOINT.MESSAGES: {
+        return anthropicMessagesRetrySemantics()
+      }
+      case ENDPOINT.CHAT_COMPLETIONS: {
+        return chatCompletionsRetrySemantics()
+      }
+      case ENDPOINT.RESPONSES:
+      case ENDPOINT.WS_RESPONSES: {
+        return viaResponsesRetrySemantics()
+      }
+      default: {
+        return assertExhaustiveEndpoint(env.targetEndpoint)
+      }
+    }
   },
   // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
   // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
   "openai-cc": (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
-    return assertExhaustiveEndpoint(env.targetEndpoint)
+    switch (env.targetEndpoint) {
+      case ENDPOINT.MESSAGES: {
+        return anthropicReverseRetrySemantics()
+      }
+      case ENDPOINT.CHAT_COMPLETIONS: {
+        return chatCompletionsRetrySemantics()
+      }
+      case ENDPOINT.RESPONSES:
+      case ENDPOINT.WS_RESPONSES: {
+        return viaResponsesRetrySemantics()
+      }
+      default: {
+        return assertExhaustiveEndpoint(env.targetEndpoint)
+      }
+    }
   },
   // openai-responses: the R1/HIGH-A corner — DIRECT `/responses` + FALLBACK `/chat` are auto-truncate OFF
   // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
   // Anthropic stack). RETRY_SEMANTICS reads env.targetEndpoint to pick → a 2D function, NOT a cf scalar.
   "openai-responses": (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return responsesFallbackRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return responsesDirectRetrySemantics()
-    return assertExhaustiveEndpoint(env.targetEndpoint)
+    switch (env.targetEndpoint) {
+      case ENDPOINT.MESSAGES: {
+        return anthropicReverseRetrySemantics()
+      }
+      case ENDPOINT.CHAT_COMPLETIONS: {
+        return responsesFallbackRetrySemantics()
+      }
+      case ENDPOINT.RESPONSES:
+      case ENDPOINT.WS_RESPONSES: {
+        return responsesDirectRetrySemantics()
+      }
+      default: {
+        return assertExhaustiveEndpoint(env.targetEndpoint)
+      }
+    }
   },
   // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
-    return assertExhaustiveEndpoint(env.targetEndpoint)
+    switch (env.targetEndpoint) {
+      case ENDPOINT.MESSAGES: {
+        return anthropicReverseRetrySemantics()
+      }
+      case ENDPOINT.CHAT_COMPLETIONS: {
+        return chatCompletionsRetrySemantics()
+      }
+      case ENDPOINT.RESPONSES:
+      case ENDPOINT.WS_RESPONSES: {
+        return viaResponsesRetrySemantics()
+      }
+      default: {
+        return assertExhaustiveEndpoint(env.targetEndpoint)
+      }
+    }
   },
 }
 

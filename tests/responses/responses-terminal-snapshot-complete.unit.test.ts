@@ -1,11 +1,34 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import type { ResponsesFunctionCallOutput, ResponsesMessageOutput, ResponsesOutputItem } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesFunctionCallOutput,
+  ResponsesMessageOutput,
+  ResponsesOutputItem,
+} from "~/types/api/openai-responses"
 
 import { isTerminalSnapshotComplete } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 
-const fc: ResponsesFunctionCallOutput = { type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}', status: "completed" }
-const msg: ResponsesMessageOutput = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] }
+const fc: ResponsesFunctionCallOutput = {
+  type: "function_call",
+  id: "fc_1",
+  call_id: "call_1",
+  name: "get_weather",
+  arguments: '{"city":"Tokyo"}',
+  status: "completed",
+}
+const msg: ResponsesMessageOutput = {
+  type: "message",
+  id: "msg_1",
+  role: "assistant",
+  status: "completed",
+  content: [{ type: "output_text", text: "hi", annotations: [] }],
+}
 
 describe("isTerminalSnapshotComplete", () => {
   test("complete when output matches collected exactly", () => {
@@ -17,7 +40,10 @@ describe("isTerminalSnapshotComplete", () => {
     expect(isTerminalSnapshotComplete([], collected)).toEqual({ complete: false, reason: "empty-output" })
   })
   test("missing-item: an id in collected has no counterpart in output", () => {
-    const collected = new Map<number, ResponsesOutputItem>([[0, fc], [1, msg]])
+    const collected = new Map<number, ResponsesOutputItem>([
+      [0, fc],
+      [1, msg],
+    ])
     expect(isTerminalSnapshotComplete([fc], collected)).toEqual({ complete: false, reason: "missing-item" })
   })
   test("inconsistent-item: same id, different function_call arguments", () => {

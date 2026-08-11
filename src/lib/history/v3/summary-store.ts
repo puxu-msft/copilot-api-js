@@ -9,9 +9,9 @@ import type {
 import type { HistorySearchFreshnessTarget } from "~/lib/history/search/protocol"
 import type { Database } from "~/lib/history/sqlite/connection"
 
+import { lifecycleStatesForQuery } from "~/lib/history/lifecycle-state"
 import {
   //
-  deleteMeta,
   getMeta,
   setMeta,
 } from "~/lib/history/sqlite/meta"
@@ -21,9 +21,11 @@ import {
   historicalProjectionValues,
   projectionColumns,
   projectionEquality,
+  SUMMARY_PROJECTION_READY_KEY,
+  validatedReadyAssignments,
 } from "./summary-schema"
 
-export const SUMMARY_PROJECTION_READY_KEY = "summary_projection_ready"
+export { SUMMARY_PROJECTION_READY_KEY } from "./summary-schema"
 
 interface SummaryWhere {
   sql: string
@@ -55,11 +57,12 @@ function compileSummaryWhere(options: QueryOptions): SummaryWhere {
     terms.push("endpoint=?")
     params.push(options.endpoint)
   }
-  if (options.state) {
-    terms.push("state=?")
-    params.push(options.state)
-  } else if (options.success !== undefined) {
-    terms.push(options.success ? "state='completed'" : "state='failed'")
+  const lifecycleStates = lifecycleStatesForQuery(options)
+  if (lifecycleStates?.length === 0) {
+    terms.push("0=1")
+  } else if (lifecycleStates !== undefined) {
+    terms.push(`state IN (${lifecycleStates.map(() => "?").join(",")})`)
+    params.push(...lifecycleStates)
   }
   if (options.from !== undefined) {
     terms.push("started_at>=?")
@@ -106,6 +109,31 @@ export function freezeHistorySearchTarget(db: Database): HistorySearchFreshnessT
     }>
   ).map((row) => row.operation_id)
   return { committedAt: boundary.committed_at, operationIdsAtBoundary }
+}
+
+/**
+ * Freeze the search target AND decide which of the caller's overlay rows the index already owns —
+ * as ONE snapshot, because the two answers are only meaningful together.
+ *
+ * Read as separate statements they can disagree: a row committing in between lands after the target
+ * boundary, so the sidecar will not count it, while the ownership probe already sees it persisted
+ * and the caller drops it from the overlay. The row then appears nowhere. The window is narrow, but
+ * it is the same shape as the await-sized one that reached production, so it is closed structurally
+ * rather than argued about — a deferred transaction holds one read snapshot across both queries.
+ *
+ * Returning them together is the point: a caller cannot pair a target with ownership taken at some
+ * other moment, because there is nothing to pair.
+ */
+export function freezeHistorySearchOwnership(
+  db: Database,
+  overlayIds: ReadonlyArray<string>,
+  options: QueryOptions,
+): { target: HistorySearchFreshnessTarget | null; indexOwned: Set<string> } {
+  return db.transaction(() => {
+    const target = freezeHistorySearchTarget(db)
+    const indexOwned = new Set(overlayIds.filter((operationId: string) => hasPersistedSummaryMatching(db, operationId, options)))
+    return { target, indexOwned }
+  })()
 }
 
 export function getPersistedSummariesByIds(db: Database, operationIds: ReadonlyArray<string>): Array<EntrySummary> {
@@ -211,37 +239,58 @@ export function explainSessionEntryPagePlan(db: Database, sessionId: string, lim
   return (db.prepare(sessionEntryPageSql("", true)).all(sessionId, limit) as Array<{ detail: string }>).map((row) => row.detail)
 }
 
-export function querySessionEntryPage(db: Database, sessionId: string, cursor: string | undefined, limit: number): PersistedSessionEntryPage {
-  const cursorRow =
-    cursor ?
-      (db
-        .prepare(
-          `SELECT started_at,operation_id
-           FROM v3_operation_summaries
-           WHERE operation_id=? AND session_id=? AND operation_kind='generation' AND projection_status='ready'`,
-        )
-        .get(cursor, sessionId) as { started_at: number; operation_id: string } | undefined)
-    : undefined
-  const boundary = cursorRow ? " AND (started_at>? OR (started_at=? AND operation_id>?))" : ""
-  const boundaryParams = cursorRow ? [cursorRow.started_at, cursorRow.started_at, cursorRow.operation_id] : []
+function sessionGenerationRowsCte(): string {
+  return `WITH overlay_rows AS (
+    SELECT
+      json_extract(value,'$.id') AS operation_id,
+      json_extract(value,'$.sessionId') AS session_id,
+      json_extract(value,'$.agentId') AS agent_id,
+      CAST(json_extract(value,'$.startedAt') AS INTEGER) AS started_at,
+      json_extract(value,'$.state') AS state,
+      json_extract(value,'$.requestModel') AS request_model,
+      json_extract(value,'$.responseModel') AS response_model,
+      CAST(json_extract(value,'$.usage.input_tokens') AS INTEGER) AS input_tokens,
+      CAST(json_extract(value,'$.usage.cache_read_input_tokens') AS INTEGER) AS cache_read_input_tokens,
+      CAST(json_extract(value,'$.usage.cache_creation_input_tokens') AS INTEGER) AS cache_creation_input_tokens,
+      CAST(json_extract(value,'$.usage.output_tokens') AS INTEGER) AS output_tokens,
+      json_extract(value,'$.previewText') AS preview_text
+    FROM json_each(?)
+  ),
+  generation_rows AS (
+    SELECT
+      operation_id,session_id,agent_id,started_at,state,request_model,response_model,
+      input_tokens,cache_read_input_tokens,cache_creation_input_tokens,output_tokens,preview_text
+    FROM v3_operation_summaries
+    WHERE projection_status='ready'
+      AND operation_kind='generation'
+      AND operation_id NOT IN (SELECT operation_id FROM overlay_rows)
+    UNION ALL
+    SELECT
+      operation_id,session_id,agent_id,started_at,state,request_model,response_model,
+      input_tokens,cache_read_input_tokens,cache_creation_input_tokens,output_tokens,preview_text
+    FROM overlay_rows
+  )`
+}
+
+export function querySessionEntryPage(
+  db: Database,
+  sessionId: string,
+  cursor: string | undefined,
+  limit: number,
+  overlay: ReadonlyArray<EntrySummary> = [],
+): PersistedSessionEntryPage {
+  const rows = db
+    .prepare(`${sessionGenerationRowsCte()} SELECT operation_id,started_at FROM generation_rows WHERE session_id=? ORDER BY started_at,operation_id`)
+    .all(JSON.stringify(overlay), sessionId) as Array<{ operation_id: string; started_at: number }>
+  const cursorIndex = cursor === undefined ? -1 : rows.findIndex((row) => row.operation_id === cursor)
+  const startIndex = cursorIndex < 0 ? 0 : cursorIndex + 1
   const boundedLimit = Math.max(0, limit)
-  const rows = db.prepare(sessionEntryPageSql(boundary)).all(sessionId, ...boundaryParams, boundedLimit + 1) as Array<{ operation_id: string }>
-  const hasMore = rows.length > boundedLimit
-  const operationIds = rows.slice(0, boundedLimit).map((row) => row.operation_id)
-  const total = (
-    db
-      .prepare(
-        `SELECT COUNT(*) AS n
-         FROM v3_operation_summaries
-         WHERE session_id=? AND operation_kind='generation' AND projection_status='ready'`,
-      )
-      .get(sessionId) as { n: number }
-  ).n
+  const operationIds = rows.slice(startIndex, startIndex + boundedLimit).map((row) => row.operation_id)
   return {
     operationIds,
-    total,
-    nextCursor: hasMore ? (operationIds.at(-1) ?? null) : null,
-    prevCursor: cursorRow && operationIds.length > 0 ? operationIds[0] : null,
+    total: rows.length,
+    nextCursor: startIndex + boundedLimit < rows.length ? (operationIds.at(-1) ?? null) : null,
+    prevCursor: startIndex > 0 && operationIds.length > 0 ? operationIds[0] : null,
   }
 }
 
@@ -261,16 +310,10 @@ interface PersistedSessionAggregate {
   preview: string | null
 }
 
-export function querySessionSummaries(db: Database, limit: number): Array<SessionSummary> {
+export function querySessionSummaries(db: Database, limit: number, overlay: ReadonlyArray<EntrySummary> = []): Array<SessionSummary> {
   const rows = db
     .prepare(
-      `WITH generation_rows AS (
-         SELECT *
-         FROM v3_operation_summaries
-         WHERE projection_status='ready'
-           AND operation_kind='generation'
-           AND session_id IS NOT NULL
-       ),
+      `${sessionGenerationRowsCte()},
        grouped AS (
          SELECT
            session_id,
@@ -330,7 +373,7 @@ export function querySessionSummaries(db: Database, limit: number): Array<Sessio
        )
        ORDER BY grouped.last_started_at DESC,grouped.session_id DESC`,
     )
-    .all(Math.max(0, limit)) as Array<PersistedSessionAggregate>
+    .all(JSON.stringify(overlay), Math.max(0, limit)) as Array<PersistedSessionAggregate>
 
   return rows.map((row) => ({
     sessionId: row.session_id,
@@ -376,17 +419,20 @@ export function queryPersistedStats(
   const params = overlayIds.length === 0 ? [] : [exclusion.param]
   const aggregate = db
     .prepare(
+      // The success/failure buckets mirror `requestBucket` in `../lifecycle-state.ts`, which is the
+      // contract: an ACTIVE state (pending/executing/streaming) is always `none`, and
+      // `response_success` is consulted only when there is no state at all. This CASE used to fall
+      // back to `response_success` for every non-terminal state, so one streaming summary landed in
+      // different buckets depending on whether it was counted from the overlay or from here.
       `SELECT
          COUNT(*) AS total_requests,
          SUM(CASE
            WHEN state='completed' THEN 1
-           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=1 THEN 1
            WHEN state IS NULL AND response_success=1 THEN 1
            ELSE 0
          END) AS successful_requests,
          SUM(CASE
            WHEN state='failed' THEN 1
-           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=0 THEN 1
            WHEN state IS NULL AND response_success=0 THEN 1
            ELSE 0
          END) AS failed_requests,
@@ -448,6 +494,23 @@ export interface SummaryProjectionReadiness {
   ready: boolean
   pending: number
   poisoned: number
+}
+
+export type ValidatedSummarySnapshot<T> = { ready: false } | { ready: true; value: T }
+
+let summarySnapshotObserverForTests: (() => void) | undefined
+
+export function setSummarySnapshotObserverForTests(observer: (() => void) | undefined): void {
+  summarySnapshotObserverForTests = observer
+}
+
+export function withValidatedSummarySnapshot<T>(db: Database, read: () => T): ValidatedSummarySnapshot<T> {
+  const transaction = db.transaction<ValidatedSummarySnapshot<T>>(() => {
+    if (!isSummaryProjectionReady(db)) return { ready: false }
+    summarySnapshotObserverForTests?.()
+    return { ready: true, value: read() }
+  })
+  return transaction()
 }
 
 export function isSummaryProjectionReady(db: Database): boolean {
@@ -523,57 +586,54 @@ export function backfillExistingSummaryRows(db: Database, limit: number, cursor?
   return { inserted: result.changes, cursor: { createdAt: last.created_at, operationId: last.operation_id } }
 }
 
+export function publishValidatedOperationSummary(db: Database, operationId: string, restoreReadyMarker: boolean): void {
+  const table = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_operation_summaries'").get()
+  if (!table) return
+  const result = db
+    .prepare(
+      `UPDATE v3_operation_summaries
+       SET ${validatedReadyAssignments},projection_status='ready',projection_error=NULL
+       WHERE operation_id=?`,
+    )
+    .run(operationId)
+  if (result.changes !== 1) throw new Error(`[history/v3] missing summary projection for validated operation: ${operationId}`)
+  if (restoreReadyMarker) setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
+}
+
 export function markSummaryProjectionPoisoned(db: Database, operationId: string, reason: string): void {
   db.prepare(
     `UPDATE v3_operation_summaries
      SET projection_status='poisoned',projection_error=?
-     WHERE operation_id=? AND projection_status<>'ready'`,
+     WHERE operation_id=?`,
   ).run(reason, operationId)
 }
 
-export function tryMarkSummaryProjectionReady(db: Database): SummaryProjectionReadiness {
-  db.exec("BEGIN IMMEDIATE")
-  try {
-    const divergence = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM (
-           SELECT o.operation_id
-           FROM v3_operations o
-           LEFT JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
-           WHERE s.operation_id IS NULL OR NOT (${projectionEquality})
-           UNION ALL
-           SELECT s.operation_id
-           FROM v3_operation_summaries s
-           LEFT JOIN v3_operations o ON o.operation_id=s.operation_id
-           WHERE o.operation_id IS NULL
-         )`,
-      )
-      .get() as { n: number }
-    const statuses = db
-      .prepare(
-        `SELECT
-           SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned,
-           SUM(CASE WHEN projection_status<>'ready' THEN 1 ELSE 0 END) AS not_ready
-         FROM v3_operation_summaries`,
-      )
-      .get() as { pending: number | null; poisoned: number | null; not_ready: number | null }
-    const pending = statuses.pending ?? 0
-    const poisoned = statuses.poisoned ?? 0
-    const ready = divergence.n === 0 && (statuses.not_ready ?? 0) === 0
-    if (ready) {
-      if (getMeta(db, SUMMARY_PROJECTION_READY_KEY) !== "1") setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
-    } else {
-      deleteMeta(db, SUMMARY_PROJECTION_READY_KEY)
-    }
-    db.exec("COMMIT")
-    return { ready, pending, poisoned }
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK")
-    } catch {
-      // Preserve the gate error when SQLite already rolled the transaction back.
-    }
-    throw error
-  }
+export function inspectSummaryProjectionReadiness(db: Database): SummaryProjectionReadiness {
+  const divergence = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT o.operation_id
+         FROM v3_operations o
+         LEFT JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
+         WHERE s.operation_id IS NULL OR NOT (${projectionEquality})
+         UNION ALL
+         SELECT s.operation_id
+         FROM v3_operation_summaries s
+         LEFT JOIN v3_operations o ON o.operation_id=s.operation_id
+         WHERE o.operation_id IS NULL
+       )`,
+    )
+    .get() as { n: number }
+  const statuses = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned,
+         SUM(CASE WHEN projection_status<>'ready' THEN 1 ELSE 0 END) AS not_ready
+       FROM v3_operation_summaries`,
+    )
+    .get() as { pending: number | null; poisoned: number | null; not_ready: number | null }
+  const pending = statuses.pending ?? 0
+  const poisoned = statuses.poisoned ?? 0
+  return { ready: divergence.n === 0 && (statuses.not_ready ?? 0) === 0, pending, poisoned }
 }

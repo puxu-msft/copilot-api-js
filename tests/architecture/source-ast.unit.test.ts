@@ -164,11 +164,23 @@ describe("moduleLoadSites", () => {
     ["动态 import 字面量", 'const m = await import("consola")\n', "consola"],
     ["无插值模板", "const m = await import(`consola`)\n", "consola"],
     ["ambient require", 'const m = require("consola")\n', "consola"],
-    ["createRequire 铸造后**直接调用**（callee 本身是一次调用）", 'import { createRequire } from "node:module"\nvoid createRequire(import.meta.url)("consola")\n', "consola"],
+    [
+      "createRequire 铸造后**直接调用**（callee 本身是一次调用）",
+      'import { createRequire } from "node:module"\nvoid createRequire(import.meta.url)("consola")\n',
+      "consola",
+    ],
     ["import.meta.require", 'void import.meta.require("consola")\n', "consola"],
     ["先绑定再调用", 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n', "consola"],
-    ["动态 import 解构出的 createRequire", 'const { createRequire } = await import("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n', "consola"],
-    ["var 提升出 block（自写 binder 曾在这里判错）", 'import { createRequire } from "node:module"\n{\n  var load = createRequire(import.meta.url)\n}\nvoid load("consola")\n', "consola"],
+    [
+      "动态 import 解构出的 createRequire",
+      'const { createRequire } = await import("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n',
+      "consola",
+    ],
+    [
+      "var 提升出 block（自写 binder 曾在这里判错）",
+      'import { createRequire } from "node:module"\n{\n  var load = createRequire(import.meta.url)\n}\nvoid load("consola")\n',
+      "consola",
+    ],
   ])("%s：目标是字面量就报出来", (_name, source, expected) => {
     expect(specifiers(source)).toContain(expected)
   })
