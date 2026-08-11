@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 语义桥 carrier v2 表达不了 server-tool 的续接状态（2026-08-11，**提请修订执行中的 RFC**）
+
+- **根因 / 现状**：用户对语义桥提过一条硬不变量——Anthropic Messages 只是**载体格式**，源自 Responses 上游的 opaque continuation state 在会话继续时**必须能无损回传**兼容的 Responses 上游；**展示可降级，续接状态不可丢**。当前执行线（B 线）[RFC `docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../rfc/2026-08-08-anthropic-responses-semantic-bridge.md) 的 `CarrierV2Envelope` 把 `kind` 联合限定为 `"claude-signature" | "responses-encrypted"`（见该 RFC「6.1 Carrier v2 wire grammar」节的 envelope schema）——**只覆盖 reasoning 侧**。reasoning 侧覆盖得很完整（opaque 仅在 protocol／provider／resolved model 三维均匹配时 preserve，不匹配则剥 opaque 保 visible），但 **server-tool 侧（`web_search_call` 等）的 opaque id 与权威完整 item 没有任何 carrier record 承载它**。
+- **当前行为**：B 线的 server-tool 契约（RFC「server-tool 四格」与计划 C5.1）只规定**展示面**降级——native／function／带 correlation ID 的 text，并明确「绝不伪造 `web_search_tool_result`」。这条降级规则本身是对的，但它只解决了呈现，没有规定把 Responses 的 server-tool source id／whole source item 存进 continuation carrier 并在下一轮回送。结果：Responses → Anthropic → Responses 往返时，server-tool 的续接状态**静默丢失**，而不是像 reasoning 那样被显式 preserve 或显式 strip。
+- **理想架构 / 若做需改什么**：给 `CarrierV2Envelope.kind` 增补 server-tool 记录（A 线规格里对应 `responses-item-reference` 与 `responses-output-item` 两类：前者存可回指的 id，后者存权威完整 item），并同步四处——(1) decoder 的 prefix／kind／source 联合校验表，(2) request 侧 Anthropic→Responses 的 echo 回送步骤，(3) 「展示降级不得删除 opaque id／权威 source item」的验收判据，(4) observation/History 只存 version／source／hash 的既有隔离规则。**验收必须取得上游实际接受性证据**（echo 回去后 Responses 上游不 400），不能只靠我方 encode↔decode 自洽——两端同源会一起错。
+- **为何暂缓**：B 线 RFC 已 accepted 且正在执行（C0 三片已交付评审收口，C1.1 起改生产代码），**修改它的 carrier schema 需要 peer 那条线重新评审**，不由本会话单方改动（用户 2026-08-11 裁决：登记 backlog + 提请修订，不直接改 peer RFC 正文）。
+- **触发条件**：B 线推进到 **C5（server-tool 四格）或 C7（carrier v2 provenance）** 时必须先处置本条——这两片是它天然的吸收点，过了 C9／C10 的原子 cutover 再补，就要改已切换的生产路径。**发现方**：A/B 双线覆盖面对比（2026-08-11），A 线对应要求见 [`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/plan-4-web-search.md`](../plan/2026-08-06-responses-anthropic-semantic-bridge/plan-4-web-search.md) 与 [A 线规格「Web Search」节](../spec/2026-08-06-responses-anthropic-semantic-bridge.md)。
+
 ## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
 
 - **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
