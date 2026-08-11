@@ -24,12 +24,16 @@ import {
 } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
-import type { RawHttpRequest } from "~/lib/pipeline/types"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { withCapturingManager } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  snapshotHistoryBody,
+  type RawHttpRequest,
+} from "~/lib/pipeline/types"
 
 import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
@@ -48,7 +52,7 @@ function parse(args: { bodyModel: string; originalModel?: string; resolvedName: 
   const raw = {
     body: { model: args.bodyModel, max_tokens: 128, messages: [{ role: "user", content: "hi" }], stream: false },
     ...(args.originalModel !== undefined && {
-      originalBodyForHistory: { model: args.originalModel, max_tokens: 128, messages: [{ role: "user", content: "hi" }], stream: false },
+      originalBodyForHistory: snapshotHistoryBody({ model: args.originalModel, max_tokens: 128, messages: [{ role: "user", content: "hi" }], stream: false }),
     }),
     preResolved: { name: args.resolvedName, model: selected },
     headers: new Headers(),

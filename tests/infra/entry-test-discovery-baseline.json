@@ -523,6 +523,7 @@
     "tests/pipeline/heartbeat-suspend.it.test.ts",
     "tests/pipeline/hedge-policy.unit.test.ts",
     "tests/pipeline/hedged-driver.it.test.ts",
+    "tests/pipeline/history-body-snapshot.unit.test.ts",
     "tests/pipeline/hooks/client-inbound.unit.test.ts",
     "tests/pipeline/hooks/client-outbound.unit.test.ts",
     "tests/pipeline/hooks/client-rewrite.unit.test.ts",

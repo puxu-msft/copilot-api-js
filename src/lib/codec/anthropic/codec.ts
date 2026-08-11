@@ -113,6 +113,7 @@ import {
   type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
@@ -408,8 +409,10 @@ function parseAnthropic(
   translationConfigSnapshot?: TranslationConfigSnapshot,
 ): ParseAnthropicResult {
   const incoming = raw.body as MessagesPayload
-  const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
-  const originalSnapshot = structuredClone(clientBody)
+  const originalSnapshot =
+    raw.originalBodyForHistory === undefined ?
+      structuredClone(raw.body as MessagesPayload)
+    : (historySnapshotBody(raw.originalBodyForHistory) as MessagesPayload)
 
   // Model resolution (requested/resolved/selected/clientModel) via the shared
   // codec primitive — it owns the rule that the client-original name comes from
