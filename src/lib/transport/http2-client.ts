@@ -107,6 +107,14 @@ const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
  */
 interface H2SessionEntry {
   session: http2.ClientHttp2Session
+  /**
+   * Process-monotonic identity for THIS h2 connection, stable for its whole life.
+   *
+   * The point is correlation across dispatches: "did three requests on one connection die at the same instant?" separates a connection-level event from a per-stream cancel, and that question is unanswerable without a shared key. `rstCode` cannot answer it — a local abort, a peer CANCEL and a dead connection all surface as 8 (measured, exp/h2-termination-observability/).
+   *
+   * ⚠️ NOT `HistoryEntry.sessionId` / `EntrySummary.sessionId`, which is the CLIENT conversation dimension. Two different identity domains; collapsing them destroys both.
+   */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
@@ -142,6 +150,8 @@ const pending = new Map<string, Promise<H2SessionEntry>>()
 let poolEpoch = 0
 /** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
 let currentGeneration = 0
+/** Monotonic within the process — never reused, so a session id in History always names one physical connection. */
+let nextSessionSequence = 0
 let reconcileState: "idle" | "running" | "failed" = "idle"
 let lastCompletedGeneration = 0
 let lastReconcileError: string | null = null
@@ -622,6 +632,7 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
     const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs, undefined, pingObserverFor(pingStats))
     const entry: H2SessionEntry = {
       session,
+      sessionId: `h2-${(nextSessionSequence += 1)}`,
       origin,
       generation: currentGeneration, // === generationAtStart, confirmed above
       lifecycle: "active",
@@ -922,6 +933,8 @@ export function reconcileH2SessionsForConfigChange(): void {
 
 /** Per-origin h2 session status row for /api/status (P5). */
 export interface H2SessionStatusRow {
+  /** Process-monotonic h2 CONNECTION id — the same key that appears in History's termination snapshots, so a live session can be tied to a past incident. NOT the client conversation `sessionId`. */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
@@ -934,6 +947,7 @@ export interface H2SessionStatusRow {
 
 function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
   return {
+    sessionId: entry.sessionId,
     origin: entry.origin,
     generation: entry.generation,
     lifecycle: entry.lifecycle,
@@ -1268,6 +1282,16 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       // a shared session event to, so the snapshot keeps its default not-observed GOAWAY.
       commitPort: createLocalTerminationCommitPort(init.dispatch === undefined ? undefined : entry.goawayLedger.acquireDispatchLease(init.dispatch)),
       onTermination: init.onTermination,
+      // Sampled when THIS stream ends, so the sibling count and ping counters describe the connection
+      // at the moment of the termination being explained — not at the moment the request started.
+      sessionSnapshot: () => ({
+        sessionId: entry.sessionId,
+        origin: entry.origin,
+        generation: entry.generation,
+        lifecycleAtSnapshot: entry.lifecycle,
+        activeStreamCountAtSnapshot: entry.activeStreamCount,
+        ping: { ...entry.pingStats },
+      }),
     })
 
     // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
