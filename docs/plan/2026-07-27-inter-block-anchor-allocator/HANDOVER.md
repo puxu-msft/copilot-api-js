@@ -2,7 +2,7 @@
 
 **状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
 
-**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出。下一动作是 T0.0d（validator 出 receipt）→ T0.1。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出；**T0.0d 与 T0.1 随后也已通过**（详见下面两节）。下一动作是按 ADR 收窄 cutover-plan，然后才进 T0.2／Commit 0。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
 
 **A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 与 `14f354ff` 的批次都 15 轮全绿却相继停在 validator 的 C9 上——producer 与 validator 同批冻结却从未端到端跑过，run log 先是缺 `canonical_command=`、补上后又缺 `verdict=`。三处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
 
