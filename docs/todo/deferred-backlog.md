@@ -2,6 +2,23 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `tests/history/search/daemon.it.test.ts` 在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
+
+- **现状**：`bun test tests/history/search/daemon.it.test.ts` 单跑 **10 pass / 12 fail**。它进 `test:backend`（`it` 档）而不进 `test:fast`，所以只在跑全后端时才暴露。失败集中在 `history-search native list-search`（`listSearch` 返回的 `total` 与预期不符、空过滤值被当成真过滤、`invalidQuery` 判定）与 `daemon freshness attestation`（frozen target 覆盖判定）。
+- **取证方式（可复算）**：本会话 C2.1 的改动**一个 history 文件都没碰**（`git diff --name-only | grep -i history` 为空）。为排除间接影响，在**父提交** `f12dd4d5~1` 上另开 detached worktree、把 gitignored 的 `native/history-search/copilot_history_search.node` 拷进去（否则测试会 `skipIf` 跳过而不是跑，比较将失去意义），单跑同一文件得到**完全相同的 10 pass / 12 fail**。故为既有红，不是本会话引入。
+- **不是「缺 native 产物」那一类**：本机 `native/history-search/copilot_history_search.node` **存在**，`describe.skipIf(!NATIVE)`（该文件 `:110`／`:160`）因此不跳过，这些用例是真跑真红。别按 CLAUDE.md 里「没产物就显式 skip」那条把它当环境性问题挥手放过。
+- **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面变得无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
+- **若做需改什么**：先判定方向——是 native 侧（Rust `listSearch` 的过滤与 total 语义）回归，还是 TS 侧断言过时。**别默认后者**：这些断言写的是「空过滤值不得放宽真过滤」这类不变量，改断言去迁就实现会永久废掉它（→ user-rule `red-tests-may-be-guarding-something`）。取证起点是 `git log -- native/history-search/ src/lib/history/search-native*`，看红是否与某次 native 改动同期。
+
+## 四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11）
+
+- **现状**：`src/lib/codec/{anthropic,openai-cc,openai-responses,gemini}/codec.ts` 各有一份 `EnvelopeInit` 与 `makeEnvelope`，**除 lazy-view 工厂名外逐字节相同**（`createAnthropicLazyView` / `createCcLazyView` / `createResponsesLazyView` / `createGeminiLazyView`）。`with()` 的重建体也是四份相同的手写字段透传。
+- **代价（已实测）**：`RequestEnvelope` 每加一个字段就要改四处，且 `with()` 那处**漏写不会报错**——字段是可选的，漏掉的那条腿只是静默丢值。C2.1 加 `translationConfigSnapshot` 时正是如此，只能靠一条读四个 codec 源码的守卫（`tests/pipeline/semantic/config-snapshot.unit.test.ts` 末节）兜底，而那是文本判据、不是类型保证。
+- **理想架构**：把 `makeEnvelope` 抽到共享位置（如 `src/lib/pipeline/envelope.ts` 或相邻模块），参数化 lazy-view 工厂，四个 codec 只传自己的 view 构造函数。`with()` 改为在共享实现里 `{ ...env, ...patch }` 的形式，使「新字段默认被携带」成为结构保证，漏写变得不可能，那条文本守卫也就可以删掉。
+- **为何暂缓**：它是 C2.1 撞到的既有债，不是 C2.1 引入的；抽取会同时改动四个 codec 的构造路径，与语义桥的 commit invariant（每 commit 终态可用、中间态不半坏）混在一起会让 bisect 失去意义。**发现方**：C2.1 接线（2026-08-11）。
+- **触发条件**：下一次要给 `RequestEnvelope` 加字段时；或语义桥推进到 C9／C10 的方向 cutover 前——那时四份 `with()` 的漂移代价最高。
+
+
 ## 语义桥 carrier v2 表达不了 server-tool 的续接状态（2026-08-11，**提请修订执行中的 RFC**）
 
 - **根因 / 现状**：用户对语义桥提过一条硬不变量——Anthropic Messages 只是**载体格式**，源自 Responses 上游的 opaque continuation state 在会话继续时**必须能无损回传**兼容的 Responses 上游；**展示可降级，续接状态不可丢**。当前执行线（B 线）[RFC `docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../rfc/2026-08-08-anthropic-responses-semantic-bridge.md) 的 `CarrierV2Envelope` 把 `kind` 联合限定为 `"claude-signature" | "responses-encrypted"`（见该 RFC「6.1 Carrier v2 wire grammar」节的 envelope schema）——**只覆盖 reasoning 侧**。reasoning 侧覆盖得很完整（opaque 仅在 protocol／provider／resolved model 三维均匹配时 preserve，不匹配则剥 opaque 保 visible），但 **server-tool 侧（`web_search_call` 等）的 opaque id 与权威完整 item 没有任何 carrier record 承载它**。

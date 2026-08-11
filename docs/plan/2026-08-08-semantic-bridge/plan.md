@@ -2,7 +2,7 @@
 
 > **⚠️ 2026-08-11「快做快合」裁决改变了本文的执行方式。** 用户当日裁决放弃 SDD 与 TDD（见 CLAUDE.md「工作节奏：快做快合」）。因此本文里**每片的 `Mutation` 小节、以及「每条不变量各一条违反路径用例」这类穷举式测试要求，一律不再作为执行门**——它们记录的是设计意图，不是必须逐条产出的交付物。测试只写**主路径**与**实际报错过的路径**。**仍然有效**的是：任务 DAG 与依赖顺序、锚点表、每 commit invariant（中间态不得半坏）、以及 RFC 作为契约权威。已按旧口径完成的 C0 与 C1 不回头精简。
 >
-> **进度**：C0.1／C0.2／C0.3 与 C1.1／C1.2／C1.3 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。下一片：C2.1。
+> **进度**：C0.1／C0.2／C0.3、C1.1／C1.2／C1.3 与 C2.1 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。C2.1 的捕获锚点选在 `src/server.ts` 的 config 中间件内、`applyConfigToState()` 之后（C2.3 建 authority 时沿用这一锚），快照经 codec 工厂 args 传进各 `parse` 并在构造时钉上 envelope；`tests/helpers/test-app.ts` 已镜像该捕获。下一片：C2.2。
 >
 > **权威 spec**：[docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted，五轮对抗评审收口）。
 > **决策依据**：[ADR 2026-08-08 protocol-neutral reasoning exchange](../../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)；收窄的既有决策 [ADR 2026-07-14 lossless-per-pair bridge](../../decisions/2026-07-14-lossless-per-pair-bridge.md)。
