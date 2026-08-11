@@ -1142,7 +1142,19 @@ async function maybeRunHedgedResponseSink(
         try {
           next = await iterator.next()
         } catch (error) {
-          return streamErrorOutcome(error, env, responseFailureSource(error))
+          // Same post-terminal teardown as the unhedged loop below: these frames went to the REAL
+          // client sink (writeWinnerFrame), so once the winner reached its terminal the wire holds a
+          // complete response. `client-abort` is not classified here (the iterator pull is upstream-
+          // side), so no abort can be swallowed by this gate.
+          const source = responseFailureSource(error)
+          if (isPostTerminalTeardown(source, selected.processor.responseOpts)) {
+            consola.warn(
+              `[driver] hedge winner transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            binding.coordinator.releaseCandidate(selected.candidate)
+            return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+          }
+          return streamErrorOutcome(error, env, source)
         }
         if (next.done) {
           liveDrained = true
@@ -1241,6 +1253,32 @@ async function writeWinnerFrame(sink: ClientSink, frame: ClientFrame): Promise<v
  */
 function responseFailureSource(error: unknown): "upstream-transport" | "codec-render" {
   return isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
+}
+
+/**
+ * The upstream tore the transport down AFTER the response already reached its terminal on the
+ * client wire. Observed against GHC: `message_delta` + `message_stop`, then RST_STREAM(CANCEL)
+ * 21-44s later (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11).
+ *
+ * Such a teardown carries nothing the client can act on: it already holds a complete, terminated
+ * response. Minting `stream-error` makes the format handler append a SECOND terminal (an `error`
+ * frame after `message_stop`, breaking the one-terminal contract) and settle a successful turn as
+ * failed. Both live drain loops (unhedged and the hedge WINNER loop) share this one definition —
+ * the invariant is a property of the bytes already on the sink, not of which loop wrote them.
+ *
+ * Each conjunct is load-bearing:
+ *   - `upstream-transport` only: `downstream-sink` / `codec-render` / `delivery-owner` mean the
+ *     client's copy may be broken or incomplete.
+ *   - `sawMessageStop() === true` (not `!== false`): a caller that never wired the predicate must
+ *     NOT be treated as having reached a terminal.
+ *   - `sawUpstreamError() !== true`: `sawMessageStop()` is true for ANY terminal including a FAILED
+ *     one (`response.failed` sets `sawFailure`, candidate-response-session.ts:128-130).
+ *
+ * Callers must apply this AFTER the `client-abort` classification: a client that disconnects after
+ * the terminal is still an abort, not a completion.
+ */
+function isPostTerminalTeardown(source: ResponseFailureSource, opts: Pick<RunResponseOpts, "sawMessageStop" | "sawUpstreamError"> | undefined): boolean {
+  return source === "upstream-transport" && opts?.sawMessageStop?.() === true && opts.sawUpstreamError?.() !== true
 }
 
 function streamErrorOutcome(
@@ -1380,25 +1418,7 @@ async function runResponseSink(
     if (isResponseCodecRenderError(error)) return streamErrorOutcome(error, env, "codec-render")
     // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
     const source = responseFailureSource(error)
-    // The upstream can tear the transport down AFTER it already delivered a COMPLETE response.
-    // Observed against GHC: `message_delta` + `message_stop`, then RST_STREAM(CANCEL) 21-44s later
-    // (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11). On this LIVE path every
-    // rendered frame is written to the sink before the pull that throws, so `sawMessageStop()` here
-    // means the client already holds a complete, terminated response. Minting `stream-error` made the
-    // format handler append a SECOND terminal (an `error` frame after `message_stop`, breaking the
-    // one-terminal contract) and settle a successful turn as failed. A post-terminal teardown carries
-    // nothing the client can act on, so it drains as `complete` and the handler's own terminal logic
-    // (refusal / unrepairable tool input / max_tokens continuation) runs unchanged.
-    //
-    // Deliberately live-only, upstream-transport-only, and fail-closed on a failed terminal:
-    //   - `runResponseBufferedSink` withholds frames until commit, so there `sawMessageStop()` does
-    //     NOT imply the client received anything — a throw must stay retryable.
-    //   - `downstream-sink` / `codec-render` / `delivery-owner` mean the client's copy may be broken
-    //     or incomplete, so they keep minting `stream-error` above.
-    //   - `sawMessageStop()` is true for ANY terminal, including a FAILED one (`response.failed` sets
-    //     `sawFailure`, candidate-response-session.ts:128-130). A failed terminal followed by a torn
-    //     transport must not drain as `complete`, so the fail-closed `sawUpstreamError()` vetoes it.
-    if (source === "upstream-transport" && effectiveOpts.sawMessageStop?.() === true && effectiveOpts.sawUpstreamError?.() !== true) {
+    if (isPostTerminalTeardown(source, effectiveOpts)) {
       consola.warn(`[driver] upstream transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`)
       return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
     }

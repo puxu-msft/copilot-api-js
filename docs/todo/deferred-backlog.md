@@ -1566,3 +1566,24 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：三项各自独立可加，都不要求重做第一类的 command 形状。classifier 可作为 owner 内的一层后置校验引入；D2 只需把 `WireEnvelopeFactory.anchor` 的 caller 参数换成 owner 对自己 lease 的查询。
 - **触发条件（值得做）**：出现**真实的** intent/effect mismatch 缺陷——不是设想的。设想不构成触发条件，这正是本次裁决的内容。
 - **完整理由与诚实边界**：ADR [2026-08-10-trust-the-caller-over-emission-authorization](../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。
+
+## 完成终局的判据是「见过 terminal」而非「见过*合法且唯一*的 terminal」（2026-08-11，post-terminal teardown 修复的评审发现）
+
+- **根因**：`candidateResponseSession` 的 `sawMessageStop()`（[candidate-response-session.ts:221](../../src/lib/pipeline/generation/candidate-response-session.ts#L221)）只读 `sawTerminal`，而 `sawTerminal` 在**任意** `response-terminal` outcome 上置真（[:128-130](../../src/lib/pipeline/generation/candidate-response-session.ts#L128)）。delivery grammar 明确把 `duplicate-terminal` 与 `post-terminal-frame` 分类为 `protocol-error`（[grammar.ts:58-62](../../src/lib/pipeline/delivery/grammar.ts#L58)），但该分类**不会**把 `sawMessageStop()` 拨回 false，也不进 `sawFailure`（后者只认 failed terminal / terminal-failure / adapter-exception）。
+- **当前行为**：`message_stop → message_stop → transport throw`、或 `message_stop → 普通数据帧 → transport throw` 这两种序列，客户端拿到的是违反单终止符契约的流，而请求被记为成功。**这不是 2026-08-11 那个 post-terminal 门引入的**——同样的序列在**干净 drain** 下今天也照样 settle complete（Anthropic 完成分支只查 `acc.streamError` / refusal / 畸形 tool 输入 / `!sawMessageStop` / max_tokens，不消费 grammar 的 protocol-error）。那个门只是让抛错那条路与干净 drain 一致。**failed terminal 那一半已在 `8762e55c` 用既有的 `sawUpstreamError()` 关掉**，剩下的就是 grammar-validity 这一半。
+- **理想架构**：candidate session 增一个 fail-closed 的 `sawValidClientCompletion()`——仅当已观察到可作为成功完成的 terminal，且其后**未**观察到任何 `protocol-error`、failed terminal 或第二个终局时为真。live 门与各 handler 的完成分支都改读它，`sawMessageStop()` 保留给 buffered 的提交判据（那里语义确实只需要「有没有终止符」）。
+- **为何暂缓**：它要改的是 candidate session 对四种 client protocol 的公共契约，且真正的收益面在**干净 drain** 那条更宽的路径上——把它塞进一个针对 transport teardown 的窄修复里，会让改动横跨两个不相干的失效模式。属独立工作单元。
+- **若做需改什么**：① candidate session 暴露新谓词并让 `recordOutcome` 记住「终局后是否再出现过 outcome」；② `driver.ts` 的 post-terminal 门改读新谓词；③ 各 handler 完成分支决定是否也改读（这一步会改变干净 drain 的既有行为，需单独裁决）；④ 覆盖四条序列：`message_stop×2 → throw` 仍 stream-error、`message_stop → 数据帧 → throw` 仍 stream-error、`response.failed → throw` 不得 complete（已由 `8762e55c` 覆盖）、原正样本 `message_stop → throw` 仍 complete 且不追加 error 帧。
+- **发现方**：`gpt-souls:reviewer` 对 `6ad26651` 的对抗评审（2026-08-11），列为 major；主会话实测复核后确认其触发序列成立，但把「本特性引入」修正为「既有缺口、本特性多了一条到达路径」。
+
+## post-terminal teardown 的宽容门只覆盖三条腿，CC / Anthropic-translate / buffered-retreat 仍会追加第二个终止符（2026-08-11，`8762e55c` 的评审发现）
+
+- **根因**：门（[driver.ts](../../src/lib/pipeline/driver.ts) 的 `runResponseSink` catch）读的是候选 session 的 `sawMessageStop()`，其真值来自 grammar 的 `sawTerminal`；而 `sawTerminal` 只有在 **adapter 对终止帧本身铸出 `response-terminal`** 时才置位。两类腿达不到这个条件：
+    - **chat-completions**：adapter 对带 `choices` 的块一律归 `response-append`，只有 `payload.error` 才铸 terminal（[adapters/chat-completions.ts:23-26](../../src/lib/pipeline/delivery/adapters/chat-completions.ts#L23)）。CC 的终局改由 `classifyFinish` 在 `publishFinish` 确立，而那里**只在自然 drain 后执行**——抛错路径永远到不了（[stream/response-processor.ts:298-299](../../src/lib/pipeline/stream/response-processor.ts#L298) 的注释明写这一点）。故 CC live 腿抛错时 `sawMessageStop()` 恒 false。
+    - **Anthropic translate 腿**：`message_stop` 由 `renderer.flushResponse` 合成，同样只在自然 drain 跑（[routes/messages/handler-v4.ts:2262-2266](../../src/routes/messages/handler-v4.ts#L2262) 自述）。
+    - **buffered retreat**：`retreated` 置真后 buffer 已冲上客户端线、改直写，此时终止帧可能已在线上；随后的 post-terminal 抛错走 [driver.ts](../../src/lib/pipeline/driver.ts) 的 `retreated && !drained` 分支，仍返回 `stream-error`。
+- **当前行为**：同一个 GHC post-terminal RST，对 `/v1/messages` direct、Gemini、Responses HTTP/WS 的客户端已被正确判成 complete；对 `/v1/chat/completions`、Anthropic translate 腿、以及退守后的 buffered 腿，客户端仍会在终止符之后收到第二个 `error` 帧、请求仍记为 failed。**这不是回归**——那三条腿的行为与修复前完全一致，只是没有一起受益。
+- **理想架构**：让「终局已抵达客户端」成为一个**与 drain 方式无关**的事实。两条路可选：① 各 vendor adapter 对自己的终止帧（CC 的 `finish_reason`、translate 腿合成的 `message_stop`）铸 `response-terminal`，使 `sawTerminal` 在抛错路径上也可信——代价是动 grammar 的公共语义，需评估对 buffered 提交判据的影响；② 由 delivery session 的 `ledger.terminalWritten`（[delivery/session.ts](../../src/lib/pipeline/delivery/session.ts) 的 `ClientBlockLedger`）充当判据——它是**下游观测**的，天然与 drain 方式无关，且已经存在。②看起来更正，因为门要断言的本来就是「客户端收到了终止符」而非「上游发过终止符」。
+- **为何暂缓**：①会改四种 client protocol 共用的 grammar 语义；②要把一个 downstream ledger 接进 driver 的 catch，需确认 evaluate 模式（帧进 collector 而非客户端）下该 ledger 的含义。两者都超出「修一个 catch 分支」的范围。retreat 那条则在另一个函数、另一套不变量里。
+- **若做需改什么**：选定判据后，四条腿各补一条与现有 it 级接线证明同形的用例（完整消息 → 上游 body 抛错 → 断言末帧是该格式的终止符且无 `error`）。
+- **发现方**：`reviewer` 对 `8762e55c` 的对抗评审（2026-08-11）第 1/3 条；主会话已逐条复核证据成立。

@@ -1452,6 +1452,26 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
   })
 
+  // Fourth negative control — the ORDERING one. The gate must sit AFTER the client-abort
+  // classification: a client that disconnects after the terminal is still an abort, not a
+  // completion. Without this, moving the gate above the abort check passes every other test here
+  // while turning a real abort into a recorded success.
+  test("a client-abort after the terminal is still settled-abort, not complete", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* abortAfterTerminal(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new StreamClientAbortError()
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: abortAfterTerminal(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome.kind).toBe("settled-abort")
+  })
+
   // Second negative control: the gate is upstream-transport-only. A sink write that rejects means the
   // client's copy may be broken even though the upstream reached its terminal, so it must stay an error.
   test("a downstream-sink failure after the terminal still mints stream-error", async () => {
