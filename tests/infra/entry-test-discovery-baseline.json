@@ -581,6 +581,7 @@
     "tests/pipeline/semantic/ledger-declare.unit.test.ts",
     "tests/pipeline/semantic/ledger-property.unit.test.ts",
     "tests/pipeline/semantic/ledger-terminal.unit.test.ts",
+    "tests/pipeline/semantic/lineage.unit.test.ts",
     "tests/pipeline/server-error-retry-strategy.unit.test.ts",
     "tests/pipeline/server-tool-rejection-retry.unit.test.ts",
     "tests/pipeline/sse-encoder.unit.test.ts",
