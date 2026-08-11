@@ -13,7 +13,7 @@
 - **主树状态**：合并落地时主树只有其他会话的 WIP（本特性零残留）。**接手时自己跑一次 `git status --short`**，别采信这句——它是快照。
 - **已跑门禁（`3df0e08d`，随后在 `e120a49c` 复测）**：`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。**这三项都是那两个 commit 上的读数，不是「此刻仍然如此」**——接手请自己重跑。
 - **focused gate 是 14 个文件，不是 15**（可复制的命令在 KICKOFF「测试门禁现状」节）。⚠️ **`tests/infra/entry-evidence-schema.unit.test.ts` 已被移出这道 gate**：它守的是**全树测试发现基线**，任何人（包括与本特性毫无关系的 peer）增删测试文件都会让它红——把它混进「我有没有弄坏自己的东西」这个判据里，会让接手方第一次复验就撞红，最坏跑去重生成别人在飞的基线。它单独的用法见 KICKOFF 同节。
-  - **判据是 `0 fail`，不是某个通过数。** 通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**，两次都 `0 fail`。写死通过数只会让接手方把正常增长误判成回归（项目裁决：文档里直接写易变数字是怪味）。要当前值就跑那条命令。
+  - **判据是 `0 fail`，不是某个通过数。** 通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**，两次都 `0 fail`。⚠️ **那两个数是 15 文件时代的**（当时 `entry-evidence-schema` 还在门内）；**移出它之后同一命令是 234**——所以你跑出个比 239 小的数**不是回归**，是门变小了。写死通过数只会让接手方把正常增长误判成回归（项目裁决：文档里直接写易变数字是怪味）。要当前值就跑那条命令。
   - **口径必须说清**：`236` 那组读数取自 **`3df0e08d`**，而它比最终合并态 `0e0768ee` 早 **17 个提交**（`git rev-list --count 3df0e08d..0e0768ee`）——**这道 gate 没有在 `0e0768ee` 上原样跑过**；合并之后的实测是 `e120a49c` 上的 `239 pass / 0 fail`。别把「已跑门禁」读成「最终合并态已被这道门覆盖」。
   - **实现期的读数（分支上，供追溯，不要拿来当合并态判据）**：十文件 gate `197 pass / 0 fail / 687 expect`（`e397720a`）；Task 4 焦点集 `30 pass / 0 fail / 74 expect`（`a8eeaf4c` 之后，独立 reviewer 在自己的副本复现同一数字）。
   ⚠️ **不要引用更早的 `26 pass / 62 expect`**——那是 `3e418cdb`（修 blocker 之前）的真实读数，blocker 整改新增了用例后已变为 30/74。它不是错数，是**陈旧数**；照它核对会误判成回归。
@@ -42,9 +42,34 @@
 本特性的立案证据是一条**真实的**长驻留 operation，此前只在 spec 里记了症状文本，**没记它是哪条记录**——后来人因此无法复查原始数据。
 
 - **operationId**：`req_1786064856101_137`（`sessionId` `529807d9-28f0-4e56-85c8-03adaf016bb7`，进程 `pid=597291`、`gitSha=ccb645f5`、`version=0.8.4-beta.18`）。
-- ⚠️ **这条记录已经取不回来了**：2026-08-11 只读实测 `GET /history/api/entries/req_1786064856101_137/export` → **`404 {"error":"Entry not found"}`**（同刻对照 `GET /history/api/entries?limit=1` → `200`，所以不是服务不可用，是记录本身没了）。端点本身仍然存在且与 [API.md](../../API.md)「History REST」一致——**失效的是这条记录，不是这条路径**。
-- **因此唯一副本是** `incident-manifest.zst`（542 KB，在 job 临时目录 `$CLAUDE_JOB_DIR/tmp/`，**未提交进仓库**，含用户真实请求/响应内容）。它随 job 删除而消失。要不要长期留存、留在哪，**由用户裁决**（见 `docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md`）。**在此之前不要清理那个目录。**
-- **调查期间导出过一份 manifest**（formatVersion 2，含完整 arena payload/frame 谱系），但它只存在于当时会话的临时目录、**未提交**——里面是用户的真实请求与响应内容，是否长期留存属用户决定，不由本次收尾代劳。若 History 已按保留策略淘汰该记录，该导出即不可再生。
+- ⚠️ **原始记录已不可再生，原始导出已按用户裁决删除。** 2026-08-11 只读实测 `GET /history/api/entries/req_1786064856101_137/export` → **`404 {"error":"Entry not found"}`**（同刻对照 `GET /history/api/entries?limit=1` → `200`——端点没坏，是这条记录被保留策略淘汰了）。调查期导出过一份 542 KB 的 manifest（formatVersion 2，含完整 arena payload/frame 谱系与用户真实请求／响应正文），**用户 2026-08-11 裁决：提炼出测试需要的关键部分后删除**。下面这张表就是提炼结果，原件已删。
+
+- **读者须知**：以下数据**无法再复查**。请**先相信它，出问题再质疑**——若后续实现与它矛盾，以代码与新的实测为准，把这张表当作线索而非权威。
+
+### 提炼出的立案事实（这就是本特性要修的那件事）
+
+| 事实 | 值 |
+|---|---|
+| 关机摘要里的表现 | `(failed, 17620s)` —— 约 **4.9 小时**仍被算作驻留 |
+| 记录里的实际终态 | `terminal.outcome = "failed"`，`sequence 18492`，`durationMs 483364`（约 **8 分钟**） |
+| 失败原因 | `upstream stream truncated: closed without finish_reason`（`attribution.category = "upstream"`，抛于 `pumpTranslateLegStreamingV4`，`src/routes/messages/handler-v4.ts:1888`） |
+| dispatch | `dispatch:0`（http）`verdict failed`，**已 settled** 于 `sequence 18489` |
+| egress | `sequence 18490`，upstream/client frames 均为空 |
+| candidate | `candidate:0`（primary）`verdict failed`，**已 settled** 于 `sequence 18491`，`reason "terminal:failed"` |
+| 候选/分派数量 | 各 1，无 hedge |
+| 时间 | 创建 `1786064856101`，全部 settle 于 `1786065339692`（**483 秒内全部落定**） |
+
+**这张表为什么是立案事实**：dispatch → egress → candidate → terminal **四级全部在 483 秒内 settled**，逻辑终态明确是 `failed`——**然而关机摘要把它打印成 `(failed, 17620s)`**。
+
+⚠️ **别把它读成「没人释放它」（这是本文档 2026-08-11 更正掉的一句话）。** 保留是**有意为之**且是本特性自己 Tasks 1–4 建立的：`src/lib/context/manager.ts:427` 的 `releaseTrackedOperationIfTerminal` 在 `blocker !== "none"` 时**故意 no-op**，让 ctx 留着可见而不是悄悄消失（`OperationBlocker` 取值见 `src/lib/context/operation-lifecycle.ts:17`：`request-running` / `operation-body` / `delivery-finalization` / `canonical-finalization` / `none`）。而上面那张表**证明不了** `blocker === "none"`——它来自 History 侧的观测记录，根本不携带 ctx 的 blocker。**所以这条 incident 不构成「释放缺陷」的证据。**
+
+**它构成证据的是「摘要在撒谎」这一类**（与 master 的三档信号契约同向，而非对立），两处具体的：
+1. **打印的是逻辑态、不是阻塞原因**——`shutdown.ts:270` 直接输出 `request.state`，运维看到 `failed` 却不知道是四个 blocker 里的哪一个在拖住关机。同一函数的 lightweight 分支已经改打 `kind` 而非 `state`，**先例就在旁边一行**。
+2. **打印的 age 是「创建至今」，不是「拖住关机多久」**——`age = now - request.startTime`。`17620s` 说的是这个请求 4.9 小时前发起，**不是**它堵了关机 4.9 小时。运维最需要的那个量，摘要一个字都没说。
+
+这正是本特性把 lifecycle 拆成四类独立事实（logical terminal / operation scope / delivery lifecycle / canonical finalization）的由来——**`failed` 不等于 quiesced**。
+
+**给 Task 6/7 写测试时直接用这张表**：构造一条 `terminal.outcome = "failed"`、所有 candidate/dispatch 均已 settled 的 operation，断言它**不再**出现在关机摘要的驻留清单里（或至少不以原始 `request.state` + 累计 age 的形式出现）。**不需要那 542 KB 原件**——它的正文是上游响应内容，与本缺陷无关。
 
 ## 入口指引（按序读）
 

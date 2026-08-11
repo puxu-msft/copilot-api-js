@@ -4,6 +4,10 @@
 
 **钩子写法**：症状词 + 防漏动作内核，**压到一行**（索引有加载上限、超出即静默失效）。只写「已升为 skill」会退化成目录项——skill 万一没浮现，这行是唯一兜底。
 
+## 工作节奏（2026-08-11 起，先读这条）
+
+- [快做快合，不做 SDD／TDD](feedback-ship-fast-no-sdd-no-tdd.md) — 想清楚就动手、做完就合；测试只覆盖主路径 + 已报错过的路径；评审只在「有规模的代码 + 主路径测试已通过 + 合并前」派一次对抗评审，**不再复评到 0 blocker**。权威正文在 CLAUDE.md「工作节奏」节。
+
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub）
 
 - [收尾与跨会话交接](session-closeout-and-handover.md) → skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF/进度文件/容量终态接力）
@@ -32,7 +36,7 @@
 - [评审可能正犯它指控你的那个错](methodology-reviewer-may-commit-the-error-it-alleges.md) — 先写下影响集合再从集合内取样；争议交未卷入第三方
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) → skill `editing-files-precisely` — assert 在写盘前→失败全丢而 commit 照跑；验证须针对新写入的字符串，`bash -n` 绿在未编辑文件上同样通过
 - [连续多轮「修复引入新回归且照绿」](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=改回原 bug 仍全绿即无裁决力；验收必须走真实 HTTP 入口
-- [plan 陈旧程度 ∝ 返工轮数，逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 按已知形态 grep 查不全；从 types.ts 逐签名出发；五类藏身处逐类过
+- [plan 陈旧的两条机制：返工轮数 + 共享 master churn](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — ①返工型：按已知形态 grep 查不全、从 types.ts 逐签名出发、五类藏身处逐类过；②churn 型：写完到执行隔数日 master 前进数百提交，**行号锚点漂后仍指向看似合理的接缝**，故交未来会话的计划一律用符号锚点不用行号，并顺手吸收 churn 里新立的契约
 - [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）
 - [输出过滤会伪造失败](methodology-output-filter-fakes-a-failure.md) — `| rg`/`tail` 让退出码变成过滤器的且吞掉判据；要判成败就别过滤，嫌长先落盘再筛
 - [门写了但没人去执行它](methodology-gates-i-write-fail-at-the-execution-seam.md) → skill `making-a-gate-actually-fire` — 九形态+四问（谁在哪个未越过的时刻执行·判否回哪步·拿得到输入吗·可逆吗）；`&&` 是门而换行不是；对账到 diff 为空

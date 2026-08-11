@@ -19,12 +19,24 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-DEFAULT_INV = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "tmp"
-    / "2026-08-09-task37-closeout-tmp-inventory.md"
-)
+REPO = Path(__file__).resolve().parents[2]
+# The inventory is located by its own first line, not by a path. Three times now a hard-coded location has gone stale — first the `.txt`/`.md` rename, then a worktree that closeout deleted, then the whole series moving into `docs/<topic>/` — and each time the failure looked like a broken script rather than a moved file. The header below is written by the freeze step and is stable.
+INVENTORY_HEADER = "# frozen inventory of $CLAUDE_JOB_DIR/tmp"
+
+
+def find_inventory() -> Path | None:
+    matches = sorted(
+        p
+        for p in (REPO / "docs").rglob("*inventory*.md")
+        if p.is_file() and p.read_text(encoding="utf-8", errors="replace").startswith(INVENTORY_HEADER)
+    )
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return None
+    print(f"ambiguous: {len(matches)} files carry the inventory header: {[str(m) for m in matches]}", file=sys.stderr)
+    return None
+
 
 EDIT_SCRIPT = re.compile(
     r"^(fix|resolve|rewrite|wire|retarget|adapt|trim|use|settle|revert|arm|pair|dedup|close|annotate"
@@ -53,7 +65,14 @@ def classify(kind: str, path: str) -> str:
 
 
 def main() -> int:
-    inv = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_INV
+    if len(sys.argv) > 1:
+        inv = Path(sys.argv[1]).resolve()
+    else:
+        found = find_inventory()
+        if found is None:
+            print("no file under docs/ carries the frozen-inventory header; pass the path explicitly", file=sys.stderr)
+            return 2
+        inv = found
     if not inv.is_file():
         print(f"inventory not found: {inv}", file=sys.stderr)
         return 2

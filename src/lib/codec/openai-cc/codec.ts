@@ -57,6 +57,7 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type { RequestState } from "~/lib/pipeline/request-state"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -181,6 +182,11 @@ export interface CreateOpenAiCcCodecArgs {
    * for both its sanitize rewrite and its resanitize (auto-truncate). Absent for the forward/direct CC legs.
    */
   reverseMapperHolder?: ReverseAnthropicMapperHolder
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /**
@@ -224,7 +230,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx))
+      const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx), args?.translationConfigSnapshot)
       truncateBaseline = baseline
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
       // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
@@ -346,7 +352,11 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
  * rejects it at the boundary with a 404 instead. Passing catalog-external models THROUGH to upstream
  * — what D5 actually wanted — still is not implemented; see docs/v4/05-progress.md P2.2-D5.
  */
-function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
+function parseOpenAiCc(
+  raw: RawHttpRequest,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
   // `body` is the wire-logical inbound (system-prompt already injected by the
   // route, P2.2-D3); `originalBodyForHistory` (when present) is the client's raw
   // pre-injection body for the history snapshot.
@@ -413,6 +423,7 @@ function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => 
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
     ctx,
+    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
   })
 
   // `renamedPayload` (post-tool-rename, PRE-sanitize) is the stable auto-truncate
@@ -457,6 +468,7 @@ interface EnvelopeInit {
   ctx: RequestContext
   prepareHints?: PrepareHints
   requestState?: RequestState
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /**
@@ -475,6 +487,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     body: init.body,
     prepareHints: init.prepareHints ?? {},
     ...(init.requestState !== undefined && { requestState: init.requestState }),
+    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createCcLazyView(env.body)
@@ -489,6 +502,8 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         ctx: env.ctx,
         prepareHints: env.prepareHints,
         requestState: env.requestState,
+        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
+        translationConfigSnapshot: env.translationConfigSnapshot,
         ...patch,
       })
     },

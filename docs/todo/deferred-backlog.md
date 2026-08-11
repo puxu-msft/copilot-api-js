@@ -2,6 +2,30 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `tests/history/search/daemon.it.test.ts` 在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
+
+- **现状**：`bun test tests/history/search/daemon.it.test.ts` 单跑 **10 pass / 12 fail**。它进 `test:backend`（`it` 档）而不进 `test:fast`，所以只在跑全后端时才暴露。失败集中在 `history-search native list-search`（`listSearch` 返回的 `total` 与预期不符、空过滤值被当成真过滤、`invalidQuery` 判定）与 `daemon freshness attestation`（frozen target 覆盖判定）。
+- **取证方式（可复算）**：本会话 C2.1 的改动**一个 history 文件都没碰**（`git diff --name-only | grep -i history` 为空）。为排除间接影响，在**父提交** `f12dd4d5~1` 上另开 detached worktree、把 gitignored 的 `native/history-search/copilot_history_search.node` 拷进去（否则测试会 `skipIf` 跳过而不是跑，比较将失去意义），单跑同一文件得到**完全相同的 10 pass / 12 fail**。故为既有红，不是本会话引入。
+- **不是「缺 native 产物」那一类**：本机 `native/history-search/copilot_history_search.node` **存在**，`describe.skipIf(!NATIVE)`（该文件 `:110`／`:160`）因此不跳过，这些用例是真跑真红。别按 CLAUDE.md 里「没产物就显式 skip」那条把它当环境性问题挥手放过。
+- **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面变得无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
+- **若做需改什么**：先判定方向——是 native 侧（Rust `listSearch` 的过滤与 total 语义）回归，还是 TS 侧断言过时。**别默认后者**：这些断言写的是「空过滤值不得放宽真过滤」这类不变量，改断言去迁就实现会永久废掉它（→ user-rule `red-tests-may-be-guarding-something`）。取证起点是 `git log -- native/history-search/ src/lib/history/search-native*`，看红是否与某次 native 改动同期。
+
+## 四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11）
+
+- **现状**：`src/lib/codec/{anthropic,openai-cc,openai-responses,gemini}/codec.ts` 各有一份 `EnvelopeInit` 与 `makeEnvelope`，**除 lazy-view 工厂名外逐字节相同**（`createAnthropicLazyView` / `createCcLazyView` / `createResponsesLazyView` / `createGeminiLazyView`）。`with()` 的重建体也是四份相同的手写字段透传。
+- **代价（已实测）**：`RequestEnvelope` 每加一个字段就要改四处，且 `with()` 那处**漏写不会报错**——字段是可选的，漏掉的那条腿只是静默丢值。C2.1 加 `translationConfigSnapshot` 时正是如此，只能靠一条读四个 codec 源码的守卫（`tests/pipeline/semantic/config-snapshot.unit.test.ts` 末节）兜底，而那是文本判据、不是类型保证。
+- **理想架构**：把 `makeEnvelope` 抽到共享位置（如 `src/lib/pipeline/envelope.ts` 或相邻模块），参数化 lazy-view 工厂，四个 codec 只传自己的 view 构造函数。`with()` 改为在共享实现里 `{ ...env, ...patch }` 的形式，使「新字段默认被携带」成为结构保证，漏写变得不可能，那条文本守卫也就可以删掉。
+- **为何暂缓**：它是 C2.1 撞到的既有债，不是 C2.1 引入的；抽取会同时改动四个 codec 的构造路径，与语义桥的 commit invariant（每 commit 终态可用、中间态不半坏）混在一起会让 bisect 失去意义。**发现方**：C2.1 接线（2026-08-11）。
+- **触发条件**：下一次要给 `RequestEnvelope` 加字段时；或语义桥推进到 C9／C10 的方向 cutover 前——那时四份 `with()` 的漂移代价最高。
+
+
+## 语义桥 carrier v2 表达不了 server-tool 的续接状态（2026-08-11，**提请修订执行中的 RFC**）
+
+- **根因 / 现状**：用户对语义桥提过一条硬不变量——Anthropic Messages 只是**载体格式**，源自 Responses 上游的 opaque continuation state 在会话继续时**必须能无损回传**兼容的 Responses 上游；**展示可降级，续接状态不可丢**。当前执行线（B 线）[RFC `docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../rfc/2026-08-08-anthropic-responses-semantic-bridge.md) 的 `CarrierV2Envelope` 把 `kind` 联合限定为 `"claude-signature" | "responses-encrypted"`（见该 RFC「6.1 Carrier v2 wire grammar」节的 envelope schema）——**只覆盖 reasoning 侧**。reasoning 侧覆盖得很完整（opaque 仅在 protocol／provider／resolved model 三维均匹配时 preserve，不匹配则剥 opaque 保 visible），但 **server-tool 侧（`web_search_call` 等）的 opaque id 与权威完整 item 没有任何 carrier record 承载它**。
+- **当前行为**：B 线的 server-tool 契约（RFC「server-tool 四格」与计划 C5.1）只规定**展示面**降级——native／function／带 correlation ID 的 text，并明确「绝不伪造 `web_search_tool_result`」。这条降级规则本身是对的，但它只解决了呈现，没有规定把 Responses 的 server-tool source id／whole source item 存进 continuation carrier 并在下一轮回送。结果：Responses → Anthropic → Responses 往返时，server-tool 的续接状态**静默丢失**，而不是像 reasoning 那样被显式 preserve 或显式 strip。
+- **理想架构 / 若做需改什么**：给 `CarrierV2Envelope.kind` 增补 server-tool 记录（A 线规格里对应 `responses-item-reference` 与 `responses-output-item` 两类：前者存可回指的 id，后者存权威完整 item），并同步四处——(1) decoder 的 prefix／kind／source 联合校验表，(2) request 侧 Anthropic→Responses 的 echo 回送步骤，(3) 「展示降级不得删除 opaque id／权威 source item」的验收判据，(4) observation/History 只存 version／source／hash 的既有隔离规则。**验收必须取得上游实际接受性证据**（echo 回去后 Responses 上游不 400），不能只靠我方 encode↔decode 自洽——两端同源会一起错。
+- **为何暂缓**：B 线 RFC 已 accepted 且正在执行（C0 三片已交付评审收口，C1.1 起改生产代码），**修改它的 carrier schema 需要 peer 那条线重新评审**，不由本会话单方改动（用户 2026-08-11 裁决：登记 backlog + 提请修订，不直接改 peer RFC 正文）。
+- **触发条件**：B 线推进到 **C5（server-tool 四格）或 C7（carrier v2 provenance）** 时必须先处置本条——这两片是它天然的吸收点，过了 C9／C10 的原子 cutover 再补，就要改已切换的生产路径。**发现方**：A/B 双线覆盖面对比（2026-08-11），A 线对应要求见 [`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/plan-4-web-search.md`](../plan/2026-08-06-responses-anthropic-semantic-bridge/plan-4-web-search.md) 与 [A 线规格「Web Search」节](../spec/2026-08-06-responses-anthropic-semantic-bridge.md)。
 ## `package-boundaries` 的全仓 AST 扫描在繁忙 CI 上会撞 5s 默认超时（2026-08-10）
 
 - **现状**：`tests/architecture/package-boundaries.unit.test.ts` 的 `no object literal with \`kind: "stream-error"\` outside \`streamErrorOutcome\`` 会 AST 解析全仓源码。正常耗时 **0.856s**（实测取自仓库内 JUnit fixture `tests/infra/fixtures/bun-junit-shard-14.xml:467` 的 `time="0.856002"`），对 bun 的 5000ms 默认超时有约 5.8 倍余量；但在 `bun run test:fast` 的 16 shard 争抢下实测跑到 **5071ms 而超时**，使整个 shard 崩溃（`0 fail` + `1 shard(s) crashed`）。
@@ -40,7 +64,7 @@
 
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
 >
-> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
+> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../mandatory-block-delivery-h2-observability/spec.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
 
 ## translated Anthropic B2 recovery publication（2026-08-08）
 
@@ -1018,7 +1042,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## Bun HTTP/2 `end + rstCode=0` 能否区分 clean RST 与 END_STREAM（当前任务完成后专项调查，用户保持怀疑）
 
-- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
+- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../mandatory-block-delivery-h2-observability/spec.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
 - **当前已证事实**：应用层在已观察样本中可见 `end`、随后 `close`、`rstCode=0`，且 Responses 协议终止事件缺失。现有 Bun `node:http2` 路径未提供足以在应用层直接裁决“正常 END_STREAM”与“clean RST 被兼容层抹平”的独立信号。因此当前规格只记录原始事实与不可判状态，不把猜测持久化为根因。
 - **用户保留意见**：用户对“无法进一步区分”保持怀疑，要求当前任务完成后仔细排查。该怀疑不是已解决结论，也不是允许当前实现猜测；它要求寻找更强 oracle。
 - **调查问题**：① Bun runtime 内部是否保留但未暴露 RST／END_STREAM 差异；② `ClientHttp2Stream` 是否存在事件顺序、内部字段、诊断通道或 native handle 可可靠观测；③ Node 对照、TLS／HTTP2 帧级代理、GHC request-id 服务端日志能否提供独立 ground truth；④ 不同 RST code、`stream.close(0)`、`stream.destroy()`、正常 `end()` 在 Bun 各版本／Node 上的可重复行为矩阵；⑤ 若 Bun 是根因，最小上游修复或本项目可维护的 runtime patch 是什么。
@@ -1274,6 +1298,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **2026-08-09 补充（Batch 2b 实测）**：本 registry 的实例是**一次性**的（`start()` 后 `shutdown()` 即终态），因此「已停止但仍留在 registry」是唯一不可恢复的状态——下一次消费者拿到它、start 它、被告知 `has been shut down`。Batch 2b 因此把**三个**生命周期出口（`shutdownHistory`、`initHistory(false)`、`initHistory` 的重装分支）统一改成 **release（停止 + 清引用）而非只 stop**，见 `src/lib/history/state.ts`。**这条一次性语义应当写进 skill `owned-singleton-lifecycle` 的正文**：现有 skill 讲的是「谁拥有、怎么 compare-and-clear」，没讲「被顶掉的实例可能永远不能复活，因此 stop 与 clear 必须同时发生、且要在每一个出口都发生」。实证代价：分三轮才修对，中间两轮分别是 282 与 49 条全档失败，每轮都只修了眼前那条路径。改 skill 属指令类文本，需走评审，故登记于此。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
 
+## `CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09，语义桥计划第三轮评审的邻域发现）
+
+- **根因 / 现状**：`src/lib/pipeline/generation/candidate-state.ts:29` 声明了 `readonly responseState?: unknown`，`:85` 也按 `supplies.createResponseState &&` 条件填充它，但**没有任何生产读点**：`driver.ts` 的 `forkEnv` 只把 `requestState` 挂回 env、**丢弃 `responseState`**（`rg 'responseState' src/lib/pipeline/driver.ts` 零命中）。也就是说这个 per-candidate 槽被造出来之后从未被送到任何消费者手里。
+- **当前行为**：无功能缺陷——没人读它，填了也不影响任何路径。代价是**误导性**：它看起来像一条现成的 per-candidate supply，下一个需要「每 candidate 一份响应侧状态」的人会自然地想复用它，然后才发现整条运送管道不存在。语义桥计划第三轮评审里就差点发生：一版计划已写成「复用 `responseState` + 让 `forkEnv` 传递它」，评审指出该路径要穿过 `RequestEnvelope`，而 `envelope.ts` 的 `with()` patch 是被刻意收窄的四键 `Pick`，且 `with()` 在**四个 codec 的 `makeEnvelope` 里各自逐字段重建**——漏改一处，该格式路径上下一次 `with()` 就把字段静默抹掉，字段可选、无编译错误。计划因此改为不走 envelope（collector 在 `createProcessor` 里按 candidate 建），这个槽维持原状。
+- **理想架构 / 若做需改什么**：二选一，**别留在中间态**。① **删除**：移除 `CandidateState.responseState` 与 `supplies.createResponseState`，让「需要 per-candidate 响应侧状态」的人从零设计运送路径，不被半成品误导——当前无消费者，删除代价最小。② **接通**：`envelope.ts` 加字段并放宽 `with()` 的 patch 键集，四个 `makeEnvelope` 同步补上该字段的透传，再加一条守卫测试「`env.with({body})` 之后 `responseState` 仍在」——**四处必须一起改**，这正是 `with()` 逐字段重建这一形状的固有代价。倾向 ①：`with()` 的窄 patch 键集是有意为之（紧邻注释解释了原因），为一个无人使用的槽去放宽它不划算。
+- **为何暂缓**：本轮任务是定稿语义桥实施计划，不是清理 pipeline 死代码；且删除公共字段属破坏性改动，应有自己的判据与回归，不适合塞进一个正在评审收口的计划里。语义桥 P3 已明确绕开它，不受影响。
+- **触发条件（值得做）**：① 又有人打算复用这个槽（那说明误导已在发生）；② 因别的原因要动 `candidate-state.ts` 或 `envelope.ts` 的 `with()` 契约时顺手了结；③ 真出现第二个需要 per-candidate 响应侧状态的域——那时按 `fix-at-the-shared-base-not-where-you-noticed`，应先把运送路径一次做对，而不是各自绕开。
+- **发现方**：语义桥实施计划第三轮独立评审（管线接线视角 major 2，`docs/tmp/2026-08-07-responses-anthropic-semantic-bridge-plan-review.md`），主会话读 `envelope.ts:130` 与四处 `makeEnvelope` 复核确认。
 ## 若干测试的通过条件挂在 wall-clock 绝对值上（2026-08-08 合并态验证 + 2026-08-09 A3 复评 round 4，两个会话独立撞到同一问题）
 
 > 本条由两条独立发现合并而成：peer 会话在 Batch 1b 合并态验证时记下 `store-performance.it` 的比值断言与三次全量运行的 A/B；A3 合并态复评 round 4 记下另外三条断言与「两类红」的区分。两边证据互补，故并成一条——分两条会让下一个人修了一条漏另一条。
@@ -1385,7 +1417,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：评审实测 N=2000：**3167ms → 5452ms**。**注意触发条件不是罕见情形**——marker 缺席正是「升级后首次启动、strict scrub 尚未跑完」的常态窗口，也是任一受保护 canonical UPDATE 之后的状态。
 - **理想架构 / 若做需改什么**：与本轮未闭合的 #5（写路径退化无人守）**同一套收口**——把判据从 wall-clock 换成**确定性工作量计数**（本次请求执行的 SQL 语句数 / 扫描行数），断言「第 1 次与第 N 次之比 < 常数」；这类判据不受 CPU 争用影响、无 false-red，且能同时守住读侧这条全表遍历与写侧的每次提交扫描。读侧本身的修法是让 visitor 在攒够 capacity 后返回 `false` 提前终止（游标语义需与 `compareSummaryNewestFirst` 的排序一致，不能简单截断）。
 - **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
-- **发现方**：Task 9 独立验收评审（`docs/tmp/2026-08-08-task9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
+- **发现方**：Task 9 独立验收评审（`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
 
 ## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）→ **载体已换 2026-08-09（`e24de3a1`），根因仍未定位**
 
@@ -1407,7 +1439,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：`tests/routes/hooks.http.test.ts` 的 `POST /reload > loads a valid hook module and returns ok:true with exports/version` 在 `bun run test:backend`（16 shards）下偶发失败；**单跑 6 pass / 0 fail**。与 History V3 / 迁移 / 判据改动**零交集**（复评独立核实）。
 - **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
 - **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
-- **发现方**：Task 9 独立验收评审的收口复评（`docs/tmp/2026-08-08-task9-review-acceptance.md` R2-4）。
+- **发现方**：Task 9 独立验收评审的收口复评（`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-acceptance.md` R2-4）。
 
 ## `initHistory()` 重入只协调 summary backfill，未协调 terminal persistence lifecycle（2026-08-09，合并态评审定位；**master 既有，非合并引入**）
 
@@ -1473,7 +1505,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为（既有，非本轮引入）**：Anthropic buffered 路径上，上游 `event: error` 若在某个内容块**已开启、尚未 `content_block_stop`** 时到达，`grammar.ts` 的 `acceptTerminal` 把它连同其他终态一律判为 `terminal-with-open-unit` protocol error，`response-terminal` outcome 根本不发出。而 `isUpstreamFailure` 只认 `terminal-failure` 与 `adapter-exception`，于是 `sawUpstreamError` 不触发，buffered 路径把缺失的 `message_stop` 读成传输截断，**对一个上游已经做出的终态决策重试 4 次**。spec `docs/spec/2026-07-11-block-level-buffered-retry.md:152` 明说这种帧必须提交并失败、永不重试。
 - **已被实测否掉的直接修法（别再走一遍）**：让 `acceptTerminal` 对 `terminal.semantic === "failed"` 发出终态而非协议错误。**重试确实停了，但代价更大**——客户端收到 `content_block_start` + delta 而**没有 `content_block_stop`**（半块泄漏到线上），并拿到**两个终态**（上游 error + 合成 truncation error）。A/B 实测（分支开：1 次上游调用、线上出现 `content_block_delta("mid-block")`；撤回态：4 次调用、该 delta 出现 0 次）确认**泄漏由该分支引入，不是既有**。已撤回，`acceptTerminal` 与改前逐字节等价。
 - **根因（比表面深一层）**：`sawUpstreamError()` 变真会让 buffered 路径的**终态提交排空**把整个缓冲区刷出去，而缓冲区里含未闭合块的帧。grammar 的 `discardOpen()` 只清自己的累积——**`discard-open-unit` outcome 在 `src/` 里零消费者**，它够不到 driver 的缓冲区。所以「grammar 内部丢弃了」不等于「不会送达客户端」，这两件事在 compatibility 期是脱节的。
-- **理想架构 / 若做需改什么**：终态排空必须知道**最后一个 commit 边界在哪**，只刷到那里为止、丢弃其后的帧。这需要 block 级感知，正是冻结计划 `docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 的 **Task 4 owner cutover**（`consume(outcome, adapter)` 让 owner 直接消费 grammar outcome）要建立的能力。⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；只修 `failed` 会在同一位置再犯一次。
+- **理想架构 / 若做需改什么**：终态排空必须知道**最后一个 commit 边界在哪**，只刷到那里为止、丢弃其后的帧。这需要 block 级感知，正是冻结计划 `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 的 **Task 4 owner cutover**（`consume(outcome, adapter)` 让 owner 直接消费 grammar outcome）要建立的能力。⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；只修 `failed` 会在同一位置再犯一次。
 - **为何暂缓**：正确修法落在 Task 4 的能力范围内，在 compatibility 期打补丁已被实测证明会引入更严重的协议违规（半块泄漏破坏客户端解析状态，而 block-level 交付是本项目公理）。**本轮连续三层「每修一层冒出新一层」本身就是架构信号。**
 - **判据已就位**：`tests/pipeline/i9-followup-midblock-error.http.test.ts` 断言的是**正确目标**（不重试 + 不泄漏半块），已按仓库既有惯用法 `describe.skip` + `[GATED — requires Task 4 owner cutover: ...]` 前缀，并登记进 `tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped`。做 Task 4 的人去掉 `.skip` 即可验收。**改进建议（未采纳，留证据）**：独立评审实测本仓 bun 1.3.14 下 `test.failing` 会在用例转绿时判红并提示 `Remove .failing`，即**自解除**，优于永远等人想起来的 `describe.skip`；未采纳是因为它在 JUnit / discovery 基线口径下的表现**未验证**，且本仓无先例。
 - **触发条件（值得做）**：① 执行 Task 4；② 有人报告 Anthropic 流在上游过载时被重复请求；③ 顺手改 `acceptTerminal` 或 buffered 终态排空时。

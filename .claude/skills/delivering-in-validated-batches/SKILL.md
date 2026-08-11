@@ -41,7 +41,7 @@ description: Use when a plan or implementation spans multiple semantic commits o
 | 正控 | 注入哪个目标缺陷会使门精确变红？正确样本能否保持绿？ |
 | 依赖 | 哪些前置已经满足，哪些尚未满足？ |
 
-多步骤计划先用 `superpowers:writing-plans`；实现遵循 `superpowers:test-driven-development`。高风险 correctness gate 用 `positive-control-your-tests` 验证鉴别力。
+**实现先行、不做 TDD**（用户 2026-08-11「快做快合」裁决；权威在 CLAUDE.md「工作节奏」节）：先让产品行为跑起来，再补测试，且只补**主路径 + 已经报错过的路径**。不必为动手先写 plan——需要多步骤计划时才写。高风险 correctness gate 仍用 `positive-control-your-tests` 验证鉴别力：**它限的是「已写的那条算不算数」，不是「要写多少条」，不在淘汰之列。**
 
 ### 2．每个新发现当场分流
 
