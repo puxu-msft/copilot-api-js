@@ -32,6 +32,8 @@
 // package.json + the C1 regression test (upstream-fetch.unit.test.ts) guard it.
 import { fetch as undiciFetch } from "undici/index.js"
 
+import type { DispatchHandle } from "~/lib/context/model-operation-record"
+
 import {
   //
   getUpstreamDispatcher,
@@ -39,7 +41,6 @@ import {
 } from "~/lib/proxy"
 import { combineAbortSignals } from "~/lib/stream"
 
-import type { DispatchHandle } from "~/lib/context/model-operation-record"
 import type { TransportTerminationSnapshot } from "./http2-observation-types"
 
 import { http2Fetch } from "./http2-client"
@@ -62,6 +63,8 @@ export interface UpstreamFetchInit {
   onTrailers?: (trailers: Record<string, string>) => void
   /** HTTP/2-only physical stream close notification, after all local req callbacks are detached/fired. */
   onStreamClosed?: () => void
+  /** HTTP/2-only: an actual stream now exists on a pooled session. Lets a caller arm teardown waits only for transports that own one. */
+  onStreamOpened?: () => void
   /** Best-effort first consumer-terminal observation for the HTTP/2 path; never called by plain HTTP. */
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
   /**

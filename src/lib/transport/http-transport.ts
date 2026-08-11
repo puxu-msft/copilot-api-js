@@ -34,6 +34,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { state } from "~/lib/state"
 import {
   //
   combineAbortSignals,
@@ -58,6 +59,12 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     options?: TransportDispatchOptions,
   ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
     const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
+    // The h2 path reports its physical stream close here, so `dispose()` can wait on the WIRE rather than on our own bookkeeping.
+    // The barrier is registered when a stream is actually OPENED, never up front: the plain-HTTP (undici) path owns no h2 stream and would never report a close, so an unconditional barrier would stall every one of its disposals for the full grace and then declare a healthy connection unusable.
+    let resolveStreamClosed!: () => void
+    const streamClosed = new Promise<void>((resolve) => {
+      resolveStreamClosed = resolve
+    })
     // A4-1 made this handle the canonical owner of the dispatch. It stays optional here only because legacy/compat callers may still send without an options bag; when absent we record nothing rather than falling back to ambient attribution, which would blame the wrong dispatch under hedging.
     const dispatch = options?.dispatch
     const headers = Object.fromEntries(wire.headers.entries())
@@ -88,6 +95,10 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
         // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
         onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
+        // Fires after the h2 stream is physically gone and its local callbacks are detached — the only honest signal that teardown finished.
+        onStreamClosed: () => resolveStreamClosed(),
+        // Armed only once an h2 stream exists, so the undici path never acquires a barrier it could not satisfy.
+        onStreamOpened: () => lifecycle.registerTeardownBarrier({ closed: streamClosed, graceMs: state.generationCleanupGraceSec * 1000 }),
         // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
         // Attribution is the EXPLICIT dispatch handle, never the ambient current attempt — a hedged request has several dispatches in flight at once.
         ...(dispatch && {

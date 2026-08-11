@@ -53,10 +53,20 @@ describe("generation runtime engine import boundaries", () => {
     }
   })
 
+  /**
+   * The invariant: a dispatch disposal must not OWN the pooled connection — it may not close sessions, clear their keepalive timers, or reach into the h2 client. Cancelling one response owns that one stream; siblings on the same connection are unaffected.
+   *
+   * 2026-08-11 (A4-4), relaxed by explicit user ruling: the second assertion used to be a bare `toContain("connectionReusable: true")`, i.e. "disposal ALWAYS reports the connection reusable". A4-4's teardown barrier reports `false` when a stream refuses to close within its grace, which the frozen plan requires in as many words ("返回 connectionReusable=false"). The guard and the plan genuinely disagreed, so the relaxation went to the user rather than being self-adjudicated.
+   *
+   * What is preserved, and is the part that actually matters: reporting a connection unusable is a REPORT to the caller, not an action on the pool — the negative below still forbids this file from touching sessions or timers at all. The normal path must still report reusable, so a barrier that pessimistically condemned every connection would be caught.
+   */
   test("dispatch disposal cannot own pooled HTTP/2 sessions or their keepalive timers", async () => {
     const source = await readFile(path.resolve(import.meta.dir, "../../src/lib/transport/dispatch-lifecycle.ts"), "utf8")
     expect(source).not.toMatch(/http2-client|closeHttp2Sessions|scheduleH2KeepalivePing|clearInterval|session\.close/)
+    // The normal path still reports the connection reusable; only an expired teardown grace may say otherwise.
     expect(source).toContain("connectionReusable: true")
+    // ...and "not reusable" must be reachable ONLY from the bounded barrier, never as an unconditional verdict.
+    expect(source).toContain("graceMs")
   })
 
   /**
