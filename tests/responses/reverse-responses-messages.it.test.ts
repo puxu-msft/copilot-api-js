@@ -72,7 +72,7 @@ function makeReverseDriver(upstream: UpstreamStream) {
   const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   // C2b/C4: the reverse `(openai-responses, /v1/messages)` cell (and every other) is dispatched through the
-  // CellAssembly, which reads the beta probe + mapper holder off `env.requestState`. The driver takes no
+  // CellAssembly, which reads the beta probe + mapper holder off `env.candidate`. The driver takes no
   // `requestRewrites`/`strategies` deps — this test drives the REAL assembly end-to-end.
   const driver = createPipelineDriver({
     codec,

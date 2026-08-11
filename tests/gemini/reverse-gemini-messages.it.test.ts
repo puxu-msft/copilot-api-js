@@ -61,7 +61,7 @@ function makeReverseDriver(upstream: UpstreamStream) {
   const codec = createGeminiCodec("claude-x@messages", { reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   // C2b: the reverse `(gemini, /v1/messages)` cell is dispatched through the CellAssembly (reads the beta
-  // probe + mapper holder off env.requestState). The driver takes no requestRewrites/strategies deps — this
+  // probe + mapper holder off env.candidate). The driver takes no requestRewrites/strategies deps — this
   // test drives the REAL assembly end-to-end.
   const driver = createPipelineDriver({
     codec,

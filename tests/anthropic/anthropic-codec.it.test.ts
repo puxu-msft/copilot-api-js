@@ -110,7 +110,7 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     const codec = createAnthropicCodec({ betaProbe, preprocessInfo: NO_PREPROCESS })
     const env = codec.parse(rawReq(anthropicBody(), { headers: new Headers({ "content-length": "42", "anthropic-beta": "beta-from-client" }) }))
     // Outbound wire preparation moved off the codec onto the (anthropic × /v1/messages) CELL
-    // (RFC 2026-07-13 inbound/outbound split); it reads the shared betaProbe from env.requestState.
+    // (RFC 2026-07-13 inbound/outbound split); it reads the shared betaProbe from env.candidate.
     const wire = resolveCellAssembly("anthropic", env.attempt.targetEndpoint).prepareWire(env)
 
     expect(wire.url).toBe("/v1/messages")
