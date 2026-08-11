@@ -79,7 +79,39 @@
 3. **`tool_use` 是主要发生地（7/10），`Write` 是主要工具（4/10）**。既有 backlog 记的实证样本（`req_1783704300404_484`）也是「静默后爆发部分 `tool_use` 即被截断」，本次 7 个样本把它从单例升为模式。
 4. **上游会先于 600 s idle 超时自己关流**（528.7 s / 503.9 s 两例），说明 GHC 侧的 stream 超时上限在 ~500 s 量级，低于我方 idle guard。这对「idle 超时该设多少」是有用的标定点：把 `stream_idle` 调到 600 以上不会有任何收益，因为掐断方不是我们。
 
-## 7. 复算命令
+## 7. 它是否只是「内容已传完、只差关会话」？——不是（10/10 证否）
+
+这个猜想值得单独回答，因为**错误串本身不区分两种形态**：
+
+- **形态 A（猜想）**：内容完整，只缺最后的 `message_stop` 终止符。若成立，则可以合成终止符把这一轮救成功。
+- **形态 B（实际）**：生成中途被掐断，内容本身残缺。无可挽救，只能判 FAIL。
+
+Anthropic 流式协议的正常收尾序列是 `content_block_stop` → `message_delta`（携带 `stop_reason` 与最终 `output_tokens`）→ `message_stop`。若是形态 A，应当能看到前两者、只缺第三个。实测结果：
+
+| 判据 | 结果 |
+|---|---|
+| 收到 `message_delta`（即 `stop_reason`）的条数 | **0 / 10** |
+| 落库 `upstreamResponse.stopReason` | **10 / 10 为 `None`** |
+| 末事件仍在块内（`content_block_delta`） | 6 / 10 |
+| 末事件是刚开块（`content_block_start`，零 delta） | 4 / 10 |
+| `tool_use` 累积 `partial_json` 可解析 | **0 / 7** |
+
+细节：
+
+- **7 个 `tool_use` 块的 JSON 全部截断**。其中 4 个是**字面 0 字符**——工具名已发出、参数一个字节都没有；另外 2 个停在 96 / 107 字符处，尾部是未闭合的对象，例如 `Write` 只吐完 `file_path` 就断了、`content` 字段根本没开始：
+
+  ```
+  ..."c/copilot-api-js/docs/tmp/2026-08-11-clone-ownership-review-claude.md"
+  ```
+
+- **3 个 `thinking` 块累积 0 字符**——`content_block_start` 发出后一个 delta 都没有。
+- **`output_tokens` 记录为 1 ～ 20**，那是 `message_start` 里的初始快照，因为没有 `message_delta` 而从未被更新。真正跑完的回合这个数应在几百到几千量级。
+
+**结论：本批 10 条全部是形态 B，即上游在生成中途被掐断，而且多数掐得很早**（4 条在实质内容开始前就断了）。当前把它 settle 成 FAIL 而非合成终止符补完，对这批样本是正确处置——没有完整内容可保。
+
+需要注意的是形态 A 在协议上依然可能存在，只是本窗口零样本；若将来出现，它会命中**同一条错误信息**，区分只能靠事件序列（有无 `message_delta` / 末块是否已 `content_block_stop`），不能靠错误串本身。
+
+## 8. 复算命令
 
 ```bash
 bun - <<'TS'
