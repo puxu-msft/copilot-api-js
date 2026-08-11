@@ -9,6 +9,7 @@
 
 import {
   //
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -21,14 +22,17 @@ import type {
   PreparedRequest,
   TransportUpstreamFrame,
 } from "~/lib/pipeline/types"
+import type { TransportTerminationSnapshot } from "~/lib/transport/http2-observation-types"
 
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import { createRequestContext } from "~/lib/context/request"
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { setStateForTests } from "~/lib/state"
 import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { semanticSseMessage } from "~/lib/transport/parsed-sse-frame"
+import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import { compatDispatchOptionsForTests } from "../helpers/dispatch-options"
 import {
@@ -45,6 +49,11 @@ import { autoRestoreState } from "../helpers/state-fixture"
 
 function makeEnv(over?: { lifecycleSignal?: AbortSignal }): RequestEnvelope {
   const ctx = { addQueueWaitMs: () => {}, lifecycleSignal: over?.lifecycleSignal }
+  return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
+}
+
+/** Envelope carrying a REAL `RequestContext`, for the tests that assert where a diagnostic landed. */
+function makeEnvWithCtx(ctx: ReturnType<typeof createRequestContext>): RequestEnvelope {
   return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
 }
 
@@ -285,5 +294,95 @@ describe("createUpstreamHttpTransport — request cancellation identity", () => 
       caught = error
     }
     expect(caught).toBe(abortErr)
+  })
+})
+
+// ── H2 stream-termination attribution (A4-2) ───────────────────────────────
+/**
+ * The transport already computes a `TransportTerminationSnapshot` to decide how an h2 stream ended; before A4-2 it computed it and dropped it, so History could not answer who ended the stream.
+ *
+ * These drive the seam this adapter owns — `onTermination` threaded down to `upstreamFetch`, then attributed to the EXPLICIT dispatch handle — against a real `RequestContext` and the finalized record.
+ * The h2 client's own production of the snapshot is not re-tested here; `http2-client.it.test.ts` drives that against a real h2 server.
+ *
+ * Why a fake upstream fetch rather than a real h2c server: `selectUpstreamTransport` sends plaintext `http://` to undici, so a local h2c server never reaches the h2 client at all. Reaching it needs TLS, which buys nothing this test is about.
+ */
+describe("createUpstreamHttpTransport — h2 termination attribution", () => {
+  autoRestoreState()
+
+  const snapshotOf = (over: Record<string, unknown> = {}): TransportTerminationSnapshot =>
+    ({
+      schemaVersion: 1,
+      firstObservedSignal: "end",
+      terminalEpochMs: 1_700_000_000_000,
+      headersReceived: true,
+      streamId: 1,
+      rstCode: null,
+      error: { code: { availability: "none" }, message: { availability: "none" } },
+      localCancel: { source: null, reason: { availability: "none" } },
+      trailers: "not-observed-before-snapshot",
+      physicalClose: "not-observed-before-snapshot",
+      goaway: { availability: "not-observed-before-snapshot", events: [], protocolViolation: { availability: "none" } },
+      ...over,
+    }) as unknown as TransportTerminationSnapshot
+
+  /** Replace the upstream fetch with one that reports `snapshot` as the stream's termination. */
+  function fetchTerminatingWith(snapshot: TransportTerminationSnapshot): void {
+    setUpstreamFetchForTests((_url, init) => {
+      const res = createSseResponse(["data: [DONE]\n\n"])
+      init?.onTermination?.(snapshot)
+      return Promise.resolve(res)
+    })
+  }
+
+  afterEach(() => {
+    setUpstreamFetchForTests(undefined)
+  })
+
+  async function driveOneDispatch(snapshot: TransportTerminationSnapshot) {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    const candidate = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate, strategy: "primary" })
+    fetchTerminatingWith(snapshot)
+
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnvWithCtx(ctx), { dispatch })
+    await collect(upstream.frames)
+
+    ctx.settleGenerationDispatch(dispatch, { verdict: "failed", reason: "transport" })
+    ctx.settleGenerationCandidate(candidate, { verdict: "failed", reason: "transport" })
+    ctx.fail("test", new Error("done"))
+    ctx.finalizeModelOperationDelivery()
+
+    const terminal = await ctx.whenModelOperationFinalized()
+    const record = terminal.dispatches.find((d) => d.handle === dispatch)
+    return record?.diagnostics.find((d) => d.kind === "transport.h2.termination")
+  }
+
+  test("records the termination snapshot against the named dispatch, in the finalized record", async () => {
+    const diagnostic = await driveOneDispatch(
+      snapshotOf({ firstObservedSignal: "local-cancel", rstCode: 8, localCancel: { source: "body-cancel", reason: { availability: "none" } } }),
+    )
+
+    expect(diagnostic).toBeDefined()
+    // The discriminating part is WHICH termination, not merely that one was recorded: a classifier that reported every ending as the same thing would satisfy "a diagnostic exists" and still be useless.
+    expect(diagnostic?.data).toMatchObject({ firstObservedSignal: "local-cancel", localCancel: { source: "body-cancel" } })
+  })
+
+  test("keeps a peer-side ending distinct from a local abort", async () => {
+    // Measured shape of a genuine peer RST_STREAM(CANCEL) under Bun (exp/h2-termination-observability/): the runtime raises a stream error, so the first observed signal is `error`, NOT `local-cancel`.
+    const diagnostic = await driveOneDispatch(
+      snapshotOf({
+        firstObservedSignal: "error",
+        rstCode: 8,
+        error: {
+          code: { availability: "captured", value: "ERR_HTTP2_STREAM_ERROR" },
+          message: { availability: "captured", value: "Stream closed with error code NGHTTP2_CANCEL" },
+        },
+      }),
+    )
+
+    expect(diagnostic?.data).toMatchObject({ firstObservedSignal: "error", rstCode: 8 })
+    // rstCode=8 alone must never be read as "the peer cancelled": a local abort carries 8 too, and so does a dead connection (both measured). The local-cancel field is what separates them, and here it must be empty.
+    expect(diagnostic?.data).toMatchObject({ localCancel: { source: null } })
   })
 })
