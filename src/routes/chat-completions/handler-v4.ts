@@ -108,6 +108,7 @@ import {
 } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import {
   //
   buildAnthropicResponseData,
@@ -184,7 +185,7 @@ async function handleChatCompletionV4Admitted(c: Context, historyReservation: Hi
   // source). Both are INERT on the forward/direct CC legs (the reverse rewrite/strategies gate MESSAGES).
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
-  const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder })
+  const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({

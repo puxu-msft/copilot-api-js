@@ -100,6 +100,7 @@ import {
 } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
@@ -137,7 +138,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   // gemini codec's internal cc delegate so its reverse prepareWire records the outbound Anthropic betas.
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, vendor)
-  const codec = createGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder })
+  const codec = createGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({
