@@ -43,7 +43,11 @@ A 要求每个决策同时给出 `presentation` 与 `continuation` 两个平面�
 
 因此 server-tool 续接缺口**不是偶然疏忽，是结构必然**：没有一道类型闸问「这个 item 的续接怎么办」，新增 item 类型天然只回答展示那一半。补一个 carrier record 只修这一个实例；装上双平面才修那一类。
 
-**落地形态**：不引入 A 的 `BridgeDecision` 返回值，而是给 `SemanticItem` 增加**必填**的 continuation 字段。因为 `SemanticItem` 是判别联合且字段必填，**每一个现有臂与将来新增的臂都被编译器强制回答**——这正是 A 的 N1 在 B 的惯用法里的等价物，且比 A 原形状侵入更小。
+**落地形态**：不引入 A 的 `BridgeDecision` 返回值，而是给 `SemanticItem`（当前**五个**顶层臂）增加**必填**的 continuation 字段，并在同文件写一条**非分布式条件类型断言**兜住全部臂。
+
+`[hard]` **必填字段本身不足以强制。** 实测（tsc 5.9.3 `--strict`）：仅在联合里新增一个缺该字段的臂，**零报错**；只有当消费者无条件访问该字段时才报 `TS2339`。因此「靠必填字段自动拦住新增臂」是**假绿**。承重的是断言的写法：`[SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false`——**方括号包裹使其非分布式**，任一臂缺字段即整体塌为 `false`；写成分布式会分配到各臂再取并集（`true | never` 仍是 `true`），拦不住。形式与实测见 RFC §4.1。
+
+这仍是 A 的 N1 在 B 的惯用法里的等价物，且比 A 原形状侵入更小。
 
 ### 3. Continuation carrier —— 取 B 的 v2 envelope，扩 A 的 server-tool record
 
@@ -82,13 +86,26 @@ F7（不可伪造 Anthropic 签名结果）与 B 的 §7 红线一致，两线�
 
 ## 后果
 
-1. **C1 需要 retrofit，且现在是最便宜的时刻。** C1.1／C1.2 刚冻结类型、C1.3 刚落地，C2 及之后尚未大量依赖这些形状。等到 C5／C7 再补，改动面显著更大。给 `SemanticItem` 加必填字段会打破刚写完的代码——这是有意的，编译错误正是那道闸在起作用。
+1. **C1 需要 retrofit，且现在是最便宜的时刻。** C1.1／C1.2 刚冻结类型、C1.3 刚落地。**理由不是「C2 已经在消费这些形状」**——C2 尚未落地（`src/`／`tests/` 搜 `TranslationConfigSnapshot`／`CandidateTranslationLineage`／`DeliveryAuthorityState`／`PairTranslationPolicy` 零命中），而是**趁消费者尚未扩散先把类型 retrofit 做掉**：每晚一片，要改的构造点与消费点就多一批。给 `SemanticItem` 加必填字段会打破刚写完的代码——这是有意的。
 2. **B 的 RFC 从 Accepted 变为 Accepted v2**，其冻结契约被本 ADR 授权修改。RFC 原有的「不在实现阶段重新裁决已冻结公共契约」仍然有效，本次修改走的是 ADR 授权，不是实现期自行裁决。
 3. **新增一个探针片**，作为 C5／C7 的前置门。
 4. **A 线 spec 与 plan 标注为已被本 ADR 取代**，保留为设计记录不删除（用户 2026-08-11 已裁决两份并列保留）。
 5. **`src/lib/pipeline/semantic/types.ts` 的纪律不变**：RFC 仍是该文件每个形状的权威，改动先回 RFC。本 ADR 与随附的 RFC v2 修订正是该纪律要求的顺序。
 
+## 已实测（本轮独立评审 + 主会话复验）
+
+- **必填字段不足以强制新增臂回答**：tsc 5.9.3 `--strict` 下，仅新增一个缺 `disposition` 的联合臂**零报错**；有判别力的是非分布式条件类型断言（方括号包裹）。本 ADR 与 RFC §4.1 的措辞已按实测改写——**初稿把 TypeScript 联合的性质说强了**，此处留痕以免下次重犯。
+- **`SemanticItem` 当前是五个顶层臂**（含 `drop`），初稿写成「四臂」，已订正三处。
+
 ## 待验证事项（不得以断言语气引用）
 
-- 双平面必填字段对现有四个 `SemanticItem` 臂的实际改动面**尚未实测**，仅由类型形状推断。实施首步应先跑一次编译取得真实破坏面。
+- 双平面必填字段对现有五个 `SemanticItem` 臂的**实际改动面**仍**未实测**（构造点与消费点清单）。C1.4 首步要求先跑一次 `bun run typecheck` 取真实破坏面，不得预估。
 - 「ledger 蕴含整方向切换」是机制推理，**未经 PoC 证否**。若实施中发现存在既能保序又能混合 legacy 与 ledger 的构造，应回到本 ADR 重裁第 4 项。
+- §6.1 新定义的 `ResponsesServerToolItemType` 受限集合目前**只列了 `web_search_call`**。这是当前唯一有真实证据的 server-tool 类型，**不是穷举结论**；开通其它 server tool 时逐条增补，不要改成裸 `string`。
+
+## 与「快做快合」裁决的关系
+
+用户 2026-08-11 另有「快做快合」裁决（见 CLAUDE.md），取代本项目此前的 SDD 流水线。本 ADR **不是**为动手而设的前置门——合并动作已经做完，本文是该裁决要求的**产物**（「文档不再是前置门，但仍是产物……决策与理由 → `docs/decisions/`」）。
+
+据此，随附的 C1.4／C0.4 两片**不按穷举变异清单写**：只保留「这条判据存在的理由本身」那两处判别力确认，其余按主路径 + 已报错过的路径。这与 CLAUDE.md 中「限的是测多少、不是测得算不算数」一致。
+

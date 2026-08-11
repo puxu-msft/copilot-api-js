@@ -437,7 +437,9 @@ type ItemDisposition = Readonly<{
 }>
 ```
 
-`SemanticItem` 的**每一个臂**都必须带 `disposition: ItemDisposition`，字段**必填**。这是本契约的全部强制力来源：`SemanticItem` 是判别联合，必填字段使**现有四臂与将来新增的任何臂**都被编译器强制回答两个平面。
+`SemanticItem` 的**每一个臂**都必须带 `disposition: ItemDisposition`，字段**必填**。当前是**五个**顶层臂（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。
+
+**但强制力不来自「必填」本身**——见下文「机器守卫」：必填字段拦不住**新增**的缺字段臂，真正兜住全部臂的是那条非分布式条件类型断言。两者要一起写，缺一不可。
 
 不采纳 A 线原本的 `BridgeDecision` 返回值形状——ledger 已是状态权威，再引入一个并行 decision 返回值会制造第二个状态源。
 
@@ -449,7 +451,22 @@ type ItemDisposition = Readonly<{
 - `continuation.kind === "carrier"` 时，`record` 的 provenance 必须满足 §3.3 不变量 2 的整体 identity 匹配；不匹配时降为 `rejected` 并剥除 opaque，不得改投另一种 record。
 - reasoning 的既有 `visible`／`opaque` 字段**保持不变**，是本契约在 reasoning 域的既有实例；v2 不重构它，只要求它同样填写 `disposition`，使两者一致可查。
 
-**机器守卫。** 需要一条守卫断言 `SemanticItem` 的每个臂都含 `disposition`，且 `ContinuationDisposition` 的四个 kind 在测试中各有正样本——防止新增臂时用 `none` 敷衍过关。该守卫的负样本是「新增一个不带 `disposition` 的臂」，必须编译失败。
+**机器守卫（形式已实测，勿照直觉写）。** `SemanticItem` 当前有**五个**顶层臂（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。
+
+`[hard]` **「新增一个不带 `disposition` 的臂会编译失败」是错的。** 实测（tsc 5.9.3 `--strict`）：仅在联合里增加一个缺该字段的臂，**零报错**；只有当某个消费者**无条件**访问 `item.disposition` 时才报 `TS2339`。也就是说「靠必填字段自动拦住新增臂」是**假绿**——它依赖恰好存在这样一个消费者。
+
+有判别力的形式是**非分布式条件类型断言**，实测可用：
+
+```ts
+type AllArmsCarryDisposition = [SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false
+const _assertAllArmsCarryDisposition: true = true satisfies AllArmsCarryDisposition
+```
+
+任一臂缺 `disposition` 时，该联合整体不可赋值，`AllArmsCarryDisposition` 塌为 `false`，赋值处报 `TS2322`。**必须写成非分布式（方括号包裹）**：写成分布式 `SemanticItem extends {...} ? true : false` 会分配到各臂再取并集，`true | never` 仍是 `true`，**拦不住**。
+
+这条断言属**类型层代码**，与 `SemanticItem` 同文件同生共死，不是测试脚手架。
+
+**`none` 不得被当作省事的默认值。** 四个 `ContinuationDisposition` kind 各有正样本，**并不能**阻止实现者给 server-tool 填 `none` 敷衍——`none` 对真正无跨轮状态的 item 是**合法且必须为绿**的，粗暴禁用它会制造 false-red。因此判别力必须来自**来源侧**而非枚举侧：`none` 的含义是「**经判定该 item 不存在跨轮状态**」，对源为 Responses 的 server-tool item，其取值只能是 `carrier` 或带具名 reason 的 `rejected`。该约束由 §7 的 server-tool 续接义务承接。
 
 ## 5．Ordered-turn request model
 
@@ -578,6 +595,31 @@ type CarrierV2Envelope = Readonly<{
 | `responses-output-item` | 权威完整 source item 的 canonical 序列化 | 最小形态不被接受、或需要完整保真时使用 |
 
 **这两类是同一能力的两种粒度，不是两个独立特性。** 究竟采用哪一种、以及最小形态到底是 `{type,id}`、`item_reference` 还是裸 id，**由 §17 的上游接受性探针裁决，不在本 RFC 预先冻结**——现有证据只证明完整 item 可被 Responses 端点接受，尚未证明任何更小形态足够。在探针给出结论前，实现取 `responses-output-item` 作为保守默认。
+
+**`ContinuationRecord` 的定义（§4.1 引用的就是它）。** 仅把 `kind` 加进联合、而把载荷留成无约束 `string`，**不足以让 §7 红线机器可判**：那样 `opaque` 里可以是任意序列化内容，包括一个伪装成 Responses item 的 Anthropic `web_search_tool_result`。故载荷必须带判别字段与受限类型集：
+
+```ts
+type ContinuationRecord =
+  | Readonly<{ kind: "claude-signature"; opaque: string }>
+  | Readonly<{ kind: "responses-encrypted"; opaque: string }>
+  | Readonly<{
+      kind: "responses-item-reference"
+      /** 只允许回指，不含内容。 */
+      ref: Readonly<{ type: ResponsesServerToolItemType; id: string }>
+    }>
+  | Readonly<{
+      kind: "responses-output-item"
+      /** 权威完整 source item；type 必须在受限集合内。 */
+      item: Readonly<{ type: ResponsesServerToolItemType }> & Readonly<Record<string, unknown>>
+    }>
+
+/** 受限集合：只有 Responses 侧的 server-tool item 类型可进 carrier。随能力开通逐条增补，不用裸 string。 */
+type ResponsesServerToolItemType = "web_search_call"
+```
+
+`[hard]` **emitter 约束：`ContinuationRecord` 永不投影为 Anthropic 原生 server-tool 结果 block。** 它只有两个合法去向——回送 Responses 上游，或作为不可见续接状态随 carrier 往返。任何把它渲染成 Anthropic `web_search_tool_result` 的路径都违反 §7 红线。**这条约束使「正交」成为可执行判据，而不只是意图声明**：前者管回家的路，后者管不许造假，二者靠受限 type 集合与本条 emitter 约束共同保证。
+
+decoder 相应的负样本（C7 承接）：伪装成 Responses item 的 Anthropic block、不在受限集合内的 item type、`source.protocol` 与 `kind` 不一致——三者都必须 fail-closed。
 
 约束（与前两类一致，不另立规则）：
 

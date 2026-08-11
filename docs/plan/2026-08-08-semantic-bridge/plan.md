@@ -481,35 +481,43 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 ### C1.4 —— 双平面 item disposition（RFC §4.1，v2 新增）
 
-> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**必须早于 C2.1** —— 它给 `SemanticItem` 加必填字段，C2 之后全都消费该契约，越晚改动面越大。
+> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**必须早于 C2.1** —— 它给 `SemanticItem` 加必填字段。**理由不是「C2 已经在消费它」**（C2 尚未落地，`src/`／`tests/` 搜 `TranslationConfigSnapshot`／`CandidateTranslationLineage`／`DeliveryAuthorityState`／`PairTranslationPolicy` 零命中），而是**趁消费者尚未扩散先把类型 retrofit 做掉**——每晚一片，要改的构造点与消费点就多一批。
 
-**Goal**：落 RFC §4.1 的 `PresentationDisposition` × `ContinuationDisposition`，使**每个 `SemanticItem` 臂**都被编译器强制回答续接问题。这修的是**结构性根因**——v1 没有任何一处强迫实现者回答「这个 item 的续接怎么办」，server-tool 续接因此能被漏掉而不报错。
+**Goal**：落 RFC §4.1 的 `PresentationDisposition` × `ContinuationDisposition`，让「这个 item 的续接怎么办」成为**必须回答**的问题。这修的是**结构性根因**——v1 没有任何一处强迫回答它，server-tool 续接因此能被漏掉而不报错。
 
 **Files**
 - Modify `src/lib/pipeline/semantic/types.ts`
 - Modify `src/lib/pipeline/semantic/ledger.ts`
-- Modify `tests/pipeline/semantic/ledger-property.unit.test.ts`
-- Create `tests/architecture/semantic-item-disposition.unit.test.ts`
+- Modify `tests/pipeline/semantic/ledger-property.unit.test.ts`（按实际破坏面）
 
 **Interfaces**
-- Produces：`PresentationDisposition`、`ContinuationDisposition`、`ItemDisposition`；`SemanticItem` 每臂新增**必填** `disposition: ItemDisposition`。
-- `ContinuationRecord` 本片只定义**形状占位联合**（对齐 RFC §6.1 的四个 kind）；其编解码与 provenance 校验由 C7.1／C7.2 落地，**本片不实现 carrier**。
+- Produces：`PresentationDisposition`、`ContinuationDisposition`、`ItemDisposition`；`SemanticItem` **五个臂**各新增必填 `disposition: ItemDisposition`。
+- `ContinuationRecord` 按 RFC §6.1 的定义引入**类型**（含受限 `ResponsesServerToolItemType` 集合）；其编解码与 provenance 校验由 C7.1／C7.2 落地，**本片不实现 carrier**。
 
 **Steps**
 1. 加三个类型；`ContinuationDisposition` 四个 kind 齐全（`none`／`native`／`carrier`／`rejected`）。
-2. 给 `SemanticItem` 四臂加必填 `disposition`。**先跑一次 `bun run typecheck` 取真实破坏面，不要预估**——编译错误集合就是本片的工作清单（ADR 已把该破坏面标为「未实测、仅由类型形状推断」）。
-3. reducer 在 item 终结时填充 disposition。`kind: "drop"` 的 item，其 `continuation` 只能是 `none` 或 `rejected`。
-4. reasoning 既有 `visible`／`opaque` **保持不变**，但同样填 `disposition`；加一条断言：`opaque` 存在时 `continuation.kind` 不得为 `none`（两者不得互相矛盾）。
-5. 架构守卫：断言 `SemanticItem` 每个臂都含 `disposition`，且四个 `ContinuationDisposition` kind 各有正样本——防止新增臂用 `none` 敷衍过关。
+2. 给 `SemanticItem` **五个**臂加必填 `disposition`（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。**先跑一次 `bun run typecheck` 取真实破坏面，编译错误集合就是本片的工作清单**——不要预估。
+3. **同文件写入类型层守卫**（这是本片的承重交付物，不是测试）：
+
+   ```ts
+   type AllArmsCarryDisposition = [SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false
+   const _assertAllArmsCarryDisposition: true = true satisfies AllArmsCarryDisposition
+   ```
+
+   `[hard]` **必须写成非分布式（方括号包裹）。** 实测：分布式写法会分配到各臂再取并集，`true | never` 仍是 `true`，**拦不住**；而**只靠必填字段也拦不住**——仅在联合里新增一个缺该字段的臂，tsc `--strict` **零报错**，只有消费者无条件访问该字段时才报 `TS2339`。
+4. reducer 在 item 终结时填充 disposition。`kind: "drop"` 的 item，其 `continuation` 只能是 `none` 或 `rejected`。
+5. reasoning 既有 `visible`／`opaque` **保持不变**，但同样填 `disposition`；`opaque` 存在时 `continuation.kind` 不得为 `none`（两者不得互相矛盾）。
+6. **源为 Responses 的 server-tool item，其 `continuation` 不得为 `none`**——只能是 `carrier` 或带具名 reason 的 `rejected`。`none` 的含义是「经判定不存在跨轮状态」，不是省事的默认值。
 
 **Commit invariant**：仍无生产调用者（C1 全程不改 production writer）；本片**不**引入任何 carrier 编解码。
 
-**Verify**：`bun run typecheck` + `bun test tests/pipeline/semantic/ tests/architecture/semantic-item-disposition.unit.test.ts`。
+**Verify**：`bun run typecheck` + `bun test tests/pipeline/semantic/`。
 
-**Mutation**（三条，逐条核对失败来自目标机制）
-- 让 reducer 在 `presentation.kind === "degraded"` 时自动把 `continuation` 填成 `rejected` → **§4.1 那条 `[hard]` 不变量的用例必须变红**（这是本片最承重的一条：展示降级不授权续接丢失）；
-- 给 `SemanticItem` 新增一个不带 `disposition` 的臂 → **必须编译失败**（类型负样本，证明闸门真的拦得住新增臂）；
-- 让 `drop` item 的 `continuation` 填成 `carrier` → 守卫变红。
+**判别力（按「快做快合」，不是穷举变异清单）**：本片只有两处判据值得亲手确认它真的会红，因为它们正是本片存在的理由——
+- 把第 3 步的断言改成分布式写法 → 必须**不再**拦住缺字段的臂（证明方括号是承重的，而非装饰）；
+- 让 reducer 在 `presentation.kind === "degraded"` 时顺手把 `continuation` 填成 `rejected` → 必须有用例变红（§4.1 那条 `[hard]`：展示降级不授权续接丢失）。
+
+其余分支按项目现行节奏，只测主路径与实际报错过的路径。
 
 ---
 
