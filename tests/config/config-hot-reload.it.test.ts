@@ -319,6 +319,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
   },
   {
+    configKey: "shutdown.graceful_wait",
+    stateKey: "shutdownGracefulWait",
+    sampleYamlValue: "900",
+    expectedStateValue: 900,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+  },
+  {
+    configKey: "shutdown.abort_wait",
+    stateKey: "shutdownAbortWait",
+    sampleYamlValue: "90",
+    expectedStateValue: 90,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  },
+  {
     configKey: "model_refresh_interval",
     stateKey: "modelRefreshInterval",
     sampleYamlValue: "120",

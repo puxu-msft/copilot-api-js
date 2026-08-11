@@ -794,9 +794,29 @@ export interface State {
    * Distinct from the two phase-scoped upstream guards: `responseHeaderTimeout` caps only the
    * pre-header wait and `streamIdleTimeout` caps only the gap between frames, so an attempt that
    * keeps trickling bytes forever escapes both. This is the total wall-clock cap for the attempt.
-   * 0 = disabled and is the bundled default.
+   * 0 = disabled; the bundled default is 1200 (user ruling, 2026-08-11).
    */
   readonly upstreamRequestDeadline: number
+
+  /**
+   * Seconds shutdown waits for accepted operations to reach their own terminal before it
+   * automatically abandons the drain. 0 = wait forever.
+   *
+   * Expiry is LOSSLESS and equivalent to the operator's second Ctrl+C: in-flight operations are
+   * terminated through `reapInFlight()` + `fail()` (attributed `shutdown`/`operator-abandoned-drain`)
+   * and shutdown then walks the whole finalize path, so History, Telemetry and Diagnostics flush.
+   * It is NOT the 2026-08-07 process-global abort, which lost the records it killed.
+   */
+  readonly shutdownGracefulWait: number
+
+  /**
+   * Seconds shutdown waits AFTER abandoning the drain before hard-exiting. 0 = wait forever.
+   *
+   * This is the escape from the persistence barriers themselves — equivalent to the third signal,
+   * so it exits WITHOUT flushing. It only starts counting once {@link shutdownGracefulWait} has
+   * expired, so the total bound a supervisor must outlast is the SUM of the two.
+   */
+  readonly shutdownAbortWait: number
 
   /**
    * Interval in seconds for refreshing the cached model list from Copilot.
@@ -1642,7 +1662,7 @@ export function setGenerationRuntimeConfig(
 
 export function setTimeoutConfig(
   patch: Partial<
-    Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "clientRequestDeadline" | "upstreamRequestDeadline" | "modelRefreshInterval">
+    Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "clientRequestDeadline" | "upstreamRequestDeadline" | "shutdownGracefulWait" | "shutdownAbortWait" | "modelRefreshInterval">
   >,
 ): void {
   const transportChanged =
@@ -2021,6 +2041,8 @@ export function resetConfigManagedState(): void {
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
     clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
     upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
+    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setUpstreamTransportConfig({
@@ -2226,6 +2248,8 @@ const mutableState: MutableState = {
   showGitHubToken: false,
   clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
   upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
+  shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,

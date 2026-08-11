@@ -1512,13 +1512,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 执行 Task 4；② 有人报告 Anthropic 流在上游过载时被重复请求；③ 顺手改 `acceptTerminal` 或 buffered 终态排空时。
 - **发现方**：Task 37 接缝复审第二、三轮（`gpt-souls:reviewer` 定位形态，主会话实现并撤回，`reviewer` 独立复核撤回与归属判定）。
 
-## 可配的 shutdown drain 放弃预算（默认 0＝无界）尚未实现（2026-08-10，三档信号契约落地时显式留下）
+## ~~可配的 shutdown drain 放弃预算（默认 0＝无界）尚未实现~~ —— **已实现（2026-08-11），但默认值与本条设想相反**
 
-- **根因 / 现状**：用户 2026-08-10 裁决三档信号契约时，同时裁决保留一个**可配、默认 0（＝无界）**的自动放弃预算——到点时执行与第二档信号相同的动作（中止残余 in-flight + 照常 finalize）。三档信号本身已落地（ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md)），**这个预算旋钮没有**。
-- **为何暂缓**：默认值是 0，语义即「关闭」，所以缺它**不改变任何现有行为**——操作者按第二次 Ctrl+C 已经能得到全部能力。本轮优先交付核心档位与其守护。**这不是静默削减**：按 `no-silently-cut-but-defer` 在此登记并已在交付报告中向用户点名。
-- **若做需改什么**：① 新增 config 键（注意 `config.schema.json` 只由 `.describe()` 生成、改 TSDoc 是 no-op）；② `packages/foundation/src/state.ts` + `state-defaults.ts` 加字段；③ `gracefulShutdown` 的 drain 循环里挂一个到点触发 `abandonDrain` 的定时器（`unref`），并在 finalize 前清除；④ 测试须覆盖「0＝永不触发」这一默认路径，否则等于没测默认行为。
-- **⚠️ 命名与论证的注意事项**：`shutdown.graceful_wait` / `abort_wait` 是被 spec `2026-08-07-lossless-graceful-shutdown-drain` **明确删除**的，理由是「保留这些字段会错误暗示 shutdown 仍拥有请求终止 deadline」。新键必须在命名与文档上讲清它是**操作者预设的放弃点**（等价于「替我按第二次」），而不是 shutdown 自己的时限，否则就是把被否决的东西改个名字放回来。
-- **发现方**：三档信号契约实现（主会话，2026-08-10）。
+- **状态**：已实现。`shutdown.graceful_wait` / `shutdown.abort_wait` 落地，裁决见 ADR [shutdown 重新拥有自己的墙钟界](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)。
+- **⚠️ 与本条原设想的偏离，必须点名**：本条写的是「**可配、默认 0（＝无界）**，所以缺它不改变任何现有行为」。用户 2026-08-11 裁决的是 **`graceful_wait: 600` / `abort_wait: 60` 写入 bundled 默认**——**默认开启**，方向与本条相反。所以这不是「按计划补上了一个空操作旋钮」，而是一次**默认行为变更**：任何未显式覆盖的实例，关机等待现在最多 660 秒。
+- **本条当初的警告是怎么处理的**：原文警告「`graceful_wait`/`abort_wait` 是被 spec 明确删除的，新键必须讲清它是操作者预设的放弃点、而不是 shutdown 自己的时限，否则就是把被否决的东西改个名字放回来」。**这个警告没有被满足，而是被用户的新裁决取代了**——现在它就是 shutdown 自己的时限，ADR 也是这么写的。取代它的论证不是「换个名字」，而是**到点后的动作变了**：2026-08-07 有害的是进程级 `AbortSignal`（杀请求、丢记录），现在到点执行的是无损放弃排空（`reapInFlight` + `fail`，走完 finalize，全部落盘），归因码 `graceful-wait-elapsed` 与操作者路径的 `operator-abandoned-drain` 刻意区分。被删掉的 `shutdownAbortController` / `getShutdownSignal()` **没有复活**。
+- **仍然成立的代价（不因已实现而消失）**：`graceful_wait` 到点会终止一条仍在合法产出的长请求——记录留住了，**结果没有**。`abort_wait` 到点则是真的丢数据（按设计不 flush），它只在 barrier 本身卡住时触发。两条都写在 ADR 的「代价与边界」节。
+- **实现落点**：config `shutdown` 段（`src/lib/config/schema.ts`）→ `state.shutdownGracefulWait` / `shutdownAbortWait` → `src/lib/shutdown.ts` 的 `armShutdownWaits` / `armAbortWait`。守卫在 `tests/shutdown/shutdown.unit.test.ts`「shutdown's own wall-clock bounds」与 `tests/config/never-false-kill-legit-thinking.unit.test.ts`。
 
 ## history 读写分离：主程序只 append 写，读/搜索/聚合全部外移 sidecar（2026-08-10，用户裁决的后续方向）
 

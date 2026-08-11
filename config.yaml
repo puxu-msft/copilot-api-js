@@ -238,11 +238,37 @@ timeouts:
   #
   # 与另外两个上游守卫互补：response_header 只管首字节前，stream_idle 只管帧间空档，两者都拦不住「一直滴水但永不结束」的尝试。
   # Complements the two phase-scoped guards: response_header covers only the pre-header wait and stream_idle only the gap between frames — neither bounds an attempt that trickles forever.
-  upstream_request_deadline: 0
+  upstream_request_deadline: 1200
 
   # 一次客户端请求的最大存活秒数（0 = 禁用）。从受理开始计，重试与 hedge 都不重置它，所以它是整个请求的外层上限。
   # Max seconds one CLIENT request can live (0 = disabled). Measured from admission and never reset by retries or hedged candidates, so it bounds the whole client-visible operation.
   client_request_deadline: 0
+
+# ============================================================================
+# Shutdown / 关机自身的墙钟上限
+# ============================================================================
+# 这不是回到 2026-08-07 事故的行为。当时有害的是「到点后做什么」——一个进程级 AbortSignal 把在飞
+# 请求以 `Server is shutting down` 杀掉、连记录一起丢。这里 graceful_wait 到点进入的是**无损**的
+# 放弃排空档：用与运维第二次 Ctrl+C 完全相同的请求级原语（reapInFlight + fail，归因
+# shutdown/graceful-wait-elapsed）终止在飞请求，然后照常走完 finalize，History／Telemetry／
+# Diagnostic 全部落盘。
+#
+# This is NOT a return to the 2026-08-07 incident. What was harmful there was the ACTION on expiry —
+# a process-global AbortSignal that killed live requests with `Server is shutting down` and lost
+# their records. Here graceful_wait expires into the LOSSLESS drain-abandonment tier and shutdown
+# still walks the whole finalize path.
+shutdown:
+  # 等待已接纳请求自行终态的秒数（0 = 无限等）。到点等价于运维按下第二个 Ctrl+C：无损。
+  # Seconds to wait for accepted operations to reach their own terminal (0 = wait forever). Expiry is equivalent to the operator's second Ctrl+C: lossless.
+  graceful_wait: 600
+
+  # 放弃排空之后、硬退出之前再等的秒数（0 = 无限等）。它逃的正是持久化 barrier 本身，所以**不落盘**。
+  # Seconds to wait AFTER abandoning the drain before hard-exiting (0 = wait forever). This escapes the persistence barriers themselves, so it exits WITHOUT flushing.
+  #
+  # ⚠️ 顺序不变量：abort_wait 从 graceful_wait 到点才开始计，所以进程管理器要撑过的是**两者之和**
+  # （当前 660s）。contrib/systemd 的 TimeoutStopSec 与 pm2 的 kill_timeout 都必须大于它。
+  # Ordering invariant: abort_wait only starts counting once graceful_wait expires, so a supervisor must outlast the SUM (currently 660s).
+  abort_wait: 60
 
 # ============================================================================
 # Upstream transport (GHC) / 上游传输

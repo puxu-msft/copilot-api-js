@@ -49,6 +49,11 @@ import {
   setShutdownPublisher,
   waitForShutdown,
 } from "~/lib/shutdown"
+import {
+  //
+  setStateForTests,
+  state,
+} from "~/lib/state"
 import { registerTerminal } from "~/lib/tui/terminal-coordinator"
 
 import { createMockServer } from "../helpers/mock-server"
@@ -1039,6 +1044,112 @@ describe("upstream WebSocket cleanup", () => {
       closeAllSpy.mockRestore()
       stopNewSpy.mockRestore()
       resetUpstreamWsManagerForTests()
+    }
+  })
+})
+
+// ============================================================================
+// shutdown.graceful_wait / shutdown.abort_wait
+// ============================================================================
+
+describe("shutdown's own wall-clock bounds", () => {
+  test("graceful_wait expiring abandons the drain LOSSLESSLY and lets finalize run", async () => {
+    // The whole point of reinstating a bound: the 2026-08-07 removal was reacting to a LOSSY
+    // expiry (a process-global abort that killed requests and lost their records). Expiry here
+    // must drive the same two request-level primitives the operator's second Ctrl+C drives, and
+    // the shutdown must then complete normally so every persistence barrier still runs.
+    const tracker = createMockTracker([{ id: "live", status: "executing" }])
+    const closeHistory = mock(async () => {})
+
+    await gracefulShutdown(
+      "SIGTERM",
+      createNoopDeps({ tracker, shutdownHistoryFn: closeHistory, gracefulWaitSec: 0.05, abortWaitSec: 0, exitFn: mock((_code: number) => {}) }),
+    )
+
+    expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["live"])
+    expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["live"])
+    // Lossless: the run reached finalize rather than exiting out from under it.
+    expect(closeHistory).toHaveBeenCalledTimes(1)
+    expect(getShutdownPhase()).toBe("stopped")
+  })
+
+  test("the terminal is attributed to the elapsed bound, NOT to an operator who did nothing", async () => {
+    // Two different events (a human gave up / the configured bound elapsed) must not share a
+    // provenance label — a post-mortem reads exactly this to tell them apart.
+    const tracker = createMockTracker([{ id: "live", status: "executing" }])
+
+    await gracefulShutdown("SIGTERM", createNoopDeps({ tracker, gracefulWaitSec: 0.05, abortWaitSec: 0 }))
+
+    const failCall = tracker._fail.mock.calls[0]
+    expect(failCall).toBeDefined()
+    expect(failCall?.[3]).toMatchObject({ attribution: { category: "shutdown", code: "graceful-wait-elapsed" } })
+    expect(String((failCall?.[2] as Error).message)).toContain("shutdown.graceful_wait")
+  })
+
+  test("graceful_wait = 0 arms nothing: the drain waits for the request, as it did before the bound existed", async () => {
+    const tracker = createMockTracker([{ id: "live", status: "executing" }])
+    const shutdown = gracefulShutdown("SIGTERM", createNoopDeps({ tracker, gracefulWaitSec: 0, abortWaitSec: 0 }))
+
+    // Well past what a 50ms bound would have been — nothing may terminate this request but itself.
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(tracker._reapInFlight).not.toHaveBeenCalled()
+    expect(tracker._fail).not.toHaveBeenCalled()
+
+    tracker._clearRequests()
+    await shutdown
+  })
+
+  test("abort_wait hard-exits after the drain was abandoned, and only counts from THEN", async () => {
+    // `abort_wait` bounds the persistence barriers, which is why it exits without flushing. It
+    // starts at graceful expiry, so the total a supervisor must outlast is the SUM of the two.
+    const exitFn = mock((_code: number) => {})
+    // Never releases: `fail()` cannot free it, so the drain stays held and finalize is never reached
+    // — precisely the wedge shape `abort_wait` exists to escape.
+    const tracker = createMockTracker([{ id: "wedged", status: "executing", settled: true, releasesOnSettle: false }])
+
+    const shutdown = gracefulShutdown("SIGTERM", createNoopDeps({ tracker, gracefulWaitSec: 0.05, abortWaitSec: 0.05, exitFn }))
+
+    // Before graceful expiry + abort window, nothing has exited.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(exitFn).not.toHaveBeenCalled()
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(exitFn).toHaveBeenCalledWith(143) // SIGTERM's forced code, same as the third signal
+
+    tracker._clearRequests()
+    await shutdown
+  })
+
+  test("an operator who abandons the drain inherits the abort bound instead of waiting forever", async () => {
+    // Pressing Ctrl+C a second time is not agreeing to wait forever on the barriers either. Before
+    // this, the only escape from a wedged barrier was a third signal nobody may be present to send.
+    //
+    // This is the one path that cannot take the deps override: the operator tier lives in
+    // `handleShutdownSignal`, which has no `ShutdownDeps`. So it reads live state — and therefore
+    // MUST restore it, or every later test in this shard inherits a 50ms hard-exit bound whose
+    // default `exitFn` is the real `process.exit`.
+    const savedAbortWait = state.shutdownAbortWait
+    setStateForTests({ shutdownAbortWait: 0.05 })
+    const exitFn = mock((_code: number) => {})
+    const tracker = createMockTracker([{ id: "wedged", status: "executing", settled: true, releasesOnSettle: false }])
+
+    try {
+      const shutdown = handleShutdownSignal("SIGTERM", {
+        // graceful bound disabled, so the ONLY thing that can arm the abort bound is the operator.
+        gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker, gracefulWaitSec: 0, abortWaitSec: 0, exitFn })),
+        exitFn,
+      })
+
+      void handleShutdownSignal("SIGTERM", { exitFn })
+      expect(exitFn).not.toHaveBeenCalled()
+
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      expect(exitFn).toHaveBeenCalledWith(143)
+
+      tracker._clearRequests()
+      await shutdown
+    } finally {
+      setStateForTests({ shutdownAbortWait: savedAbortWait })
     }
   })
 })

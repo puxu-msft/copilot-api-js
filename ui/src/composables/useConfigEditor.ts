@@ -44,6 +44,7 @@ export function normalizeConfigForEditor(input: ConfigYamlResponse | EditableCon
     ...(input.proxy !== undefined ? { proxy: input.proxy } : {}),
     ...(input.model_overrides !== undefined ? { model_overrides: normalizeStringMap(input.model_overrides) } : {}),
     ...(input.timeouts !== undefined ? { timeouts: normalizeScalarSection(input.timeouts, ["stream_idle", "response_header", "upstream_request_deadline", "client_request_deadline"]) } : {}),
+    ...(input.shutdown !== undefined ? { shutdown: normalizeScalarSection(input.shutdown, ["graceful_wait", "abort_wait"]) } : {}),
     ...(input.model_refresh_interval !== undefined ? { model_refresh_interval: input.model_refresh_interval } : {}),
     ...(input.history !== undefined ? { history: normalizeScalarSection(input.history, ["success_limit", "failure_limit", "reaper_interval"]) } : {}),
     ...(input.anthropic !== undefined ? { anthropic: normalizeAnthropic(input.anthropic) } : {}),

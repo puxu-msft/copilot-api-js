@@ -57,6 +57,8 @@ const fetchTimeout = nestedField("timeouts", "response_header", null)
 const streamIdleTimeout = nestedField("timeouts", "stream_idle", null)
 const upstreamRequestDeadline = nestedField("timeouts", "upstream_request_deadline", null)
 const clientRequestDeadline = nestedField("timeouts", "client_request_deadline", null)
+const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
+const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
 const modelRefreshInterval = topLevelField("model_refresh_interval", null)
 const systemPromptPrepend = topLevelField("system_prompt_prepend", null)
 const systemPromptAppend = topLevelField("system_prompt_append", null)
@@ -145,7 +147,7 @@ function setTopLevel<K extends keyof EditableConfig>(key: K, value: EditableConf
 }
 
 function setNested<
-  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "shutdown">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, value: NonNullable<EditableConfig[P]>[K]): void {
   const config = ensureConfig()
@@ -167,7 +169,7 @@ function topLevelField<K extends keyof EditableConfig>(key: K, fallback: NonNull
 }
 
 function nestedField<
-  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "shutdown">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, fallback: NonNullable<EditableConfig[P]>[K]) {
   return computed({
@@ -383,6 +385,20 @@ function nestedField<
               v-model="clientRequestDeadline"
               label="Client Request Deadline"
               description="Fail the whole client request once it outlives this, across every retry."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="shutdownGracefulWait"
+              label="Shutdown Graceful Wait"
+              description="Wait this long for accepted requests during shutdown, then abandon the drain losslessly."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="shutdownAbortWait"
+              label="Shutdown Abort Wait"
+              description="After abandoning the drain, wait this long before hard-exiting WITHOUT flushing. Starts only once Graceful Wait expires."
               suffix="s"
               :min="0"
             />

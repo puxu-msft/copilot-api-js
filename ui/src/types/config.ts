@@ -17,6 +17,10 @@ export interface ConfigYamlResponse {
     upstream_request_deadline?: number
     client_request_deadline?: number
   }
+  shutdown?: {
+    graceful_wait?: number
+    abort_wait?: number
+  }
   model_refresh_interval?: number
   history?: {
     success_limit?: number
@@ -60,6 +64,10 @@ export interface EditableConfig {
     response_header?: number | null
     upstream_request_deadline?: number | null
     client_request_deadline?: number | null
+  } | null
+  shutdown?: {
+    graceful_wait?: number | null
+    abort_wait?: number | null
   } | null
   model_refresh_interval?: number | null
   history?: {

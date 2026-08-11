@@ -8,11 +8,24 @@
 
 ## 优雅关闭
 
-`src/lib/shutdown.ts` 实现首信号无损排空。shutdown 只拥有进程入口和资源生命周期，不拥有请求终止权。
+`src/lib/shutdown.ts` 实现首信号无损排空。shutdown 只拥有进程入口和资源生命周期，不拥有请求终止**权**——但**自 2026-08-11 起重新拥有自己的墙钟界**（裁决见 ADR [shutdown 重新拥有自己的墙钟界](decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)，它推翻了三档契约里「shutdown 自己不拥有任何时限」这半句；三档信号本身不变）。
 
-信号契约分为终止信号与交接信号。终止信号按**操作者按了几次**分三档——界由人显式划，shutdown 自己不拥有任何时限（裁决见 ADR [三档 shutdown 信号契约](decisions/2026-08-10-three-tier-shutdown-signal-contract.md)）：
+界有两个来源，**动作完全相同**，区别只在谁先到：
 
-1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，并**无界**等待已接纳 operation 自行终态。
+| 来源 | 界 | 到点做什么 |
+|---|---|---|
+| 操作者 | 按第二次 SIGINT／SIGTERM | 第 2 档：无损放弃排空，归因 `shutdown`／`operator-abandoned-drain` |
+| 配置 | `shutdown.graceful_wait`（bundled 600s，0 = 无限等） | 同上，但归因 `shutdown`／`graceful-wait-elapsed`——两者**刻意不同码**，事后要分得清是人放弃了还是界到了 |
+
+放弃排空之后还有第二个界：`shutdown.abort_wait`（bundled 60s，0 = 无限等），**从 graceful 到点才开始计**，逃的是持久化 barrier 本身，因此**不落盘**（等同第 3 档）。手动按第二次的操作者同样继承它——放弃等请求不等于同意无限等 barrier。
+
+> ⚠️ **顺序不变量**：进程自己的总界 = `graceful_wait + abort_wait`（当前 **660s**）。进程管理器的上限必须**大于**它，否则会在无损 flush 中途 SIGKILL、正好毁掉这一档的意义。`contrib/systemd` 的 `TimeoutStopSec` 已由 `infinity` 改为 900。
+
+> **为什么这不是回到 2026-08-07 事故**：当时有害的是**到点后做什么**——一个进程级 `AbortSignal` 把在飞请求杀掉、连记录一起丢。现在到点进入的是无损档，走完 finalize、记录照常落盘。被删掉的 `shutdownAbortController`／`getShutdownSignal()` **没有复活**。
+
+终止信号仍按**操作者按了几次**分三档：
+
+1. idle 时收到 SIGINT／SIGTERM／SIGUSR2，同步认领 lifecycle，停止 ingress，等待已接纳 operation 自行终态；此时武装上面两个界（`graceful_wait=0` 则退回旧的无界行为）。
 2. **仍在等请求时**（`stopping`／`draining`）收到第二个 SIGINT／SIGTERM，放弃等待 drain，用请求级原语（`reapInFlight()` + `fail()`，与 `client_request_deadline` 同一组）中止残余 operation，**随后照常走完 finalize**——History、Telemetry、Diagnostic 全部落盘。终态 attribution 为 `shutdown`／`operator-abandoned-drain`，不伪装成 timeout。
 3. 再收到 SIGINT／SIGTERM，立即 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。它不等待请求、持久化、通知或日志。
 4. **已越过请求排空后**（`finalizing`／`notifying`／`failed`）收到的第一个 SIGINT／SIGTERM 就直接强退，不走第 2 档——此时在等的正是持久化 barrier，而那恰恰是逃生舱要逃离的东西。
@@ -27,6 +40,7 @@
 - `_isShuttingDown` 置位，middleware 拒绝此后进入的新请求。
 - `server.close(false)` 停止监听新连接，保留已建连接。
 - 每个 context 已武装的 `client_request_deadline` 与每次尝试的 `upstream_request_deadline` 继续生效（关机不触碰它们）。
+- shutdown 自己的 `graceful_wait` 在**这一步之前**就已武装——刻意早于 drain 循环，因为下面的 `drainAdmissionHandoffs` 与交接 freeze 同样无上界，而此前**没有任何一档够得到它们**（第 2 档在那里发现 `activeDrainSource` 为 null，只能如实报告帮不上）。
 - 停止 History maintenance 和 Telemetry rollup 等后台 producer，但保持 History、Telemetry 与 Diagnostic 写入可用。
 - 浏览器观察者 WS 保持连接，用于观察 draining 和 finalized。
 - token runtime、rate limiter 队列、上游 WS／h2 池保持完整能力。已接纳 operation 可能仍需刷新 token、等待 permit、创建新 transport 或重试；首信号拆除其中任一资源都会破坏无损契约。
@@ -35,10 +49,10 @@
 
 `RequestContextManager.getTrackedOperations()` 与 lightweight operation in-flight registry 共同构成“已接纳”的机械边界。generation context 从创建起进入 manager registry，直到 operation body quiesce、delivery finalize 和 immutable canonical terminal 发布完成后才离开；count_tokens／embeddings 从创建起进入 lightweight registry，在 terminal publish 完成后注销。
 
-shutdown 不设置自己的排空 deadline，也不发布 request abort。请求只由正常协议终态、客户端取消、`timeouts.client_request_deadline`、`timeouts.upstream_request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束，**或由操作者按下第二个终止信号**（上面第 2 档——那也走请求级原语，仍不是 shutdown 自己的时限）。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
+shutdown 不发布 request abort。请求由正常协议终态、客户端取消、`timeouts.client_request_deadline`、`timeouts.upstream_request_deadline`、response-header timeout、stream-idle timeout等请求级机制结束，**或由操作者按下第二个终止信号，或由 `shutdown.graceful_wait` 到点**——后两者走的是同一组请求级原语，只是触发者不同。只要 registry 非空，进程继续轮询并定期输出活跃请求摘要。
 
 > ⚠️ **无界排空对 overlap 窗口的连带影响**：drain 无界意味着 overlap 也无界，下面「overlap 窗口的共享状态安全」各条隐患的暴露面随之无界，且本文档后面「不保证链式重叠重启」那条会从运维纪律问题变成**默认会发生**。第 2 档信号是操作者手上收回这个窗口的手段。
-> 另注意：运行实例若未显式设置 `timeouts.client_request_deadline`（bundled 默认 0＝禁用），则「请求级 deadline 兜底」这条前提在该实例上是**空的**——`response_header` 只管首字节前、`stream_idle` 只管帧间静默，`upstream_request_deadline` 只管单次尝试，一条持续产帧、不断重试的长流没有上界。
+> 另注意：运行实例若未显式设置 `timeouts.client_request_deadline`（bundled 默认 0＝禁用），则「请求级 deadline 兜底」这条前提在该实例上是**空的**——`response_header` 只管首字节前、`stream_idle` 只管帧间静默，`upstream_request_deadline`（bundled 1200s）只管单次尝试，一条持续产帧、不断重试的长流在请求层没有上界。**关机期的上界由 `shutdown.graceful_wait` 提供**，但那只在关机时成立，正常服务期间不适用。
 
 > **[wip] 超长驻留 operation 的 lifecycle 修复**——退出摘要曾打出 `POST /v1/messages gpt-5.6-sol (failed, 17620s)` 这种自相矛盾的行：logical terminal 已是 `failed`，operation 却仍占着 registry 不走。根因是 candidate／dispatch／delivery／operation owner 四类 lifecycle 事实被混为一谈（`failed` ≠ quiesced），修法是拆开这四类并给 manager 单一 release primitive。**唯一入口：[plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md](plan/2026-08-08-long-resident-operation-lifecycle/HANDOVER.md)**（spec、plan、评审证据、剩余的启动 gate 都从那里进）。**当前状态：Tasks 1–4 + B1 的代码已于 2026-08-09 合入 master；Tasks 5–8 未开工。** 所以本节描述的**仍是 master 现行行为**——上面那条摘要行由 Task 6 负责，尚未改动（`git grep -n "request.state" -- src/lib/shutdown.ts` 仍能命中）。
 

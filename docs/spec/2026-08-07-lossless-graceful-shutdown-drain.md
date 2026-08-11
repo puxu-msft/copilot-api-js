@@ -53,7 +53,9 @@
 - `timeouts.upstream_request_deadline`（单次上游尝试，烧完只中止该次尝试）；
 - response-header、stream-idle 等上游 timeout。
 
-shutdown 不再拥有请求终止 deadline，也不触碰上述任何一个：首信号之后，每个 context 已武装的精确 deadline 与每次尝试的 attempt deadline 继续生效。
+首信号之后，每个 context 已武装的精确 deadline 与每次尝试的 attempt deadline 继续生效——shutdown 不触碰它们。
+
+> **2026-08-11 推翻**：本节原句「shutdown 不再拥有请求终止 deadline」已不成立。shutdown 重新拥有 `shutdown.graceful_wait`（bundled 600s）与 `shutdown.abort_wait`（bundled 60s），裁决与「为什么这不是回到 2026-08-07」的完整论证见 ADR [2026-08-11-shutdown-owns-bounded-waits-again](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)。要点：**当初有害的是到点后的动作**（进程级 abort、丢记录），而不是「有界」本身；新的到点动作是无损放弃排空，走完 finalize。
 
 > **2026-08-11 更新**：本节原先还列有「stale reaper 在正常 serving 期间的泄漏兜底」，且首信号一步写作「停止 stale reaper」。该 reaper 已删除——它测的量与 `client_request_deadline` 相同、动作也相同，只是走周期扫描、最坏晚约 1.33 倍，故由精确 timer 完全取代。旧配置键 `timeouts.stale_request_max_age` 由 compat 层迁移到 `timeouts.client_request_deadline`。`reapInFlight()` 未退役，仍是第二信号 `abandonDrain` 使用的请求级取消原语。
 

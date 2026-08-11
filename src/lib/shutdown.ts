@@ -13,6 +13,7 @@
 import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import consola from "consola"
 
+import { state } from "~/lib/state"
 import { peekTokenRuntime } from "~/lib/token"
 
 import type { LightweightInFlightOperation } from "./context/lightweight-model-operation"
@@ -99,6 +100,43 @@ let postClaimTerminationSignals = 0
  * Published so the second termination signal can reach exactly the operations the drain is waiting on — including a test-injected fake — instead of rebuilding the production union and diverging from what the drain actually watches.
  */
 let activeDrainSource: ShutdownDrainSource | null = null
+
+/**
+ * Shutdown's OWN wall-clock bounds (`shutdown.graceful_wait` / `shutdown.abort_wait`), reinstated
+ * 2026-08-11 by user ruling after the 2026-08-07 removal.
+ *
+ * What is different from the behaviour that removal was reacting to: expiry of `graceful_wait` runs
+ * the LOSSLESS drain-abandonment tier — the same `reapInFlight()` + `fail()` an operator's second
+ * Ctrl+C runs — and then lets the drain loop fall through to finalize, so History, Telemetry and
+ * Diagnostics all still flush. The 2026-08-07 incident was caused by a process-global `AbortSignal`
+ * that killed live operations and lost their records; that mechanism is NOT coming back.
+ *
+ * `abort_wait` is the second bound and only starts counting once the first has expired, so the
+ * total a supervisor must outlast is the SUM. It is the escape from the persistence barriers
+ * themselves and therefore exits WITHOUT flushing, exactly like the third signal.
+ *
+ * Both are armed once, when the lifecycle is claimed, from the values live at that moment. A config
+ * reload landing mid-shutdown deliberately does not move an already-armed timer: an operator asking
+ * "how long can this take at most" deserves an answer that cannot shift under them.
+ */
+let gracefulWaitTimer: ReturnType<typeof setTimeout> | null = null
+let abortWaitTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearShutdownWaitTimers(): void {
+  if (gracefulWaitTimer) {
+    clearTimeout(gracefulWaitTimer)
+    gracefulWaitTimer = null
+  }
+  if (abortWaitTimer) {
+    clearTimeout(abortWaitTimer)
+    abortWaitTimer = null
+  }
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): ReturnType<typeof setTimeout> {
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  return timer
+}
 
 /**
  * Scoped publisher for `system.shutdown_phase_changed` events. Set once at
@@ -248,6 +286,17 @@ export interface ShutdownDeps {
   /** Poll timing overrides for deterministic tests. */
   drainPollIntervalMs?: number
   drainProgressIntervalMs?: number
+  /**
+   * Hard-exit seam for `shutdown.abort_wait`. Defaults to `process.exit`. Tests inject a spy —
+   * without this the abort bound would be unobservable, since a real exit takes the runner with it.
+   */
+  exitFn?: (code: number) => void
+  /**
+   * Override `shutdown.graceful_wait` / `shutdown.abort_wait` (SECONDS) for deterministic tests.
+   * Absent = read the live config-managed state, which is what production does.
+   */
+  gracefulWaitSec?: number
+  abortWaitSec?: number
 }
 
 // ============================================================================
@@ -321,6 +370,10 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   }
   // Publish the source the drain is about to poll, so a second termination signal terminates exactly these operations rather than a separately-rebuilt union.
   activeDrainSource = tracker
+  // Arm shutdown's own bounds BEFORE the `stopping` awaits below, not just around the drain loop:
+  // `drainAdmissionHandoffs` and the handoff freezes are unbounded too, and a wedge in them is
+  // reachable by no signal tier (the second finds `activeDrainSource` unset and says so).
+  armShutdownWaits(signal, deps)
   const server = deps?.server ?? serverInstance
   const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
@@ -423,18 +476,31 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   setPhaseFireAndForget("draining")
   await drainActiveRequests(tracker, drainOpts)
   if (activeCount > 0) consola.info("All accepted requests completed")
+  // However the drain ended (naturally, or because a bound/operator abandoned it), the graceful
+  // bound has nothing left to bound. `abort_wait` deliberately stays armed if it was started: what
+  // it bounds is the persistence barriers, and those begin now.
+  if (gracefulWaitTimer) {
+    clearTimeout(gracefulWaitTimer)
+    gracefulWaitTimer = null
+  }
 
-  await finalize({
-    closeTokenRuntime,
-    closeWsClients,
-    getWsClientCount,
-    drainModelOperationFinalizations,
-    drainHistoryAdmission: drainAdmission,
-    closeHistory,
-    closeTelemetry,
-    closeDiagnostics,
-    publishStopped,
-  })
+  try {
+    await finalize({
+      closeTokenRuntime,
+      closeWsClients,
+      getWsClientCount,
+      drainModelOperationFinalizations,
+      drainHistoryAdmission: drainAdmission,
+      closeHistory,
+      closeTelemetry,
+      closeDiagnostics,
+      publishStopped,
+    })
+  } finally {
+    // `finally`, not a trailing statement: a barrier failure rejects out of here, and a timer that
+    // outlives the shutdown would exit a process that is no longer shutting down.
+    clearShutdownWaitTimers()
+  }
 }
 
 interface FinalizeDeps {
@@ -611,11 +677,35 @@ function writeEmergencyNoThrow(message: string): void {
  *
  * @returns what this actually did, split so the operator banner cannot overstate it.
  */
-function abandonDrain(signal: string): { started: boolean; terminated: number; finalizing: number; lightweight: number } {
+/**
+ * Who decided to stop waiting for the drain. Kept as data rather than a free-text string because it
+ * picks the terminal's `attribution.code`, and that code is what a post-mortem reads to answer
+ * "did a human give up, or did the configured bound elapse?". Those are different events and must
+ * not share a label (`abort-provenance-tag-at-source`).
+ */
+type DrainAbandonmentTrigger =
+  | { kind: "operator"; signal: string }
+  | { kind: "graceful-wait"; seconds: number }
+
+function drainAbandonmentAttribution(trigger: DrainAbandonmentTrigger): { code: string; message: string } {
+  if (trigger.kind === "operator") {
+    return {
+      code: "operator-abandoned-drain",
+      message: `Drain abandoned by operator (${trigger.signal}) before this request completed`,
+    }
+  }
+  return {
+    code: "graceful-wait-elapsed",
+    message: `Drain abandoned after shutdown.graceful_wait (${trigger.seconds}s) elapsed before this request completed`,
+  }
+}
+
+function abandonDrain(trigger: DrainAbandonmentTrigger): { started: boolean; terminated: number; finalizing: number; lightweight: number } {
   const source = activeDrainSource
   // The drain has not begun yet — we are still in the `stopping` awaits that precede it (admission handoff, freeze). There is nothing to abandon, and this tier cannot unblock those; say so rather than printing a count that implies we acted.
   if (!source) return { started: false, terminated: 0, finalizing: 0, lightweight: 0 }
 
+  const { code, message } = drainAbandonmentAttribution(trigger)
   let terminated = 0
   let finalizing = 0
   let lightweight = 0
@@ -633,15 +723,12 @@ function abandonDrain(signal: string): { started: boolean; terminated: number; f
         continue
       }
       operation.reapInFlight()
-      operation.fail(
-        operation.resolvedModel ?? operation.originalRequest?.model ?? "unknown",
-        new Error(`Drain abandoned by operator (${signal}) before this request completed`),
-        undefined,
-        { attribution: { category: "shutdown", code: "operator-abandoned-drain" } },
-      )
+      operation.fail(operation.resolvedModel ?? operation.originalRequest?.model ?? "unknown", new Error(message), undefined, {
+        attribution: { category: "shutdown", code },
+      })
       terminated++
     } catch (error) {
-      // One wedged context must not stop us reaching the others — the operator asked to stop waiting, so best-effort is the correct shape here.
+      // One wedged context must not stop us reaching the others — whoever stopped the wait asked us to stop waiting, so best-effort is the correct shape here.
       consola.warn("[shutdown] could not terminate an operation while abandoning the drain:", error)
     }
   }
@@ -668,6 +755,55 @@ function describeDrainAbandonment(outcome: { started: boolean; terminated: numbe
   return `${terminatedNote}, but the drain is STILL HELD by ${stillHolding.join(" and ")} — not flushing yet.`
 }
 
+/**
+ * Arm the post-abandon hard-exit bound. Called both when `graceful_wait` expires and when the
+ * OPERATOR abandons the drain — an operator who gave up on the wait has not thereby agreed to wait
+ * forever on the persistence barriers either, and before this the only way out of a wedged barrier
+ * was a third manual signal that nobody may be present to send.
+ *
+ * Idempotent: a second call while already armed leaves the original deadline in place, so an
+ * operator signal arriving after the timer already armed it cannot silently extend the bound.
+ */
+function armAbortWait(seconds: number, exitFn: (code: number) => void, signal: string): void {
+  if (seconds <= 0 || abortWaitTimer) return
+  abortWaitTimer = unrefTimer(
+    setTimeout(() => {
+      abortWaitTimer = null
+      // Same channel and same reasoning as the third signal: bypass consola → bus → FileSink →
+      // History, because this is the escape from exactly those subsystems.
+      writeEmergencyNoThrow(`[shutdown] shutdown.abort_wait (${seconds}s) elapsed after the drain was abandoned; exiting immediately WITHOUT flushing`)
+      exitFn(isTerminationSignal(signal) ? forcedExitCode(signal) : 143)
+    }, seconds * 1000),
+  )
+}
+
+/**
+ * Arm shutdown's own two bounds. Called once, from `gracefulShutdown`, BEFORE the `stopping` awaits
+ * — deliberately earlier than the drain loop, because `drainAdmissionHandoffs` and the handoff
+ * freezes are themselves unbounded and were previously reachable by no tier at all (the second
+ * signal finds `activeDrainSource === null` there and correctly reports it cannot help). Arming
+ * here means `graceful_wait` measures what an operator actually means by it: time since the signal.
+ *
+ * If `graceful_wait` fires during those pre-drain awaits, `abandonDrain` reports `started: false`
+ * and terminates nothing — but `abort_wait` is armed regardless, so the process is still bounded
+ * rather than wedged forever. That asymmetry is the point of having two bounds.
+ */
+function armShutdownWaits(signal: string, deps?: ShutdownDeps): void {
+  const exitFn = deps?.exitFn ?? ((code: number) => process.exit(code))
+  const gracefulSec = deps?.gracefulWaitSec ?? state.shutdownGracefulWait
+  const abortSec = deps?.abortWaitSec ?? state.shutdownAbortWait
+  if (gracefulSec <= 0) return
+
+  gracefulWaitTimer = unrefTimer(
+    setTimeout(() => {
+      gracefulWaitTimer = null
+      const outcome = abandonDrain({ kind: "graceful-wait", seconds: gracefulSec })
+      writeEmergencyNoThrow(`[shutdown] shutdown.graceful_wait (${gracefulSec}s) elapsed; ${describeDrainAbandonment(outcome)}`)
+      armAbortWait(abortSec, exitFn, signal)
+    }, gracefulSec * 1000),
+  )
+}
+
 export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
   const shutdownFn = opts?.gracefulShutdownFn ?? ((shutdownSignal: string) => gracefulShutdown(shutdownSignal))
   const exitFn = opts?.exitFn ?? ((code: number) => process.exit(code))
@@ -684,7 +820,15 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
     // Deliberately scoped to the phases that are still WAITING ON REQUESTS: once we are in `finalizing`/`notifying`/`failed` the thing being waited on IS the persistence barrier, which is exactly what the escape hatch exists to escape — so there the second signal must still exit immediately, as it always has.
     const waitingOnRequests = shutdownPhase === "stopping" || shutdownPhase === "draining"
     if (waitingOnRequests && postClaimTerminationSignals === 1) {
-      const outcome = abandonDrain(signal)
+      // The operator beat `shutdown.graceful_wait` to it; that bound has no further purpose.
+      if (gracefulWaitTimer) {
+        clearTimeout(gracefulWaitTimer)
+        gracefulWaitTimer = null
+      }
+      const outcome = abandonDrain({ kind: "operator", signal })
+      // Giving up on the drain is not agreeing to wait forever on the barriers either. `armAbortWait`
+      // is idempotent, so if the graceful bound already armed it, this does not extend the deadline.
+      armAbortWait(state.shutdownAbortWait, exitFn, signal)
       writeEmergencyNoThrow(
         `[shutdown] Second termination signal (${signal}); ${describeDrainAbandonment(outcome)} Press Ctrl+C again to exit immediately WITHOUT flushing`,
       )
@@ -750,6 +894,7 @@ export function _resetShutdownState(): void {
   _shutdownPublisher = undefined
   postClaimTerminationSignals = 0
   activeDrainSource = null
+  clearShutdownWaitTimers()
   if (signalHandlers) {
     process.removeListener("SIGINT", signalHandlers.sigint)
     process.removeListener("SIGTERM", signalHandlers.sigterm)

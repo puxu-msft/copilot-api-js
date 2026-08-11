@@ -1,6 +1,6 @@
 # ADR: 三档 shutdown 信号契约 —— 把「有界墙钟 + 干净 finalize」还回来
 
-- **状态**：Accepted
+- **状态**：Accepted（三档信号本身仍有效）；其中「**shutdown 自己不拥有任何时限**」这半句已于 2026-08-11 被 [shutdown 重新拥有自己的墙钟界](2026-08-11-shutdown-owns-bounded-waits-again.md) 推翻——现在配置界与操作者信号**并列**成为两个触发源，动作相同、归因码不同。
 - **日期**：2026-08-10
 - **裁决人**：用户（本会话直接裁决）
 - **相关**：推翻 [spec/2026-08-07-lossless-graceful-shutdown-drain.md](../spec/2026-08-07-lossless-graceful-shutdown-drain.md) 的**不变量 4**；[lifecycle.md](../lifecycle.md)「优雅关闭」「优雅重启」；skill `process-lifecycle-shutdown`；guard 处置记录 [tmp/2026-08-10-third-tier-signal-guard-dispositions.md](../tmp/2026-08-10-third-tier-signal-guard-dispositions.md)；同源 ADR [vacuum-gated-on-lock-contention](2026-08-10-vacuum-gated-on-lock-contention.md)
