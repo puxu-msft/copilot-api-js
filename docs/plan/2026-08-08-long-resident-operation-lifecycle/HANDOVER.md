@@ -42,9 +42,26 @@
 本特性的立案证据是一条**真实的**长驻留 operation，此前只在 spec 里记了症状文本，**没记它是哪条记录**——后来人因此无法复查原始数据。
 
 - **operationId**：`req_1786064856101_137`（`sessionId` `529807d9-28f0-4e56-85c8-03adaf016bb7`，进程 `pid=597291`、`gitSha=ccb645f5`、`version=0.8.4-beta.18`）。
-- ⚠️ **这条记录已经取不回来了**：2026-08-11 只读实测 `GET /history/api/entries/req_1786064856101_137/export` → **`404 {"error":"Entry not found"}`**（同刻对照 `GET /history/api/entries?limit=1` → `200`，所以不是服务不可用，是记录本身没了）。端点本身仍然存在且与 [API.md](../../API.md)「History REST」一致——**失效的是这条记录，不是这条路径**。
-- **因此唯一副本是** `incident-manifest.zst`（542 KB，在 job 临时目录 `$CLAUDE_JOB_DIR/tmp/`，**未提交进仓库**，含用户真实请求/响应内容）。它随 job 删除而消失。要不要长期留存、留在哪，**由用户裁决**（见 `docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md`）。**在此之前不要清理那个目录。**
-- **调查期间导出过一份 manifest**（formatVersion 2，含完整 arena payload/frame 谱系），但它只存在于当时会话的临时目录、**未提交**——里面是用户的真实请求与响应内容，是否长期留存属用户决定，不由本次收尾代劳。若 History 已按保留策略淘汰该记录，该导出即不可再生。
+- ⚠️ **原始记录已不可再生，原始导出已按用户裁决删除。** 2026-08-11 只读实测 `GET /history/api/entries/req_1786064856101_137/export` → **`404 {"error":"Entry not found"}`**（同刻对照 `GET /history/api/entries?limit=1` → `200`——端点没坏，是这条记录被保留策略淘汰了）。调查期导出过一份 542 KB 的 manifest（formatVersion 2，含完整 arena payload/frame 谱系与用户真实请求／响应正文），**用户 2026-08-11 裁决：提炼出测试需要的关键部分后删除**。下面这张表就是提炼结果，原件已删。
+
+- **读者须知**：以下数据**无法再复查**。请**先相信它，出问题再质疑**——若后续实现与它矛盾，以代码与新的实测为准，把这张表当作线索而非权威。
+
+### 提炼出的立案事实（这就是本特性要修的那件事）
+
+| 事实 | 值 |
+|---|---|
+| 关机摘要里的表现 | `(failed, 17620s)` —— 约 **4.9 小时**仍被算作驻留 |
+| 记录里的实际终态 | `terminal.outcome = "failed"`，`sequence 18492`，`durationMs 483364`（约 **8 分钟**） |
+| 失败原因 | `upstream stream truncated: closed without finish_reason`（`attribution.category = "upstream"`，抛于 `pumpTranslateLegStreamingV4`，`src/routes/messages/handler-v4.ts:1888`） |
+| dispatch | `dispatch:0`（http）`verdict failed`，**已 settled** 于 `sequence 18489` |
+| egress | `sequence 18490`，upstream/client frames 均为空 |
+| candidate | `candidate:0`（primary）`verdict failed`，**已 settled** 于 `sequence 18491`，`reason "terminal:failed"` |
+| 候选/分派数量 | 各 1，无 hedge |
+| 时间 | 创建 `1786064856101`，全部 settle 于 `1786065339692`（**483 秒内全部落定**） |
+
+**这张表为什么是立案事实**：dispatch → egress → candidate → terminal **四级全部在 483 秒内 settled**，逻辑终态明确是 `failed`——**然而这条 operation 仍留在 tracked-operation 集合里，被关机摘要按 4.9 小时的驻留时长打印出来**。所以缺陷不在「它没结束」，而在**「它结束了，却没有人把它从驻留集合里放掉」**，且摘要直接打印 `request.state` 这个原始字段、不做任何 lifecycle 归一。这正是本特性把 lifecycle 拆成四类独立事实（logical terminal / operation scope / delivery lifecycle / canonical finalization）的由来——**`failed` 不等于 quiesced**。
+
+**给 Task 6/7 写测试时直接用这张表**：构造一条 `terminal.outcome = "failed"`、所有 candidate/dispatch 均已 settled 的 operation，断言它**不再**出现在关机摘要的驻留清单里（或至少不以原始 `request.state` + 累计 age 的形式出现）。**不需要那 542 KB 原件**——它的正文是上游响应内容，与本缺陷无关。
 
 ## 入口指引（按序读）
 

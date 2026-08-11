@@ -6,7 +6,9 @@
 >
 > ⚠️ **「载体」这一列是主张，不是已核验的结论。** 独立评审只逐项验过其中两类（三份 raw review 存在于 `HEAD`、两份评审件与 `docs/tmp` 同名文件逐字节相同）；**脚本、日志、中间快照、提交信息输入这几类的载体主张没有逐项复核过**。既然终态是全部保留，这个缺口不会造成损失——但**不得**把这一列当成「删了也没关系」的凭据。
 >
-> 🔴 **2026-08-11 新增的硬约束**：`incident-manifest.zst` 从「有重取路径」降级为**唯一副本**——那条 History 记录已从服务端消失（实测 404）。**在用户裁决它的去留之前，这个目录一个文件都不能清。**
+> ✅ **2026-08-11 用户已裁决 incident 证据**：原话是「如果有必要，提炼出测试所需的关键部分，然后删除；如果测试用不到，直接删除，只保留（可能的证据样本）和结果，并要求阅读者『先相信，出问题再质疑』」。**已执行**：从 542 KB 原件里提炼出四级 settle 序列与终态（落在 HANDOVER「立案证据」节，含「先相信、出问题再质疑」的读者须知），随后**删除原件与解压副本**（`rm` 精确路径，无通配符；删前 sha256 前 32 位 `b621637b59317988cbac903495ccdcf1`，541,965 bytes）。
+>
+> **本目录其余文件的终态仍是「全部保留」**——它们随 job 删除而消失，且内容都另有载体（下表第四列，注意该列是主张、未逐项复核）。
 
 枚举命令与交叉验证（两法一致）：
 ```
@@ -36,7 +38,7 @@ find $T \( -type f -o -type l \) | wc -l ; fd -H -I --type f --type l . $T | wc 
 | 原始 reviewer 输出 | `lifecycle-spec-review-claude.md`、`lifecycle-spec-rereview-claude.md`、`lifecycle-plan-review.md` | **有** | 已逐字提交 `docs/tmp/*-{spec-review,spec-rereview,plan-review}-raw.md`（`be10afc6`） | **本轮不删**；载体主张未逐项复核 |
 | 已有同名载体的评审件 | `handover-review.md`、`task-4-review.md` | 有 | 与 `docs/tmp/*-handover-review.md` / `*-task-4-review.md` **逐字节相同**（diff 验证） | **本轮不删**；载体主张未逐项复核 |
 | 失败/空产物 | `lifecycle-plan-rereview.md`(19B "Prompt is too long")、`lifecycle-plan-rereview-minimal.md`(0B)、`lifecycle-spec-review-gpt.md`(76B API Error)、`task3-overstrict-single-error.patch`(0B) | 无内容 | —— | **本轮不删**；载体主张未逐项复核 |
-| **incident 原始导出** | `incident-manifest.zst` (542KB) | **有，且含用户真实请求/响应内容** | ⚠️ **重取路径已失效**：2026-08-11 实测 `GET /history/api/entries/req_1786064856101_137/export` → **404**（对照 `entries?limit=1` → 200，服务正常、是记录没了）。**blob 本身未提交** | **它现在是唯一副本，必须保留，交用户裁决** |
+| ~~**incident 原始导出**~~ | ~~`incident-manifest.zst` (542KB)~~ | 关键部分已提炼 | **已按用户 2026-08-11 裁决删除**（先提炼测试需要的部分、再删）。提炼结果在 HANDOVER「立案证据」节的事实表；服务端记录早已 404，故原件不可再生 | **已删除**（连同解压副本） |
 | agent transcript 切片 | `agent-a46e6c56981b3cd1b.{pre-trim*,trim-candidate*}.jsonl`（12 个，约 55MB） | 派生数据 | 技术已在记忆 `reference-subagent-transcript-5mib-gate-blocks-resume`；原 transcript 仍在 projects/ | **本轮不删**；载体主张未逐项复核 |
 | 处理脚本 | `trim_transcript_again.py`、`validate_transcript_slice.py`、`audit_b1_progress.sh`、`canon.ts`、`upd-*.py`、`fix-*.py`、`doc-sync.py`、`add-disables.py` | 一次性 | 产出全部已提交；`audit_b1_progress.sh` 的通用形态在 skill `writing-handover-docs` | **本轮不删**；载体主张未逐项复核 |
 | 测试/lint 日志 | `backend*.log`、`gate*.log`、`entry*.log`、`lint*.log`、`tc*.log`、`iso.log`、`cap.log`、`ab-*.log`、`backend-run.txt` | 派生 | 读数已写进提交信息与 HANDOVER 的门禁节 | **本轮不删**；载体主张未逐项复核 |
