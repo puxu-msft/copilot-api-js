@@ -1487,3 +1487,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **若做需改什么**：① `reapInFlight(cause: CancellationCause = "stale-reaper")`（留默认值，避免一次性改动全部现有调用点）；② `packages/foundation/src/error/cancellation-reason.ts:35` 的 `CancellationCause` 加 `operator-abandoned-drain`；③ `src/lib/error/forward.ts:573` 把新成因分流出去——它**不该是 504**，操作者主动关机更接近 503，且文案不得提「我方时钟」；④ `src/lib/shutdown.ts` 的 `abandonDrain` 传入新 cause；⑤ 正控：注入「传错 cause」的变异，断言客户端可观测的 status 与文案变红——**只断言内部字段不够**，这个缺陷的全部危害都在客户端可观测面上。
 - **触发条件（值得做）**：① 任何一次真实使用第二档信号后，去查 History／客户端日志时被那句 reaper 文案误导；② 下次触碰 `forward.ts` 的取消分流表或 `CancellationCause` 时顺手做。
 - **发现方**：三档信号契约的独立评审（`reviewer`，2026-08-10），主会话已逐个打开引用位置复核属实。
+
+## `isNativeHistorySearchAvailable()` 只检查产物存在、不检查是否过期，过期产物造成 14 条稳定假红（2026-08-10 合并态复验时撞到）
+
+- **根因 / 现状**：CLAUDE.md 的约定是「有产物就真跑、没有就显式 skip，**绝不红**」，守卫是 `describe.skipIf(!isNativeHistorySearchAvailable())`。但该判据只问「`native/history-search/*.node` 在不在」，**不问它是否落后于 Rust 源码**。主检出里那份产物构建于 2026-08-06 20:08，而 `native/history-search/src` 最后改动是 `14f7c6d4`（2026-08-09 01:06，"report an unparsable query as a result field, not a napi status"）——于是测试真跑、并按旧二进制的行为红了 14 条。其中一条失败用例正是 `reports an unparsable query as invalidQuery`，即该 commit 修的那件事。
+- **当前行为**：`bun run test:backend` 在主检出稳定 14 fail（`tests/history/search/daemon.it.test.ts` 12 条 + `search-rest-cutover.it.test.ts` 2 条）。**已用 A/B 证实与任何近期特性改动无关**：在 pre-merge master `29048d80` 建 worktree、拷入同一份产物与 node_modules，失败集合逐条相同。
+- **为什么值得修而不只是「记得重新构建」**：这正是 `skipIf` 想避免的那种「环境性的红太容易被当成既有失败挥手放过」——它挡住了「没产物」，却放过了更隐蔽的「产物是旧的」。而且**新建 worktree 天然没有产物 → 全部 skip → 假绿**，主检出有旧产物 → 假红；同一套判据在两种环境里朝相反方向失效。
+- **若做需改什么**：① 让 `isNativeHistorySearchAvailable()` 同时比对产物 mtime 与 `native/history-search/{src,Cargo.toml,Cargo.lock}` 的最新 mtime，过期则**当作不可用而 skip 并打印一行「产物过期，跑 `bun run build:history-search`」**——保持「绝不红」的原意；② 或在 `test:backend` 前置一个廉价的过期检查（不构建、只告警）。两者都要正样本对照：故意 touch 一个 Rust 源文件，确认判据翻转。
+- **立即可用的绕过**：`bun run build:history-search`（需 Rust toolchain）。
+- **发现方**：三档信号契约合并后的合并态复验（主会话，2026-08-10）。

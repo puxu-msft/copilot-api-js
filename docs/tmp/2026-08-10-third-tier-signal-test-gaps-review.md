@@ -60,3 +60,49 @@
 - unit 无时序依赖：`activeDrainSource` 在首个 await 前同步赋值，`abandonDrain` 全同步。
 - PTY 的 `read_until(b"abandoning the drain wait")` 不脆在时间上（信号处理器同步 `emergencyWrite`，2s 余量，实跑 7 pass），**脆在耦合**：该字面量存在于三处且 fixture 被 4 个用例共用，改文案会一次打红 4 条。失败很响不静默，可接受。
 - **潜伏陷阱**：`read_until` 隐含要求子进程此刻仍在 `stopping`/`draining`。补 G6 用例（跑真实 drain）时第二刀可能落在 `finalizing` 导致子进程立即退出，harness 会抛得像产品缺陷——届时必须换独立等待条件。
+
+## 收尾：非文件证据（本会话的失败路径、被证伪的因果、变异与探针台账）
+
+文件清单看不见这些，但它们是本轮最容易被重做的部分。逐条来自本会话可枚举的事件，不是「我知道的一切」。
+
+### 被证伪的因果解释
+
+| 我当时的解释 | 证伪方式 | 现在的正确说法 |
+| --- | --- | --- |
+| 跳过 settled operation 是因为 `reapInFlight()` 会中止「其 finalization 正在用的」lifecycle signal | GPT reviewer 读 `request.ts` 的 `whenOperationQuiesced()` 与 manager 的 release 路径 | canonical finalizer **不读**该 signal；真正消费它的是尚未 quiesce 的 operation-body／transport／delivery 收尾。跳过仍正确，但**第一条理由（计数失真）才是独立成立的那条** |
+| 合并后 14 条 history-search 失败**可能是我的 VACUUM gate 造成的**（其中一条用例名里就有 VACUUM） | 在 pre-merge master（`29048d80`）建 worktree、拷入同一份 native 产物 + node_modules 软链，跑同两个文件 | 同一组 14 条在合并前就红。**真因是 native 产物过期**：构建于 08-06 20:08，而 Rust 源码最后改动 `14f7c6d4`（08-09 01:06）——失败用例里那条 `reports an unparsable query as invalidQuery` 正是该 commit 修的东西 |
+
+### 走过但放弃的路线
+
+- **想让 `docs/lifecycle.md` 的合并冲突自动消失**：把我分支上那行 wip 状态对齐成 master 的现行文本（commit `c5d52446`）。**没用**——两边文本相同后，冲突变成「我新增的 ⚠️ 段与该行相邻」的 diff3 排序伪冲突，仍需手工解。该 commit 本身仍值得留（它修正了一条陈旧状态断言），但**别指望这招能消冲突**。
+
+### 自己犯的解析／范围错误（跑了命令、有输出，结论仍错）
+
+- **`rg -r` 当成 recursive 用**——它是 `--replace`。本会话中招两次（一次输出里匹配被替换成 `n`，一次数 ADR 引用）。`rg` 默认就递归，不需要该标志。
+- **A/B 对照跑错了树**：`search-rest-cutover` 那次没在同一调用里绑定目录，而上一条命令已把 cwd 切回主检出，于是「pre-merge 对照」实际跑的是合并后的树。重做时在同一调用里 `pwd -P` + `git log -1` 自证。
+- **`grep -c` / `grep '✗'` 无命中返回 1**，让 `cmd && grep` 复合命令整体看起来失败，而被测命令其实是绿的。
+- **`bun test tests/x.test.ts` 与 `./tests/x.test.ts` 不等价**：前者被当作 filter，不匹配时报「0 files」而非报错。
+
+### 变异对照台账（symbol → test → 失败形态）
+
+本轮 4 次，全部「注入→变红→反向恢复→`diff` 确认逐字节相同→复绿」：
+
+| 变异 | 目标用例 | 观察到的形态 |
+| --- | --- | --- |
+| 删 `abandonDrain` 里的 `if (operation.settled) { finalizing++; continue }` | `an already-settled operation still finalizing is left alone…` | 只红这一条：`_reapInFlight` 多出 `finalizing` 这一项 |
+| `abandonDrain` 无 source 时返回 `started: false` → `true` | `tier 2 before the drain has started says so…` | 只红这一条 |
+| 删 `if ("operationId" in operation) continue` | `tier 2 deliberately leaves lightweight operations alone` | 只红这一条：spies 收到 lightweight id |
+| `if (stillHolding.length === 0)` → `if (true)` | 三条横幅用例 | 同时红 3 条——这正是它该有的覆盖面 |
+
+### 运行时探针（bun:sqlite，驱动了 ADR 的声称降级）
+
+四格对照，每格前先 INSERT 制造新 WAL 内容（空 WAL 时 checkpoint 无事可做、恒 `busy:0`，会让四格看起来一样）：
+
+| 场景 | `PRAGMA wal_checkpoint(TRUNCATE)` |
+| --- | --- |
+| 无 peer | `{busy:0,log:0,checkpointed:0}` |
+| peer 连接已开、**无事务** | `busy:0` —— **放行** |
+| peer 持读事务 | `{busy:1,log:1,checkpointed:0}` |
+| peer 事务已提交 | `busy:0` |
+
+**它不证明什么**：不证明「无 busy 就没有并发写者」，也不证明 gate 消除了 overlap 争抢。复现步骤已写进 ADR `2026-08-10-vacuum-gated-on-lock-contention.md`，探针脚本本身因此可弃。
