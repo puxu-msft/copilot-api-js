@@ -1452,6 +1452,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **危害**：这批红**看起来完全像代码回归**——断言失败、消息具体、指向被测行为。下一个撞上它的人有两条错路：把它当「既有失败」挥手放过（CLAUDE.md 已点名这个形态，2026-07-28 发生过一次），或反过来去「修」生产代码来迎合旧二进制。**没有任何输出提示「你跑的是三天前的二进制」。**
 - **理想架构 / 若做需改什么**：把产物**戳上它的来源指纹**（构建时把 `native/history-search/` 的 tree hash 或源码 sha 写进产物旁的 sidecar，或由 napi 导出一个版本常量），`isNativeHistorySearchAvailable()` 改为「存在**且**指纹匹配当前源码」——**不匹配时按「不可用」显式 skip，并打印一行说明与重建命令**，而不是静默拿旧二进制去跑。注意这会让「忘记重建」从假红变成显式 skip，与既有两态设计一致。
 - **为何暂缓**：不阻塞任何交付；`bun run build:history-search` 一条命令即可绕过，且 `test:ci` 本来就会先构建。属可增量修的开发者体验债。**触发条件（值得做）**：① 有人再次把这批红误判为回归或误判为既有失败；② 顺手改 `scripts/build-history-search.ts` 或 native 加载入口时；③ 有人要把 native 测试纳入某道必过门禁。
+- **第二次独立复现（2026-08-10，三档信号契约合并态复验）**：同一形态再次撞到，14 条失败逐条相同。**追加的证据方向是「排除新改动」而非「证明产物陈旧」**——在**合并前**的 master `29048d80` 上建 worktree、拷入同一份产物并软链 node_modules，失败集合与合并后逐条一致，故与该次合并无关。这条与上面「重建产物 → 28 pass」的正样本对照互补：那条固定代码、变产物；这条固定产物、变代码。**两次都由撞到的人从零重新诊断了一遍**，因为没人想到先 grep 这个文件——见 skill `closing-a-development-session` 的 verification-log `V-duplicate-backlog`。
 - **发现方**：Task 37 接缝复审的 `test:backend` 门（主会话，2026-08-09）。
 
 ## entry-evidence 的 skip 基线把「环境条件性 skip」当成无条件的，构建了 native 产物反而会让门变红（2026-08-09，同上）
@@ -1506,15 +1507,6 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **若做需改什么**：① `reapInFlight(cause: CancellationCause = "stale-reaper")`（留默认值，避免一次性改动全部现有调用点）；② `packages/foundation/src/error/cancellation-reason.ts:35` 的 `CancellationCause` 加 `operator-abandoned-drain`；③ `src/lib/error/forward.ts:573` 把新成因分流出去——它**不该是 504**，操作者主动关机更接近 503，且文案不得提「我方时钟」；④ `src/lib/shutdown.ts` 的 `abandonDrain` 传入新 cause；⑤ 正控：注入「传错 cause」的变异，断言客户端可观测的 status 与文案变红——**只断言内部字段不够**，这个缺陷的全部危害都在客户端可观测面上。
 - **触发条件（值得做）**：① 任何一次真实使用第二档信号后，去查 History／客户端日志时被那句 reaper 文案误导；② 下次触碰 `forward.ts` 的取消分流表或 `CancellationCause` 时顺手做。
 - **发现方**：三档信号契约的独立评审（`reviewer`，2026-08-10），主会话已逐个打开引用位置复核属实。
-
-## `isNativeHistorySearchAvailable()` 只检查产物存在、不检查是否过期，过期产物造成 14 条稳定假红（2026-08-10 合并态复验时撞到）
-
-- **根因 / 现状**：CLAUDE.md 的约定是「有产物就真跑、没有就显式 skip，**绝不红**」，守卫是 `describe.skipIf(!isNativeHistorySearchAvailable())`。但该判据只问「`native/history-search/*.node` 在不在」，**不问它是否落后于 Rust 源码**。主检出里那份产物构建于 2026-08-06 20:08，而 `native/history-search/src` 最后改动是 `14f7c6d4`（2026-08-09 01:06，"report an unparsable query as a result field, not a napi status"）——于是测试真跑、并按旧二进制的行为红了 14 条。其中一条失败用例正是 `reports an unparsable query as invalidQuery`，即该 commit 修的那件事。
-- **当前行为**：`bun run test:backend` 在主检出稳定 14 fail（`tests/history/search/daemon.it.test.ts` 12 条 + `search-rest-cutover.it.test.ts` 2 条）。**已用 A/B 证实与任何近期特性改动无关**：在 pre-merge master `29048d80` 建 worktree、拷入同一份产物与 node_modules，失败集合逐条相同。
-- **为什么值得修而不只是「记得重新构建」**：这正是 `skipIf` 想避免的那种「环境性的红太容易被当成既有失败挥手放过」——它挡住了「没产物」，却放过了更隐蔽的「产物是旧的」。而且**新建 worktree 天然没有产物 → 全部 skip → 假绿**，主检出有旧产物 → 假红；同一套判据在两种环境里朝相反方向失效。
-- **若做需改什么**：① 让 `isNativeHistorySearchAvailable()` 同时比对产物 mtime 与 `native/history-search/{src,Cargo.toml,Cargo.lock}` 的最新 mtime，过期则**当作不可用而 skip 并打印一行「产物过期，跑 `bun run build:history-search`」**——保持「绝不红」的原意；② 或在 `test:backend` 前置一个廉价的过期检查（不构建、只告警）。两者都要正样本对照：故意 touch 一个 Rust 源文件，确认判据翻转。
-- **立即可用的绕过**：`bun run build:history-search`（需 Rust toolchain）。
-- **发现方**：三档信号契约合并后的合并态复验（主会话，2026-08-10）。
 
 ## generation emission 的第三类机制（运行时授权与拒绝）本轮不做（2026-08-10 用户裁决）
 
