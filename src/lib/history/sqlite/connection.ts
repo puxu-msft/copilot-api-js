@@ -243,9 +243,11 @@ export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
     // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
     // the -wal file; only TRUNCATE reclaims its bytes on disk. The probe above
-    // established that we hold this database alone, so TRUNCATE gets its
-    // exclusive moment uncontended and shrinks the -wal back to zero. Without
-    // this the multi-GB WAL persists on disk indefinitely.
+    // found no peer holding a transaction AT THAT INSTANT, which is the best this
+    // gate can say (see its SCOPE note) — not that we hold the database alone. If a
+    // peer has since taken one, this checkpoint simply does not truncate; the VACUUM
+    // it follows has already succeeded either way. Without it the multi-GB WAL
+    // persists on disk indefinitely.
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
     consola.info(
