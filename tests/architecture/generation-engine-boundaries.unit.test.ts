@@ -59,12 +59,29 @@ describe("generation runtime engine import boundaries", () => {
     expect(source).toContain("connectionReusable: true")
   })
 
+  /**
+   * The invariant, unchanged since this guard was written: a GOAWAY must remove ROUTING eligibility (retire) and must NOT dispose, because dispose clears the keepalive PING — and a GOAWAY'd session still has in-flight streams draining, which is exactly the silence that PING exists to defeat.
+   *
+   * 2026-08-11 (A4-3): the literal `session.on("goaway", retire)` match went false-red when the handler was renamed to record the GOAWAY frame before retiring. The invariant held the whole time; only the spelling moved.
+   * Rather than loosen it to accept the new name, this now binds the ACTUAL registered handler and asserts it reaches `retire()` — so it survives the next rename and additionally catches a handler that registers under a retire-ish name while never calling it.
+   */
   test("HTTP/2 GOAWAY removes routing eligibility but preserves PING until error or close", async () => {
     const source = await readFile(path.resolve(import.meta.dir, "../../src/lib/transport/http2-client.ts"), "utf8")
     expect(source).toMatch(/session\.on\("error", dispose\)/)
     expect(source).toMatch(/session\.on\("close", dispose\)/)
-    expect(source).toMatch(/session\.on\("goaway", retire\)/)
+    // The load-bearing negative: GOAWAY must never route to dispose, whatever the handler is called.
     expect(source).not.toMatch(/session\.on\("goaway", dispose\)/)
+
+    const goawayHandler = /session\.on\("goaway", (\w+)\)/.exec(source)?.[1]
+    expect(goawayHandler).toBeDefined()
+    expect(goawayHandler).not.toBe("dispose")
+    if (goawayHandler !== "retire") {
+      // A named indirection is allowed, but it has to actually reach retire() — a handler that merely
+      // sounds like it retires would otherwise satisfy the registration check while stranding the session.
+      const declaration = new RegExp(`const ${goawayHandler!} = [\\s\\S]*?\\n {4}\\}`).exec(source)?.[0]
+      expect(declaration).toBeDefined()
+      expect(declaration).toMatch(/\bretire\(\)/)
+    }
     // retire removes the entry from the routable pool (removeSessionEntry, since a
     // pool is now Map<origin, entry[]>) and moves it to retiringSessions — routing
     // eligibility gone, but the session (and its PING) live on until close.
