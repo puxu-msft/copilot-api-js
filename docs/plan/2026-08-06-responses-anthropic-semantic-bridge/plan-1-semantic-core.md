@@ -167,10 +167,23 @@ Commit: `feat(bridge): add Responses target grammar`
   **为什么三格缺一不可**：格 1 看不见容器姿势；格 2 看不见「别名仍是开放泛型」这一姿势——`HelperProfile` 字面上像是符合「用联合别名」的要求，实际等价于宽实例化。**格 3 正是第五轮评审用独立 PoC 击穿前一版修法后补上的**，前一版不变量只写「具体实例化的联合」，允许了这个写法。
   **背景**：`hub-translate.ts` 现有 `satisfies Record<ClientFormat, Record<UpstreamEndpoint, RequestBridge>>` 就是容器形状，实施者照房内惯例写就会掉进格 2／格 3 的坑。
   **这三格不可省**：8 格运行时测试测的是各协议内部正确性，**覆盖不到装配错配**——这是判据之间的缝，不是某条判据写错。
-  **⛔ 到此为止，别再往这里加第四格类型负样本。** 理由见 Step 5c。
-- [ ] **Step 5c: 把「必须用这条别名」这一条挪到架构守卫，不要继续加类型格。** 新建 `tests/architecture/bridge-profile-renderer-authority.unit.test.ts`，用既有的 `tests/architecture/source-ast.ts` 做源码级断言（形状参照 `anchor-remap-single-authority.unit.test.ts` 的单一权威守卫）：**registry／表的值类型声明必须引用那条已冻结的零参封闭联合别名**，不得是结构相似的手写替身。
-  **为什么必须换层，而不是加第四格**：类型层的三格管的是「**你怎么实例化这个已冻结构造**」；它**管不到「你到底用不用它**」。实测确认，手写 `interface ProfileBase { targetFormat: BridgeTargetFormat; errorRenderer: AnthropicRenderer | ResponsesRenderer }`（两字段各自独立声明成宽类型、压根不经 `Profile<TF>`）当容器值类型，错配同样 **exit 0**。而这类「结构相似的替身」有**无穷多种**写法，每加一格类型负样本只是点名其中一个，永远补不完——**再补形态就是在补一个补不完的集合**。TS 没有「值类型必须恰是某具名别名」的表达能力，所以这条不变量只能靠源码级守卫。
-  正样本对照：把值类型换成正确的冻结别名后守卫转绿；负样本：换成任意手写替身后守卫必须红。
+  **⛔ 到此为止，别再往这里加第四格类型负样本。** 理由见 Step 5c／5d。
+- [ ] **Step 5c: 唯一 typed factory + 不导出的 brand（覆盖非 registry 装配点）。** 给 `RequestBridgeProfile`／`ResponseBridgeProfile` 加 `readonly [BRIDGE_PROFILE_BRAND]: true`（`declare const BRIDGE_PROFILE_BRAND: unique symbol`，**不从模块导出**），并新增唯一构造入口 `defineRequestBridgeProfile<TF>(input): RequestBridgeProfile<..., TF>`。**生产表、局部临时对象、测试 fixture 一律经它构造**——含 P2 Task 2.3 的 fixture profile（那批**不在任何 registry 里**，是本 Step 要覆盖的主要真空）。
+  **红灯**：把手写结构替身传进 runner，断言编译失败。**实测形态**：`TS2345 — Property '[BRAND]' is missing in type 'StandIn' but required in type 'Profile<...>'`。
+  **为什么必须有 brand**：Step 5d 的守卫只扫 registry 声明，**扫不到**局部临时对象、工厂返回值、测试 fixture。brand 把不变量从**位置性**（"registry 那处要写对"）变成**结构性**（"没 brand 的对象根本进不了 runner"），这才覆盖非 registry 装配点。这是第三方裁决指出的、纯守卫方案的真空。
+  **⚠️ brand 单独不够，别以为加了就安全**：实测确认 `declare function makeWide(): Profile<BridgeTargetFormat>` 的返回值**带着合法 brand**，传进 runner **零报错**。显式宽实例化这一姿势只能由 Step 5d 的守卫拦。三条机制（factory 推断 / brand / 守卫拒宽实例化）各堵一类，**缺一不可**。
+- [ ] **Step 5d: 架构守卫——registry 值类型必须引用冻结别名，且拒绝显式宽实例化。** 新建 `tests/architecture/bridge-profile-renderer-authority.unit.test.ts`，用既有的 `tests/architecture/source-ast.ts` 做源码级断言（形状参照 `anchor-remap-single-authority.unit.test.ts` 的单一权威守卫）：**registry／表的值类型声明必须引用那条已冻结的零参封闭联合别名**，不得是结构相似的手写替身；**并拒绝任何显式写出的 `Profile<BridgeTargetFormat>` 宽实例化标注**（含函数返回类型标注——这正是 brand 拦不住的那一格）。
+  **为什么这一层不能省、也不能用「加类型格」替代**：类型层管的是「**你怎么实例化冻结构造**」，管不到「**你到底用不用它**」。实测确认手写 `interface ProfileBase { targetFormat: BridgeTargetFormat; errorRenderer: AnthropicRenderer | ResponsesRenderer }` 当容器值类型，错配 **exit 0**；而结构替身有**无穷多种**写法（改名、换序、改 `type`、加可选字段、`extends` 组合——第三方裁决独立实测四个变体**全部逃逸**），逐个点名补不完。
+  正样本对照：把值类型换成正确的冻结别名后守卫转绿；负样本：换成任意手写替身、或写出宽实例化标注后守卫必须红。
+  **具体写法**（经第三方裁决者读码确认可行——`source-ast.ts` 的 `parseSource` 返回 `setParentNodes:true` 的完整 `ts.SourceFile`，纯语法解析、无 type checker，但本守卫不需要符号解析）：
+  ① 找冻结别名的 `ts.TypeAliasDeclaration`，断言名称固定、**无 `typeParameters`**、右侧是预期两臂的 `UnionTypeNode`（这一步顺带把 Posture O 也钉死在源码层）；
+  ② 对每个已登记的 registry／表变量找 `VariableDeclaration`，类型来源取 `declaration.type`，或 initializer 是 `SatisfiesExpression` 时取 `initializer.type`；
+  ③ 要求外层是名为 `Record` 的 `TypeReferenceNode`，沿嵌套 `Record` 取最终 value type argument，断言它是**直接引用冻结别名**的 `TypeReferenceNode` 且无类型实参；
+  ④ 扫全仓类型标注，拒绝 `Profile<BridgeTargetFormat>` 形态的显式宽实例化；
+  ⑤ 照 `anchor-remap-single-authority` 的做法**冻结目标声明集合并双向比较**（`freeze-hit-set-not-zero-hits`），避免漏扫某个 registry；
+  ⑥ 负控至少覆盖 `ProfileBase`、其改名／换序变体，以及一处宽实例化返回标注。
+  **已知能力边界（方向别写反）**：纯语法 AST 不做符号解析，故**追不动跨文件 alias／re-export 链**；要可靠追踪需 `Program`+`TypeChecker`。当前契约只要求「声明处**直接**引用冻结别名」，因此不需要——而且守卫**原样不变时遇到中间别名会假红（误伤），不是假绿**。**只有**当有人把规则放宽成「接受任意中间 alias」却仍不做符号解析时，才会变成假绿。（第三方裁决订正：我原先把方向写反了。）
+  **旁证**：`source-ast.ts` 自己的头注释写着「the parser is the only thing that covers the legal syntax SPACE rather than a growing list of remembered forms」——本仓建这套 AST 工具时认定的正是同一条原则（覆盖语法空间，而不是维护一张记住的形态清单），本 Step 与它同源。
 - [ ] **Step 6: 运行。** Run: `bun test tests/semantic-bridge/compatibility-error.unit.test.ts tests/semantic-bridge/compatibility-error-renderer.unit.test.ts && bun run typecheck`。Expected: PASS。
 - [ ] **Step 7: commit。** Commit: `feat(error): add bridge compatibility renderers`
 

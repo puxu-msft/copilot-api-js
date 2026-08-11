@@ -37,9 +37,21 @@ union-container.ts(33,3): error TS2322: Type '{ targetFormat: "anthropic-message
 - 前面几种是「**用了**这个冻结的泛型构造，但实例化方式让判别力丢失」——类型层能管，也已经管住了。
 - `postureQ` 是「**压根没用**它」：手写一个结构相似、两个字段各自独立声明成宽类型的 interface。
 
-TS **没有**「这个容器的值类型必须**恰是**某个具名别名」的表达能力，而「结构相似的替身」有**无穷多种**写法。每加一格类型负样本只是点名其中一个，**这个集合补不完**。
+TS **没有**「这个容器的值类型必须**恰是**某个具名别名」的表达能力，而「结构相似的替身」有**无穷多种**写法。每加一格类型负样本只是点名其中一个，**这个集合补不完**（第三方裁决独立实测：改名+换序 `interface`、改 `type`+加可选字段、`extends` 组合、`HelperProfile` 宽默认值——**四个变体全部逃逸**，均为 `TS2578`）。
 
-所以该缺口**换一层堵**：源码级架构守卫（`tests/architecture/`，用既有 `source-ast.ts`，形状参照 `anchor-remap-single-authority.unit.test.ts`）断言 registry 的值类型声明确实引用了那条冻结别名。见 P1 Task 1.6 Step 5c。
+## 最终方案：三条机制，缺一不可（`brand-and-factory.ts`）
+
+第三方裁决在覆盖面一问上判定**我和 reviewer 都错**：纯守卫方案只扫 registry 声明，漏掉**非 registry 装配点**（局部临时对象、工厂返回值、以及 P2 明确存在的 fixture profile）。最终方案：
+
+| 机制 | 堵住的姿势 | 实测 |
+|---|---|---|
+| 唯一 typed factory 的 `TF` 推断 | 经 factory 装配时的错配 | `TS2322`（`brand-and-factory.ts:33`） |
+| 不导出的 `unique symbol` brand | **手写结构替身**传进 runner（Posture Q 一类） | `TS2345: Property '[BRAND]' is missing`（`:41`） |
+| 架构守卫拒绝显式宽实例化 | 函数**返回** `Profile<BridgeTargetFormat>` | 类型层拦不住，**必须靠守卫** |
+
+**关键的反直觉结论**：`brand` 单独**不够**。`brand-and-factory.ts` 的 case (4)——`declare function makeWide(): Profile<BridgeTargetFormat>`——返回值**带着合法 brand**，传进 runner **零报错**。所以第三条守卫是承重的，不能因为「加了 brand 就安全了」而省掉。这一格是我在复核裁决建议时自己测出来的，裁决建议里没有单独点出。
+
+brand 换来的关键性质：把不变量从**位置性**（registry 声明处要写对）变成**结构性**（没 brand 的对象进不了 runner），因而同时覆盖 registry 与非 registry 装配点。
 
 ## 为什么重要
 

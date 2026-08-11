@@ -305,6 +305,41 @@ type CompatibilityErrorRendererFor<TF extends BridgeTargetFormat> = TF extends "
   : ResponsesCompatibilityErrorRenderer
 
 /**
+ * **profile 的构造收敛到唯一 typed factory，并带一个不导出的 `unique symbol` brand。**
+ * 三条机制各堵一类，缺一不可（下方三格实测数据即其正负控）：
+ *
+ * ```ts
+ * declare const BRIDGE_PROFILE_BRAND: unique symbol   // 不从模块导出，外部无法产生
+ *
+ * interface RequestBridgeProfile<..., TargetFormat extends BridgeTargetFormat> {
+ *   readonly [BRIDGE_PROFILE_BRAND]: true
+ *   readonly targetFormat: TargetFormat
+ *   readonly errorRenderer: CompatibilityErrorRendererFor<TargetFormat>
+ *   // ...其余字段
+ * }
+ *
+ * // 唯一构造入口：生产表、局部临时对象、测试 fixture 一律经它
+ * declare function defineRequestBridgeProfile<TF extends BridgeTargetFormat>(
+ *   input: { readonly targetFormat: TF; readonly errorRenderer: CompatibilityErrorRendererFor<TF>; ... },
+ * ): RequestBridgeProfile<..., TF>
+ * ```
+ *
+ * | 机制 | 堵住的姿势 | 实测 |
+ * |---|---|---|
+ * | factory 的 `TF` 推断 | 经 factory 装配时的错配 | `TS2322` |
+ * | 不导出的 brand | **手写结构替身**传进 runner（Posture Q 一类，无穷多种写法） | `TS2345`：`Property '[BRAND]' is missing` |
+ * | 架构守卫拒绝宽实例化 | 函数**返回** `Profile<BridgeTargetFormat>` 之类的显式宽标注 | 类型层拦不住，**必须靠守卫** |
+ *
+ * **brand 单独不够**——实测确认：`declare function makeWide(): Profile<BridgeTargetFormat>` 的返回值
+ * 带着合法 brand，传进 runner **零报错**。所以第三条（守卫拒绝显式宽实例化）是承重的，
+ * 不能因为"加了 brand 就安全了"而省掉。
+ *
+ * **brand 换来的关键性质**：它把不变量从**位置性**（"registry 声明处要写对"）变成**结构性**
+ * （"没有 brand 的对象根本进不了 runner"），因而同时覆盖 registry 与**非 registry 装配点**
+ * （局部临时对象、工厂返回值、测试 fixture）——这正是第三方裁决指出的、纯守卫方案漏掉的真空。
+ */
+
+/**
  * ⚠️ 条件类型只在 `TF` 为**字面量**时有判别力。一旦把 profile 存进以**宽联合**
  * `BridgeTargetFormat` 实例化的容器（`satisfies Record<X, RequestBridgeProfile<..., BridgeTargetFormat>>`），
  * 错配**编译通过、零报错**——实测 tsc 5.9.3 `--strict` 确认（PoC 见 §11 验收）。

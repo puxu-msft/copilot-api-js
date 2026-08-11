@@ -79,7 +79,7 @@ export function runRequestBridge<
 ): RequestBridgeResult<TargetPayload>
 ```
 
-- [ ] **Step 1: 写 fixture profile 红灯。** Fixture 只含虚构 `alpha`／`beta` source kinds 与 `mapped`／`degraded` capability，不实现 message／function／reasoning 等真实业务。
+- [ ] **Step 1: 写 fixture profile 红灯。** Fixture 只含虚构 `alpha`／`beta` source kinds 与 `mapped`／`degraded` capability，不实现 message／function／reasoning 等真实业务。**fixture profile 必须经 P1 Step 5c 的 `defineRequestBridgeProfile` 构造**，不得手写对象字面量绕过——这批 fixture **不在任何 registry 里**，P1 Step 5d 的架构守卫扫不到它们，唯一覆盖手段就是 brand + factory。手写替身传进 runner 应得 `TS2345: Property '[BRAND]' is missing`。
 - [ ] **Step 2: 跑红灯。** Run: `bun test tests/semantic-bridge/request-profile-runner.unit.test.ts`。Expected: FAIL，缺 `runRequestBridge`。
 - [ ] **Step 3: 实现通用顺序。** 建 collector → fixture handlers 产 emissions → `orderRequestEmissions` → `applyTopLevelCapabilities` → fixture coordinator 产 items → `assembleRequestPayload`；collector 的 freeze 仍由 P3 S2 owner 负责，runner 不自行 freeze。
 - [ ] **Step 4: 正负控制。** Profile 缺 coordinator／ordering／capability table 编译红；success／rejected／unexpected throw 都返回原 error 与已追加 records，不伪造流程动作。

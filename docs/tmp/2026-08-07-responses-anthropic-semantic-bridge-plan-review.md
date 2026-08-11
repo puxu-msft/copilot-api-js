@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic Semantic Bridge 实施计划评审记录
 
-> **状态**：第六轮复评完成。管线接线侧第五轮已判「**计划可定稿**」；协议侧第六轮发现 Posture Q，经复核判定为**类型层能力边界**而非不变量漏洞，已换层用架构守卫（Step 5c）堵住——**此为与 reviewer 的分歧项，已记录理由，待第七轮仅协议侧确认层级选择**。
+> **状态**：第六轮 + 第三方裁决完成。管线接线侧第五轮已判「**计划可定稿**」；协议侧的层级分歧经**未卷入的第三方**裁决三条——可行性判我对、事实层判我对、**覆盖面判我错**（换层方案漏掉非 registry 装配点）。已按裁决落地「唯一 typed factory + 不导出 brand + 守卫拒宽实例化」三条机制，另自测出「brand 单独不够」补第三格。**待第七轮仅协议侧确认三机制方案。**
 >
 > **评审对象**：`docs/plan/2026-08-06-responses-anthropic-semantic-bridge/`
 >
@@ -278,3 +278,40 @@ interface ProfileBase {
 ### 未采纳
 
 - reviewer 建议的「Step 5b 扩至四格 + 不变量再加一句」：**层级不对**，理由见上。已用 Step 5c（架构守卫）替代，不变量的目标与覆盖面完整保留，不构成范围缩减。
+
+### 第六轮分歧的第三方裁决（未卷入的 arbiter，非 reviewer 本人）
+
+层级选择是**分歧**而非事实争议，按「已升级的分歧不得回原 reviewer 裁决」派了未卷入的第三方。裁决分三条、逐条单独提问（中途 API 中断一次，按规则 `SendMessage` 恢复同一实例并把任务砍到一次一条）。
+
+**［2］可行性——判主会话对。** 守卫做得出来：`source-ast.ts` 的 `parseSource` 返回 `setParentNodes:true` 的完整 `ts.SourceFile`（纯语法解析、无 type checker，但本守卫不需符号解析）；`anchor-remap-single-authority.unit.test.ts` 已示范自写 visitor + 冻结命中集合双向比较。**我方复核**：亲自读 `source-ast.ts:12-15,22-25` 确认属实。五步写法与能力边界已写进 Step 5c。
+
+> **顺带发现的旁证**：`source-ast.ts` 头注释原文写着「the parser is the only thing that covers the legal syntax SPACE rather than a growing list of remembered forms」——**本仓当初建这套 AST 工具，认定的正是我这次主张的同一条原则**（覆盖语法空间，而非维护一张记住的形态清单）。这条我事先并不知道，是复核裁决证据时撞见的；它把「换层」从我的一次判断变成了与既有工程决策同源的做法。
+
+**［1］事实层——判主会话对。** 第四格**不能**推广：arbiter 独立构造四个变体实测，改名+换序的 `interface`、改 `type`+加可选字段、`extends` 组合、`HelperProfile` 宽默认值，**全部 `TS2578`**（即错配未被拒绝），每个变体都得另写一条负样本才点得到。故「结构替身补不完」属实，不是偷懒。并确认 postureO／postureQ 分属「**误用**冻结构造」与「**绕过**冻结构造」两类。
+
+**［3］覆盖面**——见下（待裁决）。
+
+**［3］覆盖面——判「两者皆误」，我的换层方案有真空。**
+
+这是我特意要求裁决者往「判我错」方向挖的一条，它挖到了。Step 5c 只扫 registry 的 `VariableDeclaration` 且要求外层是 `Record`，于是两类装配点**两层都漏**（裁决者独立实测）：
+
+| 装配点 | 类型层 | 守卫层 |
+|---|---|---|
+| 具体实例化 `Profile<"anthropic-messages">` 错配 | 报错 ✅ | — |
+| 泛型 `consume<TF>(profile: Profile<TF>)` 直接错配调用 | 报错 ✅ | — |
+| **函数返回 `Profile<BridgeTargetFormat>` 的错配对象** | `TS2578` ❌ | 非 `Record` registry ❌ |
+| **非 registry fixture 用手写 `StandIn`** | `TS2578` ❌ | 扫不到 ❌ |
+
+**我方复核**：确认 P2 Task 2.3 标题即「**仅 fixture profile**」，这批 profile 天然不在任何 registry 里——真空属实，且不是边角，正是 P2 的主体。
+
+**最终方案（三条机制，缺一不可）**：唯一 typed factory + 不导出的 `unique symbol` brand + 守卫拒绝显式宽实例化。
+
+**我自己 PoC 出的一格补充**（裁决建议里没单独点出）：**brand 单独不够**。实测 `declare function makeWide(): Profile<BridgeTargetFormat>` 的返回值**带着合法 brand**，传进 runner **零报错**——显式宽实例化只能由守卫拦。若只采纳「加 brand」就收工，会以为覆盖完整而实际留着这一格。PoC 存 `exp/bridge-profile-renderer-binding/brand-and-factory.ts`。
+
+brand 的关键价值是把不变量从**位置性**变成**结构性**：没 brand 的对象根本进不了 runner，因而覆盖 registry 与非 registry 两侧。
+
+**alias 边界方向订正**：我原写「将来放宽会变假绿」，方向反了。裁决订正——守卫**原样不变时遇中间 alias 是假红（误伤）**；只有放宽成「接受任意中间 alias」却不做符号解析才假绿。已在 Step 5d 改正。
+
+### 第六轮小结
+
+三条裁决：可行性判我对、事实层判我对、**覆盖面判我错**。我在派活时明确要求「第 3 条是唯一可能判我错的，请刻意往这个方向挖，别因为前两条判了我对就顺势收尾」——若不写这句，按前两条的走势很可能被顺势判过。**对抗性提问要具名到「哪一条最可能是我错的」，泛泛说「请严格审查」不产生这个效果。**
