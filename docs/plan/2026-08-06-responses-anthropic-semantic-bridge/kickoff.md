@@ -1,11 +1,14 @@
 # Kickoff: Responses ↔ Anthropic Semantic Bridge Implementation
 
-> **状态**：计划已定稿（7 轮跨模型对抗评审收口）。**但这是并列备选线的 kickoff，默认不要用它起会话。**
+> `[hard]` **已被取代（2026-08-11）。不要用本文件起会话。**
 >
-> `[hard]` **贴这段提示词之前先确认方向。** 语义桥当前的执行线是 **B 线** [`docs/plan/2026-08-08-semantic-bridge/`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11；C0.1／C0.2／C0.3 已交付并评审收口，C1.1 起改生产代码），它有自己的 kickoff（`prompts/`）。本文件属于 **A 线**，与 B 线在**迁移粒度／core owner／continuation schema** 三处互斥，**两条线不能同时落地**。
-> 用户 2026-08-11 裁决两份计划并列保留、风险已知；**若你只是"要实施语义桥"，去 B 线**。只有在明确决定改用 A 线时才使用本文件，且那意味着要处置 B 线已交付的 C0 成果。
+> 用户裁决合并 A+B。语义桥的唯一执行入口是 **B 线** [`docs/plan/2026-08-08-semantic-bridge/`](../2026-08-08-semantic-bridge/plan.md) 及其 `prompts/` 下的 kickoff；唯一权威是 [RFC v2](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)。取舍理由见 [统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
 >
-> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09；执行前必须重取）
+> 本文的承重内容已并入 RFC v2（§4.1 双平面契约／§6.1 server-tool carrier／§7 续接义务／§17 上游接受性探针门）。**本文保留为设计记录，不再是可执行入口**——它描述的 `migratedKinds` 逐 family 迁移未被采纳，与正在跑的整方向原子 cutover 互斥。
+>
+> 历史状态：曾经 7 轮跨模型对抗评审收口，从未实施。
+>
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09）——**已陈旧**，不得据以实施。
 
 复制以下内容开启实施会话：
 
