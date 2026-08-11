@@ -33,9 +33,9 @@
  * - **P2.2-D4**: `formatError` receives only the classified kind (locked
  *   signature), so it cannot forward the raw upstream error message the legacy
  *   handler does. See `formatError` JSDoc.
- * - **P2.2-D5**: catalog-external models. `resolveCodecModel` now rejects them
- *   with a 404; passing them through to upstream is still unimplemented. The
- *   old "runtime is correct" premise was falsified — see `parse` JSDoc.
+ * - **P2.2-D5** (CLOSED, user ruling 2026-08-11): catalog-external models are rejected with a 404.
+ *   Passing them through to upstream was considered and turned down — we hold the full catalog
+ *   locally, so a name we can look up is one we should answer for. See `parse` JSDoc.
  */
 
 import consola from "consola"
@@ -344,13 +344,14 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
  * wires it as a route pre-step that `await`s the injection into `raw.body`
  * BEFORE calling `codec.parse(raw)`, keeping parse sync + pure.
  *
- * **P2.2-D5 (was deferred; premise falsified 2026-08-11):** the note here used to say that storing a
+ * **P2.2-D5 (CLOSED — user ruling 2026-08-11):** the note here used to say that storing a
  * possibly-undefined selected model cast to `ResolvedModel` was "runtime correct, only the static
  * type over-claims". It is not. Consumers are not limited to the `Model | undefined`-tolerant helpers
  * this file reaches for: `pipeline/generation/dispatch-scheduler.ts` reads `current.model.id`
  * unconditionally, so a model outside the catalog always produced a 500. `resolveCodecModel` now
- * rejects it at the boundary with a 404 instead. Passing catalog-external models THROUGH to upstream
- * — what D5 actually wanted — still is not implemented; see docs/v4/05-progress.md P2.2-D5.
+ * rejects it at the boundary with a 404. Passing catalog-external models THROUGH to upstream — what
+ * D5 originally wanted — was ruled against: we hold the full catalog locally, so a name we can look
+ * up is one we should answer for. `env.model` therefore stays non-optional, permanently.
  */
 function parseOpenAiCc(
   raw: RawHttpRequest,

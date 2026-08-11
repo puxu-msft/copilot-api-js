@@ -527,6 +527,78 @@ describe("http2-client", () => {
     expect(ping.lastAckEpochMs).toBeGreaterThan(0)
   })
 
+  /**
+   * A4-3: the sharpest way to tell a CONNECTION-level event apart from a per-stream cancel is whether siblings on the same connection died together — and `rstCode` cannot answer it, because a local abort, a genuine peer CANCEL and a dead connection all arrive as 8 (measured, exp/h2-termination-observability/).
+   * That question needs a shared key in the persisted record, which is what the session snapshot supplies. This drives the property the correlation depends on: streams pooled onto one connection report the SAME id, and a different connection reports a different one.
+   */
+  test("streams sharing a connection report the same session id, so siblings can be correlated", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    const collect = (snapshot: (typeof snapshots)[number]): number => snapshots.push(snapshot)
+
+    const first = await http2Fetch(`${url}/sibling-a`, { onTermination: collect })
+    await first.text()
+    const second = await http2Fetch(`${url}/sibling-b`, { onTermination: collect })
+    await second.text()
+    await waitUntil(() => snapshots.length === 2)
+
+    const [a, b] = snapshots
+    expect(a.session).not.toBeNull()
+    expect(a.session!.sessionId).toBe(b.session!.sessionId)
+    expect(a.session!.sessionId).toBe(getH2SessionStatusSnapshot()[0].sessionId)
+    // Ties the persisted record back to the live pool: an incident in History can be matched to the
+    // connection that produced it, which is the entire point of carrying the id.
+    expect(a.session!.origin).toBe(getH2SessionStatusSnapshot()[0].origin)
+  })
+
+  test("a fresh connection gets a distinct session id, so correlation cannot silently over-group", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    const collect = (snapshot: (typeof snapshots)[number]): number => snapshots.push(snapshot)
+
+    const first = await http2Fetch(`${url}/gen-1`, { onTermination: collect })
+    await first.text()
+    // Drop the pooled connection: the next request must build a new one.
+    closeHttp2Sessions()
+    const second = await http2Fetch(`${url}/gen-2`, { onTermination: collect })
+    await second.text()
+    await waitUntil(() => snapshots.length === 2)
+
+    // A constant or reused id would make every stream in the process look like one connection, which
+    // would turn the sibling test above green while destroying its meaning.
+    expect(snapshots[0].session!.sessionId).not.toBe(snapshots[1].session!.sessionId)
+  })
+
+  test("the terminal snapshot carries the connection's ping counters at the moment the stream ended", async () => {
+    // The stream must OUTLIVE at least one ping cycle: the snapshot is sampled at the terminal, so a
+    // server that ends immediately would (correctly) report zero pings and prove nothing.
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      setTimeout(() => stream.end(), 90)
+    }
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.02 })
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/ping-in-snapshot`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    const session = snapshots[0].session
+    expect(session).not.toBeNull()
+    // This is what makes the ping data diagnostic rather than merely operational: it is attributed to
+    // a dispatch and persisted, instead of living only in a live /api/status poll.
+    expect(session!.ping.sent).toBeGreaterThanOrEqual(1)
+    expect(session!.activeStreamCountAtSnapshot).toBeGreaterThanOrEqual(1)
+    expect(session!.lifecycleAtSnapshot).toBe("active")
+  })
+
   test("reports an immutable first-terminal snapshot before late physical close", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200 })
