@@ -113,11 +113,15 @@ describe("openai-cc codec — parse", () => {
     expect(body.messages.map((m) => m.role)).toEqual(["user"])
   })
 
-  test("unknown gpt-* model not in index → env.model undefined, still parses (CC fallback)", () => {
+  // Was: "unknown gpt-* model not in index → env.model undefined, still parses (CC fallback)".
+  // That tolerance never worked end-to-end — an `undefined` model reached
+  // `dispatch-scheduler.ts`'s `current.model.id` and the client got a 500 from an unrelated
+  // invariant guard. Rejecting at the boundary is the disposition; the alternative (make
+  // `env.model` genuinely optional and pass the name upstream) is recorded, with the open ruling,
+  // in docs/tmp/2026-08-11-unresolvable-model-guard-disposition.md.
+  test("unknown gpt-* model not in index → rejected at parse with a 404, not carried as undefined", () => {
     const codec = createOpenAiCcCodec()
-    const env = codec.parse(rawReq({ model: "gpt-unknown-xyz", messages: [{ role: "user", content: "hi" }] }))
-    expect(env.model).toBeUndefined()
-    expect((env.body as ChatCompletionsPayload).model).toBe("gpt-unknown-xyz")
+    expect(() => codec.parse(rawReq({ model: "gpt-unknown-xyz", messages: [{ role: "user", content: "hi" }] }))).toThrow(/model not found: gpt-unknown-xyz/u)
   })
 
   test("envelope.with() patches the given key and preserves the rest (incl. stream)", () => {

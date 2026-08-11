@@ -57,6 +57,7 @@ import type {
 } from "~/lib/pipeline/envelope"
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -170,6 +171,11 @@ export interface CreateAnthropicCodecArgs {
   betaProbe: BetaProbe
   /** Message-level preprocess info computed by the route (preprocessAnthropicMessages). */
   preprocessInfo: PreprocessInfo
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /**
@@ -237,7 +243,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const parsed = parseAnthropic(raw, (ctx) => (requestContext = ctx))
+      const parsed = parseAnthropic(raw, (ctx) => (requestContext = ctx), args.translationConfigSnapshot)
       truncateBaseline = parsed.baseline
       resanitize = parsed.resanitize
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
@@ -404,7 +410,11 @@ interface ParseAnthropicResult {
  * web_search — so `raw.body` is the preprocessed + system-injected wire body, and
  * `raw.originalBodyForHistory` is the client's raw pre-injection body.
  */
-function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): ParseAnthropicResult {
+function parseAnthropic(
+  raw: RawHttpRequest,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): ParseAnthropicResult {
   const incoming = raw.body as MessagesPayload
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
   const originalSnapshot = structuredClone(clientBody)
@@ -449,7 +459,7 @@ function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) =>
   // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
   // tools, so `incoming.tools` is still the client's set). Stored on ctx so the
   // response-side restore reverses it.
-  const toolNameMapper = buildAnthropicToolNameMapper(incoming.tools, resolvedName, selectedModel?.vendor)
+  const toolNameMapper = buildAnthropicToolNameMapper(incoming.tools, resolvedName, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
 
   ctx.setResolvedModel({
@@ -468,10 +478,11 @@ function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) =>
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.MESSAGES,
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: anthropicPayload.stream ?? false,
     body: anthropicPayload,
     ctx,
+    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
   })
 
   return {
@@ -526,6 +537,7 @@ interface EnvelopeInit {
   ctx: RequestContext
   prepareHints?: PrepareHints
   requestState?: RequestState
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
@@ -539,6 +551,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     body: init.body,
     prepareHints: init.prepareHints ?? {},
     ...(init.requestState !== undefined && { requestState: init.requestState }),
+    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createAnthropicLazyView(env.body)
@@ -553,6 +566,8 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         ctx: env.ctx,
         prepareHints: env.prepareHints,
         requestState: env.requestState,
+        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
+        translationConfigSnapshot: env.translationConfigSnapshot,
         ...patch,
       })
     },

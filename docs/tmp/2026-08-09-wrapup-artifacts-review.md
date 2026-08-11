@@ -602,7 +602,7 @@
 
 ### [MAJOR] 全仓现行／接手载体仍有 2 组同源计数被写成独立／完整性证据
 
-- **组 A（floor 校准）**：`docs/tmp/2026-08-08-history-worker-batch-1b-review-dispositions.md:42` 写“独立 JUnit 求和”；对应进度 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md:61` 写“两组 16 份 JUnit 独立解析”并据此校准 floor。两者同样是对 runner 同批 JUnit 的第二 parser，只能抓解析／聚合错误。
+- **组 A（floor 校准）**：`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-review-dispositions.md:42` 写“独立 JUnit 求和”；对应进度 `docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-progress-impl-1b.md:61` 写“两组 16 份 JUnit 独立解析”并据此校准 floor。两者同样是对 runner 同批 JUnit 的第二 parser，只能抓解析／聚合错误。
 - **组 B（command-algebra 当前候选）**：`docs/tmp/2026-08-08-command-algebra-final-candidate-review.md:104` 把 `7259 executed / 30 skipped` 称“当前独立稳定量”，并说 file identity／skip multiset 对账支撑 gate；但三者均由同一 Bun producer／artifacts 产生，且 baseline 与 discovery 共享 upstream，只能说当前 observed signals 自洽。
 - **接手方错误动作**：后续 floor 校准或候选验收会引用这些收口报告，把 observed floor／同源 identity 当 producer completeness，从而继续复发本轮已撤销的结论。
 - **建议处置**：两组均追加 superseded 更正并指向 coding conventions：第二 parser／identity／skip 对账各自能抓什么，不能证明什么。历史数字可保留，删除“独立”“人口／稳定量”升级。修订建议 `gpt-souls:doc-writer`。

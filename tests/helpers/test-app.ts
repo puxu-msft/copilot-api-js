@@ -1,3 +1,5 @@
+import type { Context } from "hono"
+
 import { OpenAPIHono } from "@hono/zod-openapi"
 import { Hono } from "hono"
 import {
@@ -12,6 +14,11 @@ import {
   observabilityMiddleware,
   shutdownConnectionCloseMiddleware,
 } from "~/lib/observability/middleware"
+import {
+  //
+  captureTranslationConfigSnapshot,
+  setTranslationConfigSnapshot,
+} from "~/lib/pipeline/semantic/config-snapshot"
 import { registerHttpRoutes } from "~/routes"
 import { registerOpenApiDocs } from "~/routes/openapi"
 import { readinessCheck } from "~/server"
@@ -59,6 +66,12 @@ export function createFullTestApp(opts?: { preMiddleware?: MiddlewareHandler }) 
   // this, a test-only app under-finalizes relative to production (History V2 removal Phase 1
   // audit: this gap was previously masked by the V2-only `attachHistorySink` in-flight mirror).
   if (opts?.preMiddleware) app.use(opts.preMiddleware)
+
+  // Mirrors the capture src/server.ts does in the config/token slot. This app has no config hot-reload — `preMiddleware` occupies that slot — but the snapshot still has to exist, because from C2.2 on a codec that finds none behaves differently from one that does. Leaving it out would make every http test run the un-pinned path while production runs the pinned one.
+  app.use(async (c, next) => {
+    setTranslationConfigSnapshot(c as unknown as Context, captureTranslationConfigSnapshot())
+    await next()
+  })
 
   app.use(observabilityMiddleware())
 

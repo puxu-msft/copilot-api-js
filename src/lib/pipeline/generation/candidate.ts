@@ -7,6 +7,8 @@
  * boundary until the coordinator starts consuming it in P6-T2.
  */
 
+import consola from "consola"
+
 import type {
   //
   CandidateHandle,
@@ -121,8 +123,20 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             },
           }
         } catch (error) {
-          if (signal.aborted) settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
-          else settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          // Recording the failure must never replace the failure. `settleCandidate` runs invariant
+          // guards (an unsettled dispatch, an already-settled candidate) that throw, and because
+          // they throw from here they would take the place of `error` on the way out — turning a
+          // diagnosable cause into an opaque guard message from a stack that no longer mentions it.
+          // Report both: the caller keeps the original, and the guard is still loud in the log.
+          try {
+            if (signal.aborted)
+              settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
+            else settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          } catch (settleError) {
+            consola.error(
+              `[candidate-runtime] settling ${handle} after a failure hit a recording guard: ${settleError instanceof Error ? settleError.message : String(settleError)}`,
+            )
+          }
           throw error
         }
       })()

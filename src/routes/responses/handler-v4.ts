@@ -88,6 +88,7 @@ import {
 } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import {
   //
   buildAnthropicResponseData,
@@ -144,7 +145,7 @@ async function handleResponsesV4Admitted(c: Context, historyReservation: History
   // direct/fallback legs — the reverse rewrite/strategies gate MESSAGES).
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
-  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),

@@ -30,6 +30,7 @@ import type { RouteOverride } from "~/lib/models/resolver"
 import type { ResolvedModel } from "~/lib/pipeline/envelope"
 import type { RawHttpRequest } from "~/lib/pipeline/types"
 
+import { HTTPError } from "~/lib/error"
 import {
   //
   modelRemapParts,
@@ -49,8 +50,16 @@ export interface CodecModelResolution {
   resolvedName: string
   /** Client `@cc`/`@responses`/`@messages` leg pin carried through resolution. */
   routeOverride?: RouteOverride
-  /** The resolved `Model` object — from `preResolved` or the live catalog. */
-  selectedModel: ResolvedModel | undefined
+  /**
+   * The resolved `Model` object — from `preResolved` or the live catalog.
+   *
+   * Never `undefined`: {@link resolveCodecModel} rejects an unresolvable model at the boundary
+   * rather than carrying a hole into the envelope. Before that, all four codecs laundered the
+   * `undefined` through an `as ResolvedModel` cast, and the request went on until the dispatch
+   * scheduler read `env.model.id` — surfacing as an opaque 500 from an invariant guard several
+   * layers away from the actual cause.
+   */
+  selectedModel: ResolvedModel
   /**
    * The name to record as `ctx.clientModel` — present ONLY on a genuine remap
    * (spelling variants suppressed via {@link modelRemapParts}); `undefined`
@@ -74,6 +83,17 @@ export function resolveCodecModel(raw: RawHttpRequest, opts?: { requestedModel?:
   const resolvedTarget = raw.preResolved ?? resolveModelTarget(requestedModel)
   const resolvedName = resolvedTarget.name
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
+  if (selectedModel === undefined) {
+    // The catalog has no such model, so there is nothing to dispatch to. Say so here, in the client's
+    // own terms, instead of letting a hole travel into the envelope. `state.modelIndex` is the same
+    // catalog `GET /v1/models` serves, so "not in the catalog" is exactly what the client can check.
+    throw new HTTPError(
+      `model not found: ${requestedModel}`,
+      404,
+      JSON.stringify({ error: { type: "not_found_error", message: `model not found: ${requestedModel}` } }),
+      resolvedName,
+    )
+  }
   return {
     requestedModel,
     resolvedName,

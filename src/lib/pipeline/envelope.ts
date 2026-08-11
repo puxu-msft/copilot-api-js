@@ -16,6 +16,7 @@ import type { RouteOverride } from "~/lib/models/normalize-id"
 import type { PrepareHints } from "~/lib/request/retry-types"
 
 import type { RequestState } from "./request-state"
+import type { TranslationConfigSnapshot } from "./semantic/config-snapshot"
 
 /** Client-facing inbound format (route prefix determines it). */
 export type ClientFormat = "anthropic" | "openai-cc" | "openai-responses" | "gemini"
@@ -119,6 +120,22 @@ export interface RequestEnvelope {
    * that carries none (and until its cell migrates in C2+).
    */
   readonly requestState?: RequestState
+
+  /**
+   * The `model_translation` generation this request is decided against, captured once by the ingress
+   * middleware before any route or candidate fork (RFC 2026-08-08 §6; see
+   * `./semantic/config-snapshot`).
+   *
+   * Stricter than {@link requestState}, which `with()` may patch because the codec assembles it after
+   * the base envelope exists: this one is set at construction and is deliberately **absent from the
+   * `with()` patch set**, so no retry, fallback or rewrite can swap the config a leg is translated
+   * under. `with()` still carries it through by reference — dropping it there would silently unpin
+   * the request without any hot-reload test noticing, because a leg that re-reads live config only
+   * differs once a reload actually lands mid-request.
+   *
+   * `undefined` for envelopes built outside the HTTP ingress (the dry-run debug route, tests).
+   */
+  readonly translationConfigSnapshot?: TranslationConfigSnapshot
 
   // ── Cross-cutting handle (lifecycle + recording) ──
   /** Already exists; the driver publishes events through it. */

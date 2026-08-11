@@ -33,8 +33,9 @@
  * - **P2.2-D4**: `formatError` receives only the classified kind (locked
  *   signature), so it cannot forward the raw upstream error message the legacy
  *   handler does. See `formatError` JSDoc.
- * - **P2.2-D5**: `env.model` is non-optional, but CC supports unknown gpt-*
- *   fallback models absent from the index. See `parse` JSDoc.
+ * - **P2.2-D5**: catalog-external models. `resolveCodecModel` now rejects them
+ *   with a 404; passing them through to upstream is still unimplemented. The
+ *   old "runtime is correct" premise was falsified — see `parse` JSDoc.
  */
 
 import consola from "consola"
@@ -56,6 +57,7 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type { RequestState } from "~/lib/pipeline/request-state"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -180,6 +182,11 @@ export interface CreateOpenAiCcCodecArgs {
    * for both its sanitize rewrite and its resanitize (auto-truncate). Absent for the forward/direct CC legs.
    */
   reverseMapperHolder?: ReverseAnthropicMapperHolder
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /**
@@ -223,7 +230,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx))
+      const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx), args?.translationConfigSnapshot)
       truncateBaseline = baseline
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
       // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
@@ -337,15 +344,19 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
  * wires it as a route pre-step that `await`s the injection into `raw.body`
  * BEFORE calling `codec.parse(raw)`, keeping parse sync + pure.
  *
- * **P2.2-D5 (deferred):** `env.model` is non-optional `ResolvedModel`, but CC
- * supports unknown gpt-* fallback models absent from the index (`modelIndex.get`
- * returns undefined). We store the (possibly undefined) selected model cast to
- * `ResolvedModel`; every consumer here passes it to helpers that accept
- * `Model | undefined` (e.g. `isEndpointSupported`), so the runtime is correct —
- * only the static type over-claims. P2.3 may relax the envelope to
- * `ResolvedModel | undefined` once Anthropic's non-optional assumption is revisited.
+ * **P2.2-D5 (was deferred; premise falsified 2026-08-11):** the note here used to say that storing a
+ * possibly-undefined selected model cast to `ResolvedModel` was "runtime correct, only the static
+ * type over-claims". It is not. Consumers are not limited to the `Model | undefined`-tolerant helpers
+ * this file reaches for: `pipeline/generation/dispatch-scheduler.ts` reads `current.model.id`
+ * unconditionally, so a model outside the catalog always produced a 500. `resolveCodecModel` now
+ * rejects it at the boundary with a 404 instead. Passing catalog-external models THROUGH to upstream
+ * — what D5 actually wanted — still is not implemented; see docs/v4/05-progress.md P2.2-D5.
  */
-function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
+function parseOpenAiCc(
+  raw: RawHttpRequest,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
   // `body` is the wire-logical inbound (system-prompt already injected by the
   // route, P2.2-D3); `originalBodyForHistory` (when present) is the client's raw
   // pre-injection body for the history snapshot.
@@ -391,7 +402,7 @@ function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => 
   // Tool-name sanitization (client → upstream) over the wire-logical body. The
   // mapper is stored on ctx so the response-side restore can reverse it.
   const resolvedPayload: ChatCompletionsPayload = { ...incoming, model: resolvedName }
-  const toolNameMapper = buildChatCompletionsToolNameMapper(resolvedPayload, selectedModel?.vendor)
+  const toolNameMapper = buildChatCompletionsToolNameMapper(resolvedPayload, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
   const renamedPayload = applyChatCompletionsToolNameSanitization(resolvedPayload, toolNameMapper)
 
@@ -408,10 +419,11 @@ function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
     ctx,
+    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
   })
 
   // `renamedPayload` (post-tool-rename, PRE-sanitize) is the stable auto-truncate
@@ -456,6 +468,7 @@ interface EnvelopeInit {
   ctx: RequestContext
   prepareHints?: PrepareHints
   requestState?: RequestState
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /**
@@ -474,6 +487,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     body: init.body,
     prepareHints: init.prepareHints ?? {},
     ...(init.requestState !== undefined && { requestState: init.requestState }),
+    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createCcLazyView(env.body)
@@ -488,6 +502,8 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         ctx: env.ctx,
         prepareHints: env.prepareHints,
         requestState: env.requestState,
+        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
+        translationConfigSnapshot: env.translationConfigSnapshot,
         ...patch,
       })
     },

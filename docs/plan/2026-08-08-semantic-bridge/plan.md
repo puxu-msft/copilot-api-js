@@ -2,7 +2,12 @@
 
 > **⚠️ 2026-08-11「快做快合」裁决改变了本文的执行方式。** 用户当日裁决放弃 SDD 与 TDD（见 CLAUDE.md「工作节奏：快做快合」）。因此本文里**每片的 `Mutation` 小节、以及「每条不变量各一条违反路径用例」这类穷举式测试要求，一律不再作为执行门**——它们记录的是设计意图，不是必须逐条产出的交付物。测试只写**主路径**与**实际报错过的路径**。**仍然有效**的是：任务 DAG 与依赖顺序、锚点表、每 commit invariant（中间态不得半坏）、以及 RFC 作为契约权威。已按旧口径完成的 C0 与 C1 不回头精简。
 >
-> **进度**：C0.1／C0.2／C0.3 与 C1.1／C1.2／C1.3 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。下一片：**C1.4**（RFC v2 新增的双平面 disposition；它是 C2.1 的直接前置，见任务 DAG）。**C0.4**（真实上游接受性探针）与代码无依赖，可并行开跑，须在 C5／C7 前收口。
+> **进度**：C0.1／C0.2／C0.3、C1.1／C1.2／C1.3 与 C2.1 已实现并合入 master，落点是 `src/lib/pipeline/semantic/{types,ledger,snapshot}.ts` + `tests/pipeline/semantic/`。C1.3 的读侧两种形状（`LedgerSnapshot` 与 `LedgerTransition`）都在 `snapshot.ts`；**`LedgerSnapshot` 已从 `types.ts` 移出**——它本就不属于 RFC §4，而 `types.ts` 是 §4 的逐条转写。reducer 内部改为**替换记录、不写穿记录**，于是「结构共享」以记录级共享实现：`snapshot()`／`fork()` 只重建外层 Map，transition 免费携带自己那一刻的记录。C2.1 的捕获锚点选在 `src/server.ts` 的 config 中间件内、`applyConfigToState()` 之后（C2.3 建 authority 时沿用这一锚），快照经 codec 工厂 args 传进各 `parse` 并在构造时钉上 envelope；`tests/helpers/test-app.ts` 已镜像该捕获。下一片：C2.2。
+>
+> **v2 新增两片的排期（2026-08-11）**：**C1.4**（双平面 disposition，RFC §4.1）与 **C0.4**（真实上游接受性探针，RFC §17）。
+> - C1.4 初稿曾写成「C2.1 的直接前置」，**该排序断言已被事实推翻**——C2.1 先落地了。**但它不影响 C1.4 本身**：实测 C2.1 落的是 `config-snapshot.ts` 与 envelope/codec 接线，未触及 item 契约；`PerOutputItemState` 至今仍只出现在 `ledger.ts`／`snapshot.ts`／`types.ts`（复算：`rg -l 'PerOutputItemState' src/ tests/`）。故 C1.4 的爆炸半径未变、仍然便宜。
+> - 现在的排序要求是：**C1.4 须早于任何开始消费 item 契约的片，且必然早于 C5／C7**；与 C2.2／C2.3 无先后依赖，可并行。
+> - C0.4 与代码无依赖，可立即并行开跑，须在 C5／C7 前收口。
 >
 > **权威 spec**：[docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted，五轮对抗评审收口）。
 > **决策依据**：[ADR 2026-08-08 protocol-neutral reasoning exchange](../../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)；收窄的既有决策 [ADR 2026-07-14 lossless-per-pair bridge](../../decisions/2026-07-14-lossless-per-pair-bridge.md)。
@@ -216,9 +221,9 @@ C2.3 应当**沿用并扩展这个既有模式**（在它记录交付的地方�
 C0.1 ─┬─ C0.2 ─ C0.3 ─┐
       └───────────────┤
                       ▼
-              C1.1 → C1.2 → C1.3 → C1.4       ← C1.4 = 双平面 disposition（RFC §4.1，v2 新增）
-                                    │
-                                    ▼
+              C1.1 → C1.2 → C1.3
+                             │
+                             ▼
               C2.1 → C2.2 → C2.3
                              │
                              ▼
@@ -242,14 +247,15 @@ C0.1 ─┬─ C0.2 ─ C0.3 ─┐
               C11.1 → C11.2
 
 C0.4 (真实上游接受性探针，RFC §17) ──前置门──▶ C5.1/5.2 与 C7.1/7.2
+C1.4 (双平面 disposition，RFC §4.1) ──前置门──▶ C5.1/5.2 与 C7.1/7.2   [不在 C1→C2 串行链上，可与 C2.2/C2.3 并行]
 ```
 
 **v2 新增的两片（授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)）**：
 
-- **C1.4 双平面 disposition** —— 落 RFC §4.1。**必须在 C2 之前**，但理由不是「C2 已在消费它」（C2 尚未落地）：而是**趁消费者尚未扩散先做类型 retrofit**。落点是 `PerOutputItemState`——实测 `SemanticItem` 全仓零构造点零消费点，只改它等于空操作。
+- **C1.4 双平面 disposition** —— 落 RFC §4.1。**须早于任何开始消费 item 契约的片，且必然早于 C5／C7**；与 C2.2／C2.3 无先后依赖，可并行。（初稿写作「C2.1 的直接前置」已被事实推翻——C2.1 先落地了，但它未触及 item 契约。）落点是 `PerOutputItemState`——实测 `SemanticItem` 全仓零构造点零消费点，只改它等于空操作。
 - **C0.4 真实上游接受性探针** —— 落 RFC §17。**与代码无依赖，可立即并行开跑**，但**必须在 C5／C7 之前收口**：它裁决 §6.1 的两类 server-tool record 取哪一种作默认。
 
-**串行硬约束**：C1→C2→C3 严格串行（后者消费前者的类型契约），**C1.4 并入这条链，是 C2.1 的直接前置**。**C3.4 是 C4–C7 全部四组的共同前置** —— `json-value-validator` 被 C6.1（structured output）与 C7.1（carrier canonical JSON）**共同**消费，RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」，两处必须是**同一份**实现。C8.0 必须在 C8.1/C8.2 之前（emitter 消费的 ledger 得先有人喂）。C8.3 必须在单一集成态吸收 C4–C7 全部语义。C9→C10 串行，以便每次 cutover 独立证明可达性并可单方向回滚。**C0.4 是 C5 与 C7 的前置门**，但不阻塞 C1–C4。
+**串行硬约束**：C1.1→C1.2→C1.3→C2→C3 严格串行（后者消费前者的类型契约）。**C1.4 不在这条串行链上**——它是 item 契约的 retrofit，与 C2.2／C2.3 可并行，但**须早于任何开始消费 item 契约的片，且必然早于 C5／C7**。**C3.4 是 C4–C7 全部四组的共同前置** —— `json-value-validator` 被 C6.1（structured output）与 C7.1（carrier canonical JSON）**共同**消费，RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」，两处必须是**同一份**实现。C8.0 必须在 C8.1/C8.2 之前（emitter 消费的 ledger 得先有人喂）。C8.3 必须在单一集成态吸收 C4–C7 全部语义。C9→C10 串行，以便每次 cutover 独立证明可达性并可单方向回滚。**C0.4 是 C5 与 C7 的前置门**，但不阻塞 C1–C4。
 
 **并行边界**：C4–C7 四组彼此独立，可分派不同 implementer；但它们**共改** `src/lib/pipeline/semantic/` 下的 mapper 与 policy 模块 → 需协调合并顺序，建议按 C7 → C5 → C6 → C4 依次合并（**四组都在 C3.4 之后起分支**，此时 validator 已在基线里，不存在「C7 要用 C6 尚未创建的文件」的倒置）。C8.0a 与 C8.0b、C8.1 与 C8.2 均格式独立可并行。
 
@@ -481,7 +487,9 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 ### C1.4 —— 双平面 item disposition（RFC §4.1，v2 新增）
 
-> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**必须早于 C2.1** —— 它给 `SemanticItem` 加必填字段。**理由不是「C2 已经在消费它」**（C2 尚未落地，`src/`／`tests/` 搜 `TranslationConfigSnapshot`／`CandidateTranslationLineage`／`DeliveryAuthorityState`／`PairTranslationPolicy` 零命中），而是**趁消费者尚未扩散先把类型 retrofit 做掉**——每晚一片，要改的构造点与消费点就多一批。
+> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**排期：须早于任何开始消费 item 契约的片，且必然早于 C5／C7；与 C2.2／C2.3 无先后依赖，可并行。**
+>
+> 初稿曾写作「C2.1 的直接前置」，**已被事实推翻**——C2.1 先落地了（`b0eb7997`）。但实测它落的是 `config-snapshot.ts` 与 envelope/codec 接线、未触及 item 契约，`PerOutputItemState` 至今仍只出现在 `ledger.ts`／`snapshot.ts`／`types.ts`（复算：`rg -l 'PerOutputItemState' src/ tests/`），故本片的爆炸半径未变、仍然便宜。**真正的理由始终是「趁消费者尚未扩散先做 retrofit」**——每晚一片，要改的构造点与消费点就多一批。
 
 **Goal**：落 RFC §4.1 的 `PresentationDisposition` × `ContinuationDisposition`，让「这个 item 的续接怎么办」成为**必须回答**的问题。这修的是**结构性根因**——v1 没有任何一处强迫回答它，server-tool 续接因此能被漏掉而不报错。
 

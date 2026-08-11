@@ -3,7 +3,7 @@ slug: impl-2a
 base: d8296920adb45864ab0a6d1af2bdcb018ad727bc
 branch: history-worker-batch-2a
 worktree: /home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a
-plan: docs/plan/2026-08-07-history-persistence-worker.md
+plan: docs/history-persistence-worker/plan.md
 agent_id: main-session
 status: done
 ---

@@ -591,7 +591,12 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)
   }
 
-  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)
+  // Nobody recognized this error, so the message alone rarely locates it: an invariant guard that
+  // throws from deep inside a settle path reads as a bare 500. Internal-tool posture — add the stack.
+  // FRAMES ONLY: `error.stack` starts with the raw, unsanitized message, and re-emitting it here
+  // would put back exactly what `errorMessage` was cleaned of (Bun's `verbose: true` hint).
+  const frames = error instanceof Error && error.stack !== undefined ? error.stack.slice(error.stack.indexOf("\n    at ") + 1) : ""
+  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage, frames)
 
   return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 500), 500)
 }

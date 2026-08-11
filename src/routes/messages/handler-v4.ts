@@ -177,6 +177,7 @@ import {
 } from "~/lib/pipeline/max-tokens-truncation-class"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -720,7 +721,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   // (unsupported-beta reads the candidates).
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const betaProbe = createBetaProbe(clientAnthropicBeta)
-  const codec = createAnthropicCodec({ betaProbe, preprocessInfo })
+  const codec = createAnthropicCodec({ betaProbe, preprocessInfo, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamHttpTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),

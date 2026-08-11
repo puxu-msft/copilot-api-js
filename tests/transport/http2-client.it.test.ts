@@ -32,6 +32,7 @@ import {
 } from "~/lib/transport/http2-client"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
+import { compatDispatchHandleForTests } from "../helpers/dispatch-options"
 import { waitUntil } from "../helpers/wait-until"
 
 let server: http2.Http2Server
@@ -440,6 +441,90 @@ describe("http2-client", () => {
     const p = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
     setTimeout(() => ac.abort(), 30)
     await expect(p).rejects.toThrow(/abort/i)
+  })
+
+  /**
+   * A4-3: a GOAWAY is the one termination the peer explains, and until now the frame's arguments were dropped on the floor — `session.on("goaway", retire)` used the event only to stop routing.
+   * The ledger that stores it has existed (and been unit-tested) since A4; what was missing was a producer feeding it and a consumer leasing it. These two drive both halves against a real h2 server.
+   */
+  test("a session GOAWAY reaches the terminating stream's snapshot, with its code and lastStreamID", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("part")
+      const session = stream.session
+      // GOAWAY first, then end the stream: the snapshot freezes at the stream's terminal, so a frame
+      // arriving after that point is correctly NOT in it. This orders the peer's explanation before it.
+      session?.goaway(http2.constants.NGHTTP2_NO_ERROR, stream.id, Buffer.from("bye-now"))
+      setTimeout(() => stream.end(), 60)
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/goaway-observed`, {
+      onTermination: (snapshot) => snapshots.push(snapshot),
+      dispatch: compatDispatchHandleForTests("goaway"),
+    })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    const goaway = snapshots[0].goaway
+    expect(goaway.availability).toBe("observed-before-snapshot")
+    if (goaway.availability !== "observed-before-snapshot") throw new Error("expected an observed GOAWAY")
+    expect(goaway.events).toHaveLength(1)
+    // The code is the whole point: "the peer said NO_ERROR" and "the peer said ENHANCE_YOUR_CALM" are
+    // different diagnoses, and before this wiring both arrived as an unexplained termination.
+    expect(goaway.events[0]).toMatchObject({ sequence: 1, errorCode: http2.constants.NGHTTP2_NO_ERROR, lastStreamIdOrder: "first" })
+    expect(goaway.events[0].opaqueDataLength).toEqual({ availability: "observed", value: Buffer.byteLength("bye-now") })
+    expect(goaway.events[0].evidence.availability).toBe("captured")
+  })
+
+  test("without a dispatch owner the snapshot reports no GOAWAY rather than attributing a shared session event", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("part")
+      stream.session?.goaway(http2.constants.NGHTTP2_NO_ERROR, stream.id, Buffer.from("bye-now"))
+      setTimeout(() => stream.end(), 60)
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    // Same server behaviour as above, minus the dispatch handle. A GOAWAY is a SESSION event shared by
+    // every stream on the connection, so with no owner to attribute it to we must report nothing seen —
+    // not silently hand one stream's snapshot an event that belonged to the whole session.
+    const res = await http2Fetch(`${url}/goaway-unowned`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    expect(snapshots[0].goaway).toMatchObject({ availability: "not-observed-before-snapshot", events: [] })
+  })
+
+  /**
+   * A4-3: the keepalive ack was a no-op, so an upstream that had stopped answering control frames was indistinguishable from a healthy one in the status surface.
+   * The unit tests cover the observer's arithmetic against a fake; this one is here because a fake can report any RTT it likes — only a real h2 peer proves the number came from an actual round trip.
+   */
+  test("a real PING round trip lands in the session status snapshot", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Ping fast so the test does not wait on the production interval; cadence is config, not behaviour under test.
+    // The setting is in SECONDS (getUpstreamH2PingIntervalMs multiplies) — an invented ms-shaped key is
+    // silently ignored and leaves the 15s default, which reads as "pings never ack".
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.02 })
+
+    const res = await http2Fetch(`${url}/ping-observed`, {})
+    expect(await res.text()).toBe("ok")
+    await waitUntil(() => (getH2SessionStatusSnapshot()[0]?.ping.acked ?? 0) >= 1)
+
+    const ping = getH2SessionStatusSnapshot()[0].ping
+    expect(ping.sent).toBeGreaterThanOrEqual(1)
+    expect(ping.acked).toBeGreaterThanOrEqual(1)
+    expect(ping.lastError).toBeUndefined()
+    // A genuine round trip against a loopback peer: real, non-negative, and not the fabricated
+    // constant a no-op ack would leave behind (it left nothing at all).
+    expect(typeof ping.lastRttMs).toBe("number")
+    expect(ping.lastRttMs).toBeGreaterThanOrEqual(0)
+    expect(ping.lastAckEpochMs).toBeGreaterThan(0)
   })
 
   test("reports an immutable first-terminal snapshot before late physical close", async () => {

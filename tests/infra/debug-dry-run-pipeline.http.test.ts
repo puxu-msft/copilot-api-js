@@ -37,6 +37,12 @@ function seedModel(): void {
           limits: { max_context_window_tokens: 1_000_000, max_output_tokens: 16000, max_prompt_tokens: 1_000_000 },
         },
       }),
+      // The non-Anthropic cases below drive the same seam through the other three codecs, so their
+      // models have to be in the catalog too — `resolveCodecModel` now rejects an unresolvable model
+      // instead of carrying `undefined` into the envelope. These are placeholder catalog entries;
+      // what the tests assert is that parse runs under the real codec, not anything about the model.
+      mockModel("gpt-4o", { vendor: "OpenAI" }),
+      mockModel("gemini-2.5-pro", { vendor: "Google" }),
     ],
   })
 }

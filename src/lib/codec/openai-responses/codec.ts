@@ -64,6 +64,7 @@ import type {
   ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import type { RequestState } from "~/lib/pipeline/request-state"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -186,6 +187,11 @@ export interface CreateOpenAiResponsesCodecArgs {
    * for its sanitize rewrite + resanitize. Absent for the direct/fallback legs.
    */
   reverseMapperHolder?: ReverseAnthropicMapperHolder
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Generate a short, collision-safe ID using crypto.randomUUID (matches the legacy fallback). */
@@ -299,7 +305,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const parsed = parseOpenAiResponses(raw, (ctx) => (requestContext = ctx))
+      const parsed = parseOpenAiResponses(raw, (ctx) => (requestContext = ctx), args?.translationConfigSnapshot)
       resolvedModelName = parsed.resolvedModelName
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
       // it from env.requestState. The shared fallback-exchange scratch (§11.2c) is always threaded (the CHAT
@@ -412,7 +418,11 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
  * client body as `originalBodyForHistory` for the snapshot — parity with the CC
  * codec (P2.2-D3).
  */
-function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; resolvedModelName: string } {
+function parseOpenAiResponses(
+  raw: RawHttpRequest,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): { env: RequestEnvelope; resolvedModelName: string } {
   const incoming = raw.body as ResponsesPayload
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as ResponsesPayload
 
@@ -468,7 +478,7 @@ function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestConte
 
   // Tool-name sanitization (client → upstream). The mapper is stored on ctx so
   // the response-side restore can reverse it.
-  const toolNameMapper = buildResponsesToolNameMapper(processed, selectedModel?.vendor)
+  const toolNameMapper = buildResponsesToolNameMapper(processed, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
   processed = applyResponsesToolNameSanitization(processed, toolNameMapper)
 
@@ -480,10 +490,11 @@ function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestConte
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: processed.stream ?? false,
     body: processed,
     ctx,
+    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
   })
 
   return { env, resolvedModelName: resolvedName }
@@ -516,6 +527,7 @@ interface EnvelopeInit {
   ctx: RequestContext
   prepareHints?: PrepareHints
   requestState?: RequestState
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Build a {@link RequestEnvelope} with a lazy Responses projection. */
@@ -529,6 +541,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     body: init.body,
     prepareHints: init.prepareHints ?? {},
     ...(init.requestState !== undefined && { requestState: init.requestState }),
+    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createResponsesLazyView(env.body)
@@ -543,6 +556,8 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         ctx: env.ctx,
         prepareHints: env.prepareHints,
         requestState: env.requestState,
+        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
+        translationConfigSnapshot: env.translationConfigSnapshot,
         ...patch,
       })
     },

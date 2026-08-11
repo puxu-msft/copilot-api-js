@@ -50,6 +50,7 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type { RequestState } from "~/lib/pipeline/request-state"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -156,6 +157,11 @@ export interface CreateGeminiCodecArgs {
    * Absent for the direct/via-responses Gemini legs.
    */
   reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
@@ -213,7 +219,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env } = parseGemini(raw, modelId, (ctx) => (requestContext = ctx))
+      const { env } = parseGemini(raw, modelId, (ctx) => (requestContext = ctx), opts?.translationConfigSnapshot)
       // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) as the cell-fork
       // discriminator + reverse-leg supply. The CC auto-truncate baseline is NOT known yet (parse
       // keeps the native Gemini body); S1b `translateInbound` computes the CC payload and merges
@@ -323,7 +329,12 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
  * snapshots the raw Gemini body, resolves the model, and creates the `gemini-generate-content` ctx
  * with the Gemini-shape original request. `env.body` = the native `GenerateContentRequest`.
  */
-function parseGemini(raw: RawHttpRequest, modelId: string, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; ctx: RequestContext } {
+function parseGemini(
+  raw: RawHttpRequest,
+  modelId: string,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): { env: RequestEnvelope; ctx: RequestContext } {
   // `raw.body` is the client-NATIVE Gemini body. Defensively clone it for the history snapshot
   // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
   const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
@@ -370,10 +381,11 @@ function parseGemini(raw: RawHttpRequest, modelId: string, onContext: (ctx: Requ
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream,
     body: geminiSnapshot,
     ctx,
+    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
   })
 
   return { env, ctx }
@@ -441,6 +453,7 @@ interface EnvelopeInit {
   ctx: RequestContext
   prepareHints?: PrepareHints
   requestState?: RequestState
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Build a {@link RequestEnvelope} (clientFormat `gemini`, CC-shaped body). */
@@ -454,6 +467,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     body: init.body,
     prepareHints: init.prepareHints ?? {},
     ...(init.requestState !== undefined && { requestState: init.requestState }),
+    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createGeminiLazyView(env.body)
@@ -468,6 +482,8 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         ctx: env.ctx,
         prepareHints: env.prepareHints,
         requestState: env.requestState,
+        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
+        translationConfigSnapshot: env.translationConfigSnapshot,
         ...patch,
       })
     },
