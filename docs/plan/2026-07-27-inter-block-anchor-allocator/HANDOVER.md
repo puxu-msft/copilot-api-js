@@ -28,7 +28,22 @@ archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
 | `verdict` | `green` |
 | 执行树 | `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover-a5`（detached 在 A，干净） |
 
-**下一步是 T0.1**，判据见 `cutover-plan.md` 的 T0.1 行：读该 receipt、重算 hash，并在任何 C0 测试/实现之前先分别注入 receipt 缺失、`entry_sha` 与执行树 HEAD 不同、`pointer_sha` 不可由 master 到达、manifest hash 漂移、validator blob 不同、`verdict != green` 六种情形，逐一确认 fail-closed。**T0.1 不重跑 15 次、不生成新的 manifest/P/receipt。**
+**T0.1 已通过（2026-08-10）**：正确状态七项全绿（receipt hash 与 T0.0d 记录一致、`entry_sha` == 执行树 HEAD、树干净、`pointer_sha` 可由 master 到达、manifest hash 未漂移、validator blob 与 entry 一致、`verdict=green`），六项注入 + 两项额外对照**全部 fail-closed 且各自点名**：
+
+| 注入 | rc | 消息 |
+|---|---|---|
+| receipt 缺失 | 11 | `receipt missing` |
+| `entry_sha` ≠ 执行树 HEAD | 14 | `entry_sha is not the execution tree HEAD` |
+| `pointer_sha` 不可由 master 到达 | 16 | `pointer_sha is not reachable from master` |
+| manifest hash 漂移 | 17 | `manifest hash drifted` |
+| validator blob 不同 | 18 | `validator blob differs from entry` |
+| `verdict != green` | 19 | `verdict is not green` |
+| receipt hash 与 T0.0d 记录不符 | 13 | `receipt hash differs from the one T0.0d recorded` |
+| 执行树 dirty | 15 | `execution tree is dirty` |
+
+判据脚本与注入产物在 `/home/xp/.claude/jobs/757dc257/tmp/t01/`（一次性入场确认，非常驻门，故不入库）。注入全部对**副本**做，entry 树未被弄脏；dirty 那条用临时未追踪文件触发后已移除并复验正样本仍绿。**T0.1 未重跑 15 次，未生成新的 manifest/P/receipt。**
+
+**范围裁决（2026-08-10，用户）**：cutover 只做原子性/并发、类型层收窄与遥测，不做 classifier 运行时授权与拒绝、不做 D2 的 owner-minted provenance。权威在 ADR [2026-08-10-trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)；cutover-plan 的 Commit 2–4 正按该 ADR 收窄，**收窄完成前不要照旧 plan 进 Commit 0**。
 
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
