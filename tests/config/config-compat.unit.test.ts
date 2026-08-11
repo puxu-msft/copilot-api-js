@@ -99,6 +99,25 @@ describe("config compat — legacy key migration (file load)", () => {
     expect((result as Record<string, unknown>).stream_idle_timeout).toBeUndefined()
   })
 
+  // Both legacy spellings live INSIDE `timeouts`, so the top-level case above does not cover them.
+  // These are the paths a real user's config.yaml actually takes: `stale_request_max_age` measured
+  // the same quantity as the deadline (age since admission) and took the same action, so it folds
+  // onto `client_request_deadline` rather than being dropped.
+  test("timeouts.stale_request_max_age → timeouts.client_request_deadline (reaper retired 2026-08-11)", () => {
+    const result = validateConfig({ timeouts: { stale_request_max_age: 777 } })
+    expect(result.timeouts).toEqual({ client_request_deadline: 777 })
+  })
+
+  test("timeouts.request_deadline → timeouts.client_request_deadline (pure rename)", () => {
+    const result = validateConfig({ timeouts: { request_deadline: 1200 } })
+    expect(result.timeouts).toEqual({ client_request_deadline: 1200 })
+  })
+
+  test("both current deadline keys pass through untouched", () => {
+    const result = validateConfig({ timeouts: { upstream_request_deadline: 300, client_request_deadline: 1200 } })
+    expect(result.timeouts).toEqual({ upstream_request_deadline: 300, client_request_deadline: 1200 })
+  })
+
   test("auto_truncate.max_retries → retry.max_reactive_retries", () => {
     const result = validateConfig({ auto_truncate: { max_retries: 8 } })
     expect(result.retry?.max_reactive_retries).toBe(8)
