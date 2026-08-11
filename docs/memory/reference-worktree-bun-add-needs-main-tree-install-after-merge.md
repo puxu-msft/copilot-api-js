@@ -38,6 +38,19 @@ metadata:
 - 同一次实测还证伪了另一条更常犯的推断：**用 grep/正则扫 import 语句来清点依赖是不可靠的**（多行 import 形式、Vue 模板语法都会骗过正则——我的扫描漏掉了 `diff`，却把 `:disabled=` 当成包名）。「这个项目需要哪些依赖」唯一可信的 oracle 是仓库外裸装裸跑。
 - 边界也要如实写：同一次实测里 `build`/`test` 在仓库外能跑，`typecheck` 不能（它经 `~backend/*` 拖入后端源码，后端自己的依赖装在仓库根）。别把不对称的结论压成一句「已独立」。
 
+### 第三方向的背面（2026-08-09 新增）：做 A/B 对照时，建在仓库外反而是错的
+
+**同一个旋钮，两个问题下的正确设置相反**，所以放置位置之前先说清「我在测什么」（同 [[feedback-pass-null-clean-not-self-validating]] 与 probe-depth 对齐那条的形状）：
+
+| 我要回答的问题 | worktree 该建在哪 | 建错了会怎样 |
+|---|---|---|
+| 这个子项目脱离宿主能不能自立 | **仓库外** | 建在仓库内 → 向上借到主树 node_modules → **假绿** |
+| 这批测试在 X 提交上是红是绿（A/B 对照） | **仓库内**（`.worktrees/`） | 建在仓库外 → 零 node_modules → **假红** |
+
+2026-08-09 实例：为判断 `test:backend` 的 28 条红是不是自己合出来的，我在 `$CLAUDE_JOB_DIR/tmp/ab-master` 建了 detached worktree 跑对照，得到 `0 pass / 4 fail / Ran 4 tests across 4 files [122ms]`。**差点据此断言「master 自己就是红的」**——真因是 `error: Cannot find module 'undici/index.js'`，四个文件全部加载失败，每个文件算 1 条“失败”。挪进 `.worktrees/ab-master` 重跑即 `24 pass / 20 skip / 0 fail`。
+
+**判据（比记住结论便宜）**：A/B 树里的失败若**数量恰好等于文件数、耗时在百毫秒量级、错误是 `Cannot find module`**，那是缺依赖不是缺陷。跑对照前先 `ls <worktree>/node_modules` 或直接看首条错误，别读失败计数。
+
 ## 第四方向（2026-07-29 新增）：验证命令实际落在哪棵树，委派消息说了不算
 
 前三条讲**树里有什么**；这条讲**验证命令实际落在哪棵树**。2026-07-29 在 Claude Code 2.1.220 / Claude Agent SDK 0.3.218 的普通 subagent 委派中实测：仅在 prompt 文本里写「工作目录是 `<worktree>`」**不会**改变该 subagent 的初始 Bash cwd，它继承会话启动时的 cwd（本次主会话起于主树 `/home/xp/src/copilot-api-js`，故 subagent 落在主树）。**边界要如实说**：若走显式的 worktree isolation / cwd 启动机制（`Agent` 工具有 `isolation: "worktree"` 参数），或主会话本来就在别的目录，结果会不同；这是环境相关行为，不是跨版本契约，每次都该实测而不是背下结论。
