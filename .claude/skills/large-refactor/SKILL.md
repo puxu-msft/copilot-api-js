@@ -5,7 +5,7 @@ description: 当在 copilot-api-js 做大型（≥1000 行）/多 commit 结构�
 
 # 大重构方法论
 
-适用「≥1000 行 / 多 commit 结构性重构」：改类型/删函数/改 import/迁移 registry/可观测性重写等。小重构（自己一路实现、单一语义单元）不需要本 skill 的重型流程——直接 RFC/主线实现即可。本 skill 是用户 rule `60-feat-dev-workflow`（spec-driven）在本项目的操作层落地。
+适用「≥1000 行 / 多 commit 结构性重构」：改类型/删函数/改 import/迁移 registry/可观测性重写等。小重构（自己一路实现、单一语义单元）不需要本 skill 的重型流程——直接 RFC/主线实现即可。**2026-08-11「快做快合」裁决后的定位**（权威在 CLAUDE.md「工作节奏」节）：本 skill 的 **commit invariants**（每 commit 终态不变量、中间态绝不半坏）**保留**——那是防止主干被改到半坏的机械约束，不是流程仪式；它的 **RFC-first 前置文档**部分**已淘汰**，不必先写 RFC 才动手。下面的三层文档结构只在**要把重构拆给一组独立实现者分别完成**时才用，自己一路实现就不用。
 
 判据：全流程 = RFC-first → 每 commit 守 invariant + 过渡态无害 → 用 golden 证行为等价 → 交并行实现者则拆三层文档 → 批量改造用工具箱避坑。
 
@@ -81,10 +81,10 @@ description: 当在 copilot-api-js 做大型（≥1000 行）/多 commit 结构�
 当大重构 RFC **要交给一组独立实现者分别完成**（而非自己一路实现）时，文档拆**三层物理结构**（仿 `docs/v4/`，活范例 `docs/archive/2606-landed-rfcs/response-pipeline/`）：
 
 1. **`design.md`（RFC）** — 为什么这么改 + 接口契约（§接口）+ 各 phase 的 Stage 划分 + 与既有 deferred items 的推翻/取代关系（§deferred）。回答「WHY + 契约」。
-2. **`<stage>-plan.md`（master plan）** — 每个 Task 的 TDD 步骤 + **factory/锚点表**（被迁移/复用的现有函数 `file:line` + order 常量）。回答「HOW + 锚在哪」。
+2. **`<stage>-plan.md`（master plan）** — 每个 Task 的**实现步骤**（实现先行，测试随后补主路径 + 已报错路径；不写红测试） + **factory/锚点表**（被迁移/复用的现有函数 `file:line` + order 常量）。回答「HOW + 锚在哪」。
 3. **`prompts/`（per-phase kick-off）** — 每 phase 一个**可直接粘给独立实现者的 self-contained 文件** + 一个 `README.md` 导航。回答「实现者照着干」。
 
-**每个 per-phase prompt 的固定骨架**（self-contained，假设实现者零项目上下文 + questionable taste）：背景+为什么 / 必读（引用 design+plan+progress）/ 目标+改动锚点（含 factory `file:line` 表）/ TDD 步骤 / 验收 gate（byte-critical 则 golden 逐字节等价为硬 gate）/ 提交指引（精确 pathspec + conventional commit）/ 红线（引用 README，不在每 phase 重复）。
+**每个 per-phase prompt 的固定骨架**（self-contained，假设实现者零项目上下文 + questionable taste）：背景+为什么 / 必读（引用 design+plan+progress）/ 目标+改动锚点（含 factory `file:line` 表）/ **实现步骤**（实现先行，不写红测试）/ 验收 gate（byte-critical 则 golden 逐字节等价为硬 gate）/ 提交指引（精确 pathspec + conventional commit）/ 红线（引用 README，不在每 phase 重复）。
 
 **`prompts/README.md` 集中承载**：① phase 导航表（含前置）② **阶段依赖 DAG**——标清哪些 phase 格式独立可并行分派、哪条链 byte-critical 严格串行不可拆、共改哪些文件需协调合并顺序 ③ **通用红线**（git checkout 禁令、细粒度暂存、golden gate、subagent 全量工具、三能力守卫等，集中一处各 phase 引用）④ 通用必读清单。
 
@@ -94,7 +94,7 @@ description: 当在 copilot-api-js 做大型（≥1000 行）/多 commit 结构�
 - 自己一路实现的小重构**不需要**三层——直接 RFC + 主线实现。三层是「分派给多人/多会话」才值得的开销。
 - **battle-tested > hand-rolled（丢渲染壳、保算法核）**：byte-critical 迁移类 phase（如响应改写迁 registry）的 plan 必给 **factory 锚点表**——**复用现有算法核、不重写**。范围明确/算法性的叶子层（行+词 diff、解析、日期运算）用成熟库（如 UI block-diff 引擎 L3 叶子用 jsdiff `diffLines`/`diffWordsWithSpace`/`diffJson`），只**丢弃渲染包装层**（`diff2html` → 自己的主题渲染），**保留算法核心**（`diff`）；只有库表达不了的领域层（L1/L2/L4 按 role/type/offsetMs 对齐）才自建。别过度套「不引第三方 / 自己造」本能——手搓久经验证的算法是得不偿失的虚假节省。phase prompt 必带 golden-fixture-pre-capture gate（§4）+ commit-invariants（§2）。
 - DAG 必须显式标注：哪些 phase 因 byte-critical 顺序契约**不可并行**（如「原子迁一组改写」不能逐条拆），哪些格式独立可并行但共改同一文件需排合并序。
-- 收尾 phase 固定含 whole-domain audit + 文档同步 + 用决策数据重走遗留 open question（见 CLAUDE.md `scope-ambiguity-then-ask`、skill `session-closeout`），而非自动启动下一 Stage。
+- 收尾 phase 固定含 whole-domain audit + 文档同步 + 用决策数据重走遗留 open question（见 CLAUDE.md `scope-ambiguity-then-ask`、user-level skill `closing-a-development-session`），而非自动启动下一 Stage。
 - `git mv` 重组已有扁平文档时，记得修相对路径引用（`../`/`../../` 随目录深度变）并核验解析。
 - 不要把 rfc/spec/plan/prompt 混在一个扁平目录或单文件里——用户明确要求分层（2026-06-20）。
 

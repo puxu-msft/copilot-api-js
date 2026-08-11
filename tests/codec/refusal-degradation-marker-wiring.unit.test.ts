@@ -33,17 +33,20 @@ function makeHarness(clientFormat: "openai-cc" | "openai-responses") {
     path: clientFormat === "openai-cc" ? "/chat/completions" : "/responses",
   })
   const env = {
-    clientFormat,
-    targetEndpoint: ENDPOINT.MESSAGES,
-    model: mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES] }),
-    stream: true,
-    body: clientFormat === "openai-cc" ? { model: "claude-opus-4.8@messages", messages: [] } : { model: "claude-opus-4.8@messages", input: [] },
+    request: {
+      clientFormat: clientFormat,
+      model: mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES] }),
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      body: clientFormat === "openai-cc" ? { model: "claude-opus-4.8@messages", messages: [] } : { model: "claude-opus-4.8@messages", input: [] },
+      targetEndpoint: ENDPOINT.MESSAGES,
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
   return { ctx, env, markers, unsubscribe }
 }

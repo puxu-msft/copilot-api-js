@@ -1,6 +1,16 @@
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ResponseFailureSource,
+} from "~/lib/pipeline/types"
 
 import type { CandidateResponseSession } from "./candidate-response-session"
+
+import {
+  //
+  asResponseCodecRenderError,
+  isResponseCodecRenderError,
+} from "../stream/response-processor"
 
 export interface ProbeCandidate<TCandidate> {
   readonly candidate: TCandidate
@@ -25,6 +35,7 @@ export type CandidateProbeOutcome<TCandidate> =
       readonly kind: "failure"
       readonly candidate: TCandidate
       readonly error: unknown
+      readonly source: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
     }
 
 /** Probe one candidate up to its first complete client-format block without writing any sink. */
@@ -38,8 +49,7 @@ export async function probeCandidateResponse<TCandidate>(input: ProbeCandidate<T
       const next = await iterator.next()
       if (next.done) return { kind: "terminal", candidate, bufferedFrames }
       if (next.value.data === "[DONE]") continue
-      const transformed = session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(next.value) : next.value
-      if (!transformed) continue
+      const transformed = next.value
       bufferedFrames.push(transformed)
       if (session.boundary.result) {
         return {
@@ -52,7 +62,7 @@ export async function probeCandidateResponse<TCandidate>(input: ProbeCandidate<T
           },
         }
       }
-      if (session.responseOpts.stopAfterFrame?.(transformed)) {
+      if (shouldStopAfterCandidateFrame(transformed, session)) {
         await iterator.return?.()
         return { kind: "terminal", candidate, bufferedFrames }
       }
@@ -63,7 +73,19 @@ export async function probeCandidateResponse<TCandidate>(input: ProbeCandidate<T
     } catch {
       // The original response failure is the candidate outcome; cleanup failure is joined by its lifecycle owner.
     }
-    return { kind: "failure", candidate, error }
+    return { kind: "failure", candidate, error, source: candidateFailureSource(error) }
+  }
+}
+
+function candidateFailureSource(error: unknown): Extract<ResponseFailureSource, "upstream-transport" | "codec-render"> {
+  return isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
+}
+
+function shouldStopAfterCandidateFrame(frame: ClientFrame, session: CandidateResponseSession): boolean {
+  try {
+    return session.responseOpts.stopAfterFrame?.(frame) ?? false
+  } catch (error) {
+    throw asResponseCodecRenderError(error)
   }
 }
 
@@ -76,9 +98,8 @@ function continueCandidateFrames(iterator: AsyncIterator<ClientFrame>, session: 
             const next = await iterator.next()
             if (next.done) return next
             if (next.value.data === "[DONE]") continue
-            const transformed = session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(next.value) : next.value
-            if (!transformed) continue
-            if (session.responseOpts.stopAfterFrame?.(transformed)) {
+            const transformed = next.value
+            if (shouldStopAfterCandidateFrame(transformed, session)) {
               await iterator.return?.()
               return { done: false, value: transformed }
             }

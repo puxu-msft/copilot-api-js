@@ -1,0 +1,164 @@
+# Anthropic ↔ Responses semantic bridge RFC 评审记录
+
+> 评审对象：[`2026-08-08-anthropic-responses-semantic-bridge.md`](2026-08-08-anthropic-responses-semantic-bridge.md)、[`2026-08-08 protocol-neutral reasoning exchange ADR`](../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)
+> 第1轮基线：`78b5a97d`
+> 第1轮后先行修订：`fb20919a`、`b6cbced2`
+> 状态：五轮评审已收口；协议、架构／cutover、决策／config／docs三视角均零blocker／major
+
+本文件转录并处置第1轮三名独立 reviewer 的返回结果。首轮报告没有写入仓库，以下按原评审分组保留 finding，而不是把重叠项去重；这样每名 reviewer 的复评范围都可逐条追溯。技术设计裁决均为 C 级可逆产物决策。实施授权冲突涉及用户已裁决事项，按 A 级“适用性明确且本次裁定是遵从既有决定”分支直接同步，不重新询问。
+
+## 第1轮处置
+
+### A．协议状态机与 wire 语义
+
+| ID | 原严重级别 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| P1 | BLOCKER | ledger 无法表达 Responses nested lifecycle：缺 content／summary index、part declare／done、reasoning content track 与 authoritative done。 | 采纳（C）。加入 `PartKey`、`PartKind`、`PartState` 与 declare／delta／done；part `.done` text 为权威值，item 完成不得替代 nested part 完成。 | RFC §4、§11 C1 |
+| P2 | BLOCKER | function／server-tool 终态数据不足，declare 缺 name／callId，result variant 不完整。 | 采纳（C）。`b6cbced2` 先补 function-result／server-tool-result；本轮再加入 declare-time `CallMetadata`，缺 name／callId 的 call 不进入 emitter。 | RFC §4 |
+| P3 | MAJOR | 缺 response-level terminal：completed／incomplete／failed／cancelled、reason、usage、error 与 EOF／abort provenance。 | 采纳（C）。新增 `ResponseTerminal`，规定每个 candidate 恰有一个 response terminal，且 emitter 不得把非成功终态改成 completed。 | RFC §4、§11 C0/C1 |
+| P4 | MAJOR | partial 只存在 Reasoning Exchange Envelope，普通 text／function item 无法表达 partial。 | 采纳（C）。`ItemTerminal`适用于所有item与part，并由判别联合携provenance／reason；reasoning carrier的`boundary.partial`只作为统一item terminal的序列化投影，没有独立setter。ADR同步修订。 | RFC §4、§6.1；ADR §2 |
+| P5 | MAJOR | reasoning visible 有 `summaryParts` 与 final envelope `visible` 两个 owner。 | 采纳（C）。parts authoritative text 加 `reasoningVisibleKind` 是唯一可写 owner；终结时才派生 envelope visible。 | RFC §4 |
+| P6 | MAJOR | Carrier v2 的 `opaque:string` 无内部 discriminant，prefix／source protocol／opaque kind 一致性未冻结。 | 采纳（C）。加入 `kind`，decoder 联合校验 wire prefix、kind 与 source protocol，任一不一致 fail-closed。 | RFC §6.1 |
+
+### B．架构、candidate lineage 与 cutover
+
+| ID | 原严重级别 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| A1 | BLOCKER | DAG 在 C5/C6 cutover 后才做 ordered-turn、server-tool、capability policy 与 carrier v2，切换会丢既有或目标行为。 | 采纳（C）。重排为 C4–C7 先闭合全部领域语义，C8 全 cell shadow parity，C9/C10 才切 production authority。 | RFC §11.2 |
+| A2 | BLOCKER | C5 stream 与 C6 non-stream 分开切换，违反“一个方向原子替换 stream/non-stream 全部 cells”。 | 采纳（C）。C1–C8 均不切 production writer；C9、C10 分别在一个语义 commit 内覆盖单方向 HTTP／WS、stream／non-stream、terminal、usage 与 History。 | RFC §11.2 C8–C10 |
+| A3 | MAJOR | retry／hedge／fallback lineage 不完整：winner commit point、loser discard、partial 已发状态、retry 从何处 fork 均未定义。 | 采纳（C）。新增 config snapshot、candidate／dispatch／segment lineage，冻结首次不可逆客户端 emission 为 winner commit point，区分 pre-commit retry 与 post-commit continuation。 | RFC §6、§11 C2 |
+| A4 | MAJOR | 缺通用 partial terminal。 | 采纳（C）。与P4同一根因，但保留独立评审项；所有item／part使用统一`ItemTerminal`判别联合。 | RFC §4 |
+| A5 | MAJOR | reasoning visible 双 owner。 | 采纳（C）。与 P5 同一根因；parts 是唯一可写 owner，envelope 是终态派生值。 | RFC §4 |
+| A6 | MAJOR | Observation 缺 candidate／winner／sink-commit 阶段，shadow 或 loser 可能写入 History actual effect。 | 采纳（C）。加入 proposed→winner-committed→sink-emitted 单向阶段；loser／shadow 永远停在 proposed，actual 只收 winner。 | RFC §10 |
+| A7 | MAJOR | config snapshot 应在 ingress 捕获一次；每 candidate 只按 final route 从同一 snapshot 解析 policy。 | 采纳（C）。ingress 在任何分叉前捕获 immutable snapshot；所有后代共享 snapshot identity，candidate final route 后解析一次 policy。 | RFC §3.1、§6、§11 C2 |
+| A8 | MAJOR | carrier 比较不能只看 model，必须使用 protocol／provider／resolved model 组成的规范化 `ModelIdentity`。 | 采纳（C）。source 与 target 均改用完整 `ModelIdentity`；三维全部相同才 preserve v2 opaque。 | RFC §4、§6、§6.1 |
+
+### C．决策、配置与公共文档
+
+| ID | 原严重级别 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| D1 | BLOCKER | ADR 说“不自动启动代码执行”，RFC 说 plan 后无需再问，二者冲突。 | 采纳（A，遵从既有裁决）。文档自身不构成一般授权；用户在 2026-08-08 本轮已另行明确授权协调实施，因此 plan 定稿后不重复询问。新公共契约分叉、范围变化或不可逆动作仍另行裁决。 | ADR“实施边界”；RFC §16 |
+| D2 | MAJOR | 非法 policy 叶子不能 warn-continue 后静默回落默认；v2 policy rule 必须原子。 | 采纳（C）。任一非法／未知／冲突字段使整条 rule 不进入 resolver；服务可继续使用其他有效 rule，但匹配失效 rule 的请求返回 typed config error。 | RFC §6.2、§11 C6 |
+| D3 | MAJOR | `safe-stable-stringify` 有损容错，不能直接承担 canonical validator。 | 采纳（C）。`fb20919a` 已要求先用严格递归 JSON-domain validator 拒绝非有限数、undefined、function、symbol、bigint 与 cycle，再只借用 stable key ordering。 | RFC §6.1、§8.1 |
+| D4 | MAJOR | History 公共 projection shape 未冻结：缺双向 versioned path、policy snapshot、observation stage、缺失语义与 opaque hash 算法；API 文档同步不能等 C11。 | 采纳（C）。冻结 `pipelineInfo.translation.semanticBridgeV2`、actual/candidate 分层、字段缺失语义、域分离 SHA-256、详情／WS／summary 表面；公共 docs 前移到 C3。 | RFC §10.1、§11 C3 |
+
+## 第1轮后自我证伪修正
+
+1. RFC 初写的 History detail 路径为不存在的 `/api/history/:id`。对照 `docs/history.md` 与 `docs/API.md` 后修为实际公共端点 `GET /history/api/entries/:id`。
+2. `boundary.partial` 若不说明派生关系，仍可能成为 reasoning 专属第二状态源。RFC 已明确它只能从父 `SemanticItem.terminal` 序列化／恢复。
+3. 原 DAG 的章节文字与图互相冲突：文字要求按方向原子切换，图却按 stream/non-stream 分开。现由 C9／C10 两个方向性 cutover 作为唯一 production authority 切换点。
+
+## 第2轮复评与处置
+
+复评基线：`5015f107`。
+
+### 协议状态机与wire语义
+
+P1–P6全部关闭，blocker为0。reviewer新增：
+
+| ID | 严重级别 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| P7 | MAJOR | `finish-item`未要求所有已declare child part先terminal；`finish-response`也可能在item／part开放时提前终结。实现可因此跳过官方Responses的part-before-item lifecycle。 | 采纳（C）。任何item terminal前全部part必须terminal；complete item的非discarded part必须complete且不得有partial part，discarded part须带具名degradation；partial／discarded item前按具名provenance逐个终结开放part。response terminal同样先闭合所有开放item／part，reducer对违反前置条件的transition fail-closed，emitter不得补完。 | RFC §4、§11 C0 |
+
+协议视角结论：P7复评关闭后可定稿。
+
+### 决策、配置与公共文档
+
+D1–D4全部关闭，未发现新blocker／major。reviewer明确给出“决策/config/docs视角可定稿”。其中特别确认：当前实现尚未进入C3，`docs/history.md`／`docs/API.md`不得提前声称`semanticBridgeV2`已经落地；本RFC只冻结未来C3必须同步的公共契约。
+
+### 架构、candidate lineage与cutover
+
+A1、A2、A4、A5、A7、A8关闭，blocker为0。A3、A6的首轮修法不足，另新增A9：
+
+| ID | 严重级别 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| A3-R2 | MAJOR | post-commit fallback／continuation没有可表达的delivery authority状态：新candidate若也标winner会出现多个winner；保持uncommitted又不能写sink。 | 采纳（C）。以单一`DeliveryAuthorityState`取代candidate winner布尔值；初始内容commit、preflight reject或contentless success建立epoch 0，post-commit恢复在一个临界动作中把唯一active authority从祖先移交给后代，最终overall terminal只取authority chain的terminal leaf。 | RFC §6、§10.1、§11 C2 |
+| A6-R2 | MAJOR | 初始commit后才由流式mapper产生的observation没有晋级规则，会永久停在proposed并从History actual消失。 | 采纳（C）。driver接受mapper update时读取当前authority；active candidate的新observation直接成为`authority-committed`并携epoch。区分无wire byte的semantic effect与需要sink ACK的wire effect；后者才继续晋级`sink-emitted`。 | RFC §10、§10.1、§11 C3 |
+| A9 | MAJOR | C8–C10的“全cell”漏掉已知Anthropic→Responses请求三点seam：`translateOut`、`prepareWire`、retry baseline；只切request mapper会二次CC翻译或让retry读取错误body形状。 | 采纳（C）。C8明确按方向枚举request mapper、codec cell、prepareWire、initial/retry baseline及response/terminal/History；前向三点分别具首次dispatch、retry正控和逐点mutation。C9在同一cutover commit切换并删除三点旧dispatch。 | RFC §11 C8–C10 |
+
+架构视角结论：A3-R2、A6-R2、A9复评关闭后可定稿。
+
+### 第2轮整改中的自我证伪修正
+
+| ID | 发现 | 处置 | 落点 |
+|---|---|---|---|
+| S1 | P7若写成“complete item的全部part都complete”，会错误排斥带具名degradation的discarded child。 | 父终结的硬门改为所有child已terminal；complete父允许具名discarded child，但禁止partial child。 | RFC §4 |
+| S2 | `candidates`可裁剪，而route-dependent policy原只在该可选数组中；裁剪后实际authority epochs使用的policy丢失。 | 每个不可省略的`authorityLineage` entry携完整`PairTranslationPolicy`；可选candidate投影只补非authority诊断。 | RFC §10.1 |
+| S3 | preflight fail-closed与合法contentless success没有普通内容帧，若authority只由首帧建立，真实拒绝／终态会永远停在proposed。 | 第2轮修法先写成“终结authority后发送wire”，随后被第3轮A3-R3证明顺序错误并取代；最终契约是先建立active epoch、晋级semantic observation，由active authority发送／确认终态wire或记录写失败，再转terminal。 | RFC §6、§10.1、§12 |
+| S4 | History详情与WebSocket包含in-flight entry，但旧shape强制顶层terminal；同时result虽有final类型，ledger无output delta／done通道。 | History改为`in-flight|terminal`判别联合，区分空lineage、active leaf与terminal leaf；result补`ResultMetadata`、output delta和authoritative done。 | RFC §4、§10.1 |
+| S5 | terminal若仍是裸字符串，P7要求的partial provenance／discard reason和response合法组合不可由类型执行；observation晋级若追加副本会重复计数；authority transfer若只闭合内存状态会让后代wire越过祖先closing events。 | `ItemTerminal`与`ResponseTerminal`改为互斥判别联合；每个observation ID只保留一个当前stage；旧authority须先发送并ACK全部closing effects，再原子移交，后代首帧在移交后发送。 | RFC §4、§6、§10 |
+| S6 | continuation已进入authority与History类型，但boundary标题／mapper职责／candidate ledger枚举仍只写fallback，实施者可能靠上下文猜continuation或复用旧segment；另有跨commit反例：post-commit fallback若接受`partialOutputKept:false`，会谎称撤回已发字节。 | 统一为fallback／continuation显式`SegmentBoundaryUpdate`、判别envelope／carrier boundary和独立candidate ledger；两类ID不共命名空间。pre-commit fallback可false并discard，post-commit只能true并transfer，false fail-closed；continuation恒true。 | RFC §3.3–§3.4、§4、§6.1 |
+
+## 第3轮复评
+
+复评基线：`0615aad4`。
+
+### 协议状态机与wire语义
+
+P7、`ItemTerminal`／`ResponseTerminal`合法组合、call／result authoritative done、reasoning／text child lifecycle、preflight reject／contentless terminal全部关闭。未发现新增blocker／major，reviewer明确给出“协议视角可定稿”。
+
+### 架构与History
+
+架构reviewer关闭A6-R2、A9、C9/C10及post-commit transfer主体；History reviewer关闭authority policy、observation stage/effect、opaque与公共表面。剩余4项major全部采纳：
+
+| ID | 来源 | Finding | 处置 | 落点 |
+|---|---|---|---|---|
+| A3-R3 | 架构 | preflight reject先把authority转terminal再发送错误wire，违反“只有active可写sink”。 | 采纳（C）。driver接受typed rejection时建立active epoch并冻结failed terminal；错误wire仍由active authority发送／ACK，随后才转terminal。发送失败先记录delivery failure再转terminal，不允许无authority writer。 | RFC §6 |
+| A10 | 架构 | 必填authority lineage缺transferred祖先的segment terminal、partial delivery、closing ACK，裁剪candidate diagnostics后无法证明部分写出。 | 采纳（C）。transferred entry必带fallback／continuation incomplete terminal、`partialDelivery:true`和closing ACK；terminal leaf带最终terminal与terminal wire结果；active leaf带not-started／writing。 | RFC §10.1 |
+| D5 | History | terminal variant类型仍允许空lineage，terminal leaf不携`ResponseTerminal`，不可结构化验证terminal存在与等值。 | 采纳（C）。in-flight允许空或`transferred*+active`，terminal强制非空`transferred*+terminal` tuple；最终`ResponseTerminal`只由terminal leaf拥有，消灭顶层双owner。 | RFC §10.1 |
+| D6 | History | 可选candidate明细缺少captured／not-captured／pruned判别，字段缺失语义不明确。 | 采纳（C）。`candidateDiagnostics`改为不可省略判别联合，并冻结total／retained／array length不变量；空captured数组表示确无明细。 | RFC §10.1 |
+
+架构与History视角结论：A3-R3、A10、D5、D6复评关闭后可定稿。
+
+## 第4轮复评
+
+复评基线：`2e9c16cf`。
+
+### 协议状态机与wire语义
+
+fallback／continuation `SegmentBoundaryUpdate`、envelope／carrier boundary、Item／Response terminal ID配对、pre/post-commit `partialOutputKept`、continuation独立candidate ledger及P7回归全部关闭。未发现新增blocker／major，reviewer明确给出“协议视角可定稿”。
+
+### 架构与History
+
+History reviewer关闭in-flight／terminal判别联合、唯一ResponseTerminal owner、transferred ancestor审计、terminal wire committed语义、candidateDiagnostics裁剪语义及裁剪后policy／actual／opaque保真；未发现新增blocker／major，明确给出“决策/config/docs视角可定稿”。
+
+架构reviewer关闭A3-R3、A10、post-commit transfer、post-commit false分支与continuation boundary；新增1项major：
+
+| ID | Finding | 处置 | 落点 |
+|---|---|---|---|
+| A11 | `SegmentBoundaryUpdate`允许pre-commit fallback + `partialOutputKept:true`，但RFC未定义应建立旧authority后flush+transfer，还是reject；实现会产生不同客户端wire。 | 采纳（C）。update按`authorityPhase`判别；phase由driver在authority临界区据锁内状态派生／复核。pre-commit true时，有可发wire effect则旧candidate建立epoch 0、flush+ACK closing后transfer至epoch 1；空segment则discard旧candidate、后代首次写／contentless terminal／preflight reject时直接epoch 0，不建transfer。空segment normalized observation归属新candidate并在其获权时晋级actual，不留在discarded祖先。post-commit只允许true；continuation恒为post-commit true。History transferred entry记录boundary authority phase。 | RFC §3.4、§6、§10.1、§12 |
+
+架构视角结论：A11复评关闭后可定稿。
+
+## 第5轮复评
+
+复评基线：`b84047d2`。
+
+### 协议状态机与wire语义
+
+`authorityPhase`锁内派生／复核、pre-commit retain三分支、fallback／continuation terminal ID、空segment observation owner与boundary lifecycle回归全部关闭。未发现新增blocker／major，reviewer明确给出“协议视角可定稿”。
+
+### 架构与History
+
+History reviewer确认pre-commit retain三支、空segment observation归属、boundary authority phase、terminal wire committed语义及裁剪后policy／actual／opaque保真均关闭；未发现新增blocker／major，明确给出“决策/config/docs视角可定稿”。
+
+架构reviewer逐支执行锁内phase复核、pre-commit false、pre-commit true有wire、pre-commit true空segment、flush失败、post-commit fallback／continuation与History投影，A11全部关闭；未发现新增blocker／major，明确给出“架构/cutover视角可定稿”。
+
+### 收口结论
+
+固定基线`b84047d2`的第5轮复评三视角均为零blocker／major。RFC可从Draft改为Accepted，并进入独立TDD plan／kickoff阶段；产品代码仍未开始实施。
+
+## 复评门
+
+原三名 reviewer 逐条复核自己分组内的 finding，并检查本轮修订是否引入同类新缺陷。若只剩 minor，须明确给出“可定稿”；任何未关闭 blocker／major 都进入下一轮处置与复评。复评还必须覆盖以下当前状态命题：
+
+1. RFC 中所有会影响 production 语义的能力都在 C9／C10 cutover 前完成并进入 C8 全 cell shadow parity。
+2. 单一方向的 production cutover 不再拆分 stream/non-stream 或 HTTP/WS。
+3. nested part、item terminal 与 response terminal 三层状态互不替代。
+4. loser／shadow observation 不会进入请求级 actual History 或 WARN。
+5. 所有 candidate 从同一 ingress config snapshot 解析 policy，v2 opaque 比较使用完整 `ModelIdentity`。
+6. 非法 v2 policy rule 整条失效，不会删除坏叶子后静默使用默认值。
+7. History v2 投影在 C3 定义、持久化、API readback 并同步公共文档，且不复制 opaque bytes。
+8. ADR 与 RFC 对本轮实施授权的描述一致。
+9. function／server-tool result不仅有final `SemanticItem`类型，还具备declare-time `ResultMetadata`、output delta与authoritative done通道。
+10. History判别联合能表达未commit的in-flight、active authority的in-flight与terminal authority chain，不为WebSocket实时entry伪造terminal。

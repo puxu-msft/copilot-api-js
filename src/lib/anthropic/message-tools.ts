@@ -199,7 +199,11 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       && !historyToolNames.has(tool.name)
 
     if (shouldDefer) {
-      deferred.push({ ...normalized, defer_loading: true })
+      // Drop any client-supplied cache breakpoint: upstream rejects a tool carrying both `defer_loading: true` and `cache_control` ("Tools with defer_loading cannot use prompt caching").
+      // Clients that place breakpoints positionally (e.g. nanobot marks the last non-MCP tool and the tail tool) have no way to know which tools we are about to defer.
+      // `addToolCacheControl` (request-preparation.ts) re-anchors on the last non-deferred function tool when budget remains, so the request keeps a tool-level breakpoint.
+      const { cache_control: _droppedCacheControl, ...withoutCacheControl } = normalized
+      deferred.push({ ...withoutCacheControl, defer_loading: true })
     } else {
       nonDeferred.push(normalized)
     }

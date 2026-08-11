@@ -1,6 +1,15 @@
-import { describe, it, expect } from "bun:test"
+import {
+  //
+  describe,
+  it,
+  expect,
+} from "bun:test"
 
-import { abortableDelay, OperationCancelledError } from "~/lib/util/abortable-delay"
+import {
+  //
+  abortableDelay,
+  OperationCancelledError,
+} from "~/lib/util/abortable-delay"
 
 describe("abortableDelay", () => {
   it("resolves after the delay when not aborted", async () => {

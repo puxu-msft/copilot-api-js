@@ -19,7 +19,7 @@
  * The reverse envs are hand-built minimal fakes (mirrors `ccLegEnv`/`forwardLegEnv` in
  * `tests/anthropic/forward-leg-strategies.it.test.ts` / `tests/routes/messages/handler-v4-selfheal-
  * delegation.it.test.ts`): the reverse branch of `buildLegStrategies` never touches `env.ctx`, only
- * `env.requestState.{reverseMapperHolder,betaProbe}` + `env.body` — so no real codec/driver/runtime dance is
+ * `env.candidate.{reverseMapperHolder,betaProbe}` + `env.attempt.body` — so no real codec/driver/runtime dance is
  * needed to exercise it here.
  */
 
@@ -88,17 +88,22 @@ describe("retry-strategy assembly golden (pre-refactor lock, Task 1 / Commit 1)"
 
   describe("4-6. reverse @messages legs (via anthropicMessagesLeg.buildLegStrategies) → 各 16 策略顺序", () => {
     /** A minimal reverse `@messages` env (mirrors `ccLegEnv`/`forwardLegEnv`) — no real `.ctx` needed: the
-     *  reverse branch of `buildLegStrategies` reads only `env.body` + `env.requestState`. */
+     *  reverse branch of `buildLegStrategies` reads only `env.attempt.body` + `env.candidate`. */
     function reverseEnv(clientFormat: "gemini" | "openai-cc" | "openai-responses"): RequestEnvelope {
       return {
-        clientFormat,
-        targetEndpoint: ENDPOINT.MESSAGES,
-        body: anthropicBaseline,
-        model: { id: "claude-sonnet-4" },
-        requestState: {
+        request: {
+          clientFormat: clientFormat,
+          model: { id: "claude-sonnet-4" },
+        } as RequestEnvelope["request"],
+        attempt: {
+          targetEndpoint: ENDPOINT.MESSAGES,
+          body: anthropicBaseline,
+        } as RequestEnvelope["attempt"],
+        candidate: {
           reverseMapperHolder: createReverseAnthropicMapperHolder("claude-sonnet-4"),
           betaProbe: createBetaProbe(undefined),
-        },
+        } as RequestEnvelope["candidate"],
+        createView: () => ({}) as RequestEnvelope["view"],
       } as unknown as RequestEnvelope
     }
 

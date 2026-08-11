@@ -11,9 +11,14 @@ import type {
   //
   CandidateHandle,
   CandidateRole,
+  CandidateVerdict,
 } from "~/lib/context/model-operation-record"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ResponseFailureSource,
+} from "~/lib/pipeline/types"
 
 import { withRejectionObserver } from "~/lib/transport/crash-safety"
 
@@ -23,6 +28,7 @@ import type {
   CandidateRuntime,
 } from "./candidate"
 import type { CandidateResponseSession } from "./candidate-response-session"
+import type { DispatchSettlement } from "./dispatch-scheduler"
 import type { GenerationBudget } from "./generation-budget"
 
 import {
@@ -35,6 +41,10 @@ export interface CoordinatorCandidateInput {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
   readonly env: RequestEnvelope
+  /** Structured trigger retained on the recovery candidate instead of overloading retryNextStrategy. */
+  readonly metadata?: { recoveryReason?: string }
+  /** Strategy attached to this candidate's initial physical dispatch. */
+  readonly initialStrategy?: string
 }
 
 export interface CoordinatedCandidate<TProcessor> extends CandidateReady<TProcessor> {
@@ -53,7 +63,18 @@ export interface CreateGenerationCoordinatorInput<TProcessor> {
 export interface GenerationCoordinator<TProcessor> {
   readonly deliveryIdentity: symbol
   runPrimary(): Promise<CoordinatedCandidate<TProcessor>>
-  runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  /**
+   * Starts the one parent-less recovery candidate after the primary failed before becoming ready.
+   * The failed primary settles itself, so this operation must never settle a parent; it is guarded
+   * at most once for the coordinator's shared generation budget.
+   */
+  runRecoveryFromPreReadyFailure(reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  runRecovery(
+    parent: CoordinatedCandidate<TProcessor>,
+    reason: string,
+    env?: RequestEnvelope,
+    retryNextStrategy?: string,
+  ): Promise<CoordinatedCandidate<TProcessor>>
   /**
    * Continuation-retry (spec 2026-07-22 §5.1, ADR D3): the append counterpart of {@link runRecovery}.
    * `runRecovery` REPLACES a failed parent whose content never reached the client (settles it
@@ -70,6 +91,10 @@ export interface GenerationCoordinator<TProcessor> {
     hedgeEnv?: RequestEnvelope
     startHedge?: () => Promise<CoordinatedCandidate<TProcessor>>
   }): Promise<HedgeRaceResult<TProcessor>>
+  /** Settle a response pump that fully consumed the ready stream without cancelling it again. */
+  settleConsumedReady(candidate: CoordinatedCandidate<TProcessor>, input: DispatchSettlement, verdict: "winner" | "failed", reason: string): Promise<void>
+  /** Dispose a ready stream that evaluation deliberately did not consume. */
+  disposeUnconsumedReady(candidate: CoordinatedCandidate<TProcessor>, input: DispatchSettlement, verdict: "failed", reason: string): Promise<void>
   completeCandidate(candidate: CandidateHandle, verdict?: "winner" | "failed", reason?: string): void
   releaseCandidate(candidate: CandidateHandle): void
   cancel(reason: string): Promise<void>
@@ -82,10 +107,24 @@ export interface HedgeWinner<TProcessor> {
   readonly loserCleanup: Promise<void>
 }
 
+export interface HedgeRaceFailure {
+  readonly error: unknown
+  readonly source: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
+}
+
+export interface HedgeRaceAggregateError extends AggregateError {
+  readonly hedgeFailures: ReadonlyArray<HedgeRaceFailure>
+}
+
+/** A mixed race is fail-closed: timing must not convert a codec failure into a recoverable transport failure. */
+export function hedgeFailureSource(failures: ReadonlyArray<HedgeRaceFailure>): Extract<ResponseFailureSource, "upstream-transport" | "codec-render"> {
+  return failures.every((failure) => failure.source === "upstream-transport") ? "upstream-transport" : "codec-render"
+}
+
 export type HedgeRaceResult<TProcessor> =
   | ({ readonly kind: "winner" } & HedgeWinner<TProcessor>)
   | { readonly kind: "terminal"; readonly candidate: CoordinatedCandidate<TProcessor>; readonly bufferedFrames: ReadonlyArray<ClientFrame> }
-  | { readonly kind: "failure"; readonly error: unknown }
+  | ({ readonly kind: "failure" } & HedgeRaceFailure)
 
 /** Create a single-generation, primary-only coordinator. */
 export function createGenerationCoordinator<TProcessor>(input: CreateGenerationCoordinatorInput<TProcessor>): GenerationCoordinator<TProcessor> {
@@ -94,9 +133,42 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   const candidateReservations = new Map<CandidateHandle, import("./generation-budget").BudgetReservation>()
   let primaryStarted = false
   let hedgeStarted = false
+  let recoveryFromPreReadyStarted = false
+  // A ready parent may be passed through independent error paths in the same microtask turn.
+  // Claim before the first await so exactly one recovery owns its discard/replace transition.
+  const recoveryParentsInProgress = new Set<CandidateHandle>()
   let raceStarted = false
   let active: CandidateRuntime<TProcessor> | undefined
   let cancelledReason: string | undefined
+
+  const distinctErrors = (errors: ReadonlyArray<unknown>): Array<unknown> => {
+    const unique: Array<unknown> = []
+    for (const error of errors) if (!unique.includes(error)) unique.push(error)
+    return unique
+  }
+
+  const settleAndRelease = (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }): Array<unknown> => {
+    const errors: Array<unknown> = []
+    try {
+      runtime.settle(settlement)
+    } catch (error) {
+      errors.push(error)
+    } finally {
+      candidateReservations.get(runtime.handle)?.release()
+      if (active === runtime) active = undefined
+    }
+    return errors
+  }
+
+  const throwCoordinatorFailures = (errors: ReadonlyArray<unknown>, message: string, wrapUnknown = true): void => {
+    if (errors.length === 0) return
+    if (errors.length === 1) {
+      const error = errors[0]
+      if (!wrapUnknown || error instanceof Error) throw error
+      throw new Error(message, { cause: error })
+    }
+    throw new AggregateError(errors, message)
+  }
 
   const start = async (candidateInput: CoordinatorCandidateInput): Promise<CoordinatedCandidate<TProcessor>> => {
     if (cancelledReason !== undefined) throw new Error(cancelledReason)
@@ -130,14 +202,41 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       return start({ role: "primary", env: input.env })
     },
 
-    async runRecovery(parent, reason, env = parent.env) {
-      const parentRuntime = runtimes.get(parent.candidate)
-      if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
-      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy: "buffered-retry" })
-      parentRuntime.settle({ verdict: "failed", reason })
-      candidateReservations.get(parentRuntime.handle)?.release()
-      if (active === parentRuntime) active = undefined
-      return start({ role: "recovery", parentCandidate: parent.candidate, env })
+    runRecoveryFromPreReadyFailure(_reason, env) {
+      if (recoveryFromPreReadyStarted) throw new Error("[generation-coordinator] recovery from pre-ready failure already started")
+      recoveryFromPreReadyStarted = true
+      // The primary never became ready and has already settled itself as failed in candidate.ts, so there is no ready parent to settle here.
+      return start({ role: "recovery", env, metadata: { recoveryReason: _reason }, initialStrategy: "precontent-recovery" })
+    },
+
+    async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
+      if (recoveryParentsInProgress.has(parent.candidate)) throw new Error("[generation-coordinator] recovery parent is already being consumed")
+      recoveryParentsInProgress.add(parent.candidate)
+      try {
+        const parentRuntime = runtimes.get(parent.candidate)
+        if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
+        // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
+        // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
+        // would first publish cancelled and erase this recovery's terminal provenance.
+        const errors: Array<unknown> = []
+        try {
+          await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
+        } catch (error) {
+          errors.push(error)
+        } finally {
+          errors.push(...settleAndRelease(parentRuntime, { verdict: "failed", reason }))
+        }
+        throwCoordinatorFailures(distinctErrors(errors), "Ready parent disposal failed")
+        return await start({
+          role: "recovery",
+          parentCandidate: parent.candidate,
+          env,
+          metadata: { recoveryReason: reason },
+          initialStrategy: retryNextStrategy,
+        })
+      } finally {
+        recoveryParentsInProgress.delete(parent.candidate)
+      }
     },
 
     async runContinuation(parent, reason, env) {
@@ -146,10 +245,20 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       // The parent PARTIALLY delivered (its committed blocks are on the client wire) → settle it
       // `continued`, NOT `discarded`/`failed`. `retryNextStrategy:"continuation"` marks the diagnostic
       // trail as a continuation hand-off (distinct from a transparent retry — telemetry §5.3 split).
-      await parent.settleDispatch({ verdict: "continued", reason, retryNextStrategy: "continuation" })
-      parentRuntime.settle({ verdict: "continued", reason })
-      candidateReservations.get(parentRuntime.handle)?.release()
-      if (active === parentRuntime) active = undefined
+      const errors: Array<unknown> = []
+      try {
+        await parent.settleDispatch({ verdict: "continued", reason, retryNextStrategy: "continuation" })
+      } catch (error) {
+        errors.push(error)
+      } finally {
+        errors.push(
+          ...settleAndRelease(parentRuntime, {
+            verdict: errors.length === 0 ? "continued" : "failed",
+            reason: errors.length === 0 ? reason : "settlement-failed",
+          }),
+        )
+      }
+      throwCoordinatorFailures(distinctErrors(errors), "Continuation parent settlement failed")
       return start({ role: "continuation", parentCandidate: parent.candidate, env })
     },
 
@@ -171,7 +280,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           probeCandidateResponse({ candidate, session, upstream: candidate.upstream }).then((outcome) => ({ index, outcome })),
         )
       }
-      const failures: Array<unknown> = []
+      const failures: Array<HedgeRaceFailure> = []
       while (pending.size > 0) {
         // Promise.race observes the iterable in candidate order. If boundaries settle in the same
         // microtask turn, the primary/earlier candidate therefore wins deterministically.
@@ -183,12 +292,23 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           const loserCleanup = observeLoserCleanup(candidates, pending, winner, runtimes, candidateReservations)
           return { candidate: winner, bufferedFrames: outcome.bufferedFrames, liveFrames: outcome.liveFrames, loserCleanup }
         }
-        const runtime = runtimes.get(outcome.candidate.candidate)
-        runtime?.settle({ verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" })
-        if (runtime) candidateReservations.get(runtime.handle)?.release()
-        if (outcome.kind === "failure") failures.push(outcome.error)
+        const { failure, ownerErrors } = settleRaceOutcome(outcome, runtimes, settleAndRelease)
+        if (failure) failures.push(failure)
+        if (ownerErrors.length > 0) {
+          const aggregate = new AggregateError(
+            [...failures.map((failure) => failure.error), ...ownerErrors],
+            "Generation candidate settlement failed",
+          ) as HedgeRaceAggregateError
+          Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+          throw aggregate
+        }
       }
-      throw new AggregateError(failures, "No generation candidate produced a complete client block")
+      const aggregate = new AggregateError(
+        failures.map((failure) => failure.error),
+        "No generation candidate produced a complete client block",
+      ) as HedgeRaceAggregateError
+      Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+      throw aggregate
     },
 
     async racePrimaryWithDelayedHedge({ primary, delayMs, hedgeEnv, startHedge }) {
@@ -212,7 +332,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           }
         }
         if (first.outcome.kind === "terminal") return { kind: "terminal", candidate: primary, bufferedFrames: first.outcome.bufferedFrames }
-        return { kind: "failure", error: first.outcome.error }
+        return { kind: "failure", error: first.outcome.error, source: first.outcome.source }
       }
 
       let hedge: CoordinatedCandidate<TProcessor>
@@ -221,16 +341,47 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       } catch (error) {
         await runtimes.get(primary.candidate)?.cancel("hedge-start-failed")
         await primaryProbe
-        return { kind: "failure", error }
+        return { kind: "failure", error, source: "upstream-transport" }
       }
       const hedgeProbe = probeCandidateResponse({ candidate: hedge, session: asCandidateResponseSession(hedge.processor), upstream: hedge.upstream })
-      return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations })
+      return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations, settleAndRelease })
+    },
+
+    async settleConsumedReady(candidate, input, verdict, reason) {
+      const runtime = runtimes.get(candidate.candidate)
+      const errors: Array<unknown> = []
+      try {
+        await candidate.settleDispatch(input)
+      } catch (error) {
+        errors.push(error)
+      } finally {
+        if (runtime)
+          errors.push(
+            ...settleAndRelease(runtime, { verdict: errors.length === 0 ? verdict : "failed", reason: errors.length === 0 ? reason : "settlement-failed" }),
+          )
+      }
+      throwCoordinatorFailures(distinctErrors(errors), "Consumed ready settlement failed", false)
+    },
+
+    async disposeUnconsumedReady(candidate, input, verdict, reason) {
+      const runtime = runtimes.get(candidate.candidate)
+      if (!runtime) throw new Error("[generation-coordinator] unconsumed ready candidate is not owned by this coordinator")
+      const errors: Array<unknown> = []
+      try {
+        await runtime.disposeReadyWithSettlement(input)
+      } catch (error) {
+        errors.push(error)
+      } finally {
+        errors.push(
+          ...settleAndRelease(runtime, { verdict: errors.length === 0 ? verdict : "failed", reason: errors.length === 0 ? reason : "disposal-failed" }),
+        )
+      }
+      throwCoordinatorFailures(distinctErrors(errors), "Unconsumed ready disposal failed")
     },
 
     completeCandidate(candidate, verdict = "winner", reason = "generation-complete") {
       const runtime = runtimes.get(candidate)
-      runtime?.settle({ verdict, reason })
-      if (runtime) candidateReservations.get(runtime.handle)?.release()
+      if (runtime) throwCoordinatorFailures(distinctErrors(settleAndRelease(runtime, { verdict, reason })), "Candidate completion settlement failed", false)
     },
 
     releaseCandidate(candidate) {
@@ -249,14 +400,34 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   }
 }
 
+/**
+ * Settle a non-boundary race outcome (terminal-without-boundary or failure) against its owning
+ * runtime and split the result into probe-provenance failure vs. recorder/owner settlement errors.
+ * Shared by {@link raceReadyCandidates} and {@link raceProbePromises} so a defect in owner-error
+ * collection or release timing shows up in both race paths' mutation controls, not just one.
+ */
+function settleRaceOutcome<TProcessor>(
+  outcome: Exclude<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "boundary" }>,
+  runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>,
+  settleAndRelease: (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }) => ReadonlyArray<unknown>,
+): { failure: HedgeRaceFailure | undefined; ownerErrors: ReadonlyArray<unknown> } {
+  const runtime = runtimes.get(outcome.candidate.candidate)
+  const ownerErrors =
+    runtime ? settleAndRelease(runtime, { verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" }) : []
+  const failure = outcome.kind === "failure" ? { error: outcome.error, source: outcome.source } : undefined
+  return { failure, ownerErrors }
+}
+
 async function raceProbePromises<TProcessor>(input: {
   candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>
   probes: ReadonlyArray<Promise<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>>>
   runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>
   candidateReservations: Map<CandidateHandle, import("./generation-budget").BudgetReservation>
+  settleAndRelease: (runtime: CandidateRuntime<TProcessor>, settlement: { verdict: CandidateVerdict; reason?: string }) => ReadonlyArray<unknown>
 }): Promise<HedgeRaceResult<TProcessor>> {
   const pending = new Map(input.probes.map((probe, index) => [index, probe.then((outcome) => ({ index, outcome }))]))
-  const failures: Array<unknown> = []
+  const failures: Array<HedgeRaceFailure> = []
+  const ownerErrors: Array<unknown> = []
   let firstTerminal: Extract<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "terminal" }> | undefined
   while (pending.size > 0) {
     const settled = await Promise.race(pending.values())
@@ -272,20 +443,25 @@ async function raceProbePromises<TProcessor>(input: {
         loserCleanup,
       }
     }
-    if (outcome.kind === "failure") {
-      const runtime = input.runtimes.get(outcome.candidate.candidate)
-      runtime?.settle({ verdict: "failed", reason: "response-failure" })
-      if (runtime) input.candidateReservations.get(runtime.handle)?.release()
-      failures.push(outcome.error)
-    } else {
-      const runtime = input.runtimes.get(outcome.candidate.candidate)
-      runtime?.settle({ verdict: "failed", reason: "terminal-without-boundary" })
-      if (runtime) input.candidateReservations.get(runtime.handle)?.release()
-      firstTerminal ??= outcome
-    }
+    const { failure, ownerErrors: settlementErrors } = settleRaceOutcome(outcome, input.runtimes, input.settleAndRelease)
+    ownerErrors.push(...settlementErrors)
+    if (outcome.kind === "failure") failures.push(failure as HedgeRaceFailure)
+    else if (settlementErrors.length === 0) firstTerminal ??= outcome
   }
-  if (firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
-  return { kind: "failure", error: new AggregateError(failures, "No generation candidate produced a complete client block") }
+  const uniqueOwnerErrors = [...new Set(ownerErrors)]
+  if (uniqueOwnerErrors.length === 0 && firstTerminal)
+    return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
+  // Owner recording failures do not originate at a probe; this empty-probe fallback is classification only, not provenance.
+  const aggregate = new AggregateError(
+    [...failures.map((failure) => failure.error), ...uniqueOwnerErrors],
+    "No generation candidate produced a complete client block",
+  ) as HedgeRaceAggregateError
+  Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+  return {
+    kind: "failure",
+    error: aggregate,
+    source: failures.length === 0 ? "upstream-transport" : hedgeFailureSource(failures),
+  }
 }
 
 function observeLoserCleanup<TProcessor>(

@@ -34,6 +34,12 @@ import {
   openDatabase,
   openDatabaseReadonly,
 } from "~/lib/history/sqlite/connection"
+import {
+  //
+  closeHistoryReadDatabase,
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+} from "~/lib/history/sqlite/read-connection"
 import { projectSearchableText } from "~/lib/history/v3/projection"
 import {
   //
@@ -44,6 +50,11 @@ import {
   prepareModelOperation,
   visitV3StoredOperations,
 } from "~/lib/history/v3/store"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 import { createDatabase } from "~/lib/sqlite/driver"
 
 const tmpDirs: Array<string> = []
@@ -134,7 +145,7 @@ describe("readonly store read surface (Phase 0)", () => {
     // hydrateManifest itself, directly against the raw manifest blob — the sidecar's
     // actual entry point once it tails `v3_operations` itself (Phase 1).
     const row = readonlyDb.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("rebuild-op") as { manifest_gz: Uint8Array }
-    const hydrated = hydrateManifest(readonlyDb, row.manifest_gz)
+    const hydrated = hydrateManifest(readonlyDb, row.manifest_gz, "rebuild-op")
     expect(hydrated.identity.operationId).toBe("rebuild-op")
 
     readonlyDb.close()
@@ -153,15 +164,41 @@ describe("readonly store read surface (Phase 0)", () => {
     expect(text).toContain("here is the searchable reply")
   })
 
-  test("openDatabase() still defaults db-param read functions to the module singleton (backward compatible)", () => {
+  test("readonly detail and search projection fail loud for future manifest format", () => {
+    const dbPath = freshDbPath()
+    seedRealV3Db(dbPath, "readonly-future-format")
+    const writable = openDatabase(dbPath)
+    const row = writable.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("readonly-future-format") as { manifest_gz: Uint8Array }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(row.manifest_gz))) as { formatVersion: number }
+    manifest.formatVersion = 999
+    writable
+      .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+      .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), "readonly-future-format")
+    closeDatabase()
+
+    const readonlyDb = openDatabaseReadonly(dbPath)
+    expect(() => getV3StoredOperation("readonly-future-format", readonlyDb)).toThrow(/unsupported manifest format version/i)
+    expect(() => {
+      const stored = getV3StoredOperation("readonly-future-format", readonlyDb)
+      if (stored) projectSearchableText(stored.record)
+    }).toThrow(/unsupported manifest format version/i)
+    readonlyDb.close()
+  })
+
+  test("db-param read functions default to the main thread's readonly handle", () => {
     const dbPath = freshDbPath()
     seedRealV3Db(dbPath, "singleton-op")
-    openDatabase(dbPath)
 
-    // No explicit db argument — must resolve against the process-wide singleton,
-    // exactly as every existing production call site does today.
-    const stored = getV3StoredOperation("singleton-op")
-    expect(stored?.record.identity.operationId).toBe("singleton-op")
+    // Until the Batch 2b cutover this asserted the opposite — that the default resolved the WRITE singleton opened by `openDatabase()`, "exactly as every existing production call site does today". That premise is what the cutover retired: the Worker owns the write connection, so no production call site has a write singleton to resolve any more, and a default pointing at one would throw on every read. The invariant that survives is the real one — a read with no explicit handle resolves whatever connection this thread publishes for reading.
+    detachHistoryReadDatabaseForTests()
+    const readonlyDb = openDatabaseReadonly(dbPath)
+    installHistoryReadDatabase(readonlyDb)
+    try {
+      const stored = getV3StoredOperation("singleton-op")
+      expect(stored?.record.identity.operationId).toBe("singleton-op")
+    } finally {
+      closeHistoryReadDatabase()
+    }
   })
 
   test("refuses to open a not-yet-initialized / unowned database readonly", () => {

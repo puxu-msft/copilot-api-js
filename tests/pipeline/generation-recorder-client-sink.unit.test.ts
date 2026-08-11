@@ -16,7 +16,7 @@ function stubSseStream() {
   return {
     written,
     stream: {
-      async writeSSE(frame: Record<string, unknown>) {
+      async write(frame: Record<string, unknown>) {
         written.push(frame)
       },
     } as unknown as Parameters<typeof makeSseSink>[0],
@@ -39,7 +39,7 @@ describe("generation recorder ClientSink frame arena integration", () => {
     const { stream } = stubSseStream()
     const sink = makeSseSink(stream, {
       onForwarded: (record) => forwarded.push(record),
-      ...clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx }),
+      ...clientFirstRealSinkOpts({ request: { clientFormat: "anthropic" }, ctx }),
     })
     await sink.write(raw)
 

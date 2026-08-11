@@ -527,7 +527,7 @@ describe("upstream websocket connection", () => {
       createSocket: () => socket,
     })
 
-    const reason = cancellationAbortError("request-deadline", "request_deadline")
+    const reason = cancellationAbortError("client-request-deadline", "client_request_deadline")
     const ac = new AbortController()
     const connecting = connection.connect({ signal: ac.signal })
     ac.abort(reason)
@@ -538,7 +538,7 @@ describe("upstream websocket connection", () => {
     )
     expect((error as Error).message).toBe("Upstream WebSocket connection aborted")
     expect((error as Error).cause).toBe(reason)
-    expect(getCancellationCause(error)).toBe("request-deadline")
+    expect(getCancellationCause(error)).toBe("client-request-deadline")
   })
 
   test("idle socket error marks connection unusable and closes the socket", async () => {

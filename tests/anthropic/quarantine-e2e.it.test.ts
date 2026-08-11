@@ -114,10 +114,16 @@ function realRewrites(store: ThinkingQuarantineStore): { l3: RequestRewrite; l1:
 function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<unknown> }): RequestEnvelope {
   const body = { model: "claude-opus-4.8", max_tokens: 100, messages: opts.messages } as unknown as MessagesPayload
   const env = {
-    clientFormat: "anthropic" as const,
-    // Both Anthropic-wire request rewrites (L3 proactive @250, L1 sanitize @300) gate on the
-    // OUTBOUND leg (RFC §3.1); anthropic-direct routes to /v1/messages, so the env carries it.
-    targetEndpoint: "/v1/messages" as const,
+    request: {
+      clientFormat: "anthropic" as const,
+    } as RequestEnvelope["request"],
+    attempt: {
+      // Both Anthropic-wire request rewrites (L3 proactive @250, L1 sanitize @300) gate on the
+      // OUTBOUND leg (RFC §3.1); anthropic-direct routes to /v1/messages, so the env carries it.
+      targetEndpoint: "/v1/messages" as const,
+      body: body,
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     ctx: {
       sessionId: opts.sessionId,
       agentId: opts.agentId,
@@ -125,10 +131,7 @@ function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<u
       setPipelineInfo: () => {},
       setInitialSanitizationInfo: () => {},
     },
-    body,
-    with(this: RequestEnvelope, patch: { body?: unknown }) {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -158,7 +161,7 @@ function hasSyntheticMarker(messages: Array<MessageParam>): boolean {
   return messages.some((m) => Array.isArray(m.content) && (m.content as Array<{ type: string; text?: string }>).some(isMarker))
 }
 function messagesOf(env: RequestEnvelope): Array<MessageParam> {
-  return (env.body as MessagesPayload).messages
+  return (env.attempt.body as MessagesPayload).messages
 }
 
 let dir: string

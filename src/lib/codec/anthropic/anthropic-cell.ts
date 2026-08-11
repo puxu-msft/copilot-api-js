@@ -5,7 +5,7 @@
  *   - `anthropic` (DIRECT `/v1/messages`) — C2a: implemented here, reusing the SAME `anthropic-leg`
  *     cores + `buildAnthropicStrategies` + sanitize/quarantine rewrites the codec calls, so the driver's
  *     cell-keyed fork is byte-for-byte identical (the C0 direct-stream golden locks it). Request-lifecycle-
- *     stable supply is read from `env.requestState`; side-channels are written to `env.ctx`.
+ *     stable supply is read from the envelope's request + candidate scopes; side-channels are written to `env.ctx`.
  *   - `openai-cc` / `gemini` / `openai-responses` (REVERSE `@messages`) — C2b: still throw here (the
  *     driver fork only routes the migrated `anthropic|/v1/messages` cell, so these are unreachable until
  *     C2b registers the reverse cells + supplies the reverse translateOut + resanitize).
@@ -42,6 +42,7 @@ import {
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
@@ -56,24 +57,22 @@ import { buildAnthropicStrategies } from "./strategies"
 
 /** Is this a REVERSE `@messages` cell (a non-anthropic client translated to the Anthropic wire)? */
 function isReverse(env: RequestEnvelope): boolean {
-  return env.clientFormat !== "anthropic"
+  return env.request.clientFormat !== "anthropic"
 }
 
-/** The reverse leg's shared per-request mapper holder (parse put it on requestState; both sanitize + resanitize read it). */
+/** The reverse leg's shared per-request mapper holder (parse put it on the candidate scope; both sanitize + resanitize read it). */
 function reverseMapperHolder(env: RequestEnvelope): ReverseAnthropicMapperHolder {
-  return (env.requestState?.reverseMapperHolder as ReverseAnthropicMapperHolder | undefined) ?? throwMissing("reverseMapperHolder")
+  return (env.candidate.reverseMapperHolder as ReverseAnthropicMapperHolder | undefined) ?? throwMissing("reverseMapperHolder")
 }
 
-/** The direct-Anthropic PrepareWireDeps sourced from `env.requestState` + `env.ctx` (RFC §11.2 carriers). */
+/** The direct-Anthropic PrepareWireDeps sourced from the envelope's request + candidate scopes and `env.ctx` (RFC §11.2 carriers). */
 function directWireDeps(env: RequestEnvelope): Parameters<typeof prepareAnthropicWire>[1] {
-  const rs = env.requestState
-  const baseline = rs?.truncateBaseline as MessagesPayload | undefined
+  const baseline = env.request.truncateBaseline as MessagesPayload | undefined
   return {
-    // The betaProbe is the SHARED mutable instance parse put on requestState (R3 — reference sharing +
-    // lazy read; the throw below only fires on a wiring bug where parse did not populate it).
-    betaProbe: rs?.betaProbe ?? throwMissing("betaProbe"),
-    clientAnthropicBeta: rs?.clientAnthropicBeta,
-    clientRequestHeaders: rs?.clientRequestHeaders,
+    // The betaProbe is the SHARED mutable instance parse put on the CANDIDATE scope (R3 — reference sharing + lazy read; the throw below only fires on a wiring bug where parse did not populate it).
+    betaProbe: env.candidate.betaProbe ?? throwMissing("betaProbe"),
+    clientAnthropicBeta: env.request.clientAnthropicBeta,
+    clientRequestHeaders: env.request.clientRequestHeaders,
     requestContext: env.ctx,
     // requested = the client's original thinking type, from the FIXED truncate baseline (never per-attempt env.body).
     requestedThinkingType: (baseline?.thinking as { type?: string } | undefined)?.type,
@@ -81,7 +80,7 @@ function directWireDeps(env: RequestEnvelope): Parameters<typeof prepareAnthropi
 }
 
 function throwMissing(field: string): never {
-  throw new Error(`[anthropic-cell] env.requestState.${field} missing — anthropic parse did not populate the leg supply`)
+  throw new Error(`[anthropic-cell] leg supply field ${field} missing — anthropic parse did not populate it`)
 }
 
 /** The `/v1/messages` outbound leg — anthropic DIRECT (C2a) + the 3 REVERSE `@messages` cells (C2b). */
@@ -102,8 +101,10 @@ export const anthropicMessagesLeg: OutboundLeg = {
   // state to a ctx side-channel (RFC §11.2) is a C4 (/responses leg) concern, not C2.
   translateOut(env) {
     if (!isReverse(env)) return env
-    const anthropicBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
-    return env.with({ body: anthropicBody })
+    const anthropicBody = translateRequestVia(env.request.clientFormat, env.attempt.targetEndpoint, env.attempt.body, {
+      model: env.request.model as Model | undefined,
+    })
+    return writeAttempt(env, { body: anthropicBody })
   },
 
   // S3: DIRECT = the Anthropic sanitize chain (quarantine + sanitize @ preprocessInfo). REVERSE = the reverse
@@ -111,14 +112,14 @@ export const anthropicMessagesLeg: OutboundLeg = {
   // left behind, using the shared per-request mapper holder — NOT the source ctx.toolNameMapper).
   requestRewrites(env): ReadonlyArray<RequestRewrite> {
     if (isReverse(env)) return [createReverseAnthropicSanitizeRewrite(reverseMapperHolder(env))]
-    const preprocessInfo = env.requestState?.preprocessInfo ?? throwMissing("preprocessInfo")
+    const preprocessInfo = env.request.preprocessInfo ?? throwMissing("preprocessInfo")
     return [createQuarantineProactiveFilter(), createAnthropicSanitizeRewrite({ preprocessInfo, onInitialSanitizationInfo: () => {} })]
   },
 
   prepareWire(env): PreparedRequest {
     // REVERSE: no client anthropic-beta / headers / thinking+cache-control ctx side-channels (a non-Anthropic
     // client sends none) — the shared betaProbe records outbound betas for the reverse unsupported-beta probe.
-    if (isReverse(env)) return prepareReverseAnthropicWire(env, env.requestState?.betaProbe)
+    if (isReverse(env)) return prepareReverseAnthropicWire(env, env.candidate.betaProbe)
     return prepareAnthropicWire(env, directWireDeps(env))
   },
 
@@ -142,24 +143,23 @@ export const anthropicMessagesLeg: OutboundLeg = {
   },
 
   buildLegStrategies(spec: RetrySemanticsSpec, env): ReadonlyArray<RetryStrategy> {
-    const rs = env.requestState
     // REVERSE: the truncation baseline is env.body (the translated Anthropic body — the source codecs used
     // `originalPayload: env.body`); resanitize is the reverse resanitize off the shared mapper holder.
     if (isReverse(env)) {
       return buildAnthropicStrategies({
-        originalPayload: env.body as MessagesPayload,
+        originalPayload: env.attempt.body as MessagesPayload,
         resanitize: buildReverseResanitize(reverseMapperHolder(env)),
-        model: env.model as Model | undefined,
+        model: env.request.model as Model | undefined,
         maxRetries: spec.maxRetries,
-        betaProbe: rs?.betaProbe ?? throwMissing("betaProbe"),
+        betaProbe: env.candidate.betaProbe ?? throwMissing("betaProbe"),
       })
     }
     const built = buildAnthropicStrategies({
-      originalPayload: (rs?.truncateBaseline as MessagesPayload | undefined) ?? (env.body as MessagesPayload),
-      resanitize: rs?.resanitize as AnthropicSanitizeFn,
-      model: env.model as Model | undefined,
+      originalPayload: (env.request.truncateBaseline as MessagesPayload | undefined) ?? (env.attempt.body as MessagesPayload),
+      resanitize: env.candidate.resanitize as AnthropicSanitizeFn,
+      model: env.request.model as Model | undefined,
       maxRetries: spec.maxRetries,
-      betaProbe: rs?.betaProbe ?? throwMissing("betaProbe"),
+      betaProbe: env.candidate.betaProbe ?? throwMissing("betaProbe"),
     })
     // D-class self-heal delegation (Phase 5, docs/plan/2026-07-13-upstream-error-client-shaping/
     // phase-5-selfheal-delegation.md): ONLY the DIRECT anthropic-client `/v1/messages` leg (this

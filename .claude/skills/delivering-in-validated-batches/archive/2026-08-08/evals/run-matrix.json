@@ -1,0 +1,260 @@
+{
+  "runs": [
+    {
+      "file": "baseline-parent-closure-1.json",
+      "suite": "core",
+      "id": 3,
+      "model": "opus",
+      "without_skill": true,
+      "evidence_role": "baseline"
+    },
+    {
+      "file": "baseline-parent-closure-2.json",
+      "suite": "core",
+      "id": 3,
+      "model": "opus",
+      "without_skill": true,
+      "evidence_role": "baseline"
+    },
+    {
+      "file": "baseline-parent-closure-3.json",
+      "suite": "core",
+      "id": 3,
+      "model": "opus",
+      "without_skill": true,
+      "evidence_role": "baseline"
+    },
+    {
+      "file": "baseline-parent-closure-4.json",
+      "suite": "core",
+      "id": 3,
+      "model": "opus",
+      "without_skill": true,
+      "evidence_role": "baseline"
+    },
+    {
+      "file": "baseline-parent-closure-5.json",
+      "suite": "core",
+      "id": 3,
+      "model": "opus",
+      "without_skill": true,
+      "evidence_role": "baseline"
+    },
+    {
+      "file": "final-opus-core-2.json",
+      "suite": "core",
+      "id": 2,
+      "model": "opus",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-sonnet-core-3.json",
+      "suite": "core",
+      "id": 3,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-opus-core-4.json",
+      "suite": "core",
+      "id": 4,
+      "model": "opus",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-5.json",
+      "suite": "r2",
+      "id": 5,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-6.json",
+      "suite": "r2",
+      "id": 6,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-7.json",
+      "suite": "r2",
+      "id": 7,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-8.json",
+      "suite": "r2",
+      "id": 8,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-9.json",
+      "suite": "r2",
+      "id": 9,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-fable-r2-10.json",
+      "suite": "r2",
+      "id": 10,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-sonnet-core-1.json",
+      "suite": "core",
+      "id": 1,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-sonnet-core-2.json",
+      "suite": "core",
+      "id": 2,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-sonnet-r2-5.json",
+      "suite": "r2",
+      "id": 5,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-sonnet-r2-8.json",
+      "suite": "r2",
+      "id": 8,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-haiku-core-2.json",
+      "suite": "core",
+      "id": 2,
+      "model": "haiku",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-haiku-r2-5.json",
+      "suite": "r2",
+      "id": 5,
+      "model": "haiku",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "final-haiku-r2-8.json",
+      "suite": "r2",
+      "id": 8,
+      "model": "haiku",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-opus-core-2.json",
+      "suite": "core",
+      "id": 2,
+      "model": "opus",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-sonnet-core-3.json",
+      "suite": "core",
+      "id": 3,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-fable-r2-6.json",
+      "suite": "r2",
+      "id": 6,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-fable-r2-8.json",
+      "suite": "r2",
+      "id": 8,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-fable-r2-10.json",
+      "suite": "r2",
+      "id": 10,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "historical"
+    },
+    {
+      "file": "current-fable-r2-11.json",
+      "suite": "r2",
+      "id": 11,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "current"
+    },
+    {
+      "file": "current-opus-core-2-v2.json",
+      "suite": "core",
+      "id": 2,
+      "model": "opus",
+      "without_skill": false,
+      "evidence_role": "current"
+    },
+    {
+      "file": "current-sonnet-core-3-v2.json",
+      "suite": "core",
+      "id": 3,
+      "model": "sonnet",
+      "without_skill": false,
+      "evidence_role": "current"
+    },
+    {
+      "file": "current-fable-r2-6-v2.json",
+      "suite": "r2",
+      "id": 6,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "current"
+    },
+    {
+      "file": "current-fable-r2-8-v2.json",
+      "suite": "r2",
+      "id": 8,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "current"
+    },
+    {
+      "file": "current-fable-r2-10-v2.json",
+      "suite": "r2",
+      "id": 10,
+      "model": "fable",
+      "without_skill": false,
+      "evidence_role": "current"
+    }
+  ]
+}

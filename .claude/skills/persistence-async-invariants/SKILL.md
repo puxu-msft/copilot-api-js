@@ -74,3 +74,4 @@ L2 buffered-retry（`protect_streaming_generation`）会让 **S5 响应处理（
 - 实测裁决（真实 http entry 读回、探针复制生产接线）：skill `empirical-verification`。
 - 后台 backfill 的可恢复骨架（相邻但不同域）：skill `history-backfill`。
 - schema 结构 / 迁移账本：skill `history-sqlite-schema`。
+- **持有资源的 module-global 单例**（Worker/timer/socket/DB handle）的 reset 与替换合同——capture → stop producer → drain → `await dispose` → **compare-and-clear**：skill `owned-singleton-lifecycle`。本 skill 管的是**写入路径**的 settle 时点，那边管的是**持有者**的释放时点，两者常在同一次改动里同时出现。

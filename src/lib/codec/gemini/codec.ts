@@ -46,10 +46,8 @@ import type {
   NeutralSystem,
   NeutralTool,
   RequestEnvelope,
-  ResolvedModel,
-  UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { RequestState } from "~/lib/pipeline/request-state"
+import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
   CandidateResponseRenderer,
@@ -59,14 +57,17 @@ import type {
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   Content as GeminiContent,
   GenerateContentRequest,
   Part as GeminiPart,
 } from "~/types/api/gemini"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
@@ -95,13 +96,16 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import {
-  //
-  type RouteOverride,
-} from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import {
+  //
+  restoreChatCompletionsChunkToolNames,
+  restoreChatCompletionsToolNames,
+} from "~/lib/openai/tool-name-sanitize"
+import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
@@ -143,10 +147,15 @@ export interface CreateGeminiCodecArgs {
   reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
   /**
    * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
-   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
+   * `env.candidate` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
    * Absent for the direct/via-responses Gemini legs.
    */
   reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
+  /**
+   * The ingress-captured `model_translation` generation (RFC 2026-08-08 §6). Supplied by the route
+   * from the Hono context; `parse` pins it onto the envelope. Absent outside HTTP ingress.
+   */
+  translationConfigSnapshot?: TranslationConfigSnapshot
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
@@ -162,20 +171,31 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
   const createRenderer = (candidateEnv?: RequestEnvelope): CandidateResponseRenderer => {
     const ccRenderer = candidateEnv === undefined ? undefined : cc.createCandidateRenderer?.(candidateEnv)
     const geminiTranslator = createGeminiStreamTranslator(modelId)
+    const restoreCcFrame = (frame: ClientFrame, env: RequestEnvelope): ClientFrame => {
+      if (!frame.data || frame.data === "[DONE]" || !env.ctx.toolNameMapper) return frame
+      try {
+        const chunk = JSON.parse(frame.data) as unknown
+        return restoreChatCompletionsChunkToolNames(chunk, env.ctx.toolNameMapper) ? { ...frame, data: JSON.stringify(chunk) } : frame
+      } catch {
+        return frame
+      }
+    }
     return {
       renderResponse(frame, env) {
         const rendered = ccRenderer?.renderResponse(frame, env) ?? cc.renderResponse(frame, env)
         const ccFrames = Array.isArray(rendered) ? rendered : [rendered]
         const output: Array<ClientFrame> = []
         for (const ccFrame of ccFrames) {
-          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+          const restored = restoreCcFrame(ccFrame, env)
+          for (const step of geminiTranslator.renderFrame(restored as ServerSentEventMessage)) output.push(step.frame)
         }
         return output
       },
       flushResponse(env) {
         const output: Array<ClientFrame> = []
         for (const ccFrame of ccRenderer?.flushResponse(env) ?? []) {
-          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+          const restored = restoreCcFrame(ccFrame, env)
+          for (const step of geminiTranslator.renderFrame(restored as ServerSentEventMessage)) output.push(step.frame)
         }
         output.push(...geminiTranslator.flush().map((step) => step.frame))
         return output
@@ -193,18 +213,14 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, ctx } = parseGemini(raw, modelId)
-      requestContext = ctx
-      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) as the cell-fork
-      // discriminator + reverse-leg supply. The CC auto-truncate baseline is NOT known yet (parse
-      // keeps the native Gemini body); S1b `translateInbound` computes the CC payload and merges
-      // `truncateBaseline` onto requestState before S2/S4 (where the forward `@cc` cell reads it).
-      return env.with({
-        requestState: {
-          ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
-          ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
-        },
+      const { env } = parseGemini(raw, modelId, (ctx) => (requestContext = ctx), opts?.translationConfigSnapshot)
+      // Attach the cell-fork discriminator + reverse-leg supply. The CC auto-truncate baseline is NOT known yet (parse keeps the native Gemini body); S1b `translateInbound` computes the CC payload and writes `truncateBaseline` into the request scope before S2/S4, where the forward `@cc` cell reads it.
+      env.request.legSupplyReady = true
+      Object.assign(env.candidate, {
+        ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
+        ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
       })
+      return env
     },
 
     getContext() {
@@ -213,12 +229,12 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
 
     // S1b (RFC 2026-07-14 §4): Gemini→CC translation + async system-prompt injection + sanitize +
     // O10 fill, moved off the route so `client.inbound` (Phase 4) sees the native `contents[]` body.
-    // Records the droppedParams warning + sets the CC auto-truncate baseline (closure + requestState,
+    // Records the droppedParams warning + sets the CC auto-truncate baseline (closure + request scope,
     // read by the forward `@cc` leg's OUTBOUND_LEGS at S4). One-shot, outside the retry loop.
     async translateInbound(env) {
-      const geminiBody = env.body as GenerateContentRequest
-      const resolvedName = env.model.id
-      const { payload: ccPayload, droppedParams } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream: env.stream })
+      const geminiBody = env.attempt.body as GenerateContentRequest
+      const resolvedName = env.request.model.id
+      const { payload: ccPayload, droppedParams } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream: env.request.stream })
       ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName, "gemini")
 
       if (droppedParams.length > 0) {
@@ -231,10 +247,12 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
       // Sanitize + fill O10 (mirrors legacy prepareGeminiRequest — Gemini fills O10 here, unlike the
       // CC codec which defers it to prepareWire, so env.body / the effective history track carries it).
       const { payload: sanitizedPayload } = sanitizeOpenAIMessages(ccPayload)
-      const filledPayload = fillMaxCompletionTokens(sanitizedPayload, env.model)
+      const filledPayload = fillMaxCompletionTokens(sanitizedPayload, env.request.model)
       // The post-system-prompt, PRE-sanitize CC payload is the stable auto-truncate baseline.
       truncateBaseline = ccPayload
-      return env.with({ body: filledPayload, requestState: { ...env.requestState, truncateBaseline: ccPayload } })
+      env.attempt.body = filledPayload
+      env.request.truncateBaseline = ccPayload
+      return env
     },
 
     getTruncateBaseline() {
@@ -258,7 +276,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     createCandidateStateFactory(env) {
       return createCandidateStateFactory(env, {
         createBetaProbe,
-        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.request.model.id, env.request.model.vendor),
         createResanitize: ({ source, reverseMapperHolder }) =>
           reverseMapperHolder ?
             (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
@@ -275,7 +293,8 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     },
 
     renderResponseNonStreaming(upstream, env) {
-      return cc.renderResponseNonStreaming(upstream, env)
+      const response = cc.renderResponseNonStreaming(upstream, env) as ChatCompletionResponse
+      return restoreChatCompletionsToolNames(response, env.ctx.toolNameMapper)
     },
 
     createResponseAccumulator(env): ResponseAccumulator {
@@ -303,10 +322,18 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
  * snapshots the raw Gemini body, resolves the model, and creates the `gemini-generate-content` ctx
  * with the Gemini-shape original request. `env.body` = the native `GenerateContentRequest`.
  */
-function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelope; ctx: RequestContext } {
-  // `raw.body` is the client-NATIVE Gemini body. Defensively clone it for the history snapshot
-  // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
-  const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
+function parseGemini(
+  raw: RawHttpRequest,
+  modelId: string,
+  onContext: (ctx: RequestContext) => void,
+  translationConfigSnapshot?: TranslationConfigSnapshot,
+): { env: RequestEnvelope; ctx: RequestContext } {
+  // `raw.body` is the client-NATIVE Gemini body. A route-supplied `originalBodyForHistory` is already a private snapshot (see `snapshotHistoryBody`), so retain it as-is; without one, `raw.body` carries no ownership guarantee and must be cloned (parity with the legacy `structuredClone(body)` — guards history against later mutation).
+  // Staying in step with the other codecs matters here because `resolveCodecModel` below ALSO reads `originalBodyForHistory`: cloning `raw.body` unconditionally would let `model` come from the client body while `payload` came from the wire body.
+  const geminiSnapshot =
+    raw.originalBodyForHistory === undefined ?
+      structuredClone(raw.body as GenerateContentRequest)
+    : (historySnapshotBody(raw.originalBodyForHistory) as GenerateContentRequest)
 
   // Model resolution via the shared codec primitive. Gemini's model comes from
   // the URL path (`modelId`), not the native `contents[]` body — pass it as the
@@ -324,7 +351,9 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     ...(raw.query !== undefined && { query: raw.query }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    historyReservation: raw.historyReservation,
   })
+  onContext(ctx)
 
   ctx.setOriginalRequest({
     model: requestedModel,
@@ -346,12 +375,17 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   // env.body stays the client-NATIVE Gemini `contents[]`; S1b `translateInbound` turns it into the
   // sanitized + O10-filled CC payload (+ droppedParams warning + the CC auto-truncate baseline).
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
-    ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
-    stream,
-    body: geminiSnapshot,
+    request: {
+      clientFormat: CLIENT_FORMAT,
+      model: selectedModel,
+      stream,
+      ...(routeOverride && { routeOverride }),
+      ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    },
+    // targetEndpoint is initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    attempt: { body: geminiSnapshot, targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, prepareHints: {} },
     ctx,
+    createView: createGeminiLazyView,
   })
 
   return { env, ctx }
@@ -407,51 +441,8 @@ function formatGeminiError(err: ClassifiedStreamError): ClientFrame {
 }
 
 // ============================================================================
-// Envelope construction + lazy view
+// Lazy view
 // ============================================================================
-
-interface EnvelopeInit {
-  targetEndpoint: UpstreamEndpoint
-  routeOverride?: RouteOverride
-  model: ResolvedModel
-  stream: boolean
-  body: unknown
-  ctx: RequestContext
-  prepareHints?: PrepareHints
-  requestState?: RequestState
-}
-
-/** Build a {@link RequestEnvelope} (clientFormat `gemini`, CC-shaped body). */
-function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
-  const env: RequestEnvelope = {
-    clientFormat: CLIENT_FORMAT,
-    targetEndpoint: init.targetEndpoint,
-    ...(init.routeOverride && { routeOverride: init.routeOverride }),
-    model: init.model,
-    stream: init.stream,
-    body: init.body,
-    prepareHints: init.prepareHints ?? {},
-    ...(init.requestState !== undefined && { requestState: init.requestState }),
-    ctx: init.ctx,
-    get view(): LazyMessageView {
-      return createGeminiLazyView(env.body)
-    },
-    with(patch) {
-      return makeEnvelope({
-        targetEndpoint: env.targetEndpoint,
-        routeOverride: env.routeOverride,
-        model: env.model,
-        stream: env.stream,
-        body: env.body,
-        ctx: env.ctx,
-        prepareHints: env.prepareHints,
-        requestState: env.requestState,
-        ...patch,
-      })
-    },
-  }
-  return env
-}
 
 /**
  * Lazy, read-only neutral projection of the (CC-shaped) body. The driver does not

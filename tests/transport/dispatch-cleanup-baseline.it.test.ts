@@ -267,12 +267,29 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
   })
 
   test("P5 contract: candidate abort stops a pending 429 backoff replay", async () => {
-    const limiter = new AdaptiveRateLimiter({
-      baseRetryIntervalSeconds: 0.01,
-      requestIntervalSeconds: 0.01,
-      consecutiveSuccessesForRecovery: 1,
-      gradualRecoverySteps: [0],
-    })
+    let releaseBackoff!: () => void
+    const backoffStarted = Promise.withResolvers<undefined>()
+    const limiter = new AdaptiveRateLimiter(
+      {
+        baseRetryIntervalSeconds: 0.01,
+        requestIntervalSeconds: 0.01,
+        consecutiveSuccessesForRecovery: 1,
+        gradualRecoverySteps: [0],
+      },
+      {
+        sleep: (_ms, signal) => {
+          backoffStarted.resolve()
+          return new Promise<void>((resolve) => {
+            const release = () => {
+              signal.removeEventListener("abort", release)
+              resolve()
+            }
+            releaseBackoff = release
+            signal.addEventListener("abort", release, { once: true })
+          })
+        },
+      },
+    )
     const candidateAbort = new AbortController()
     let calls = 0
 
@@ -286,9 +303,9 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
         },
         candidateAbort.signal,
       )
-      await waitUntil(() => calls === 2 && limiter.getStatus().mode === "rate-limited" && limiter.getStatus().queueLength === 1, {
-        label: "rate limiter retry backoff",
-      })
+      await backoffStarted.promise
+      expect(calls).toBe(2)
+      expect(limiter.getStatus()).toMatchObject({ mode: "rate-limited", queueLength: 1 })
       candidateAbort.abort()
 
       const outcome = await result.then(
@@ -296,8 +313,11 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
         (error: unknown) => ({ kind: "rejected" as const, error }),
       )
       expect(outcome.kind).toBe("rejected")
+      releaseBackoff()
+      await drainMicrotasks()
       expect(calls).toBe(2)
     } finally {
+      releaseBackoff?.()
       limiter.rejectQueued()
     }
   })

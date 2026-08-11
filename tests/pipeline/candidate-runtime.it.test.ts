@@ -24,6 +24,7 @@ import type {
 import type { UpstreamAdmissionController } from "~/lib/transport/admission-controller"
 
 import { HTTPError } from "~/lib/error"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { createCandidateRuntime } from "~/lib/pipeline/generation/candidate"
 import {
   //
@@ -41,11 +42,15 @@ interface DispatchRow {
   openedKind?: PhysicalTransportResponse["kind"]
   verdict?: DispatchVerdict
   settlementReason?: string
+  settlementError?: unknown
 }
 
-function recordingPort() {
+function recordingPort(options?: { throwSettlementOnce?: unknown; throwCandidateSettlementOnce?: unknown }) {
   let candidateSequence = 0
   let dispatchSequence = 0
+  let settlementThrowPending = options?.throwSettlementOnce !== undefined
+  let candidateSettlementThrowPending = options?.throwCandidateSettlementOnce !== undefined
+  let candidateSettlementCalls = 0
   const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; verdict?: CandidateVerdict; reason?: string }>()
   const dispatches = new Map<DispatchHandle, DispatchRow>()
   const port: DispatchRecordingPort = {
@@ -55,6 +60,11 @@ function recordingPort() {
       return handle
     },
     settleCandidate(handle, input) {
+      candidateSettlementCalls++
+      if (candidateSettlementThrowPending) {
+        candidateSettlementThrowPending = false
+        throw options?.throwCandidateSettlementOnce
+      }
       Object.assign(candidates.get(handle)!, input)
     },
     beginDispatch(input) {
@@ -69,27 +79,27 @@ function recordingPort() {
       dispatches.get(handle)!.openedKind = response.kind
     },
     settleDispatch(handle, input) {
+      if (settlementThrowPending) {
+        settlementThrowPending = false
+        throw options?.throwSettlementOnce
+      }
       const row = dispatches.get(handle)!
       row.verdict = input.verdict
       row.settlementReason = input.reason
+      if ("error" in input) row.settlementError = input.error
     },
   }
-  return { port, candidates, dispatches }
+  return { port, candidates, dispatches, candidateSettlementCalls: () => candidateSettlementCalls }
 }
 
 function envelope(label: string): RequestEnvelope {
   const env = {
-    clientFormat: "openai-responses",
-    targetEndpoint: "/responses",
-    model: { id: "model" },
-    stream: true,
-    body: { label },
+    request: { clientFormat: "openai-responses", model: { id: "model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { label }, targetEndpoint: "/responses", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {},
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -154,7 +164,7 @@ function runtime(input: {
   maxDispatches?: number
 }) {
   const scheduler = createDispatchScheduler({
-    prepareWire: (env) => ({ url: "https://upstream.test", headers: new Headers(), body: env.body, stream: env.stream }),
+    prepareWire: (env) => ({ url: "https://upstream.test", headers: new Headers(), body: env.attempt.body, stream: env.request.stream }),
     open: input.open,
     admission: input.admission ?? immediateAdmission(),
     recording: input.recording,
@@ -172,6 +182,33 @@ function runtime(input: {
 
 describe("P6-T1 candidate dispatch runtime", () => {
   useIsolatedRuntime()
+
+  test("candidate settlement retries after a recording adapter rejection", () => {
+    const recordingError = new Error("candidate recording failed")
+    const recording = recordingPort({ throwCandidateSettlementOnce: recordingError })
+    const candidate = runtime({
+      env: envelope("candidate-recording-retry"),
+      recording: recording.port,
+      open: async () =>
+        streamResponse(
+          {
+            cancel() {},
+            async dispose() {
+              return { quiesced: true, connectionReusable: false }
+            },
+            quiesced: Promise.resolve(),
+          },
+          "candidate-recording-retry",
+        ),
+    })
+
+    expect(() => candidate.settle({ verdict: "failed", reason: "first" })).toThrow(recordingError)
+    candidate.settle({ verdict: "failed", reason: "second" })
+    candidate.settle({ verdict: "failed", reason: "third" })
+
+    expect(recording.candidateSettlementCalls()).toBe(2)
+    expect(recording.candidates.get(candidate.handle)).toMatchObject({ verdict: "failed", reason: "second" })
+  })
 
   test("WS fallback quiesces the failed dispatch and opens a force-HTTP dispatch in the same candidate", async () => {
     const recording = recordingPort()
@@ -198,6 +235,204 @@ describe("P6-T1 candidate dispatch runtime", () => {
     expect(log).toContain("ws:dispose:ws-fallback")
     expect(ready.upstream.headers.get("x-marker")).toBe("http-success")
     await candidate.cancel("test-cleanup")
+  })
+
+  test("cleanup rejection releases the ready dispatch while preserving all phase errors", async () => {
+    const recording = recordingPort()
+    const upstreamError = new Error("upstream failure")
+    const cancelError = new Error("cancel cleanup failed")
+    const disposeError = new Error("dispose cleanup failed")
+    const quiesceError = new Error("quiesce cleanup failed")
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {
+        throw cancelError
+      },
+      async dispose() {
+        throw disposeError
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("cleanup-rejection"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "cleanup-rejection"),
+    })
+
+    const ready = await candidate.run()
+    const rejection = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "cleanup-rejection", error: upstreamError }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors[0]).toBeInstanceOf(AggregateError)
+    expect(((rejection as AggregateError).errors[0] as AggregateError).errors).toEqual([cancelError, disposeError, quiesceError])
+    // Propagation deliberately contains cleanup errors only: `settlement.error` is diagnostic input, not a cleanup failure.
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-cleanup" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "cleanup-rejection" })
+    expect((recording.dispatches.get(ready.dispatch)?.settlementError as AggregateError).errors).toEqual([
+      upstreamError,
+      cancelError,
+      disposeError,
+      quiesceError,
+    ])
+    expect(recording.candidates.get(candidate.handle)?.verdict).toBeUndefined()
+  })
+
+  test("undefined cleanup rejection fails settlement and releases the active dispatch", async () => {
+    const recording = recordingPort()
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+    const quiesced = Promise.reject(undefined)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+        throw undefined
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("undefined-cleanup-rejection"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "undefined-cleanup-rejection"),
+    })
+
+    const ready = await candidate.run()
+    const outcome = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "undefined-cleanup-rejection" }).then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(outcome.state).toBe("rejected")
+    if (outcome.state !== "rejected") throw new Error("undefined cleanup unexpectedly resolved")
+    expect(outcome.error).toBeInstanceOf(AggregateError)
+    expect((outcome.error as AggregateError).errors).toHaveLength(1)
+    expect(((outcome.error as AggregateError).errors[0] as Error).message).toBe("undefined")
+    expect(recording.dispatches.get(ready.dispatch)?.verdict).toBe("failed")
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-undefined-cleanup" })).resolves.toBeUndefined()
+  })
+
+  test("consumed undefined quiescence failure records failed and releases the active dispatch", async () => {
+    const recording = recordingPort()
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+    const quiesced = Promise.reject(undefined)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-undefined-quiescence"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-undefined-quiescence"),
+    })
+
+    const ready = await candidate.run()
+    const outcome = await ready.settleDispatch({ verdict: "committed", reason: "consumed-undefined-quiescence" }).then(
+      () => ({ state: "resolved" as const }),
+      (error: unknown) => ({ state: "rejected" as const, error }),
+    )
+
+    expect(outcome).toEqual({ state: "rejected", error: undefined })
+    const row = recording.dispatches.get(ready.dispatch)
+    expect(row).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed", settlementError: undefined })
+    expect(Object.hasOwn(row ?? {}, "settlementError")).toBe(true)
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-consumed-undefined" })).resolves.toBeUndefined()
+  })
+
+  test("consumed quiescence preserves upstream diagnostics while propagating the original error", async () => {
+    const recording = recordingPort()
+    const upstreamError = new Error("upstream error")
+    const quiesceError = new Error("consumed quiescence failed")
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-quiescence-diagnostics"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-quiescence-diagnostics"),
+    })
+
+    const ready = await candidate.run()
+    await expect(ready.settleDispatch({ verdict: "committed", reason: "consumed-quiescence-diagnostics", error: upstreamError })).rejects.toBe(quiesceError)
+    const row = recording.dispatches.get(ready.dispatch)
+    expect(row).toMatchObject({ verdict: "failed", settlementReason: "settlement-quiesce-failed" })
+    expect((row?.settlementError as AggregateError).errors).toEqual([upstreamError, quiesceError])
+  })
+
+  test("consumed quiescence plus recording failure releases active ownership before retry", async () => {
+    const quiesceError = new Error("consumed quiescence failed")
+    const recordingError = new Error("consumed recording failed")
+    const recording = recordingPort({ throwSettlementOnce: recordingError })
+    const quiesced = Promise.reject(quiesceError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("consumed-recording-failure"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "consumed-recording-failure"),
+    })
+
+    const ready = await candidate.run()
+    const failure = await ready.settleDispatch({ verdict: "committed", reason: "consumed-recording-failure" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).errors).toEqual([quiesceError, recordingError])
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "after-consumed-recording-failure" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "after-consumed-recording-failure" })
+  })
+
+  test("cleanup recording failure preserves errors and allows one terminal settlement retry", async () => {
+    const cleanupError = new Error("cleanup failed")
+    const recordingError = new Error("recording failed")
+    const recording = recordingPort({ throwSettlementOnce: recordingError })
+    const quiesced = Promise.reject(cleanupError)
+    void quiesced.catch(() => {})
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel() {},
+      async dispose() {
+        throw cleanupError
+      },
+      quiesced,
+    }
+    const candidate = runtime({
+      env: envelope("recording-failure"),
+      recording: recording.port,
+      open: async () => streamResponse(lifecycle, "recording-failure"),
+    })
+
+    const ready = await candidate.run()
+    const rejection = await candidate.disposeReadyWithSettlement({ verdict: "discarded", reason: "recording-failure" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect((rejection as AggregateError).errors[0]).toBeInstanceOf(AggregateError)
+    expect(((rejection as AggregateError).errors[0] as AggregateError).errors).toEqual([cleanupError, recordingError])
+    await expect(ready.settleDispatch({ verdict: "failed", reason: "retry-after-recording-failure" })).resolves.toBeUndefined()
+    expect(recording.dispatches.get(ready.dispatch)).toMatchObject({ verdict: "failed", settlementReason: "retry-after-recording-failure" })
   })
 
   test("429 admission replay creates a fresh dispatch in the same candidate", async () => {
@@ -248,7 +483,7 @@ describe("P6-T1 candidate dispatch runtime", () => {
         if (opens++ === 0) return { kind: "failed-open", error: new HTTPError("bad field", 400, "bad field"), lifecycle: settledLifecycle(log, "bad") }
         return streamResponse(ownedLifecycle(log, "semantic"), "semantic-success")
       },
-      decideRetry: async ({ env }) => ({ kind: "retry", reason: "strip-bad-field", env: env.with({ body: { label: "after-retry" } }) }),
+      decideRetry: async ({ env }) => ({ kind: "retry", reason: "strip-bad-field", env: writeAttempt(env, { body: { label: "after-retry" } }) }),
     })
 
     await candidate.run()
@@ -436,7 +671,7 @@ describe("P6-T1 candidate dispatch runtime", () => {
       decideRetry: async ({ env, dispatchNumber }) => ({
         kind: "retry",
         reason: `step-${dispatchNumber}`,
-        env: env.with({ body: { label: `chain-${dispatchNumber}` } }),
+        env: writeAttempt(env, { body: { label: `chain-${dispatchNumber}` } }),
         onResolved: () => {
           resolved.push(`step-${dispatchNumber}`)
         },

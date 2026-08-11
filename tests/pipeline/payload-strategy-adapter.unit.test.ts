@@ -2,7 +2,7 @@
  * v4 payload→envelope strategy adapter unit tests.
  *
  * Drives `adaptPayloadStrategy` with a mock payload `RetryStrategy<TPayload>`,
- * asserting the action mapping (retry → env.with(body/prepareHints), abort →
+ * asserting the action mapping (retry → writeAttempt(env, {body,prepareHints}), abort →
  * {kind:"abort"}), meta attached to the env-action (C0-②, not fired immediately),
  * onResolved meta forwarding into the payload ResolvedContext, the shared attempt
  * counter, and waitMs/learning passthrough. Also a light check that
@@ -32,18 +32,19 @@ interface P {
 
 function makeEnv(body: P): RequestEnvelope {
   return {
-    body,
-    prepareHints: {},
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    attempt: {
+      body: body,
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
 const ERR = { type: "network_error", message: "boom" } as unknown as ApiError
 
 describe("adaptPayloadStrategy", () => {
-  test("retry: maps payload → env.with(body) + prepareHints, passes waitMs/learning", async () => {
+  test("retry: maps payload → writeAttempt(env, {body}) + prepareHints, passes waitMs/learning", async () => {
     const payloadStrategy: PayloadRetryStrategy<P> = {
       name: "mock",
       canHandle: () => true,
@@ -59,8 +60,8 @@ describe("adaptPayloadStrategy", () => {
     const action = await adapted.handle(ERR, env)
     expect(action.kind).toBe("retry")
     if (action.kind === "retry") {
-      expect((action.env.body as P).v).toBe(11)
-      expect(action.env.prepareHints).toEqual({ excludeBetas: ["b1"] })
+      expect((action.env.attempt.body as P).v).toBe(11)
+      expect(action.env.attempt.prepareHints).toEqual({ excludeBetas: ["b1"] })
       expect(action.waitMs).toBe(7)
       expect(action.learning).toBe(true)
     }

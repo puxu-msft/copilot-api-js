@@ -7,6 +7,8 @@
  * boundary until the coordinator starts consuming it in P6-T2.
  */
 
+import consola from "consola"
+
 import type {
   //
   CandidateHandle,
@@ -49,6 +51,8 @@ export interface CandidateRuntime<TProcessor> {
   readonly handle: CandidateHandle
   readonly role: CandidateRole
   run(): Promise<CandidateReady<TProcessor>>
+  /** Dispose a ready parent without changing its candidate verdict. */
+  disposeReadyWithSettlement(input: DispatchSettlement): Promise<void>
   cancel(reason: string): Promise<void>
   settle(input: { verdict: CandidateVerdict; reason?: string }): void
   recovery(reason: string): RecoveryCandidateRequest
@@ -57,6 +61,9 @@ export interface CandidateRuntime<TProcessor> {
 export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
+  readonly metadata?: { recoveryReason?: string }
+  /** Strategy attached to this candidate's initial physical dispatch. */
+  readonly initialStrategy?: string
   readonly env: RequestEnvelope
   /** Fork request/response state only after the canonical candidate handle exists. */
   readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
@@ -67,7 +74,11 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
 
 /** Create a single-use candidate runtime. Buffered recovery is represented only as a child-candidate request. */
 export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
-  const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+  const handle = input.recording.beginCandidate({
+    role: input.role,
+    ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
+    ...(input.metadata !== undefined && { metadata: input.metadata }),
+  })
   const candidateEnv = input.forkEnv?.(handle) ?? input.env
   const controller = new AbortController()
   const signal = combineAbortSignals(controller.signal, candidateEnv.ctx.operationSignal) ?? controller.signal
@@ -78,8 +89,8 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
 
   const settleCandidate = (settlement: { verdict: CandidateVerdict; reason?: string }): void => {
     if (settled) return
-    settled = true
     input.recording.settleCandidate(handle, settlement)
+    settled = true
   }
 
   return {
@@ -91,7 +102,12 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
       started = true
       runPromise = (async () => {
         try {
-          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal })
+          const ready = await input.scheduler.run({
+            candidate: handle,
+            env: latestEnv,
+            signal,
+            ...(input.initialStrategy !== undefined && { initialStrategy: input.initialStrategy }),
+          })
           latestEnv = ready.env
           return {
             candidate: handle,
@@ -101,23 +117,44 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             dispatchedAtMonotonic: ready.dispatchedAtMonotonic,
             upstream: ready.upstream,
             processor: input.createProcessor({ candidate: handle, dispatch: ready.dispatch, env: ready.env, upstream: ready.upstream }),
-            settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
+            settleDispatch: async (settlement) => {
+              await input.scheduler.settle(ready.dispatch, settlement)
+              input.scheduler.assertNoActiveReadyDispatch(ready.dispatch)
+            },
           }
         } catch (error) {
-          if (signal.aborted) settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
-          else settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          // Recording the failure must never replace the failure. `settleCandidate` runs invariant
+          // guards (an unsettled dispatch, an already-settled candidate) that throw, and because
+          // they throw from here they would take the place of `error` on the way out — turning a
+          // diagnosable cause into an opaque guard message from a stack that no longer mentions it.
+          // Report both: the caller keeps the original, and the guard is still loud in the log.
+          try {
+            if (signal.aborted)
+              settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
+            else settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          } catch (settleError) {
+            consola.error(
+              `[candidate-runtime] settling ${handle} after a failure hit a recording guard: ${settleError instanceof Error ? settleError.message : String(settleError)}`,
+            )
+          }
           throw error
         }
       })()
       return runPromise
     },
 
+    async disposeReadyWithSettlement(settlement) {
+      await input.scheduler.disposeActiveWithSettlement(settlement)
+    },
+
     async cancel(reason) {
       if (!controller.signal.aborted) controller.abort(new OperationCancelledError(reason))
+      let cleanupFailed = false
       let cleanupError: unknown
       try {
         await input.scheduler.cancelActive(reason)
       } catch (error) {
+        cleanupFailed = true
         cleanupError = error
       }
       if (runPromise) {
@@ -129,7 +166,7 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
         }
       }
       settleCandidate({ verdict: "cancelled", reason })
-      if (cleanupError !== undefined) throw cleanupError instanceof Error ? cleanupError : new Error("Candidate cleanup failed", { cause: cleanupError })
+      if (cleanupFailed) throw cleanupError
     },
 
     settle(settlement) {

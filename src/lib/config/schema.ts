@@ -717,6 +717,19 @@ export const AnthropicConfigSchema = z
      */
     stream_commit_after_sec: nullableNonnegativeInt(),
     /**
+     * Enables one fresh dispatch after a pre-content upstream failure. It is
+     * intentionally independent of buffered_retry because recovery applies to
+     * both live and buffered streaming paths. The value is wired into runtime state; the handler's recovery
+     * decision and dispatch remain intentionally deferred to Task 4.3b. Default true.
+     */
+    precontent_recovery: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+        })
+        .strict(),
+    ),
+    /**
      * L2 — transactional buffered retry for streaming generations cut short by an
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
      * whole response and commits only after `message_stop`, re-running the exchange
@@ -783,13 +796,6 @@ export const AnthropicConfigSchema = z
       })
       .strict()
       .optional(),
-  })
-  .strict()
-
-export const ShutdownConfigSchema = z
-  .object({
-    graceful_wait: nullableNonnegativeInt(),
-    abort_wait: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -886,6 +892,26 @@ export const HistoryConfigSchema = z
   .object({
     /** Startup-only master switch. false means no History database is opened. */
     enabled: nullableBoolean(),
+    /** Maximum admitted History operations. Strictly positive; 0 is never unlimited. */
+    persistence_queue_capacity: nullablePositiveInt(),
+    /**
+     * How long process startup waits for History to become ready before failing
+     * the whole start with a non-zero exit. The Worker's startup retries are
+     * rate-limited but uncapped on purpose (a locked database may clear on the
+     * next attempt), and the server may not listen before History is ready — so
+     * without this bound a persistently locked database leaves the process
+     * neither serving nor exiting. `0` waits forever, restoring that hang; it
+     * exists for operators who would rather block than restart. Capped at the
+     * JS timer ceiling (2^31-1 ms): a larger delay does not wait longer, it
+     * wraps to ~1ms and would make every healthy start report a deadline.
+     */
+    startup_deadline_ms: z
+      .number()
+      .int()
+      .min(0)
+      .max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms")
+      .nullable()
+      .optional(),
     raw_capture: nullableSection(
       z
         .object({
@@ -897,22 +923,21 @@ export const HistoryConfigSchema = z
     ),
     /**
      * Terminal-persistence transient retry (DI-5). A commit that fails with a
-     * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
+     * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with exponential
      * backoff instead of dropping the entry on the first failure. `max_attempts`
-     * caps the retries (a transient storm can't spin forever); `backoff_ms` is
-     * the base linear step. `max_total_ms` is a per-commit wall-clock soft cap
-     * (DI-5-followup-2): the linear backoff sum grows quadratically and each
-     * attempt can itself block (SQLite busy_timeout), so a large
-     * `max_attempts × backoff_ms` product or slow attempts could wedge the drain —
-     * and shutdown, which has no abort signal here — for minutes; the cap bounds
-     * the total elapsed time one entry spends retrying (`0` = disabled). Permanent
-     * failures / conflicts are never retried.
+     * caps the attempts; `backoff_ms` is the initial delay and `max_backoff_ms`
+     * caps each wait. `max_total_ms` is a per-commit wall-clock soft cap that also
+     * counts each attempt's own blocking time (SQLite busy_timeout), preventing a
+     * transient storm from wedging shutdown. `max_total_ms: 0` disables the total
+     * time cap; `max_backoff_ms: 0` makes retries immediate. Permanent failures and
+     * conflicts are never retried.
      */
     persist_retry: nullableSection(
       z
         .object({
           max_attempts: nullableNonnegativeInt(),
           backoff_ms: nullableNonnegativeInt(),
+          max_backoff_ms: nullableNonnegativeInt(),
           max_total_ms: nullableNonnegativeInt(),
         })
         .strict(),
@@ -1047,6 +1072,38 @@ export const GenerationConfigSchema = z
 const StreamIdleOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
 const ResponseHeaderOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
 
+/**
+ * Shutdown's OWN wall-clock bounds, reinstated 2026-08-11 by user ruling.
+ *
+ * These are deliberately NOT a return to the 2026-08-07 incident's behaviour. What that incident
+ * proved harmful was the ACTION on expiry — a process-global `AbortSignal` that killed live
+ * operations with `Server is shutting down` and lost their records. `graceful_wait` here expires
+ * into the LOSSLESS drain-abandonment tier instead: in-flight operations are terminated through
+ * the same request-level primitives an operator's second Ctrl+C uses (`reapInFlight()` + `fail()`,
+ * attributed `shutdown`/`operator-abandoned-drain`), and the shutdown then walks the whole
+ * finalize path so History, Telemetry and Diagnostics still flush.
+ *
+ * Ordering invariant: the total bound a supervisor must outlast is `graceful_wait + abort_wait`,
+ * because `abort_wait` only starts counting once `graceful_wait` has expired. `contrib/systemd`'s
+ * `TimeoutStopSec` and pm2's `kill_timeout` must both exceed that sum.
+ */
+export const ShutdownConfigSchema = z
+  .object({
+    /**
+     * Seconds to wait for accepted operations to reach their own terminal before automatically
+     * abandoning the drain (seconds; 0 = wait forever, which was the behaviour between 2026-08-07
+     * and 2026-08-11). Expiry is equivalent to the operator pressing the second Ctrl+C: lossless.
+     */
+    graceful_wait: nullableNonnegativeInt(),
+    /**
+     * Seconds to wait AFTER the drain has been abandoned before hard-exiting (seconds; 0 = wait
+     * forever). This is the escape from the persistence barriers themselves, equivalent to the
+     * third signal, so it exits WITHOUT flushing. Only starts counting once `graceful_wait` fires.
+     */
+    abort_wait: nullableNonnegativeInt(),
+  })
+  .strict()
+
 export const TimeoutsConfigSchema = z
   .object({
     /** Max seconds between SSE events (0 = no timeout). Was top-level `stream_idle_timeout`. */
@@ -1057,8 +1114,7 @@ export const TimeoutsConfigSchema = z
      * Per-model stream-idle timeout override (seconds), keyed by model-name
      * substring OR glob (`*`/`?`) with `"*"` wildcard (specificity: literal > glob >
      * `"*"`, then longest key). A match wins over `stream_idle`; 0 = disabled.
-     * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
-     * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
+     * Bundled default `{}`. Per-key merged with the user table. App-guard only — does not
      * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
      */
     stream_idle_overrides: StreamIdleOverridesSchema.nullable()
@@ -1072,16 +1128,21 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
-    stale_request_max_age: nullableNonnegativeInt(),
     /**
-     * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
-     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled,
-     * behavior then byte-identical to the stale-reaper-only path. Bundled default is an explicit value
-     * (intentional product default); the stale reaper stays as the leak safety-net (`stale_request_max_age`
-     * should be > `request_deadline`).
+     * Hard total-duration deadline (seconds) for one CLIENT request, enforced by a precise
+     * per-request timer. Measured from admission and NOT reset by retries or hedged candidates, so
+     * it bounds the whole client-visible operation. 0 = disabled and is the bundled default so
+     * legitimate unbounded thinking is never terminated by elapsed time.
      */
-    request_deadline: nullableNonnegativeInt(),
+    client_request_deadline: nullableNonnegativeInt(),
+    /**
+     * Hard total-duration deadline (seconds) for ONE upstream attempt, enforced by a per-dispatch
+     * timer. Restarts every attempt, so firing it aborts only that attempt and leaves the retry /
+     * hedge budget intact. Complements `response_header` (pre-header only) and `stream_idle` (gap
+     * between frames only), neither of which bounds an attempt that trickles bytes forever.
+     * 0 = disabled and is the bundled default.
+     */
+    upstream_request_deadline: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -1450,8 +1511,8 @@ export const ConfigSchema = z
     forward_client_query_exclude: z.array(z.string()).optional(),
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
-    shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    shutdown: nullableSection(ShutdownConfigSchema),
     upstream_transport: nullableSection(UpstreamTransportConfigSchema),
     server: nullableSection(ServerConfigSchema),
     telemetry: nullableSection(TelemetryConfigSchema),
@@ -1553,7 +1614,6 @@ export type SystemPromptEntry = z.infer<typeof SystemPromptEntrySchema>
 export type EndpointScope = (typeof ENDPOINT_SCOPE_VALUES)[number]
 export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
-export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>

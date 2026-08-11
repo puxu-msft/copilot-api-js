@@ -279,7 +279,15 @@ describe("P4c-1 — migrated consumers read the populated new legs", () => {
     const entry = driveSuccess() as unknown as Parameters<(typeof TELEMETRY_DIMENSIONS)[number]["extract"]>[0]
     const modelDim = TELEMETRY_DIMENSIONS.find((d) => d.name === "model")!
     // The ctx-snapshot arg is unused by the model dimension; pass a minimal stub.
-    const value = modelDim.extract(entry, { id: "x", endpoint: "openai-chat-completions", method: "POST", path: "/", state: "completed", startTime: 0, queueWaitMs: 0 })
+    const value = modelDim.extract(entry, {
+      id: "x",
+      endpoint: "openai-chat-completions",
+      method: "POST",
+      path: "/",
+      state: "completed",
+      startTime: 0,
+      queueWaitMs: 0,
+    })
     expect(value).toBe(RESOLVED)
   })
 

@@ -1,6 +1,6 @@
 # Cutover 实施计划 —— generation emission command algebra
 
-> **状态（核验于 `528c1785`）**：**三层计划全部评审放行，计划层完成**。第二层：判据证伪 9 轮、执行方走查 8 轮，最终均 0 blocker / 0 major（`docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`）；第三层：判据证伪 8 轮最终 0 blocker / 0 major、执行方走查 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit（`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`）。放行范围含本文、`traceability.md`、`prompts/`、三个 checker 与 `d7f6c222` 结构化 evidence 能力。**实现尚未开工**；按 docs-merge-before-execute，开工仍是独立决定。
+> **计划基线（核验于 `528c1785`）**：**三层计划全部评审放行，计划层完成**。第二层：判据证伪 9 轮、执行方走查 8 轮，最终均 0 blocker / 0 major（`docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`）；第三层：判据证伪 8 轮最终 0 blocker / 0 major、执行方走查 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit（`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`）。放行范围含本文、`traceability.md`、`prompts/`、三个 checker 与 `d7f6c222` 结构化 evidence 能力。`528c1785` 当时的“实现尚未开工”只是一条历史状态；当前执行状态的单一入口是 [`docs/tmp/2026-08-05-command-algebra-commit-minus-1-progress-impl.md`](../../tmp/2026-08-05-command-algebra-commit-minus-1-progress-impl.md)，本文不冻结会随提交立即过期的 current/final HEAD。
 >
 > **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
 >
@@ -135,11 +135,11 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 | 约束 | 脚本位置 | 后果 |
 |---|---|---|
-| **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:77` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
-| **脏树硬拒 rc=3** | `:115-122` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.0f** |
-| **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:106-113` | 重跑要换目录，别往同一个目录里混批次 |
+| **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:80` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
+| **脏树硬拒 rc=3** | `:124-131` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.0f** |
+| **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:113-122` | 重跑要换目录，别往同一个目录里混批次 |
 
-`MIN_TESTS` 无默认值、缺失即 rc=2（`:84-90`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:80`）。
+`MIN_TESTS` 无默认值、缺失即 rc=2（`:92-98`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:83`）。**`MIN_TESTS` 比较的是 summary 行的 executed 口径**（缺失时才回退 `N tests`）：producer 传的是 baseline `minimum_executed`，而 runner 的 `N tests` 是调度单元数、与 executed 不是同一个量（实测同一 commit 出现过 6719 tests / 7255 executed）。同理，wrapper 取 summary 行必须挑带计数的那一行——runner 在 summary **之后**还会打印 `[parallel-test] artifacts=<dir>`。
 
 ### 0.4 准备 commit（1～3）的越界判据
 
@@ -423,6 +423,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 - **一律显式 pathspec**：`git add -- <精确路径>`、`git commit -F <msgfile> -- <精确路径>`。**绝不 `git add -A`／`.`／`commit -am`**——`$TREE` 虽是隔离树，但每次 merge 回主线时同样纪律适用，且养成 pathspec 习惯是本项目的硬要求。
 - **conventional commits**（`refactor:`／`test:`／`feat:`／`docs:`／`fix:`），**不加模型署名**（无 `Co-authored-by`）。
 - **每条 message 点名它对应本文哪一节**（如 `refactor: publish generation authority (cutover-plan Commit 4)`），否则 merged-state review 无法把 commit 与 plan 对账。
+- **Commit -1 一次性 traceability 例外**：Commit -1 的历史提交在发现上一条偏差前已经过多轮 mutation、逐项复评与合并态整改。禁止通过 rebase／amend 改写这些 SHA，因为那会同时使既有 review range、mutation restore 基线、报告引用与 evidence lineage 失效；本次改以 [`commit-minus-1-traceability.md`](commit-minus-1-traceability.md) 的逐 commit 映射闭合对账。该表必须与 `git rev-list 87679f35d346cad94abd32d62133b40fee79fe7a..4fe920fca820f7dcee630d76e2aab120952eb7ea` 双向精确相等、无重复／遗漏／orphan，并逐条记录原 SHA、subject、T0.0a/b/c/e／§0.4e／§0.4f／Commit -1 gate 归属、产物角色、主要路径、review coverage 与 ancillary PTY／performance／docs 的归属理由。**例外只覆盖该冻结 range；本例外自身、后续收口提交及 Commit 0～8 仍须在 message 内点名章节。**
 - **绝不 `git push`** —— user-rule `never-push--the-user-does-that` 是 `[hard]`。发布是用户的事。
 - 每个 Commit 0～8 是**一个 semantic commit**；准备期的中途状态可以先 WIP 提交再整理，但**Commit 4 不许拆**（§7.7）。
 
@@ -490,7 +491,11 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 ```
 
 - `--out` 必须是 `$TREE` 外的绝对空目录；已有 `run-*.log` 或路径落在 `$TREE` 内即 `exit 2`。
-- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，**严格使用下面的 v1 schema；额外／缺失字段一律 fail-closed**。`minimum_executed` 不得从本次 15-run 命令输出反推；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
+- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，**严格使用下面的 v1 schema；额外／缺失字段一律 fail-closed**。
+
+> **口径裁决（用户，2026-08-09）**：本计划所说的「独立 oracle」，其**独立性口径限定为「相对被验收的那次 run 独立」**——即基线不得从 T0.0f 的 15-run 输出反推。它**不要求**结构独立于 discovery 规则或 JUnit producer：提交进仓库的 baseline 与 runner 的 discovery 共享上游（同 checkout／同后缀集／同形 `Bun.Glob`），这是**已知且被接受的**。
+> **随之而来的验收强度，写明白别让后人误读**：T0.0a～c 因此守住的是「runner 侧静默少跑／少报**已请求**的文件」，**不是**「仓库应有的测试集合完整」，更**不是**「用例总数不减」——用例级完整性当前不可判，见 `docs/coding-conventions.md`「并行执行」节的三层划分。若日后要把强度提到结构独立，须先交 provenance 图（每侧的生产者／观测点／上游）并双向验证，那是一次**独立的范围扩张**、不在本计划内。
+`minimum_executed` 不得从本次 15-run 命令输出反推；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
 
 **`entry-test-discovery-baseline.json` v1 完整 schema 与 canonical encoding**：
 
@@ -502,10 +507,18 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
   "files": ["tests/example.unit.test.ts"],
   "allowed_skipped": [
     {
+      "kind": "testcase",
       "file": "tests/example.unit.test.ts",
       "classname": "suite",
       "name": "case",
       "ordinal": 1,
+      "count": 1,
+      "reason": "todo"
+    },
+    {
+      "kind": "suite",
+      "file": "tests/native.unit.test.ts",
+      "suite_name": "tests/native.unit.test.ts",
       "count": 1,
       "reason": "native-unavailable"
     }
@@ -514,12 +527,19 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 ```
 
 - `files`：repo-root 相对 POSIX 路径、无 `./`／`..`、唯一、按 UTF-8 bytewise 升序；每项后缀恰为 `.unit.test.ts`／`.it.test.ts`／`.http.test.ts`，且磁盘存在。
-- `allowed_skipped`：multiset 的规范表示，不用重复对象表达重复次数；key 是 `file+classname+name+ordinal`，`count` 为正整数，`ordinal` 为同 file/classname/name 的 1-based 出现序号；按 `(file, classname, name, ordinal)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许冻结枚举 `native-unavailable | todo | whole-suite-skip | reviewed-environment`，未知 reason fail-closed。
+- `allowed_skipped`：**判别联合**，只保存 Bun JUnit 真提供的数据，禁止为空缺字段造 sentinel：
+  - `kind="testcase"`：JUnit 有 `<testcase>` 时，key=`file+classname+name+ordinal`；`ordinal` 是同 file/classname/name 的 1-based 出现序号。
+  - `kind="suite"`：整文件 skip 只有 self-closing `<testsuite file=... name=... skipped=.../>`、没有 testcase；key=`file+suite_name`，**不得伪造 classname/name/ordinal**。
+  两种 entry 的 `count` 均为正整数，以 multiset count 表达重复；分别按 `(kind, file, classname, name, ordinal)` 或 `(kind, file, suite_name)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许 `native-unavailable | todo | whole-suite-skip | reviewed-environment`；`suite` 通常只允许 `native-unavailable | whole-suite-skip | reviewed-environment`，未知组合 fail-closed。
 - `minimum_executed`：非负整数，由 Commit -1 的独立 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。
 - `runner_git_blob` 必须等于 entry A 中 `scripts/parallel-test.ts` 的 `git rev-parse "${ENTRY_SHA}:scripts/parallel-test.ts"`；不等说明用另一把尺子量 evidence。
 - 文件编码 UTF-8、LF、2-space JSON、末尾单个 `\n`；顶层 key 顺序固定为上例，条目 key 顺序固定为上例。消费者既验证解析语义，也对原始 bytes 取 hash；禁止“语义相同就重写 baseline”绕过审计。
-- producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
-- 全部 15 次绿后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
+- **runner→baseline wrapper→producer 的 artifact transfer 是冻结接口，不是实现细节**：
+  1. `scripts/parallel-test.ts` 接受环境变量 `PARALLEL_TEST_ARTIFACT_DIR=<绝对路径>`。设置时，该目录必须在启动前不存在或为空；runner 创建它，并原子写 `shard-01.xml`…`shard-NN.xml`、`runtime-identity.json`、`skipped-multiset.json`。未设置时可使用临时目录，但该次输出**不得**用于 entry evidence。
+  2. `baseline-runs.sh` 在 `REQUIRE_TEST_ARTIFACTS=1` 时，对第 `NN` 次运行设置 `PARALLEL_TEST_ARTIFACT_DIR="$OUT/run-NN-artifacts"`，在同一份 `run-NN.log` 写 `artifact_dir=<绝对路径>`；command rc=0 后仍须核该目录存在、至少一份 shard JUnit 以及两个派生 JSON，缺失即该 run fail。未设置 `REQUIRE_TEST_ARTIFACTS=1` 时维持普通重复运行语义。
+  3. `capture-entry-evidence.ts` **必须**以 `REQUIRE_TEST_ARTIFACTS=1` 调用树内 `baseline-runs.sh`，只接受每份 log 声明的 artifact dir；不得扫描 `/tmp` 猜目录、复用 `refreshTimings()` JUnit、或把 runner stdout 当 file identity。每个 run 的 manifest 条目列出该目录下全部 shard JUnit path/hash，以及 runtime/skipped JSON path/hash。
+- producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`REQUIRE_TEST_ARTIFACTS=1`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
+- 全部 15 次绿且 artifact transfer 完整后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／artifact／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity/artifact transfer；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
 - producer **不修改 HANDOVER、不执行 git commit**。T0.0f 在 producer rc=0 后，按下方 pointer v1 语法更新 master HANDOVER 并显式提交 P。
 
 **版本化 validator 路径与 CLI（由 T0.0e 在 Commit -1 实现，T0.0d 原样消费；prompts 不得另造接口）**：
@@ -591,8 +611,12 @@ archive_path=<可为空；归档副本不定义 entry>
       "ordinal": 1,
       "log_path": "<绝对路径>",
       "log_sha256": "<hex>",
-      "junit_path": "<绝对路径>",
-      "junit_sha256": "<hex>",
+      "artifact_dir": "<绝对路径>",
+      "junit_artifacts": [
+        { "path": "<绝对路径/shard-01.xml>", "sha256": "<hex>" }
+      ],
+      "runtime_identity": { "path": "<绝对路径/runtime-identity.json>", "sha256": "<hex>" },
+      "skipped_multiset": { "path": "<绝对路径/skipped-multiset.json>", "sha256": "<hex>" },
       "executed": 0,
       "skipped": 0,
       "verdict": "green"
@@ -601,7 +625,7 @@ archive_path=<可为空；归档副本不定义 entry>
 }
 ```
 
-`runs` **恰 15 项**，`ordinal` 恰为 1～15 且不重复。file identity 与 skipped identity 不信 manifest 摘要，由 validator 从每份原始 JUnit 重算；`canonical_command`、三 intent 字段与 verdict 从每份原始 log 重取。pointer／manifest／raw artifacts 任一缺失即 fail-closed。
+`runs` **恰 15 项**，`ordinal` 恰为 1～15 且不重复。每项 `junit_artifacts` 非空、path 唯一并按 basename bytewise 排序；`artifact_dir` 必须是该 run 的树外目录，全部 JUnit/runtime/skipped path 必须位于其下。file identity 与 skipped identity 不信 manifest 摘要，由 validator 从每份原始 shard JUnit 和两个派生 JSON 重算；`canonical_command`、三 intent 字段、`artifact_dir` 与 verdict 从每份原始 log 重取。pointer／manifest／raw artifacts 任一缺失即 fail-closed。
 
 **因果相位（已裁 Git 图）**：Commit -1 在独立树收口 → 合 master 得 **A** → 从 A 建 cutover worktree → **T0.0f 在 A 上生成树外 15-run/JUnit／manifest，并在 master 提交 pointer P** → **T0.0d 消费这些真实 evidence** → 才允许执行树进入 T0.1／Commit 0。
 
@@ -699,6 +723,14 @@ orphan IDs: none
 
 ## Commit 0 — Legacy 基线、旧缺陷 characterization 与 oracle 分型
 
+> 🛑 **本 commit 已被用户 2026-08-11 裁决全面推迟，不执行。** 原话：「**显然不该继续 commit 0，这些验证设施全面推迟，业务代码完成后，选择一部分在主线的实施，其他的彻底推迟**」。
+>
+> **理由**：T0.3–T0.9 全部是证据基础设施——physical recorder、route observer 基线、旧缺陷 characterization、capability 类型双向闭包、测试面四分类、golden 冻结——**零生产行为**。它与本项目 2026-08-11 起的「快做快合，放弃 SDD／TDD，只补主路径与已报错路径」正面冲突，也撞 user-rule `40-dev-workflow` 的 `solve-the-task-before-building-proof-infrastructure` `[hard]`。
+>
+> **改为**：直接进 Commit 1–3 的准备与 Commit 4 的原子发布。验证靠**已有**资产：O-6 字节门（双向自检已通过）、现有 anthropic／terminal goldens、`setDeliverySessionObserverForTests`、以及 semantic-bridge 的 wire golden。
+>
+> **推迟项的处置**：业务代码完成后，从下表中**挑一部分在主线实施**，其余**彻底推迟**（不进 backlog 排期）。挑选时点与清单见本节末的「推迟项分流」。下表原样保留，仅供那一次挑选时参考，**不再是待执行清单**。
+
 **目标**（RFC §7.3）：不改 production；冻结 O-1／O-2／O-6 与现有 goldens、搭建 handle-level physical recorder 并自检、把测试面分四类、并把「旧生成 delivery 的完整能力面」按 §7.2 的双向闭包冻结成 A／B／C／D 四集。
 
 ### 逐 task
@@ -756,7 +788,21 @@ orphan IDs: none
 
 ### commit invariant
 
+> 🛑 **随 Commit 0 一并推迟，不作为门执行。** 下段原文保留供日后分流时参考。
+
 production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据**：tracked 全集减排除表，输出为空）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
+
+### 推迟项分流（业务代码完成后做这一次挑选）
+
+**时点**：Commit 4 的原子发布落地、且主路径行为经真实 route 验证之后。**不早于**，因为在那之前挑不出「哪些验证真的守住了东西」。
+
+**挑选口径**（用户 2026-08-11：「选择一部分在主线的实施，其他的彻底推迟」）：
+
+- **优先进主线的**：**已经报错过的路径**的回归，以及**主路径**的行为断言。判据是「它对应一个真实发生过的缺陷或一条用户可观察的主路径」，不是「它覆盖了某个理论出口」。
+- **彻底推迟的**：为证明覆盖面而存在的分类／闭包／冻结类设施——T0.7 的双向不动点闭包、T0.8 的测试面四分类、T0.9 的 golden 清单冻结。**彻底推迟 = 不进 backlog 排期**，需要时再从本文档取回。
+- **T0.6 的 characterization 有一条特殊性**：它「绿 = 缺陷仍在」，Commit 4 之后必须反转成正确性断言。既然 Commit 0 不做，**这条 characterization 不存在**，那么 Commit 4 的正确性就直接由「反转后的那条断言」承担——即在 Commit 4 里**直接写正确性断言**（stop 与 anchor index 同字节时，wire 关闭与 lease 清除必须同一 command 内完成），跳过中间的「先证明缺陷在」这一步。这是本次推迟里**唯一需要在 Commit 4 补一条测试**的项。
+
+**下列 R-x 的 C0 门随本次推迟失效**，其覆盖改由 Commit 4 的 C4 门承担或一并推迟：R-13（C0 production 硬门 → 归 C4）、R-1（recorder 自检 → 彻底推迟）、R-3（旧缺陷 characterization → 按上一条转为 C4 的正确性断言）。
 
 ---
 
@@ -771,9 +817,9 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据*
 | **T1.1** | compile fixture **正样本**：四类 non-Anthropic concrete profile 调 `emitGeneric`／`emitKeepalive`／`terminate`，Anthropic concrete profile 调 common 与每个 indexed command。**先在类型不存在时跑 `tsc`，确认红。** | 按 RFC §3.2 加 `AnthropicDeliveryProfile` 等五个 profile 与 `FormatDeliveryProfile` union，`indexedBlockLifecycle` 是 **compile-time discriminant，不是 runtime feature flag**，所有 profile 必须显式给值。`tsc` 转绿。 |
 | **T1.2** | compile fixture **负样本**：在 Responses HTTP／Responses WS／Chat Completions／Azure／Gemini owner 上分别引用 `openAnchor`／`openRealBlock`／`writeRealBlockFrame`，由 `@ts-expect-error` 锁定 property 不存在。**先确认移除注解时 `tsc` 必须失败**——否则这条 fixture 什么都没测。 | 按 §3.4 的 `CommandsFor<P>` 条件类型收窄，负样本转绿。 |
 | **T1.3** | **判别正控**：故意把 factory 返回值退化成共同大接口，负样本必须因「unused `@ts-expect-error`」或显式 compile-failure harness **转红**。再写 union profile 正负样本：未收窄的 `FormatDeliveryProfile` 不能取得 indexed port；先 `profile.indexedBlockLifecycle === "anthropic"` 收窄再调 generic factory，所得 owner 的 indexed command 必须 compile-green，`none` 分支仍 compile-red。 | 保留 §3.5 的**反例锁定**：factory 先接 union profile、再检查嵌套 `owner.profile.indexedBlockLifecycle` 的样例**必须保留为 compile-red characterization**（该路径已被 TypeScript 5.9.3 PoC 证否）。**不得用 `as AnthropicGenerationCommandPort` 作正确样本。** |
-| **T1.4** | classifier 三态 unit：①structured payload parse failure 在 external write 前拒绝；②已登记为 owner-governed／terminal／indexed-block 的 effect 误走 generic → `CommandEffectMismatchError`；③payload 可解析但 effect 未登记 → **按 richest-data-flow 默认允许发送**，`actualEffect=unknown`，原始 type／frame detail 进 trace／History。**第三态先写成「拒绝」跑一遍确认它会红**——默认拒绝是最容易写错的方向。 | 三态转绿。**未知 effect 不是已知 generic 的证明，也不是默认拒绝理由。** |
+| **T1.4** | **本 task 原为「classifier 三态 unit」，按用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md) 收窄为两态**——中间那一态（已登记为 owner-governed／terminal／indexed-block 的 effect 误走 generic → `CommandEffectMismatchError`）是 classifier 校验并拒绝 intent×effect mismatch 的核心机制，本轮不做，恢复入口见该 ADR。unit：①structured payload parse failure 在 external write 前拒绝（基础 payload 合法性检查，与信任调用方 intent 与否无关）；③payload 可解析、effect 未登记或未知 → **按 richest-data-flow 默认允许发送**，`actualEffect=unknown`，原始 type／frame detail 进 trace／History。**先写成「未登记 effect 也拒绝」跑一遍确认它会红**——默认拒绝是最容易写错的方向。 | 两态转绿。**未知 effect 不是已知 generic 的证明，也不是默认拒绝理由；intent 与 actual effect 不一致时不在此处 fail loud，诚实边界见 design.md §9.2／§11.1。** |
 | **T1.5** | command input／result types、`ValidatedDeliveryEnvelope`、`command × profile` compatibility registry 的 unit：断言 envelope 至少保留 §2.2 冻结的性质集合（原始 frame、`command`＋per-operation 唯一 `commandId`、format profile、expected／actual effect、owner-minted provenance、target kind、authorization 引用的 wire index／leg kind／owner state version、candidate／dispatch identity、observation time、C9 committed、compound phase）。 | 转绿。**这些是最小性质集合，不预先规定扁平字段／嵌套对象／opaque token**——具体形状由 T3.1 沿真实 caller 调查后定。 |
-| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。<br>🔴 **前置停门：§11 #6 未裁则本 task 不可开工。** M1 的 `OwnerTerminalDecision`（`delivery/owner-failure.ts:11`）已经有一套三态，**本 task 一旦把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，形状就定死了**——之后 T2.7／T3.5／T4.10 全建在它上面。**这是 #6 最早咬人的地方，不是 Commit 4。** |
+| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。<br>✅ **前置停门已解：§11 #6 已裁 2026-08-11（候选 ④）。** M1 的 `OwnerTerminalDecision`（`delivery/owner-failure.ts:11`）已经有一套三态，**本 task 一旦把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，形状就定死了**——之后 T2.7／T3.5／T4.10 全建在它上面。**这是 #6 最早咬人的地方，不是 Commit 4。** |
 | **T1.7** | 属性存在性快照工具（§0.4 第 2 条）在 Commit 0→1 之间跑一次。**先手工加一个 optional 方法确认它会红。** | 快照相等，rc=0。 |
 
 ### factory／锚点表
@@ -794,9 +840,9 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据*
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
-| R-2 | C1 `辅助门`（classifier 三态 unit） | T1.4 落盘的测试路径 |
-| — | **§11 #5 的必经触发点** | **未裁则本 commit 不得开工**——候选②要改的正是 C1 的内容（把 T2.3 前移进来）。裁后同步 RFC／矩阵／plan 三处 |
-| — | **§11 #6 的必经触发点** | **未裁则本 commit 不得开工**（不只是 T1.6）——T1.6 冻结类型、T2.7 实现状态机、T3.5 产出映射，**取代／合并类候选到 C4 才裁就要重写 C1～C3**。把**四个**候选交主会话／用户 |
+| R-2 | C1 `辅助门`（T1.4 落盘的两态 unit；classifier 拒绝 mismatch 一态本轮不做，见 T1.4 注） | T1.4 落盘的测试路径 |
+| — | ~~§11 #5 的必经触发点~~ | ✅ **已消解 2026-08-11**——论域随 Commit 0 与门矩阵推迟而消失，不再是开工前置 |
+| — | ~~§11 #6 的必经触发点~~ | ✅ **已裁 2026-08-11：候选 ④**（①②③ 经 `ownerFailureOutcome` 调用点实测证否）。不再是开工前置 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
@@ -835,7 +881,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据*
 | owner serializer 现状（`write` → `writeToSink`） | `delivery/session.ts:127,131`；`writeToSink` 定义 `:581` | T2.4 的迁移起点 |
 | heartbeat **四个** producer | `delivery/session.ts:175`（`contentFrame`）、`:184`（`injectContentScaffold`）、`:209`（`injectScaffold`）、`:219`（normal ping） | T2.6 被测对象；inventory §13 单列这四个 **owner-internal producer**（**是四个不是三个**） |
 | `DeliveryHeartbeat` | `delivery/types.ts:55` | 含 `injectScaffold`；§7.2 点名它是闭包 sanity 成员 |
-| `OwnerFailureReason` 三值 | `types.ts:295` | `client-gone` / `session-terminating` / `wire-torn` 生命周期失败通道。**`AuthorizationCardinalityError` 与 `CommandEffectMismatchError` 不走这条通道，直接 throw** |
+| `OwnerFailureReason` 三值 | `types.ts:295` | `client-gone` / `session-terminating` / `wire-torn` 生命周期失败通道。**`AuthorizationCardinalityError` 不走这条通道，直接 throw**（`CommandEffectMismatchError` 已按用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md) 本轮不引入，见 Commit 1 T1.4 注） |
 | `ownerFailure` / `classifyOwnerFailure` | `delivery/session.ts:300-309` / `delivery/owner-failure.ts:41` | 同上；**M1 已把散落的提前返回收敛成 `OwnerTerminalDecision`**，T2.7 写 `terminate` 状态机前必读，别再造第二个分类器（§11 #6） |
 | commit point（`committed` 翻转） | `delivery/session.ts:323-354` | C9 现状；T2.2 ③④ 的注入点 |
 | owner→raw 存在性分派 | `delivery/session.ts:584-596` | §0.4 第 2 条快照的必覆盖对象（`sink.writeAnchor ?? sink.write` 四处） |
@@ -861,7 +907,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 ## Commit 3 — Producer builders、LegHandle 数据流与 publish harness 准备
 
-**目标**（RFC §7.6）：增加各 profile 的 pure classifiers／builders、producer-to-command 转换 helpers、candidate binding 中的 opaque LegHandle 承载、10-root cutover harness 与 test-only handle recorder；**所有 helpers 尚未被 production roots 调用**。
+**目标**（RFC §7.6）：增加各 profile 的 pure builders（原 RFC §7.6 写「classifiers／builders」；classifier 归一 actual effect 后与 caller intent 比对并拒绝 mismatch 的机制本轮不做，见 T3.1 注）、producer-to-command 转换 helpers、candidate binding 中的 opaque LegHandle 承载、10-root cutover harness 与 test-only handle recorder；**所有 helpers 尚未被 production roots 调用**。
 
 ### 前置调查（RFC §7.6「前置调查」＋§9.3）
 
@@ -882,7 +928,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T3.1** | 各 profile 的 pure builders 与 classifiers，用**真实 vendor bytes** 做 unit／SDK 校准。**先用一份合成 fixture 跑通、再换成真实上游字节确认它仍绿**——合成 fixture 与 builder 共享同一份错误假设时会一起绿（RFC §11.1）。 | builders 转绿。**转发腿的 producer 谓词与 classifier 若共享谓词，两侧会共因判绿**——因此本 task 的绿**不计** behavior 闭合，兜底由 O-2 状态机／wire golden／真 SDK 承担（见 T4.13）。 |
+| **T3.1** | 各 profile 的 pure builders，用**真实 vendor bytes** 做 unit／SDK 校准。**先用一份合成 fixture 跑通、再换成真实上游字节确认它仍绿**——合成 fixture 与 builder 共享同一份错误假设时会一起绿（RFC §11.1）。**本 task 原描述「builders 与 classifiers」；classifier 归一 actual effect 后与 caller intent 比对并拒绝 mismatch 的机制本轮不做**（用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)），本 task 只保留纯 frame-construction builders。 | builders 转绿。**转发腿的 producer 谓词若与本 task 自身的合成 fixture 共享同一错误假设，两侧会共因判绿**——这与 classifier 是否存在无关，纯粹是「自洽测试可能共享实现的错误假设」；因此本 task 的绿**不计** behavior 闭合，兜底由 O-2 状态机／wire golden／真 SDK 承担（见 T4.13／T4.14 注）。 |
 | **T3.2** | Responses output-item boundary 的 effect taxonomy：从 **HTTP renderer、WS renderer、terminal fixtures** 三个来源分别枚举 **runtime 观测到的** event／effect 命中集合，每项记 canonical family 与依据。**先冻结这三份 hit set**，别从 RFC §3.6 那一句话猜 enum。 | taxonomy 落盘 + unit 转绿。<br>**mutation 正控（三条，各打一个来源）**：分别删掉一个 **HTTP-only**、一个 **WS-only**、一个 **terminal-only** 的 effect，要求**对应的真实入口**转红——这能区分「taxonomy 漏了某来源」与「命名不同」。<br>**false-red 对照**：允许**多个 wire event 映射到同一个冻结 effect family**，不得因聚合而误红。<br>⚠️ **比集合与映射，不比名称文本**。「随手臆造一个 enum 看它不匹配」不是稳定 mutation——它可能碰巧与当前 renderer 一致，也可能只因命名差异而红。 |
 | **T3.3** | opaque LegHandle 在 candidate binding 中的承载。<br>🔴 **这不是 `5 × 3 × 4 = 60` 格笛卡尔积**——**RFC §9.3 第 3 项冻结的是三个独立覆盖轴的人口口径，不是组合可达性**。实测五个 site 的 kind 是**字面量写死的**：`driver.ts:885/1014/1102` 固定 `"primary"`、`:1521` 固定 `"recovery"`、`:1579` 固定 `"continuation"`。要求在 primary-only site 驱动 recovery，只能靠伪造入口或错误扩宽 production site，**三种做法都在削弱门**。<br>**正确形状是关系覆盖表**：先为每个 site 列出它**可达**的 leg kind／source scenario，不适用的格**具名 `N/A` 并附控制流证据**（哪一行的字面量／哪个分支决定了它不可达）。 | 覆盖判据（三条同时成立，缺一不可）：<br>① **5 个 site 各至少一条正向 witness**；<br>② **3 种 leg kind 的全集**各至少被一个适用 site 覆盖；<br>③ **4 种 source scenario 的全集**（sole primary／hedge winner／continuation／recovery）各至少被一个适用 site 覆盖。<br>**mutation 正控**：**逐 site** 删掉它的 LegHandle 接线，**该 site 专属的生产路径**必须转红（这才证明五个 site 都真的接上了；一条聚合断言做不到）。<br>⚠️ **hedge winner 属于 primary kind，不是第四种 leg kind**（§9.3 第 3 项）——它是 source scenario 轴上的值。**先写一格「hedge winner 是第四种 leg kind」的错误映射，确认它红。**<br>**owner 能从 state 推导的字段不得重复让 caller 提交。** |
 | **T3.4** | producer-to-command 转换 helpers 的 unit。**先写一条「helper 接收或返回闭包内任何符号」的检查确认它红**——准备期新增声明**不得**把闭包内任何符号放进签名（RFC §7.2 表，注意是「闭包内任何符号」而非只有种子类型）。 | 转绿。 |
@@ -948,7 +994,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | **T4.1** | **Q5 停门**（非测试）。产出逐帧 diff 预测，含 heartbeat 重臂时点的逐 tick 比较（输入来自 T3.5）。**先拿 T0.9 冻结的 goldens 做基座**。 | diff 落盘并复核。缺材料**不得进入后续 task**。 |
 | **T4.2** | **8 个 sink 构造点**创建唯一 owner 与 private raw emitter；**2 个 Anthropic 接线点**改为接收 owner／command port（**不自己构造**）。⚠️ **别读成「10 个并列 root 各建一个 owner」**——`messages/handler-v4.ts:574`／`:658` 与 `:1192` 是**同一条链上的两层**（前两者调用 `makeAnchoredSseSink`，后者在其内部），照 10 个各建会让**单条 Anthropic 请求出现两个 owner**，直接违反本 commit 的「一个 serializer／一个 timer／一次 sampling／一次 emit」。<br>**先断言「recorder 包裹的是 composition root 实际取得的 `stream`／`ws` handle」**——用 T0.3 的 direct-send seam 复验它仍看得见绕过 owner 的发送。**注入 owner 的 test raw adapter 不用于本判定。** | 8 构造 + 2 接线切换；**删除 raw 第二 serializer 与 raw heartbeat**。转绿。<br>**验收计数是 `8 + 2`，不是裸 `10`**——R-1 的覆盖面按 8 个构造点核对（四 vendor HTTP + WS），Anthropic 那 2 个接线点单独断言「未构造 owner」。 |
 | **T4.3** | 断言 runner／driver／terminal helper／decorator 参数里**没有** raw handle、closure 返回值与可恢复 registry 里也没有；且**不存在能从已传出的 sink／wrapper／observer 反查完整 session、allocation port 或 raw authority 的 lookup**。**先用 test-only adversarial runner 试着 resolve 回 session，确认它做不到**——窄 port 若可被 lookup 还原，只是形式收窄。 | 转绿。**源码／类型扫描只作 presence ratchet**。 |
-| **T4.4** | 所有 ordinary／winner／live common producers 切 `emitGeneric`；generic pings 切 `emitKeepalive`；可解析未知 event 按 unknown passthrough。**先写 adversarial `emitGeneric(block-stop)`，断言它在 external write 前以 `CommandEffectMismatchError` 失败。** | 转绿。mutation 恢复 generic passthrough 后，**wire／owner-state 双 oracle 转红**。 |
+| **T4.4** | 所有 ordinary／winner／live common producers 切 `emitGeneric`；generic pings 切 `emitKeepalive`；可解析未知 event 按 unknown passthrough。**本 task 原含「先写 adversarial `emitGeneric(block-stop)`，断言它在 external write 前以 `CommandEffectMismatchError` 失败」——classifier 校验 intent×effect 并拒绝 mismatch 本轮不做**（用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)），该adversarial sub-test 摘除，恢复入口见该 ADR。 | 转绿。**mutation 恢复 generic passthrough（即某 producer 仍调用旧 raw `sink.write` 而非 `emitGeneric`）后，必须被 Commit 6 的 A 集 population-zero 机械审计（T6.1／T6.2）转红**；这是本 task 剩余的回归防护，不再依赖 classifier 判定 payload 与 intent 是否一致——**intent 与 actual effect 不一致时，`emitGeneric` 本身不再 fail loud，这是本轮接受的诚实边界**（design.md §9.2／§11.1）。 |
 | **T4.5** | 默认 on-demand／`empty_text` 切 `openAnchor`，`enveloped_ping` 切 `openMessageEnvelope`，anchor pulse／close 切 indexed commands。**先写「`enveloped_ping` 误走 `openAnchor`」的 mutation**，断言它因多 block／index shift／extra stop 转红——以 `tests/anthropic/enveloped-ping.it.test.ts` 为正样本基座。 | 转绿。<br>🔴 **同时反转 T0.6 的 characterization**（按其头部第③条）：断言方向从「wire closed 且 lease 仍 open」改成相反的正确性断言。**反转后绿；若维持原样仍绿，说明 authority 没生效**——这是 T0.6 特意留的探测器。**不许删掉它当过时测试**（C4 同时在跑十几个 mutation，删一条「过时的 characterization」看起来会很合理，但那会永久丢掉这个探测器）。`openMessageEnvelope` **不分配 block index、不创建 lease**；`openAnchor` 的 `prelude.kind` 至少区分 `captured` 与 `fabricated`，**owner 铸 provenance，caller 不自报 marker**。 |
 | **T4.6** | 5 个 `beginLeg` lexical sites 按 **T3.3 的关系覆盖表**（**不是 60 格笛卡尔积**，见 T3.3）接好 LegHandle；primary、hedge winner、continuation、recovery 的 real start／delta／stop 全部切 `openRealBlock`／`writeRealBlockFrame`。**先删掉 caller offset 算术再跑 O-1**，确认没有第二条 legacy arithmetic 旁路（C4 双偏移作废）。 | 转绿，覆盖判据沿用 T3.3 的三条（5 site 各有正向 witness／3 kind 全覆盖／4 scenario 全覆盖；不适用格具名 `N/A` + 控制流证据）。<br>**mutation 逐 site**：删除任一 site 的 open／write 接线或恢复 caller offset 算术，**该 site 专属的生产路径**必须由 O-1／O-2／cross-leg oracle 转红。 |
 | **T4.7** | close→real-start 用 **compound command**。**先在不 park 的对照中推进 N×interval 断言恰有 N 个 keepalive**（活性对照，缺它则下一条是假绿）；再把 tick 停在旧两 operation 之间，断言新 production live HTTP 只见相邻 `stop@leaseIndex → real-start@next` 且 `maxOpen<=1`。 | 转绿。**mutation 拆回两个 enqueue 必须产生插帧并红**；`wireTorn` 时按已裁决语义只 close、不 reserve／不写 real start，返回 typed `ClosedThenWireTorn`——调用方**不得**把它误解为「零副作用失败」。 |
@@ -958,7 +1004,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | **T4.11** | Responses WS direct transport 按 authority 分域：post-owner error／truncation 不再 direct send，改走 `terminate` ＋ typed socket close intent；control-with-inflight 先协调 active owner。**先在 keep-open socket 上启动 parked generation 并打开 anchor，再发坏 JSON、超长、并发 create，并推进 idle clock**——断言无 orphan anchor、active operation 先被协调、**无 5 分钟 idle timer 误杀**。 | 转绿。**真正 pre-owner admission／AUQ／warmup writers 保持独立且 observer 证零 owner，不纳入归零集。** |
 | **T4.12** | 收口 **C 集**：删除 production `getDownstreamDeliverySession(sink)` 及等价 lookup 引用。**先写「恢复 sink lookup」的 authority-leak mutation**，确认 production bypass witness 咬得住。<br>收口 **D 集**：闭包命中的每个声明改为只接／只返回 command port 与窄 observer，或退化为纯 transform。**判据不是「签名里不再出现 `ClientSink` 这个名字」**——那会被局部同构 interface 再 cast 绕过（本项目已实测过），而是**运行期没有任何生产路径能从这些声明拿到 emission 能力**。 | 转绿。`createDownstreamDeliverySession` 只留 composition-root 私有 construction allowlist。 |
 | **T4.13** | 迁移旧 session observation／provenance consumers：`noteWinner` 改用 `selectWinner(source)` 或等价窄 observation command。**先写 FF-2 描述的退化实现**——让 `selectWinner` 只更新 snapshot／telemetry 而不参与 provenance 铸造——断言 CC／Azure／Responses HTTP／Responses WS／Gemini **五种 profile 的 forwarded provenance 全部转为 `legacy`** 并使 R-14 转红。 | 转绿：五种 profile 各从真实 route 跑一次**有 winner 的 generation**，断言 forwarded 记录携带**真实** candidate／dispatch identity 且与该请求实际胜出的 candidate 一致；同一断言在 **hedge winner 场景重跑一次**。<br>false-red 对照：Anthropic profile 经 `beginLeg` 得到 provenance 仍绿；**无 winner 的路径（pre-owner 拒绝、warmup）不要求 candidate provenance，不得被本条误伤**。<br>`noteUpstreamRoundStarted`／`noteUpstreamRoundEnded`／`writeScaffold` 当前零 production consumers，**不继续暴露给 driver**。新 observer 不得返回 session／command port／raw handle，也不得产生 wire effect。 |
-| **T4.14** | **转发腿的独立 oracle**（RFC §2.7／§11.1 的诚实边界）：producer 常以与 classifier 同族的 frame 谓词选择 command，**共享谓词漏形态时两侧会共因判绿**。因此除 wrong-command mutations 外，**直接破坏 producer 与 classifier 共用的 frame 谓词**，使其漏一种合法 block shape。 | **O-2 状态机／wire golden／真 SDK oracle 必须转红**——这三者**不复用**该谓词。这条不能由 builders 的自洽测试替代。 |
+| **T4.14** | **保留，但去 classifier 化重写**（独立评审 2026-08-11 判定原整体移除为 blocker）。原文以「classifier 与 producer 共享谓词会共因判绿」立论，而 classifier 只是**解释**了同源检查为何不能自证，**不是 mutation 与外部 oracle 的运行前提**——去掉 classifier 后，同源的第二侧从 classifier 换成 T3.1 的 builder fixture，**producer 谓词漏形态这件事没有消失**（本 plan `:909` 与 design `§11.1` 当前文本都仍如此承认）。Commit 6 的 population-zero 也覆盖不到它：那条查的是「有没有绕过 command port」，而本条查的是「走了 command port 但选错了 command」，两种错误互不包含。**做法**：直接破坏转发腿 producer 的 command-selection predicate，使其漏掉一种**合法** vendor block shape（该形状仍经 `emitGeneric` 发出，而未调用本应调用的 indexed command）；覆盖该形状的 **O-2 状态机／wire golden／真实 SDK 客户端 oracle 至少一项必须转红**，且同一真实 route 在正确实现上保持绿（false-red 对照）。**这些 oracle 不得复用被破坏的那个谓词**——复用了就又是同源。若现有 oracle 都不覆盖该形状，本 task 的交付就是**补上那一个独立 oracle**，不得以「现有覆盖已足够」结案。 |
 | **T4.15** | 同步迁移 raw／heartbeat 11 文件、common／indexed／terminal／finalize／WS、winner observation 与 session-resolution tests。<br>🔴 **同时填 T0.11 manifest 第 ③ 项的迁移关系槽位**：为每个被退役的旧 identity（`OwnerRawSink`／`createDownstreamDeliverySession`／`WireBlockAllocationPort` 等）登记它的 **test-only replacement**，**并让它满足 T6.5 第 ③ 项的 (a)(b)(c) 三条**——只登记名字不算数。**不填则 T6.5 的门在 C6 无法判别「正确退役」与「seam 被悄悄拆掉」**。**任何 guard 删除或放宽必须有独立裁决记录**（CLAUDE.md：删除或放宽既有 guard，合并前必须交独立 reviewer 或用户裁决，不得自判放行）。 | 转绿。 |
 | **T4.16** | **先跑独立 O-1／O-2／真 SDK**，再在本 commit 同步更新 Q5 批准范围内的 anchor／heartbeat goldens 并复跑。**注入 duplicate index、orphan delta、悬挂 block，必须先由 O-1／O-2 红**——不能只靠新 golden 自洽。 | goldens 更新并复跑绿。**O-6 fixture 永不重捕。** 实测 diff 超出 T4.1 预测即**停下回用户重裁**。 |
 
@@ -1038,7 +1084,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-1 | C4 `production 硬门` | 四 vendor HTTP root + Responses WS 的 zero／exactly-once 断言（T4.2／T4.3） |
-| R-2 | C4 `production 硬门` | 每 profile 从真实 route 发 generic／keepalive／terminal（T4.4）＋ T4.14 |
+| R-2 | C4 `production 硬门` | 每 profile 从真实 route 发 generic／keepalive／terminal（T4.4）＋ T4.14（转发腿 producer 谓词的独立 oracle，已按 2026-08-11 评审去 classifier 化重写，见 T4.14 注） |
 | R-3 | C4 `production 硬门` | 真实 Anthropic live consumer（T4.5／T4.7）；**T0.6 的 characterization 在此按其头部第③条反转为正确性断言**（反转后绿；⚠️ **维持原样仍绿 = authority 没生效**——那正是它要抓的） |
 | R-4 | C4 `production 硬门` | FakeClock + 真实 route（T4.7） |
 | R-5 | C4 `production 硬门` | production registration mutation（T4.9） |
@@ -1288,8 +1334,8 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #2 Q1 telemetry 联合查询 | ⏳ **未裁** | **Commit 5 全节不可开工** |
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
 | #4 entry 拓扑 | ✅ **已裁 2026-08-04/05**（Commit -1 先合 master得 A；P 后执行树显式从 `ENTRY_SHA=A` 建） | — |
-| #5 R-5 的 C1／C2 归属 | ⏳ **未裁** | **Commit 1 kickoff 之前**——候选②要改的正是 C1 的内容 |
-| #6 两个正交轴的职责边界 | ⏳ **未裁**（**本轮重框**：不是「同一件事的两种命名」） | **Commit 1 kickoff 之前**——T1.6 一写就冻结形状；C4 停门第 4 项是兜底 |
+| #5 R-5 的 C1／C2 归属 | ✅ **已消解 2026-08-11**（随 Commit 0 与 R-x 门矩阵推迟而失去论域） | — |
+| #6 两个正交轴的职责边界 | ✅ **已裁 2026-08-11：候选 ④**（①②③ 经代码实测证否） | — |
 
 ### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
 
@@ -1340,25 +1386,38 @@ M1 已 merge 进 master（`8125f123`），**「两棵树」不再存在**。用�
 
 ⚠️ **裁决前本节的候选 1 量化影响写着「merge 会引入需要解决的语义冲突」，实测是错的**：`git merge-tree --write-tree` rc=0、冲突列表为空，master 自 merge-base 起**未触及 feature 改过的任何一个文件**。**这条错误成本差点把裁决推向另一边**——记在这里当反例：**量化影响栏里的每个成本都要有可复跑命令，没实测过的不要写成事实**（`anchor-numbers-to-commits`）。
 
-### #5 R-5 的 C1／C2 归属 —— ⏳ **未裁（本轮撤回自裁）**
+### #5 R-5 的 C1／C2 归属 —— ✅ **已消解 2026-08-11（论域随 Commit 0 推迟而消失）**
 
-⚠️ **本 plan 上一版在正文里断言「这不是错配」并按 C1 记账，同时在本节称「待裁」——那是实质自裁。** 本轮撤回该断言，**在裁决前不得声称任何一方成立**。
+**这条问的是「R-5 的辅助门段记在 C1 还是 C2」，而辅助门段与 R-x 门矩阵正是用户 2026-08-11 裁决全面推迟的那套验证设施。** 门不跑，就没有「该门在哪个 commit 生效」可争——三个候选都是在同一套记账体系内部换位置。
 
-**事实**（双方都可查）：
+**因此本条不再是 C1 的开工前置。** cardinality assertion 按**功能归属**实现：它读的是 owner private registries 的完整 population，所以它跟着 registries 走（原 T2.3 的位置），不跟着门表走。`traceability.md` 的 R-5 行随门矩阵一并进入推迟态，不在本轮同步。
 
-- **矩阵** `traceability.md:35` 把 R-5 的辅助门段记为 **C1**；矩阵 §0 把「归属 commit」定义为**该门生效的 commit**。
-- **本 plan** 把 cardinality assertion 的实现排在 **Commit 2**（T2.3），依据是 RFC §7.5 的 Commit 2 目标清单**逐字含「cardinality assertion」**，而 §7.4 的 Commit 1 清单**没有**。
-- 因此按矩阵的定义，**C1 终态并不存在该辅助门**——「Commit 1 与 Commit 2 行为等价」不能让一个尚未实现的门追溯生效。
+若日后从推迟项里把这条门捞回主线，届时按「该门实际生效的那个 commit」重新记账即可——那时实现已经落地，归属是可观测事实，不再需要预先裁决。
 
-**候选**：①矩阵改成 C2（与 RFC §7.5 一致，本 plan 认为证据最强，但**不自行改**）；②plan 把 T2.3 前移到 Commit 1（与 RFC §7.5 的目标清单冲突）；③RFC §7.4／§7.5 补一句说明该 assertion 跨两个准备 commit。
+⚠️ **保留原分析供日后取回时参考**：矩阵 `traceability.md:35` 记 C1，而 RFC §7.5 的 Commit 2 目标清单逐字含「cardinality assertion」、§7.4 没有；按矩阵自己「归属 = 该门生效的 commit」的定义，证据指向 C2。
 
-**触发点**：**Commit 1 kickoff 之前——未裁则 C1 不得开工。**
+### #6 两个**正交轴**的职责边界 —— ✅ **已裁 2026-08-11：候选 ④（保留正交职责 + 具名映射桥）**
 
-⚠️ **上一轮把它挂在 Commit 2 门表是「可达但过晚」**：候选②是「把 T2.3 前移到 Commit 1」，而执行者走到 Commit 2 的门时 **C1 已经作为 semantic commit 提交并通过了它自己的 invariant**。那时才裁只剩三条路——改写已落盘的 C1、重排历史、或接受 C1 终态缺门，**plan 三条都没授权**。**触发点必须早于「该裁决还能无成本执行」的那一刻**，不是「流程一定会看到它」。
+**裁决依据是代码实测，不是文档自述。** 复核命令与结果（`$TREE` = 本执行树，测于本裁决时）：
 
-机械校验帮不上忙：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 **它不判**，所以只能靠人工触发点。Commit 2 的门表**保留一行，但降为「复核裁决已被贯彻」**，不再承担首次裁决。
+```
+rg -n 'ownerFailureOutcome\(' -A 1 src/lib/pipeline/driver.ts | rg -o '"[a-z-]+"' | sort | uniq -c
+```
 
-### #6 两个**正交轴**的职责边界（**本轮重框；上一版把它们误称为「同一件事」**）
+得 `begin-leg` ×5、`close-anchor-before-real` ×1、`codec-render` ×1 —— **7 个调用点没有一个是 terminal**。据此：
+
+- **候选① 被证否**：`TerminalEmissionResult` 取代 `OwnerTerminalDecision` 会让这 7 个非-terminal 失败站点失去 caller action。
+- **候选③ 被证否**：两轴论域不相交（7 个非-terminal 站点 vs 仅 terminate），合成一个三态覆盖不了。
+- **候选② 被证否**：`begin-leg` 失败没有 terminal frame 可言，**投影的像不存在**，「Decision 是内部分类器、Result 是它的对外投影」这个关系本身不成立。
+
+**④ 是唯一在自身分析下存活的候选**，且证否它三个同僚的是可复跑的事实而非偏好。按 `00-kernel` 的 `what-decided-is-decided`，这不是待裁分叉，是一个没人写下来的既定结论。
+
+**落地形状**：`OwnerTerminalDecision` **改名为 `OwnerCommandFailureDisposition`**（现名让读者持续误以为它只管 terminal——本文档上一版自己就误框过一次），职责不变；`TerminalEmissionResult` 只承载 terminate 的 effect／result；**只在「terminate 自身失败」这一格架一条具名映射桥**。按 `快做快合`，配套测试收敛为两条：桥的 exhaustive mapping，以及「同一失败既走 disposition 又走 result 时 settle 恰好一次」的顺序断言——后者对应一个真实风险（撞 Commit 4 的 first-terminal-command-wins），不是假想分支。
+
+**未采纳 `architect-advisor` 先出重框提案**：重框本身已由本文档上一版完成并写进上表，四个候选的论域与代价都在纸面上；剩下的只是核对事实，而事实我已用上面那条命令取到。再派一轮只会重复它。
+
+#### 原分析（保留为裁决依据，勿据此重新开裁）
+
 
 ⚠️ **上一版说这两者「处理的是同一件事、词汇高度重叠但不同构」——那个框法不成立**，据它做的裁决会丢东西。实测：
 

@@ -76,3 +76,26 @@ export function matchesModelKey(modelName: string, key: string): boolean {
   if (hasGlobMeta(nk)) return globToRegExp(nk).test(n)
   return n.includes(nk)
 }
+
+/**
+ * Return the value for the most-specific matching per-model key, falling back to
+ * `"*"`. Literal keys outrank glob keys; within a kind, the longest key wins and
+ * equal-length ties preserve insertion order.
+ */
+export function findMostSpecific<T>(modelName: string, patterns: Record<string, T>): T | undefined {
+  let bestKey: string | undefined
+  let bestIsGlob = false
+  for (const key of Object.keys(patterns)) {
+    if (key === "*") continue
+    if (!matchesModelKey(modelName, key)) continue
+    const isGlob = hasGlobMeta(key)
+    const better = bestKey === undefined || (bestIsGlob && !isGlob) || (bestIsGlob === isGlob && key.length > bestKey.length)
+    if (better) {
+      bestKey = key
+      bestIsGlob = isGlob
+    }
+  }
+  if (bestKey !== undefined) return patterns[bestKey]
+  if ("*" in patterns) return patterns["*"]
+  return undefined
+}

@@ -25,22 +25,35 @@ import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
+import { StreamClientAbortError } from "~/lib/stream"
 
-function frames(label: string, signal: AbortSignal, stallPrimary: boolean): AsyncIterable<UpstreamFrame> {
+function frames(
+  label: string,
+  signal: AbortSignal,
+  stallPrimary: boolean,
+  postBoundaryError?: Error,
+  onIteratorClose?: () => void,
+): AsyncIterable<UpstreamFrame> {
   return {
     async *[Symbol.asyncIterator]() {
-      yield { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: label } }) }
-      if (label === "primary" && stallPrimary) {
-        await new Promise<void>((_resolve, reject) => {
-          const abortError = () => (signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason)))
-          if (signal.aborted) reject(abortError())
-          else signal.addEventListener("abort", () => reject(abortError()), { once: true })
-        })
+      try {
+        yield { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: label } }) }
+        if (label === "primary" && stallPrimary) {
+          await new Promise<void>((_resolve, reject) => {
+            const abortError = () => (signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason)))
+            if (signal.aborted) reject(abortError())
+            else signal.addEventListener("abort", () => reject(abortError()), { once: true })
+          })
+        }
+        yield { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: label } }) }
+        yield { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) }
+        if (postBoundaryError) throw postBoundaryError
+        yield { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }
+      } finally {
+        onIteratorClose?.()
       }
-      yield { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: label } }) }
-      yield { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) }
-      yield { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }
     },
   }
 }
@@ -61,12 +74,20 @@ function hedgePolicy(enabled: boolean, thresholdMs: number) {
   })
 }
 
-function driverHarness(input: { stallPrimary: boolean; policy: ReturnType<typeof hedgePolicy> }) {
+function driverHarness(input: {
+  stallPrimary: boolean
+  policy: ReturnType<typeof hedgePolicy>
+  candidateOnRenderedFrame?: (frame: import("~/lib/pipeline/types").ClientFrame) => import("~/lib/pipeline/types").ClientFrame | undefined
+  postBoundaryError?: Error
+  onIteratorClose?: () => void
+}) {
   let opens = 0
   let primaryCancelled = false
+  const openedEnvs: Array<RequestEnvelope> = []
   const transport: PhysicalTransport = {
     async open(_wire, _env, options): Promise<PhysicalTransportResponse> {
       const label = opens++ === 0 ? "primary" : "secondary"
+      openedEnvs.push(_env)
       const controller = new AbortController()
       options?.signal?.addEventListener("abort", () => controller.abort(options.signal?.reason), { once: true })
       const owner = lifecycle(controller, () => {
@@ -74,7 +95,11 @@ function driverHarness(input: { stallPrimary: boolean; policy: ReturnType<typeof
       })
       return {
         kind: "stream",
-        upstream: { headers: new Headers({ "x-candidate": label }), frames: frames(label, controller.signal, input.stallPrimary), lifecycle: owner },
+        upstream: {
+          headers: new Headers({ "x-candidate": label }),
+          frames: frames(label, controller.signal, input.stallPrimary, input.postBoundaryError, input.onIteratorClose),
+          lifecycle: owner,
+        },
         lifecycle: owner,
       }
     },
@@ -87,13 +112,20 @@ function driverHarness(input: { stallPrimary: boolean; policy: ReturnType<typeof
         throw new Error("legacy send must not run")
       },
     },
+    candidateResponseSessionFactory: (factoryInput) =>
+      createCandidateResponseSession({
+        ...factoryInput,
+        createState: () => undefined,
+        ...(input.candidateOnRenderedFrame && { onRenderedFrame: (_state, frame) => input.candidateOnRenderedFrame?.(frame) }),
+        snapshot: () => ({}),
+      }),
     strategies: [],
     maxRetries: 0,
     maxLearningRetries: 0,
     monotonicNow: () => 0,
     hedgePolicy: input.policy,
   })
-  return { driver, opens: () => opens, primaryCancelled: () => primaryCancelled }
+  return { driver, opens: () => opens, primaryCancelled: () => primaryCancelled, openedEnvs: () => openedEnvs }
 }
 
 function lifecycle(controller: AbortController, onCancel: () => void): UpstreamDispatchLifecycle {
@@ -119,22 +151,17 @@ function codec(): FormatCodec {
     parse() {
       const ctx = createRequestContext({ endpoint: "anthropic-messages" })
       const value = {
-        clientFormat: "anthropic" as const,
-        targetEndpoint: "/v1/messages" as const,
-        model: { id: "claude-test" },
-        stream: true,
-        body: { model: "claude-test", stream: true },
+        request: { clientFormat: "anthropic" as const, model: { id: "claude-test" }, stream: true } as RequestEnvelope["request"],
+        attempt: { body: { model: "claude-test", stream: true }, targetEndpoint: "/v1/messages" as const, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
         view: {} as never,
-        prepareHints: {},
-        ctx,
-        with(patch: Partial<RequestEnvelope>) {
-          return { ...this, ...patch } as RequestEnvelope
-        },
+        ctx: ctx,
+        createView: () => ({}) as RequestEnvelope["view"],
       }
       return value as unknown as RequestEnvelope
     },
     translateOut: (env) => env,
-    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.body, stream: true }),
+    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.attempt.body, stream: true }),
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (body) => body,
     formatError: () => ({ event: "error", data: "{}" }),
@@ -173,6 +200,170 @@ describe("production driver hedged response", () => {
     const winnerDispatch = request.env.ctx.modelOperationSnapshot.dispatches.find((dispatch) => String(dispatch.handle) === activeSource.dispatchId)
     expect(String(winnerDispatch?.candidate)).toBe(activeSource.candidateId)
     expect(delivery.snapshot.winnerCandidateId).toBe(activeSource.candidateId)
+  })
+
+  /**
+   * The candidate fork must give each candidate its OWN body, and it has to be asserted HERE — on the env the transport actually receives — rather than on `createCandidateStateFactory`'s output. `candidate-state.ts` has always cloned per candidate, but the driver's `forkEnv` bridge discarded that clone and handed every candidate the same `env.attempt.body` reference; a unit test on the factory stays green through exactly that defect. Harmless while envelopes were copy-on-write (nothing wrote a body in place), a live cross-candidate corruption once the scopes became mutable.
+   *
+   * `prepareHints` is asserted alongside it because it is the SIBLING field cloned on the same `forkEnv` line, and it fails the same way for the same reason. An independent round-2 review found the gap by sharing just that one field: every guard in this batch stayed green (92 pass) while each candidate's retry hints aliased its siblings'. Fixing the body half and leaving the sibling is how the original defect got here in the first place.
+   */
+  test("each hedge candidate reaches the transport with its own body object", async () => {
+    const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
+    const { driver } = harness
+    const request = await driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink: rawSink } = makeArraySink()
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
+
+    await driver.runResponseSink(request.upstream, request.env, delivery.clientSink, {
+      onRenderedFrame: (frame) => frame,
+      wireAllocationPort: delivery.allocationPort,
+    })
+
+    const [primaryEnv, hedgeEnv] = harness.openedEnvs()
+    expect(harness.openedEnvs()).toHaveLength(2)
+    if (!primaryEnv || !hedgeEnv) throw new Error("expected two dispatched candidate envelopes")
+
+    expect(primaryEnv.attempt.body).not.toBe(hedgeEnv.attempt.body)
+    expect(primaryEnv.attempt.body).toEqual(hedgeEnv.attempt.body)
+    // Behavioural half: identity alone would still pass if some later stage re-shared the object.
+    ;(primaryEnv.attempt.body as Record<string, unknown>).contaminated = true
+    expect(hedgeEnv.attempt.body).not.toHaveProperty("contaminated")
+
+    // Same contract, sibling field: retry hints are per-candidate intent, so an in-place write by one
+    // candidate's strategy must not steer its sibling's next dispatch.
+    expect(primaryEnv.attempt.prepareHints).not.toBe(hedgeEnv.attempt.prepareHints)
+    expect(primaryEnv.attempt.prepareHints).toEqual(hedgeEnv.attempt.prepareHints)
+    ;(primaryEnv.attempt.prepareHints as Record<string, unknown>).contaminated = true
+    expect(hedgeEnv.attempt.prepareHints).not.toHaveProperty("contaminated")
+
+    // The request scope is the opposite invariant — shared by reference on purpose, so a late request-level write reaches every candidate.
+    expect(primaryEnv.request).toBe(hedgeEnv.request)
+  })
+
+  test("a pre-boundary candidate transform failure is codec-render", async () => {
+    const renderError = new Error("candidate pre-boundary render failure")
+    const harness = driverHarness({
+      stallPrimary: false,
+      policy: hedgePolicy(true, 60_000),
+      candidateOnRenderedFrame() {
+        throw renderError
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: renderError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.error).toBe(renderError)
+    expect((outcome.error as Error).cause).not.toBeInstanceOf(Error)
+  })
+
+  test("a post-boundary candidate transform failure is codec-render", async () => {
+    const renderError = new Error("candidate post-boundary render failure")
+    const harness = driverHarness({
+      stallPrimary: true,
+      policy: hedgePolicy(true, 0),
+      candidateOnRenderedFrame(frame) {
+        if (frame.event === "message_stop") throw renderError
+        return frame
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: renderError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.error).toBe(renderError)
+    expect((outcome.error as Error).cause).not.toBeInstanceOf(Error)
+  })
+
+  test("post-boundary upstream iterator failure is upstream-transport", async () => {
+    const upstreamError = new Error("post-boundary upstream failure")
+    const harness = driverHarness({ stallPrimary: false, policy: hedgePolicy(true, 60_000), postBoundaryError: upstreamError })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "upstream-transport",
+      error: upstreamError,
+    })
+  })
+
+  test.each([
+    ["sink rejection", new Error("winner sink rejected"), "stream-error", "downstream-sink"],
+    ["client abort", new StreamClientAbortError(), "settled-abort", undefined],
+    ["next throw", new Error("post-boundary upstream failure"), "stream-error", "upstream-transport"],
+  ])("winner live %s closes the iterator before terminal outcome", async (_name, fault, expectedKind, expectedSource) => {
+    let closes = 0
+    const postBoundaryError = expectedSource === "upstream-transport" ? (fault as Error) : undefined
+    const harness = driverHarness({
+      stallPrimary: false,
+      policy: hedgePolicy(true, 60_000),
+      postBoundaryError,
+      onIteratorClose: () => {
+        closes++
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+    let writes = 0
+    const sink =
+      expectedSource === "upstream-transport" ?
+        makeArraySink().sink
+      : {
+          write: () => {
+            writes++
+            // The first complete candidate block is buffered before the live iterator starts.
+            return writes <= 3 ? Promise.resolve() : Promise.reject(fault)
+          },
+        }
+
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, sink)
+
+    expect(outcome.kind).toBe(expectedKind as typeof outcome.kind)
+    if (expectedSource !== undefined && outcome.kind === "stream-error") expect(outcome.source).toBe(expectedSource as typeof outcome.source)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(closes).toBe(1)
+  })
+
+  test("a buffered-prefix sink rejection closes the winner live iterator", async () => {
+    let closes = 0
+    const harness = driverHarness({
+      stallPrimary: true,
+      policy: hedgePolicy(true, 0),
+      onIteratorClose: () => {
+        closes++
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, {
+      write: () => Promise.reject(new Error("buffered prefix rejected")),
+    })
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
+    await Promise.resolve()
+    // The losing primary and selected secondary each own an iterator; both must close.
+    expect(closes).toBe(2)
+  })
+
+  test("a winner sink write failure is downstream-sink", async () => {
+    const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink } = makeArraySink({ rejectAtFrame: 0 })
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "downstream-sink",
+    })
   })
 
   test("a complete primary before the threshold never starts a hedge", async () => {

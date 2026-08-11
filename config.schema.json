@@ -1234,6 +1234,29 @@
                 }
               ]
             },
+            "precontent_recovery": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "protect_streaming_generation": {
               "anyOf": [
                 {
@@ -2684,6 +2707,30 @@
                 }
               ]
             },
+            "persistence_queue_capacity": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "startup_deadline_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 2147483647
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "raw_capture": {
               "anyOf": [
                 {
@@ -2758,6 +2805,18 @@
                         }
                       ]
                     },
+                    "max_backoff_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "max_total_ms": {
                       "anyOf": [
                         {
@@ -2805,43 +2864,6 @@
               "anyOf": [
                 {
                   "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "shutdown": {
-      "anyOf": [
-        {
-          "type": "object",
-          "properties": {
-            "graceful_wait": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "abort_wait": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
                 },
                 {
                   "type": "null"
@@ -2921,7 +2943,7 @@
                 }
               ]
             },
-            "stale_request_max_age": {
+            "client_request_deadline": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -2933,7 +2955,44 @@
                 }
               ]
             },
-            "request_deadline": {
+            "upstream_request_deadline": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "shutdown": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "graceful_wait": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "abort_wait": {
               "anyOf": [
                 {
                   "type": "integer",

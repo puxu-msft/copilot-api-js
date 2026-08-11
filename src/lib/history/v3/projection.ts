@@ -18,9 +18,10 @@ import type {
   CopilotAnnotations,
 } from "~/types/api/anthropic"
 
-import type { V3TimingSource } from "./store"
+import type { V3TimingSource } from "./timing-source"
 
 import { toEntrySummary } from "../in-flight"
+import { matchesLifecycleQuery } from "../lifecycle-state"
 
 function nodeValues(record: ModelOperationRecord): Map<string, unknown> {
   return new Map([...record.arena.payloads, ...record.arena.frames].map((node) => [node.handle, node.value]))
@@ -48,26 +49,37 @@ function trailers(track: OperationTrack | undefined): Record<string, string> | u
   return foldHeaderFields(track?.trailers)
 }
 
-function frameRaw(value: { raw?: unknown; data?: unknown } | undefined): string {
-  if (typeof value?.raw === "string") return value.raw
-  return typeof value?.data === "string" ? value.data : ""
+type StoredSseFrame = { kind?: unknown; message?: unknown; event?: unknown; raw?: unknown; data?: unknown; id?: unknown; retry?: unknown }
+
+/** Arena preserves rich parsed frames; projection reads their nested semantic message without flattening stored provenance. */
+function semanticStoredSseFrame(value: StoredSseFrame | undefined): { event?: unknown; raw?: unknown; data?: unknown } | undefined {
+  if (!value || typeof value !== "object") return value
+  if (value.kind !== "parsed-sse" || !value.message || typeof value.message !== "object") return value
+  return value.message as { event?: unknown; raw?: unknown; data?: unknown }
 }
 
-function frameType(value: { event?: unknown; data?: unknown } | undefined): string {
-  if (typeof value?.data === "string") {
+function frameRaw(value: StoredSseFrame | undefined): string {
+  const semantic = semanticStoredSseFrame(value)
+  if (typeof semantic?.raw === "string") return semantic.raw
+  return typeof semantic?.data === "string" ? semantic.data : ""
+}
+
+function frameType(value: StoredSseFrame | undefined): string {
+  const semantic = semanticStoredSseFrame(value)
+  if (typeof semantic?.data === "string") {
     try {
-      const parsed = JSON.parse(value.data) as { type?: unknown }
+      const parsed = JSON.parse(semantic.data) as { type?: unknown }
       if (typeof parsed.type === "string") return parsed.type
     } catch {
       // Non-JSON data falls through to its SSE event name.
     }
   }
-  if (typeof value?.event === "string") return value.event
-  return value?.data ? "message" : "keepalive"
+  if (typeof semantic?.event === "string") return semantic.event
+  return semantic?.data ? "message" : "keepalive"
 }
 
 function projectedFrame(values: Map<string, unknown>, handle: string, observation?: OperationFrameObservation): SseEventRecord {
-  const value = values.get(handle) as { event?: unknown; raw?: unknown; data?: unknown } | undefined
+  const value = values.get(handle) as StoredSseFrame | undefined
   return {
     offsetMs: observation?.offsetMs ?? 0,
     offsetSource: observation?.offsetMs === undefined ? "unavailable" : "observed",
@@ -358,6 +370,7 @@ export function recordToHistoryEntry(
     | {
         durationMs?: number
         queueWaitMs?: number
+        historyAdmissionWaitMs?: number
         warningMessages?: HistoryEntry["warningMessages"]
         pipelineInfo?: HistoryEntry["pipelineInfo"]
         preprocessing?: HistoryEntry["preprocessing"]
@@ -382,6 +395,7 @@ export function recordToHistoryEntry(
     pinned: stored.pinned ?? false,
     lastUpdatedAt: endedAt ?? record.identity.createdAt,
     queueWaitMs: terminalMeta?.queueWaitMs,
+    historyAdmissionWaitMs: terminalMeta?.historyAdmissionWaitMs,
     ...(terminalMeta?.warningMessages && terminalMeta.warningMessages.length > 0 && { warningMessages: terminalMeta.warningMessages }),
     ...(terminalMeta?.pipelineInfo && { pipelineInfo: terminalMeta.pipelineInfo }),
     ...(terminalMeta?.preprocessing && { preprocessing: terminalMeta.preprocessing }),
@@ -465,8 +479,7 @@ export function recordMatchesQuery(record: ModelOperationRecord, options: QueryO
     if (![record.routing?.requestedModel, record.routing?.resolvedModel].some((model) => model?.toLowerCase().includes(needle))) return false
   }
   const state = lifecycleState(record)
-  if (options.state && state !== options.state) return false
-  if (!options.state && options.success !== undefined && state !== (options.success ? "completed" : "failed")) return false
+  if (!matchesLifecycleQuery({ state }, options)) return false
   if (options.from !== undefined && record.identity.createdAt < options.from) return false
   if (options.to !== undefined && record.identity.createdAt > options.to) return false
   return true

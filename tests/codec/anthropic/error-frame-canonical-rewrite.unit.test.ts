@@ -27,7 +27,7 @@ import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 
 /** Minimal RequestEnvelope stub — `appliesTo` only reads `targetEndpoint`; `transform` reads nothing off env. */
 function env(targetEndpoint: string): RequestEnvelope {
-  return { targetEndpoint } as RequestEnvelope
+  return { attempt: { targetEndpoint } } as unknown as RequestEnvelope
 }
 
 describe("errorFrameCanonicalRewrite", () => {
@@ -53,7 +53,7 @@ describe("errorFrameCanonicalRewrite", () => {
   test("non-error frame → emit unchanged (passthrough)", () => {
     const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
     const action = errorFrameCanonicalRewrite.transform({ event: "content_block_delta", data: "{}" }, state)
-    expect(action).toEqual({ kind: "emit", frames: [{ event: "content_block_delta", data: "{}" }] })
+    expect(action).toEqual({ kind: "emit", frames: [{ event: "content_block_delta", data: "{}" }], provenance: "preserve" })
   })
 
   test("raw upstream event:error frame (non-Anthropic shape) → reshaped into canonical Anthropic envelope, original message preserved", () => {

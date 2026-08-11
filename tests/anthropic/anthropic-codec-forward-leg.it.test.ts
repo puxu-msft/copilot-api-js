@@ -182,14 +182,23 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
 
   function translateLegEnv(): RequestEnvelope {
     return {
-      targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
-      body: { model: "claude-x" },
-      model: { id: "claude-x" },
+      request: {
+        model: { id: "claude-x" },
+      } as RequestEnvelope["request"],
+      attempt: {
+        targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
+        body: { model: "claude-x" },
+      } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       ctx: { recordFeature: () => {} },
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope
+    return {
+      request: { model: {} } as RequestEnvelope["request"],
+      attempt: { targetEndpoint: ENDPOINT.MESSAGES, body: {} } as RequestEnvelope["attempt"],
+    } as unknown as RequestEnvelope
   }
   const codec = () => createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 

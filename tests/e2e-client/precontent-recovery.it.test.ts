@@ -1,0 +1,222 @@
+import Anthropic from "@anthropic-ai/sdk"
+import {
+  //
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import { tagTransportError } from "~/lib/error/transport-reason"
+import { getHistory } from "~/lib/history"
+import { drainV3Writer } from "~/lib/history/v3/store"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
+import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+
+import {
+  //
+  DONE_FRAME,
+  MESSAGE_STOP_FRAME,
+  blockStopFrame,
+  messageDeltaFrame,
+  messageStartFrame,
+  textBlockStartFrame,
+  textDeltaFrame,
+} from "../helpers/anthropic-frames"
+import { mockModel } from "../helpers/factories"
+import { FakeClock } from "../helpers/fake-clock"
+import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenError,
+} from "../helpers/sse"
+import {
+  //
+  type InProcessProxy,
+  serveInProcess,
+} from "./harness/serve-in-process"
+import {
+  //
+  scriptedUpstream,
+  sequencedUpstream,
+} from "./harness/upstream-script"
+
+const MODEL = "claude-opus-4.8"
+const REQUEST = { model: MODEL, max_tokens: 64, messages: [{ role: "user" as const, content: "recover" }] }
+const SESSION_HEADER = { "x-session-id": "sdk-precontent-recovery" }
+const CLIENT_TIMEOUT_MS = 5_000
+// Bun test escape hatch only. FakeClock drives 1ms proxy business timers; SDK deadlines and localhost I/O stay on real time.
+const TEST_WATCHDOG_MS = 30_000
+
+function completeFrames(id: string, text: string): Array<string> {
+  return [
+    messageStartFrame({ id, model: MODEL, inputTokens: 5 }),
+    textBlockStartFrame(0),
+    textDeltaFrame(0, text),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "end_turn", outputTokens: 2 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
+  ]
+}
+
+function textOf(message: { content: ReadonlyArray<unknown> }): string {
+  return message.content
+    .flatMap((block) =>
+      typeof block === "object" && block !== null && "type" in block && (block as { type?: string }).type === "text" ?
+        [(block as { text?: string }).text ?? ""]
+      : [],
+    )
+    .join("")
+}
+
+describe("@anthropic-ai/sdk 0.106.0 pre-content recovery", () => {
+  useIsolatedRuntime()
+
+  let proxy: InProcessProxy
+  let client: Anthropic
+  const clock = new FakeClock()
+
+  beforeAll(() => {
+    proxy = serveInProcess()
+    client = new Anthropic({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0, timeout: CLIENT_TIMEOUT_MS })
+  })
+  afterAll(() => proxy.close())
+
+  beforeEach(() => {
+    setStateForTests({
+      copilotToken: "tok",
+      accountType: "individual",
+      vsCodeVersion: "1.100.0",
+      responseHeaderTimeout: 0,
+      streamIdleTimeout: 0,
+      streamCommitAfterSec: 0.001,
+      streamKeepalivePingSec: 0,
+      streamKeepaliveMode: "ping",
+      maxReactiveRetries: 0,
+      preContentRecovery: { enabled: true },
+      protectStreamingGeneration: false,
+      refusalSseRewrite: "refusal",
+      recoverToolCallText: false,
+      toolRepairMalformedInput: [],
+    })
+    setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+  })
+  afterEach(() => {
+    clock.restore()
+    setUpstreamFetchForTests(undefined)
+  })
+
+  test.each(["ping", "enveloped_ping", "empty_text"] as const)(
+    "ready-live %s recovery yields one coherent SDK message",
+    async (mode) => {
+      setStateForTests({ streamKeepaliveMode: mode, streamKeepalivePingSec: 0.001 })
+      let calls = 0
+      let primaryReached!: () => void
+      let failPrimary!: () => void
+      const primaryReachedP = new Promise<void>((resolve) => (primaryReached = resolve))
+      const failPrimaryP = new Promise<void>((resolve) => (failPrimary = resolve))
+      setUpstreamFetchForTests(async () => {
+        calls += 1
+        if (calls === 1) {
+          primaryReached()
+          await failPrimaryP
+          return createSseResponseThenError([], tagTransportError(new Error(`primary ${mode} failed`), "refused-stream"))
+        }
+        return createSseResponse(completeFrames(`msg_sdk_pre_ready_${mode}`, `${mode} recovered`))
+      })
+
+      clock.install({ intercept: (delayMs) => delayMs === 1 })
+      try {
+        const finalP = client.messages.stream(REQUEST, { headers: SESSION_HEADER }).finalMessage()
+        await primaryReachedP
+        await clock.advance(20)
+        failPrimary()
+        const final = await finalP
+
+        expect(calls).toBe(2)
+        expect(final.stop_reason).toBe("end_turn")
+        expect(final.usage.output_tokens).toBe(2)
+        // The SDK sees a single completed message even when the proxy inserted and reconciled a synthetic prelude.
+        expect(textOf(final)).toContain(`${mode} recovered`)
+        if (mode === "ping") {
+          await drainV3Writer()
+          const entry = getHistory({ endpoint: "anthropic-messages", sessionId: SESSION_HEADER["x-session-id"] }).entries[0]
+          expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "winner", dispatchVerdict: "committed" })
+        }
+      } finally {
+        clock.restore()
+      }
+    },
+    TEST_WATCHDOG_MS,
+  )
+
+  test("selective business clock leaves the SDK request timeout on real wall time", async () => {
+    const timeoutClient = new Anthropic({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0, timeout: 50 })
+    setUpstreamFetchForTests(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init.signal
+          const rejectAbort = (): void => {
+            const reason: unknown = signal?.reason
+            reject(reason instanceof Error ? reason : new DOMException("The operation was aborted.", "AbortError"))
+          }
+          if (signal?.aborted) rejectAbort()
+          else signal?.addEventListener("abort", rejectAbort, { once: true })
+        }),
+    )
+    clock.install({ intercept: (delayMs) => delayMs === 1 })
+
+    await expect(timeoutClient.messages.stream(REQUEST).finalMessage()).rejects.toBeInstanceOf(Anthropic.APIConnectionTimeoutError)
+  })
+
+  test("ready-live clean EOF before semantic content recovers one coherent SDK message", async () => {
+    const upstream = sequencedUpstream([
+      // `messageStartFrame()` is already a complete `event: ...\ndata: ...\n\n` SSE string;
+      // `createSseResponse()` writes it verbatim, then closes the body after the live pump consumes it.
+      () => createSseResponse([messageStartFrame({ id: "msg_sdk_ready_eof_primary", model: MODEL, inputTokens: 5 })]),
+      () => createSseResponse(completeFrames("msg_sdk_ready_eof_recovery", "ready clean EOF recovered")),
+    ])
+    setUpstreamFetchForTests(upstream.handler)
+
+    const final = await client.messages.stream(REQUEST).finalMessage()
+
+    expect(upstream.callCount()).toBe(2)
+    expect(final.stop_reason).toBe("end_turn")
+    expect(textOf(final)).toBe("ready clean EOF recovered")
+  })
+
+  test("ready-live transport close recovers one coherent SDK message", async () => {
+    const upstream = sequencedUpstream([
+      () =>
+        createSseResponseThenError(
+          [messageStartFrame({ id: "msg_sdk_primary", model: MODEL, inputTokens: 5 })],
+          tagTransportError(new Error("ready transport closed"), "refused-stream"),
+        ),
+      () => createSseResponse(completeFrames("msg_sdk_ready_recovery", "ready recovered")),
+    ])
+    setUpstreamFetchForTests(upstream.handler)
+
+    const final = await client.messages.stream(REQUEST).finalMessage()
+
+    expect(upstream.callCount()).toBe(2)
+    expect(final.stop_reason).toBe("end_turn")
+    expect(textOf(final)).toBe("ready recovered")
+  })
+
+  test("clean control remains one untouched exchange", async () => {
+    const upstream = scriptedUpstream(() => createSseResponse(completeFrames("msg_sdk_control", "control response")))
+    setUpstreamFetchForTests(upstream.handler)
+
+    const final = await client.messages.stream(REQUEST).finalMessage()
+
+    expect(upstream.callCount()).toBe(1)
+    expect(final.stop_reason).toBe("end_turn")
+    expect(textOf(final)).toBe("control response")
+  })
+})

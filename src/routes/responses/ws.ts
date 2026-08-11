@@ -20,6 +20,7 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   DriverRequestResult,
@@ -32,6 +33,7 @@ import type {
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import {
   //
   ENDPOINT,
@@ -44,6 +46,7 @@ import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
@@ -230,7 +233,18 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
   const clientAbort = new AbortController()
   wsClientAborts.set(ws, clientAbort)
 
-  return handleResponseCreateV4(ws, rawPayload, clientAbort)
+  try {
+    await withHistoryAdmission(
+      clientAbort.signal,
+      "responses_ws",
+      async (historyReservation) => await handleResponseCreateV4(ws, rawPayload, clientAbort, historyReservation),
+    )
+  } catch (error) {
+    if (clientAbort.signal.aborted) return
+    const message = error instanceof Error ? error.message : String(error)
+    consola.error(`[WS] Responses admission error: ${message}`)
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+  }
 }
 
 // ============================================================================
@@ -256,7 +270,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * `flushResponse`. Responses has no `[DONE]` / no H2; the WS sink now runs a forward-idle app-layer
  * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
-async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+async function handleResponseCreateV4(
+  ws: WSContext,
+  rawPayload: ResponsesPayload,
+  clientAbort: AbortController,
+  historyReservation: HistoryReservation,
+): Promise<void> {
   const operationIdentity = {
     kind: "responses_ws" as const,
     connectionId: stableWsConnectionId(ws),
@@ -293,12 +312,13 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   try {
     result = await driver.runRequest({
       body: wireBody,
-      originalBodyForHistory: rawPayload,
+      originalBodyForHistory: snapshotHistoryBody(rawPayload),
       headers: new Headers(), // WS transport: no inbound HTTP headers to capture
       method: "WS",
       path: "/v1/responses",
       preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
       operationIdentity,
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -326,7 +346,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const { upstream, env } = result
   // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
   env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel) })
-  const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+  const viaFallback = env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.
   if (viaFallback) {
@@ -372,10 +392,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
   // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
   // is DELIBERATELY OMITTED: per `RunBufferedOpts.commitBoundaries`'s doc (types.ts), UNDEFINED means
-  // terminal-only — the buffer commits exactly once, at the terminal drain (`sawMessageStop` /
-  // `sawUpstreamError`), never mid-generation. WS must NOT reuse the HTTP block-level predicate
-  // (`isResponsesCommitBoundary`): that predicate treats `response.output_item.done` (an output ITEM
-  // finishing, not the whole response) as a commit boundary, which would commit a block live and close
+  // terminal-only — the buffer commits exactly once, at the terminal drain through the grammar-derived
+  // terminal/error projection, never mid-generation. WS stays response-terminal: treating
+  // `response.output_item.done` (an output ITEM finishing, not the whole response) as a commit boundary would commit a block live and close
   // the retry window (`committedAny`) before the response actually reaches a terminal — a drop after
   // `output_item.done` but before `response.completed` would then wrongly degrade to `partial-degrade`
   // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
@@ -427,7 +446,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -461,7 +480,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -495,13 +514,13 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
-  sink.finalize?.()
+  await sink.finalize?.()
 
   if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }

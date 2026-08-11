@@ -592,8 +592,16 @@ function requireNonEmpty(value: string, field: string): void {
   if (value.trim().length === 0) throw new Error(`[model-operation-record] ${field} must not be empty`)
 }
 
+let captureWorkObserver: (() => void) | undefined
+
+/** Test-only observer for the object visits and sealed-arena copies that constitute canonical capture work. */
+export function setCaptureWorkObserverForTests(observer: (() => void) | undefined): void {
+  captureWorkObserver = observer
+}
+
 function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object") return value
+  captureWorkObserver?.()
   const object = value as object
   if (seen.has(object)) return value
   seen.add(object)
@@ -604,6 +612,15 @@ function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
     Object.freeze(object)
   }
   return value
+}
+
+function copyCapturedArena<T>(items: ReadonlyArray<T>): ReadonlyArray<T> {
+  const copy: Array<T> = []
+  for (const item of items) {
+    captureWorkObserver?.()
+    copy.push(item)
+  }
+  return Object.freeze(copy)
 }
 
 function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
@@ -771,7 +788,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       ...(attempt.settledSequence === undefined ? {} : { settledSequence: attempt.settledSequence }),
       ...(attempt.settledAt === undefined ? {} : { settledAt: attempt.settledAt }),
       ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
-      ...(attempt.error === undefined ? {} : { error: attempt.error }),
+      ...("error" in attempt ? { error: attempt.error } : {}),
       ...(attempt.metadata === undefined ? {} : { metadata: attempt.metadata }),
       ...(attempt.extensions === undefined ? {} : { extensions: attempt.extensions }),
       ...(attempt.settlementExtensions === undefined ? {} : { settlementExtensions: attempt.settlementExtensions }),
@@ -800,7 +817,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     const dispatchSnapshots = Object.freeze(dispatches.map((dispatch) => snapshotDispatch(dispatch)))
     const record = {
       identity: snapshotIdentity(),
-      arena: Object.freeze({ payloads: Object.freeze([...payloads]), frames: Object.freeze([...frames]) }),
+      arena: Object.freeze({ payloads: copyCapturedArena(payloads), frames: copyCapturedArena(frames) }),
       ingress,
       routing,
       transforms: Object.freeze([...transforms]),
@@ -1079,7 +1096,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     },
 
     setDispatchTiming(handle, kind, epoch, mode): void {
-      assertWritable()
+      if (sealed) return
       const dispatch = getDispatch(handle)
       // A response-header event is physically earlier than settlement, but its
       // async listener can run after the driver marks the dispatch settled. Timing
@@ -1118,7 +1135,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       dispatch.settledAt = settled.occurredAt
       if (settlement.upstreamResponse !== undefined) dispatch.upstreamResponse = freezeTrack(settlement.upstreamResponse)
       if (settlement.reason !== undefined) dispatch.reason = settlement.reason
-      if (settlement.error !== undefined) dispatch.error = freezeCapturedValue(settlement.error)
+      if ("error" in settlement) dispatch.error = freezeCapturedValue(settlement.error)
       if (settlement.metadata !== undefined) {
         dispatch.metadata = freezeCapturedValue({ ...(dispatch.metadata as Readonly<Record<string, unknown>> | undefined), ...settlement.metadata })
       }

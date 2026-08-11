@@ -46,6 +46,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import { request } from "undici/index.js"
@@ -74,6 +75,15 @@ import {
 
 const MODEL = "claude-opus-4.8"
 
+// Both arms deliberately spend REAL wall-clock time (a compressed 2.5s body-idle deadline and a
+// 4.5s upstream silence window), so the file's floor is ~10s of genuine waiting. Bun's per-test
+// budget is a wall-clock quantity, NOT one of this file's invariants — under the 16-shard runner
+// (`scripts/parallel-test.ts`) contention stretches these waits several-fold and turns healthy
+// arms red at whichever one happens to be slowest that run. Budget the file once for its actual
+// mechanism instead of sprinkling per-test timeouts (which is whack-a-mole: which case goes red
+// depends only on that run's scheduling). Same shape as `tests/infra/validate-entry-evidence.unit.test.ts`.
+setDefaultTimeout(30_000)
+
 /** Compressed undici client-side body-idle deadline (production default is 300_000ms). */
 const BODY_TIMEOUT_MS = 2_500
 /** Upstream silence duration — comfortably ABOVE bodyTimeout so armSilent must die, and
@@ -81,6 +91,14 @@ const BODY_TIMEOUT_MS = 2_500
 const SILENCE_MS = 4_500
 /** Proxy heartbeat cadence for armPing (seconds) — comfortably BELOW bodyTimeout (2.5s). */
 const KEEPALIVE_SEC = 0.5
+/**
+ * Coarse outlier tripwire, NOT a discriminating criterion. The regression this file exists to catch
+ * (the compressed `bodyTimeout` not being applied at all) dies at the production 300s scale, so any
+ * ceiling far below that flags it; 25s also sits ~5x above the worst contention amplification we
+ * have measured on this box (~4x). Do NOT tighten this toward the nominal deadline — the actual
+ * discrimination comes from the UND_ERR_BODY_TIMEOUT assertions, which do not drift with load.
+ */
+const OUTLIER_CEILING_MS = 25_000
 
 /**
  * Build an upstream SSE `Response` whose body opens with `preludeChunks`, then goes REAL-CLOCK
@@ -169,11 +187,17 @@ describe("client↔proxy e2e (Anthropic) — keepalive M-2: proxy heartbeat rese
       expect((result.error as NodeJS.ErrnoException).code).toBe("UND_ERR_BODY_TIMEOUT")
       expect(result.error.message).toContain("Body Timeout")
     }
-    // Died at (approximately) the compressed deadline, NOT after the full SILENCE_MS window —
-    // proves the deadline is real and would have fired regardless of the eventual tail.
+    // Lower bound only: the client did not die instantly for some unrelated reason. This direction
+    // is load-safe — contention can only make `elapsedMs` larger, and a timer cannot fire early.
     expect(elapsedMs).toBeGreaterThanOrEqual(BODY_TIMEOUT_MS - 200)
-    expect(elapsedMs).toBeLessThan(SILENCE_MS) // must NOT survive to see the tail
-  }, 15_000)
+    // Outlier tripwire, NOT the criterion. "Did not survive to see the tail" is already PROVEN
+    // causally above: the tail is emitted only after SILENCE_MS, so a client that saw it would have
+    // finished cleanly and `result.ok` would be true. The former `elapsedMs < SILENCE_MS` assertion
+    // here was both redundant and wrong-framed — `elapsedMs` starts before the request and includes
+    // proxy setup, while SILENCE_MS starts only once the upstream mock's stream opens, so shard
+    // contention alone pushed it over (observed 4583 > 4500 with every causal assertion green).
+    expect(elapsedMs).toBeLessThan(OUTLIER_CEILING_MS)
+  })
 
   test("armPing (gate): keepalive ON (0.5s < 2.5s bodyTimeout) → the SAME compressed-bodyTimeout client SURVIVES + receives the clean tail", async () => {
     setStateForTests({ streamKeepalivePingSec: KEEPALIVE_SEC })
@@ -194,9 +218,10 @@ describe("client↔proxy e2e (Anthropic) — keepalive M-2: proxy heartbeat rese
       expect(result.text).toContain('"text_delta","text":""')
     }
     // Survived PAST the compressed deadline (the naive no-keepalive lifetime) and past the full
-    // silence window to receive the real tail.
+    // silence window to receive the real tail. Lower bound only — load-safe in the same sense as
+    // armSilent's; the causal content is already carried by the tail assertions above.
     expect(elapsedMs).toBeGreaterThanOrEqual(SILENCE_MS - 200)
-  }, 15_000)
+  })
 
   test("MUTATION control: with keepalive OFF, a SHORTER silence (below bodyTimeout) still completes cleanly — the armSilent throw above is caused by the SILENCE duration exceeding bodyTimeout, not by some unrelated proxy fault", async () => {
     setStateForTests({ streamKeepalivePingSec: 0 })
@@ -209,5 +234,5 @@ describe("client↔proxy e2e (Anthropic) — keepalive M-2: proxy heartbeat rese
 
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.text).toContain("message_stop")
-  }, 15_000)
+  })
 })

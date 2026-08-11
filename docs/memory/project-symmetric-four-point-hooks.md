@@ -7,7 +7,7 @@ metadata:
   originSessionId: f117b90e-e29e-4aed-8ed8-5dcb1f5b3c04
 ---
 
-**大项目现状（2026-07-14→15，已实施于 worktree `feat/hook-symmetric-4point`，待合并 master）**。起点是用户要「剥离 messages 里客户端注入的 TodoWrite `role:system` 块」，一路演化为 hook 机制的架构重构。**7 phase 全绿落地**（提交 e4e01b76→a05436a9 + doc-sync 73ab12a7），零新增测试失败（base 上 7 个预存失败属并发会话 WIP）。
+**大项目现状（2026-07-14→15，实施于 worktree `feat/hook-symmetric-4point`，已合入 master）**。2026-08-08 复核：`git merge-base --is-ancestor 2a77bf7c master` 退出 0；此前本行写「待合并 master」，是写于合并前的陈旧状态。起点是用户要「剥离 messages 里客户端注入的 TodoWrite `role:system` 块」，一路演化为 hook 机制的架构重构。**7 phase 全绿落地**（提交 e4e01b76→a05436a9 + doc-sync 73ab12a7），零新增测试失败（base 上 7 个预存失败属并发会话 WIP）。
 
 **关键转折链**：
 1. 需求方否决 config+regex 声明式引擎，要求全面接入**编程 hook**。

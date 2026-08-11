@@ -284,6 +284,12 @@ export interface State {
   readonly streamCommitAfterSec: number
 
   /**
+   * Enables one fresh upstream dispatch after a pre-content failure. The value is wired into runtime state;
+   * the handler's recovery decision and dispatch remain intentionally deferred to Task 4.3b.
+   */
+  readonly preContentRecovery: { enabled: boolean }
+
+  /**
    * L2 — transactional buffered retry for streaming Anthropic generations cut
    * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
    * `false` (default) = live streaming, no buffering. `"on"` = buffer every
@@ -599,6 +605,8 @@ export interface State {
    * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Maximum admitted History operations; strictly positive and hot-reloadable. */
+  readonly historyPersistenceQueueCapacity: number
   /** Optional raw capture is hot-reloadable through artifact generations. */
   readonly historyRawCaptureEnabled: boolean
   readonly historyRawCaptureDbPath: string
@@ -767,35 +775,48 @@ export interface State {
   readonly pooledConnectionIdleTimeout: number
 
   /**
-   * Shutdown Phase 2 timeout in seconds.
-   * Wait for in-flight requests to complete naturally before sending abort signal.
-   * Default: 60.
+   * Hard total-duration deadline (seconds) for one CLIENT request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a precise per-request monotonic timer.
+   * Measured from context creation and NOT reset by retries or hedged candidates, so it caps the
+   * whole client-visible operation however many upstream attempts it takes. 0 = disabled, which
+   * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
+   *
+   * Sibling knob: {@link upstreamRequestDeadline} caps ONE upstream attempt, leaving the retry
+   * budget intact. This one is the outer bound; that one is the inner bound.
+   */
+  readonly clientRequestDeadline: number
+
+  /**
+   * Hard total-duration deadline (seconds) for ONE upstream attempt (a single physical dispatch),
+   * enforced by a per-dispatch timer. Unlike {@link clientRequestDeadline} it restarts for every
+   * attempt, so firing it aborts just that attempt and leaves retry/hedge free to try again.
+   *
+   * Distinct from the two phase-scoped upstream guards: `responseHeaderTimeout` caps only the
+   * pre-header wait and `streamIdleTimeout` caps only the gap between frames, so an attempt that
+   * keeps trickling bytes forever escapes both. This is the total wall-clock cap for the attempt.
+   * 0 = disabled; the bundled default is 1200 (user ruling, 2026-08-11).
+   */
+  readonly upstreamRequestDeadline: number
+
+  /**
+   * Seconds shutdown waits for accepted operations to reach their own terminal before it
+   * automatically abandons the drain. 0 = wait forever.
+   *
+   * Expiry is LOSSLESS and equivalent to the operator's second Ctrl+C: in-flight operations are
+   * terminated through `reapInFlight()` + `fail()` (attributed `shutdown`/`operator-abandoned-drain`)
+   * and shutdown then walks the whole finalize path, so History, Telemetry and Diagnostics flush.
+   * It is NOT the 2026-08-07 process-global abort, which lost the records it killed.
    */
   readonly shutdownGracefulWait: number
 
   /**
-   * Shutdown Phase 3 timeout in seconds.
-   * After abort signal, wait for handlers to wrap up before force-closing.
-   * Default: 120.
+   * Seconds shutdown waits AFTER abandoning the drain before hard-exiting. 0 = wait forever.
+   *
+   * This is the escape from the persistence barriers themselves — equivalent to the third signal,
+   * so it exits WITHOUT flushing. It only starts counting once {@link shutdownGracefulWait} has
+   * expired, so the total bound a supervisor must outlast is the SUM of the two.
    */
   readonly shutdownAbortWait: number
-
-  /**
-   * Maximum age of an active request before the stale reaper forces it to fail (seconds).
-   * Requests exceeding this age are assumed stuck and cleaned up.
-   * 0 = disabled. Default: 600 (10 minutes).
-   */
-  readonly staleRequestMaxAge: number
-
-  /**
-   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
-   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
-   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
-   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
-   * ships an explicit value (an intentional product default; the stale reaper stays as the
-   * leak safety-net for anomalies that outlive the deadline).
-   */
-  readonly requestDeadline: number
 
   /**
    * Interval in seconds for refreshing the cached model list from Copilot.
@@ -1415,6 +1436,7 @@ export function setAnthropicBehavior(
       | "streamKeepaliveEscalateSec"
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
+      | "preContentRecovery"
       | "protectStreamingGeneration"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
@@ -1507,18 +1529,35 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 
 export function setHistoryConfig(
   patch: Partial<
-    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+    Pick<
+      MutableState,
+      | "historyEnabled"
+      | "historyDbPath"
+      | "historyPersistenceQueueCapacity"
+      | "historyRawCaptureEnabled"
+      | "historyRawCaptureDbPath"
+      | "historyRawCaptureMaxObjectBytes"
+    >
   >,
 ): void {
+  const queueCapacityChanged =
+    patch.historyPersistenceQueueCapacity !== undefined && patch.historyPersistenceQueueCapacity !== mutableState.historyPersistenceQueueCapacity
   const rawCaptureChanged =
     (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
     || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
     || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
+  if (queueCapacityChanged) for (const listener of historyPersistenceQueueCapacityListeners) listener()
   if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
 }
 
+const historyPersistenceQueueCapacityListeners = new Set<() => void>()
 const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryPersistenceQueueCapacityChange(listener: () => void): () => void {
+  historyPersistenceQueueCapacityListeners.add(listener)
+  return () => historyPersistenceQueueCapacityListeners.delete(listener)
+}
 
 export function onHistoryRawCaptureChange(listener: () => void): () => void {
   historyRawCaptureListeners.add(listener)
@@ -1565,10 +1604,6 @@ export function setTelemetryConfig(
 export function onTelemetryConfigChange(listener: () => void): () => void {
   telemetryConfigListeners.add(listener)
   return () => telemetryConfigListeners.delete(listener)
-}
-
-export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
-  updateState(patch)
 }
 
 /**
@@ -1626,7 +1661,9 @@ export function setGenerationRuntimeConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
+  patch: Partial<
+    Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "clientRequestDeadline" | "upstreamRequestDeadline" | "shutdownGracefulWait" | "shutdownAbortWait" | "modelRefreshInterval">
+  >,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
@@ -1931,6 +1968,7 @@ export function resetConfigManagedState(): void {
     streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+    preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
@@ -2001,8 +2039,10 @@ export function resetConfigManagedState(): void {
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
-    staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
-    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+    clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
+    upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
+    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setUpstreamTransportConfig({
@@ -2016,10 +2056,6 @@ export function resetConfigManagedState(): void {
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
     softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
-  setShutdownConfig({
-    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  })
   setHooksConfig({
     hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
     hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
@@ -2030,6 +2066,7 @@ export function resetConfigManagedState(): void {
   })
   setHistoryConfig({
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
     historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
     historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
     historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
@@ -2161,6 +2198,7 @@ const mutableState: MutableState = {
   streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+  preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
   bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
@@ -2187,6 +2225,7 @@ const mutableState: MutableState = {
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyPersistenceQueueCapacity: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
   historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
   historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
@@ -2207,10 +2246,10 @@ const mutableState: MutableState = {
   modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
-  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  clientRequestDeadline: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
+  upstreamRequestDeadline: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
   shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-  staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
-  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,

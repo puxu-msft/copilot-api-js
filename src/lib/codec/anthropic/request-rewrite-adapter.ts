@@ -35,6 +35,7 @@ import {
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
 type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
@@ -62,7 +63,7 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
     // `/v1/messages` wire, so it gates on the OUTBOUND leg (`targetEndpoint`), not the inbound
     // `clientFormat`. Byte-identical to the prior `clientFormat==="anthropic"` gate in Phase 1
     // (anthropic-direct has both axes co-true; no translation leg exists yet).
-    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
+    appliesTo: (env) => env.attempt.targetEndpoint === ENDPOINT.MESSAGES,
     apply: (env) => applyAnthropicSanitize(env, deps),
   }
 }
@@ -70,7 +71,7 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
 /** The S3 transform + recordings (was inlined in `parseAnthropic`, RFC §4.A0). */
 function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewriteDeps): RewriteResult {
   const ctx = env.ctx
-  const baseline = env.body as MessagesPayload
+  const baseline = env.attempt.body as MessagesPayload
   const { payload: sanitized, sanitizeResult } = runAnthropicPayloadRewrites(baseline, { toolNameMapper: ctx.toolNameMapper })
   const stats = sanitizeResult.stats
 
@@ -95,5 +96,5 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
     })
   }
 
-  return { env: env.with({ body: sanitized }), changed: sanitized !== baseline }
+  return { env: writeAttempt(env, { body: sanitized }), changed: sanitized !== baseline }
 }

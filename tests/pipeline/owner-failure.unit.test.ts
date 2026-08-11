@@ -15,6 +15,7 @@ import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 const operations = {
   "allocate-anchor": true,
   "allocate-real-block": true,
+  "publish-recovery-batch": true,
   "begin-leg": true,
   "close-anchor-before-real": true,
   "close-anchor-terminal": true,
@@ -27,7 +28,7 @@ function failure<T>(result: OwnerResult<T>): Extract<OwnerResult<T>, { ok: false
 }
 
 test("classifies every reachable owner failure without losing committed state", () => {
-  expect(Object.keys(operations)).toHaveLength(6)
+  expect(Object.keys(operations)).toHaveLength(7)
   expect(classifyOwnerFailure(failure({ ok: false, reason: "client-gone", committed: false }), "allocate-anchor", { settled: false })).toEqual({
     kind: "client-aborted",
     reason: "client-gone",

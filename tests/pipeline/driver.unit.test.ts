@@ -6,6 +6,7 @@
  * and the non-streaming variant.
  */
 
+import { HTTPError as FoundationHTTPError } from "@hsupu/ghc-proxy-foundation/error/http-error"
 import {
   //
   afterEach,
@@ -38,9 +39,15 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
-import { HTTPError } from "~/lib/error"
+import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
+import {
+  //
+  classifyError,
+  HTTPError,
+} from "~/lib/error"
 import {
   //
   getRetryGiveUpCounts,
@@ -57,6 +64,7 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { StreamClientAbortError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 
@@ -99,17 +107,12 @@ function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
 
 function makeEnv(ctx: RequestContext, body: unknown = { v: 0 }): RequestEnvelope {
   const env = {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: {},
-    stream: true,
-    body,
+    request: { clientFormat: "openai-cc", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: body, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -190,7 +193,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("429 is observed by admission and replayed as an explicit rate-limit dispatch", async () => {
     const { ctx, calls } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     let sends = 0
     const transport = makeTransport(async () => {
@@ -227,7 +231,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("429 falls through to semantic retry when admission has no retry instruction", async () => {
     const { ctx } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     let sends = 0
     const transport = makeTransport(async () => {
@@ -270,7 +275,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("WS before-first-event fallback starts a separately admitted HTTP dispatch", async () => {
     const { ctx, calls } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     const dispatchOptions: Array<unknown> = []
     let sends = 0
@@ -337,7 +343,7 @@ describe("driver.runRequest — orchestration", () => {
       env,
       decideRoute: () => ({ kind: "translate", to: "/responses" }),
       translateOut: (e) => {
-        seenEndpoint = e.targetEndpoint
+        seenEndpoint = e.attempt.targetEndpoint
         return e
       },
     })
@@ -356,12 +362,12 @@ describe("driver.runRequest — orchestration", () => {
       order,
       appliesTo: () => true,
       apply: (e) => {
-        const body = e.body as { steps: Array<string> }
-        return { env: e.with({ body: { steps: [...body.steps, name] } }), changed: true }
+        const body = e.attempt.body as { steps: Array<string> }
+        return { env: writeAttempt(e, { body: { steps: [...body.steps, name] } }), changed: true }
       },
     })
     let bodySent: unknown
-    const transport = makeTransport(async (_wire, e) => ((bodySent = e.body), okStream()))
+    const transport = makeTransport(async (_wire, e) => ((bodySent = e.attempt.body), okStream()))
     const driver = createPipelineDriver({
       ...BASE,
       codec,
@@ -394,7 +400,7 @@ describe("driver.runExchange — error-driven retry", () => {
         codec,
         decideRoute: (e) => codec.decideRoute(e),
         transport,
-        strategies: buildOpenAiCcStrategies({ originalPayload: env.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
+        strategies: buildOpenAiCcStrategies({ originalPayload: env.attempt.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
       })
 
       const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
@@ -409,6 +415,85 @@ describe("driver.runExchange — error-driven retry", () => {
     } finally {
       clock.restore()
     }
+  })
+
+  test("retries a GHC request-body read timeout once through the production Responses strategy stack", async () => {
+    const clock = new FakeClock()
+    clock.install()
+    try {
+      const { ctx, calls } = makeCtx()
+      const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+      const env = makeEnv(ctx, payload)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) {
+          throw new HTTPError(
+            "Failed to create responses",
+            408,
+            JSON.stringify({
+              error: {
+                code: "user_request_timeout",
+                message: "Timed out reading request body. Try again, or use a smaller request size.",
+              },
+            }),
+          )
+        }
+        return okStream()
+      })
+      const driver = createPipelineDriver({
+        ...BASE,
+        codec,
+        decideRoute: (e) => codec.decideRoute(e),
+        transport,
+        strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
+      })
+
+      const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
+      for (let i = 0; i < 50 && clock.liveTimerCount === 0; i++) await Promise.resolve()
+      expect(clock.liveTimerDelaysMs).toEqual([1000])
+      await clock.advance(1000)
+      const result = await resultPromise
+
+      expect(result.ok).toBe(true)
+      expect(attempts).toBe(2)
+      expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "network-retry", waitMs: 1000 }])
+    } finally {
+      clock.restore()
+    }
+  })
+
+  test.each([
+    ["ordinary 408", '{"error":{"code":"request_timeout","message":"Request deadline exceeded"}}'],
+    ["matching code with another message", '{"error":{"code":"user_request_timeout","message":"Generation timed out"}}'],
+    ["matching message with another code", '{"error":{"code":"invalid_request","message":"Timed out reading request body."}}'],
+    ["plain-text body", "Timed out reading request body."],
+  ])("does not retry %s through the production Responses strategy stack", async (_label, responseText) => {
+    const { ctx, calls } = makeCtx()
+    const payload = { model: "test-model", input: "hello" } as ResponsesPayload
+    const env = makeEnv(ctx, payload)
+    const { codec } = makeCodec({ env })
+    let attempts = 0
+    const error = new HTTPError("Failed to create responses", 408, responseText)
+    expect(HTTPError).toBe(FoundationHTTPError)
+    expect(error).toBeInstanceOf(FoundationHTTPError)
+    expect(classifyError(error).type).toBe("bad_request")
+    const transport = makeTransport(async () => {
+      attempts++
+      throw error
+    })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport,
+      strategies: buildOpenAiResponsesStrategies({ originalPayload: payload, model: undefined, maxRetries: 3 }),
+    })
+
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toBe(error)
+    expect(attempts).toBe(1)
+    expect(calls.recordAttemptFailure).toEqual([])
   })
 
   test("retries once via a strategy, then succeeds", async () => {
@@ -643,22 +728,17 @@ describe("driver.runExchange — error-driven retry", () => {
     // deps.strategies for a MIGRATED cell — the legacy per-route factory carries recordFeature side effects
     // (via-responses / via-chat-completions-fallback) that the leg's translateOut now owns, so an eager call
     // would double-fire them on the live observability bus. A migrated env (openai-cc|/chat/completions, a
-    // real MIGRATED_CELLS entry, with the leg supply on requestState) drives the REAL chatCompletionsLeg.
+    // real MIGRATED_CELLS entry, with `request.legSupplyReady` set — the flag the REAL codecs' parse sets and
+    // the driver's `migratedCell()` discriminates on) drives the REAL chatCompletionsLeg.
     const { ctx } = makeCtx()
     const ccBody = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }
     const migratedEnv = {
-      clientFormat: "openai-cc",
-      targetEndpoint: "/chat/completions",
-      model: { id: "gpt-4o" },
-      stream: true,
-      body: ccBody,
+      request: { clientFormat: "openai-cc", model: { id: "gpt-4o" }, stream: true, truncateBaseline: ccBody, legSupplyReady: true } as RequestEnvelope["request"],
+      attempt: { body: ccBody, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       view: {},
-      prepareHints: {},
-      requestState: { truncateBaseline: ccBody },
-      ctx,
-      with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-        return { ...this, ...patch } as unknown as RequestEnvelope
-      },
+      ctx: ctx,
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const { codec } = makeCodec({ env: migratedEnv })
     let strategyFactoryCalls = 0
@@ -666,7 +746,12 @@ describe("driver.runExchange — error-driven retry", () => {
       strategyFactoryCalls++
       return []
     }
-    const transport = makeTransport(async () => okStream())
+    // `resolveExchangeStrategies` is reached ONLY from the exchange's error handler (`candidateStrategies ??=`),
+    // so a happy-path transport leaves the legacy factory unevaluated no matter which branch ran — the assertion
+    // below would then be green for a NON-migrated env too. Throwing forces the resolution to actually happen.
+    const transport = makeTransport(async () => {
+      throw new Error("boom")
+    })
     const driver = createPipelineDriver({
       ...BASE,
       codec,
@@ -675,8 +760,9 @@ describe("driver.runExchange — error-driven retry", () => {
       strategies: strategiesFactory,
     })
 
-    const result = await driver.runRequest({ body: {}, headers: new Headers() })
-    expect(result.ok).toBe(true)
+    // No strategy in the cell's stack claims a bare Error, so the driver rethrows — that is the point: the stack
+    // that got consulted was the CELL's.
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     // The migrated cell composed its stack via the CellAssembly → the legacy factory was NEVER evaluated.
     expect(strategyFactoryCalls).toBe(0)
   })
@@ -899,6 +985,119 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     const out = await collect(driver.runResponse(okStream([{ data: "x" }]), env))
     // x is buffered by rewrite[0]; on flush its output threads rewrite[1] → "[x]"
     expect(out.map((f) => f.data)).toEqual(["[x]"])
+  })
+
+  test("network-shaped onUpstreamFrame failure is codec-render rather than transport", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const callbackError = new Error("Stream closed with error code NGHTTP2_CANCEL")
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink, {
+      onUpstreamFrame() {
+        throw callbackError
+      },
+    })
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+  })
+
+  test("finally flush rewrite failure retains the superseded upstream error with its source", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("flush rewrite failed")
+    const upstreamError = new Error("upstream failed first")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-upstream-error",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+    async function* upstreamThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "buffered" }
+      throw upstreamError
+    }
+
+    const outcome = await driver.runResponseSink({ frames: upstreamThenThrow(), headers: new Headers() }, env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ supersededError: upstreamError, supersededSource: "upstream-transport", flushError })
+  })
+
+  test("finally flush rewrite failure retains a prior codec error as codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const firstCodecError = new Error("first codec failure")
+    const flushError = new Error("flush codec failure")
+    const rewrite: ResponseRewrite = {
+      name: "two-codec-failures",
+      order: 100,
+      appliesTo: () => true,
+      transform: () => {
+        throw firstCodecError
+      },
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [rewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ supersededError: firstCodecError, supersededSource: "codec-render", flushError })
+  })
+
+  test("natural drain flush rewrite failure is codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("natural flush failed")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-natural-drain",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "buffered" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toBeUndefined()
   })
 
   test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {
@@ -1140,8 +1339,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     const outcome = await driver.runResponseSink(okStream([{ data: "1" }, { data: "2" }, { data: "3" }]), makeEnv(ctx), sink)
 
     // The disconnect must NOT be swallowed into `complete`.
-    expect(outcome.kind).not.toBe("complete")
-    expect(outcome.kind).toBe("stream-error")
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
     // Frame 0 was written before the reject at frame 1.
     expect(sunk).toEqual([{ data: "1" }])
   })
@@ -1182,7 +1380,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(frames).toEqual([{ data: "1" }])
   })
 
-  test("stream-error carries the RAW thrown error (richest-data-flow), not a {type,message} summary", async () => {
+  test("stream-error carries the RAW upstream error and upstream-transport provenance", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
@@ -1194,9 +1392,98 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     }
     const { sink } = makeArraySink()
     const outcome = await driver.runResponseSink({ frames: throwRaw(), headers: new Headers() }, makeEnv(ctx), sink)
-    expect(outcome.kind).toBe("stream-error")
-    // The handler is the consumer that classifies/formats/logs — it gets the SAME error object.
-    if (outcome.kind === "stream-error") expect(outcome.error).toBe(raw)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport", error: raw })
+  })
+
+  // GHC has been observed to RST_STREAM(CANCEL) 21-44s AFTER it already sent message_delta +
+  // message_stop (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11). On the live
+  // sink the terminal frame is already on the client wire by then, so that teardown is not a failure.
+  test("an upstream-transport throw AFTER the terminal settles complete (post-terminal teardown)", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* terminalThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: terminalThenThrow(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome.kind).toBe("complete")
+  })
+
+  // Negative control for the gate above: the SAME throw without the terminal must stay an error, or
+  // the gate would swallow every mid-generation cut.
+  test("an upstream-transport throw BEFORE the terminal still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* throwMidStream(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: throwMidStream(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => false,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
+  })
+
+  // Third negative control: `sawMessageStop()` is true for ANY terminal, including a FAILED one
+  // (`response.failed` sets sawFailure). A failed terminal followed by a torn transport must NOT
+  // drain as complete — the fail-closed `sawUpstreamError()` vetoes the gate.
+  test("a FAILED terminal followed by an upstream-transport throw still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* failedTerminalThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: failedTerminalThenThrow(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+      sawUpstreamError: () => true,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
+  })
+
+  // Fourth negative control — the ORDERING one. The gate must sit AFTER the client-abort
+  // classification: a client that disconnects after the terminal is still an abort, not a
+  // completion. Without this, moving the gate above the abort check passes every other test here
+  // while turning a real abort into a recorded success.
+  test("a client-abort after the terminal is still settled-abort, not complete", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* abortAfterTerminal(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new StreamClientAbortError()
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: abortAfterTerminal(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome.kind).toBe("settled-abort")
+  })
+
+  // Second negative control: the gate is upstream-transport-only. A sink write that rejects means the
+  // client's copy may be broken even though the upstream reached its terminal, so it must stay an error.
+  test("a downstream-sink failure after the terminal still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    const errSink: ClientSink = { write: () => Promise.reject(new Error("sink is gone")) }
+    const outcome = await driver.runResponseSink(okStream([{ data: "1" }]), makeEnv(ctx), errSink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
   })
 
   test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {
@@ -1255,13 +1542,13 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
     const strategy: RetryStrategy = {
       name: "mutate-body",
       canHandle: () => true,
-      handle: async (_e, e) => ({ kind: "retry", env: e.with({ body: { v: 42 } }) }),
+      handle: async (_e, e) => ({ kind: "retry", env: writeAttempt(e, { body: { v: 42 } }) }),
     }
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
-    if (result.ok) expect((result.env.body as { v: number }).v).toBe(42) // pre-retry env would be 0
+    if (result.ok) expect((result.env.attempt.body as { v: number }).v).toBe(42) // pre-retry env would be 0
   })
 
   test("onMeta fires post-gate with the accepted retry's meta; onResolved receives the same meta (C0-②)", async () => {

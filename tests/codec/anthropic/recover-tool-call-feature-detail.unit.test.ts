@@ -58,7 +58,10 @@ describe("recover-tool-call feature detail wiring", () => {
 
   test("streaming transform records tool-call-recovered with detail.tools = recovered names", () => {
     const { ctx, features } = makeCapturingCtx()
-    const env = { ctx, targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as unknown as RequestEnvelope
+    const env = {
+      attempt: { targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as RequestEnvelope["attempt"],
+      ctx,
+    } as unknown as RequestEnvelope
     const st = recoverRewrite!.createState!(env)
 
     // Tier-A downgrade sequence: text block carrying the `<invoke>` markup, then a
@@ -79,7 +82,10 @@ describe("recover-tool-call feature detail wiring", () => {
 
   test("streaming: multiple recovered tool_use in one downgraded tail → all names collected in call order", () => {
     const { ctx, features } = makeCapturingCtx()
-    const env = { ctx, targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }, { name: "fetch" }] } } as unknown as RequestEnvelope
+    const env = {
+      attempt: { targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }, { name: "fetch" }] } } as RequestEnvelope["attempt"],
+      ctx,
+    } as unknown as RequestEnvelope
     const st = recoverRewrite!.createState!(env)
 
     // One downgraded tail carrying TWO `<invoke>` regions → emitCommit emits both synthesized
@@ -100,7 +106,10 @@ describe("recover-tool-call feature detail wiring", () => {
 
   test("non-streaming transformWhole records tool-call-recovered with detail.tools (was previously silent)", () => {
     const { ctx, features } = makeCapturingCtx()
-    const env = { ctx, targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as unknown as RequestEnvelope
+    const env = {
+      attempt: { targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as RequestEnvelope["attempt"],
+      ctx,
+    } as unknown as RequestEnvelope
     const response = {
       role: "assistant",
       model: "claude-opus-4-8",
@@ -120,7 +129,10 @@ describe("recover-tool-call feature detail wiring", () => {
 
   test("non-streaming transformWhole with no downgrade records NOTHING (no false recovery)", () => {
     const { ctx, features } = makeCapturingCtx()
-    const env = { ctx, targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as unknown as RequestEnvelope
+    const env = {
+      attempt: { targetEndpoint: "/v1/messages", body: { tools: [{ name: "search" }] } } as RequestEnvelope["attempt"],
+      ctx,
+    } as unknown as RequestEnvelope
     const response = {
       role: "assistant",
       model: "claude-opus-4-8",

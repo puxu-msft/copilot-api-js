@@ -34,6 +34,7 @@ import { streamSSE } from "hono/streaming"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -69,6 +70,7 @@ import {
   //
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -86,6 +88,7 @@ import {
 } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import {
   //
   buildAnthropicResponseData,
@@ -118,6 +121,10 @@ import {
 const MAX_LEARNING_RETRIES = 32
 
 export async function handleResponsesV4(c: Context): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "generation", async (historyReservation) => await handleResponsesV4Admitted(c, historyReservation))
+}
+
+async function handleResponsesV4Admitted(c: Context, historyReservation: HistoryReservation): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
@@ -138,7 +145,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // direct/fallback legs — the reverse rewrite/strategies gate MESSAGES).
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
-  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
@@ -153,7 +160,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every openai-responses cell is migrated: direct `/responses` + `/chat` fallback + reverse
     // `@messages`). The reverse leg's sanitize rewrite + Anthropic stack + the R1 corner (direct/fallback
-    // auto-truncate OFF, maxRetries 1) are assembled by OUTBOUND_LEGS + RETRY_SEMANTICS from env.requestState.
+    // auto-truncate OFF, maxRetries 1) are assembled by OUTBOUND_LEGS + RETRY_SEMANTICS from the envelope's request/candidate scopes.
     maxRetries: 1,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
@@ -168,6 +175,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -195,10 +203,10 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const { upstream, env } = result
   // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
   env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
-  const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
-  const reverseMessages = env.targetEndpoint === ENDPOINT.MESSAGES
+  const viaFallback = env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+  const reverseMessages = env.attempt.targetEndpoint === ENDPOINT.MESSAGES
 
-  if (!env.stream) {
+  if (!env.request.stream) {
     try {
       const resp = driver.runResponseNonStreaming(upstream, env) as ResponsesResponse
       // REVERSE `@messages` leg (Phase 5): the client body is the Responses render, but the OUTBOUND leg
@@ -323,7 +331,7 @@ interface PumpStreamingV4Options {
 
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env, viaFallback } = opts
-  const model = (env.body as ResponsesPayload).model
+  const model = (env.attempt.body as ResponsesPayload).model
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
@@ -416,7 +424,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -445,7 +453,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -471,7 +479,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error(`[Responses:v4] Upstream error for ${acc.model || model}: ${acc.streamError.code} — ${acc.streamError.message}`)
     recordForwarded()
     env.ctx.fail(acc.model || model, new Error(`${acc.streamError.code}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -498,13 +506,13 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }
 
 // ============================================================================
@@ -593,7 +601,7 @@ interface PumpReverseAnthropicLegOptions {
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as MessagesPayload).model
+  const model = (env.attempt.body as MessagesPayload).model
   const streamStartMs = Date.now()
   const forwardedSseEvents: Array<SseEventRecord> = []
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
@@ -613,7 +621,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     recordForwarded()
     consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -629,7 +637,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -642,7 +650,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     consola.error(`[Responses:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "truncated") {
@@ -657,7 +665,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "contentless-refusal") {
@@ -665,11 +673,11 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   // The processor finish boundary already emitted response.completed through restore/onRenderedFrame.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }

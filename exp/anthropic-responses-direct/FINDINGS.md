@@ -100,3 +100,34 @@
 | TEST | user→**user**→assistant→user（相邻同角色） | **HTTP 200 ACCEPTED** |
 
 **裁决**：GHC 的 Anthropic `/v1/messages` 腿**接受相邻同角色 turn**（不强制严格交替）。→ **MAJOR-2 降级为语义差异、非 wire 回归**：mid-conversation system 折成独立 user turn 是 **wire-safe** 的，且**保留了 item 位置**（旧两跳折进 top-level system 会丢位置）。按 richest-data-flow + 位置保全，当前行为反而更优，**无需修复**。（同族 [W2 探针](#) 证 GHC 接受任意 tool_use.id、此处证接受相邻同角色，GHC 上游对 Anthropic wire 约束比真 Anthropic API 宽松。）
+
+---
+
+## 探针 (e)：反向 reasoning round-trip 物理可行性（Phase 5，2026-07-16）
+
+**问题**：真 Claude thinking signature 能否原样搬运（经我方载体编码/解码）后回喂 Claude `/v1/messages` 上游续接（RFC §4.2/§4.4 P0-b，Phase 0 未测部分）？签名对「载体损耗」的容忍度（trim/改码/修改明文）？
+
+**实测（隔离服务器 4160、独立 `XDG_DATA_HOME`、真 GHC token 只读复制，非-4141、事后按 PID 精确清理，4141 全程未动、复核 healthy）**：
+
+| 组 | 操作 | 结果 |
+|---|---|---|
+| CONTROL | 直接 `/v1/messages` 请求 `claude-opus-4.8` 开 `thinking:{enabled}`，拿到真 `signature`（非流式响应体，len=372） | 200，thinking 块 `{thinking:"", signature:"<372 chars>"}` |
+| 载体编码往返 | `base64url(sig utf8 bytes)` 包 `copilot-api:claude-signature:v1:` 前缀 → 解码 → 与原始 `sig` 逐字节比对 | **完全一致**（Python 侧模拟，验证编码方案本身无损） |
+| ROUND-TRIP 回喂 | 把 CONTROL 拿到的**原始** signature 原样塞进新一轮 `assistant.content[].thinking.signature`（`thinking:""`）、追加一条 user 消息 → 回喂 `/v1/messages` | **HTTP 200 接受**，模型基于前一轮上下文正确续接（"391×2=782"） |
+| 签名被篡改（1 字符改动） | 同上、但把 signature 中间 1 个字符换掉 | **HTTP 400**：`Invalid \`signature\` in \`thinking\` block`（signature 必须逐字节原样、不容忍任何损耗——包括本探针刻意验证的"1 字符差"边界） |
+| **thinking 明文被修改（signature 保留原样）** | 同上、但把 `thinking` 字段的**明文**从 `""` 改成 `"modified thinking text"`（signature 不变） | **HTTP 200 接受**（！）——**GHC 只校验 signature 自身合法性，不校验 signature 与 thinking 明文的绑定关系**（signature 是自包含的，不对明文做完整性校验，同 skill `ghc-anthropic-upstream` 已记录的「signature 自包含」结论，此处补证「对明文改写宽容」这个新维度） |
+| 流式（`stream:true`）signature 捕获时机 | 观察流式 SSE：`content_block_start`（空）→ **仅一个** `signature_delta` 事件（非分片累积、一次性给出完整 372 字节）→ `content_block_stop` | **流式无「mid-state vs 权威版」问题**——不同于 Responses reasoning 的 `encrypted_content`（added≠done 两版），Claude thinking 的 `signature_delta` **只发一次、即为完整最终签名**，无需像 Phase 3 那样纠结「捕哪个事件」 |
+| 跨模型（claude-sonnet-4.6 / claude-sonnet-5 / claude-haiku-4.5）复测 | 同一 CONTROL 请求换 4 个 Claude 模型 | 全部返回非空 `signature`（opus/sonnet-4.6/sonnet-5 明文空+纯签名承载；haiku-4.5 明文非空+签名皆有，模型间明文策略不同但**签名机制一致**） |
+
+**关键结论**：
+
+1. **反向 round-trip 物理可行、且比前向更简单**——反向不像前向那样有「中间态 vs 权威版」的捕获时机问题（`signature_delta` 一次性给出完整签名），载体只需**原样透传**、不需要判断"哪个事件是权威版"。
+2. **签名不可损耗（byte-exact）、但对明文不设绑定校验**——这两点共同精化 R-DIRECTION-ASYMMETRY 的实现约束：
+   - 载体编码**必须无损可逆**（不能有 lossy transform、不能截断/trim）——base64url 往返验证满足这一点。
+   - 载体里搬的 `thinking` 展示文本（Responses reasoning item 的 `summary`）**理论上**可以与 signature 分开处理而不影响上游接受性（上游不校验绑定）——但**不代表可以放松严谨性**：本 RFC 仍应把 thinking 文本与 signature 作为一个整体单元搬运（诚实表示 + 未来若上游加强校验时的前瞻防御），只是 P0 探针确认了"就算实现有微小时序不一致也不会引发上游 400"，降低了工程实现的脆弱性担忧。
+3. **对 Phase 5 载体设计的直接影响**：反向载体（真 Claude signature → Responses reasoning item 的某字段）只需保证 **byte-exact 编解码**（base64url 足够），不需要额外设计"哪个事件版本才是权威"的捕获逻辑（对比前向 Responses reasoning `encrypted_content` 需要专门捕 `.done` 事件）。
+
+**对 RFC 的影响**：§4.2/§4.4 P0-b「反向物理可行性未验」→ **已坐实可行**。§7.2 P0 去风险验证的反向部分补齐（前向 P0-a 已 Phase 0 坐实、反向 P0-b 本探针坐实）。签名 byte-exact 不可损耗的实测边界（1 字符改动即 400）为 Phase 5 载体编码方案（下方设计小节）的正确性提供了独立 oracle：**任何编解码方案都必须在单元测试里断言「解码结果与原始 signature 逐字节相等」**，而非仅断言"非空/长度合理"这类弱校验。
+
+## 4141 保护（补充，本轮 e 探针）
+测试服务器起在 **4160**（独立 `XDG_DATA_HOME=/tmp/copilot-test-4160-data`、独立 history.db/config，token 从 `~/.local/share/copilot-api/github_token` **只读复制**，非-4141），实测后 `kill <确切PID>`（非 pkill/killall）精确清理 + `rm -rf` 清理临时目录；4141 主服务器全程未 kill、`curl :4141/health` 复核 healthy（探针前后各一次）。

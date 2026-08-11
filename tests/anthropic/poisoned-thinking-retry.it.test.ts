@@ -41,6 +41,7 @@ import {
   classifyError,
   HTTPError,
 } from "~/lib/error"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { setStateForTests } from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
@@ -178,15 +179,16 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
     }
     if (tail === "assistant") messages.pop()
     return {
-      body: { model: "claude-opus-5", max_tokens: 1024, messages },
+      attempt: {
+        body: { model: "claude-opus-5", max_tokens: 1024, messages },
+      } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       ctx: {},
-      with(patch: { body: unknown }) {
-        return { ...this, ...patch } as RequestEnvelope
-      },
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
   }
   const contentOf = (action: RetryAction, index: number): Array<{ type: string }> =>
-    (action as { env: { body: { messages: Array<{ content: Array<{ type: string }> }> } } }).env.body.messages[index].content
+    (action as unknown as { env: { attempt: { body: { messages: Array<{ content: Array<{ type: string }> }> } } } }).env.attempt.body.messages[index].content
 
   test("措辞分类：prefill 归 tool-terminal-prefill，与 thinking-layout 分开", () => {
     expect(isToolTerminalPrefillRejection("This model does not support assistant message prefill. The conversation must end with a user message.")).toBe(true)
@@ -234,10 +236,10 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
   test("handle：内联 system 消息收尾**不算** prefill → 照常重试（真上游实测 [user,system] 得 200）", async () => {
     setStateForTests({ stripThinkingOnReject: true })
     const env = envFor([[T, toolUse, T]])
-    const withSystemTail = env.with({
+    const withSystemTail = writeAttempt(env, {
       body: {
-        ...(env.body as { messages: Array<unknown> }),
-        messages: [...(env.body as { messages: Array<unknown> }).messages, { role: "system", content: "mid-turn note" }],
+        ...(env.attempt.body as { messages: Array<unknown> }),
+        messages: [...(env.attempt.body as { messages: Array<unknown> }).messages, { role: "system", content: "mid-turn note" }],
       },
     } as never)
     const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), withSystemTail)

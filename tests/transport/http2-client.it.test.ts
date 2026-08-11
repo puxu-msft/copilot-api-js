@@ -25,12 +25,15 @@ import { setUpstreamTransportConfig } from "~/lib/state"
 import {
   //
   closeHttp2Sessions,
+  evictSessionForTests,
   getH2SessionStatusSnapshot,
   http2Fetch,
   setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
+import { compatDispatchHandleForTests } from "../helpers/dispatch-options"
 import { waitUntil } from "../helpers/wait-until"
 
 let server: http2.Http2Server
@@ -39,6 +42,61 @@ const serverSessions = new Set<http2.ServerHttp2Session>()
 
 type Handler = (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void
 let handler: Handler
+
+type AbortListener = Parameters<AbortSignal["addEventListener"]>[1]
+type AbortAddOptions = Parameters<AbortSignal["addEventListener"]>[2]
+type AbortRemoveOptions = Parameters<AbortSignal["removeEventListener"]>[2]
+
+interface ListenerTrackingSignal extends AbortSignal {
+  markHeadersResolved(): void
+  readonly postResponseAdds: number
+  readonly postResponseRemoves: number
+}
+
+function trackPostResponseAbortListeners(controller: AbortController): ListenerTrackingSignal {
+  const activeAbortListeners = new Set<AbortListener>()
+  const postResponseListeners = new Set<AbortListener>()
+  let postResponseRemoves = 0
+
+  const facade = {
+    get aborted() {
+      return controller.signal.aborted
+    },
+    get reason() {
+      return controller.signal.reason
+    },
+    throwIfAborted() {
+      controller.signal.throwIfAborted()
+    },
+    addEventListener(type: string, listener: AbortListener, options?: AbortAddOptions) {
+      if (!listener) return
+      if (type === "abort") activeAbortListeners.add(listener)
+      controller.signal.addEventListener(type, listener, options)
+    },
+    removeEventListener(type: string, listener: AbortListener, options?: AbortRemoveOptions) {
+      if (!listener) return
+      if (type === "abort") {
+        activeAbortListeners.delete(listener)
+        if (postResponseListeners.delete(listener)) postResponseRemoves += 1
+      }
+      controller.signal.removeEventListener(type, listener, options)
+    },
+    dispatchEvent(event: Event) {
+      return controller.signal.dispatchEvent(event)
+    },
+    markHeadersResolved() {
+      for (const listener of activeAbortListeners) postResponseListeners.add(listener)
+    },
+    get postResponseAdds() {
+      return postResponseListeners.size + postResponseRemoves
+    },
+    get postResponseRemoves() {
+      return postResponseRemoves
+    },
+  }
+
+  return facade as ListenerTrackingSignal
+}
 
 beforeEach(async () => {
   server = http2.createServer()
@@ -93,6 +151,80 @@ describe("http2-client", () => {
     expect(await res.text()).toBe("not found")
   })
 
+  test("upstreamFetch disarms the header deadline before a delayed HTTP2 body", async () => {
+    let releaseBody!: () => void
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      void bodyGate.then(() => stream.end("late"))
+    }
+    let streamClosed = 0
+
+    const response = await upstreamFetch("https://fixture.invalid/late", {
+      responseHeaderTimeoutMs: 1000,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    releaseBody()
+    expect(await response.text()).toBe("late")
+    await waitUntil(() => streamClosed === 1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("natural HTTP2 end detaches the post-response abort listener", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/natural-end`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    expect(await response.text()).toBe("ok")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("post-header abort detaches its listener after the HTTP2 stream closes", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("held")
+    }
+    const controller = new AbortController()
+    const signal = trackPostResponseAbortListeners(controller)
+    let streamClosed = 0
+
+    const response = await http2Fetch(`${url}/post-header-abort`, {
+      signal,
+      onStreamClosed: () => {
+        streamClosed += 1
+      },
+    })
+    signal.markHeadersResolved()
+    controller.abort(new DOMException("client disconnected", "AbortError"))
+    await response.body?.cancel("release reader")
+    await waitUntil(() => streamClosed === 1)
+
+    expect(signal.postResponseAdds).toBe(1)
+    expect(signal.postResponseRemoves).toBe(1)
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+  })
+
   test("streams the body incrementally via response.body (ReadableStream)", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200, "content-type": "text/event-stream" })
@@ -113,6 +245,7 @@ describe("http2-client", () => {
 
   test("body cancel resolves after the owned h2 stream closes while a sibling keeps using the pooled session", async () => {
     let localStreamClosed = false
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
     handler = (stream, headers) => {
       if (headers[":path"] === "/cancel") {
         stream.respond({ ":status": 200, "content-type": "text/event-stream" })
@@ -123,13 +256,21 @@ describe("http2-client", () => {
       stream.end("sibling-ok")
     }
 
-    const cancelled = await http2Fetch(`${url}/cancel`, { onStreamClosed: () => (localStreamClosed = true) })
+    const cancelled = await http2Fetch(`${url}/cancel`, {
+      onStreamClosed: () => (localStreamClosed = true),
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
     const sibling = await http2Fetch(`${url}/sibling`, {})
     expect(await sibling.text()).toBe("sibling-ok")
 
     await cancelled.body!.cancel("test disposal")
 
     expect(localStreamClosed).toBe(true)
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "body-cancel", reason: { value: "test disposal" } },
+    })
     // A new sibling still succeeds on the pool after the owned stream was cancelled.
     const after = await http2Fetch(`${url}/sibling`, {})
     expect(await after.text()).toBe("sibling-ok")
@@ -159,16 +300,17 @@ describe("http2-client", () => {
     expect(await res.json()).toEqual({ ae: "identity" })
   })
 
-  // NOTE: mid-stream truncation detection is NOT unit-testable under Bun.
-  // Bun's node:http2 client delivers `response → data → end → close` (rstCode=0)
-  // for ANY mid-stream termination — clean server RST_STREAM AND full
-  // connection drop alike (verified, exp/upstream-models-hang/) — i.e. a
-  // synthetic clean `end`. The adapter's `error` / `close-before-end` backstops
-  // still fire under Node (the compat runtime) and on any genuine `req` error,
-  // but under Bun a truncated upstream body reads as complete. The app-layer
-  // backstop is the missing terminal SSE event (message_stop / [DONE]) detected
-  // downstream. This is strictly better than the undici path it replaces, which
-  // HANGS forever under Bun on these hosts rather than truncating.
+  // NOTE (corrected 2026-08-11 — the previous version of this note was wrong, and wrong in the direction that discourages testing).
+  //
+  // It used to say: mid-stream truncation is NOT unit-testable under Bun, because Bun's node:http2 delivers `response → data → end → close` (rstCode=0) for ANY mid-stream termination, so a clean server RST_STREAM and a full connection drop are indistinguishable from a normal end; and that the `error` / `close-before-end` backstops fire only under Node.
+  // It cited `exp/upstream-models-hang/`, which does not exist in this repo and never did, so it could not be checked against its own evidence.
+  //
+  // Measured, both runtimes, with a TCP frame decoder and a frame injector (exp/h2-termination-observability/, reproducible):
+  //   1. A genuine peer RST_STREAM(CANCEL) IS observable under Bun: Bun raises `error(ERR_HTTP2_STREAM_ERROR, "…NGHTTP2_CANCEL")` with `rstCode=8`. It is NODE that folds a peer CANCEL into a clean `end` with no error — the opposite of what the old note claimed.
+  //   2. The old observation was real but came from a miswritten scenario. A server-side `stream.close(NGHTTP2_CANCEL)` puts NO RST_STREAM on the wire at all while the writable side is open: it sends `DATA[END_STREAM]`. So the client was right to report a clean end — the peer really did end cleanly. `stream.destroy()` emits RST(0) and `destroy(err)` emits RST(2); no server-side spelling emits CANCEL mid-body, which is why the experiment injects the frame directly.
+  //
+  // Still true, and the reason this suite has no truncation test: an abrupt TCP drop with no frame at all IS delivered as a synthetic clean `end` on both runtimes, carrying `rstCode=8` — indistinguishable from a real peer CANCEL under Node, though separable under Bun by the presence of the stream error. So `rstCode === 8` alone must never be read as "the peer cancelled".
+  // The app-layer backstop remains the missing terminal SSE event (message_stop / [DONE]) detected downstream, and this is still strictly better than the undici path it replaces, which HANGS forever under Bun on these hosts rather than truncating.
 
   test("a pre-aborted signal rejects without opening a stream", async () => {
     handler = (stream) => {
@@ -236,6 +378,27 @@ describe("http2-client", () => {
     expect(localStreamClosed).toBe(true)
   })
 
+  test("post-response signal abort records its own local-cancel source", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("partial")
+    }
+    const abort = new AbortController()
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    await http2Fetch(`${url}/post-response-abort`, {
+      signal: abort.signal,
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
+
+    abort.abort(new DOMException("post response", "AbortError"))
+    await waitUntil(() => snapshots.length === 1)
+
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "post-response-signal-abort", reason: { value: "post response" } },
+    })
+  })
+
   // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller
   // stopped awaiting it — e.g. its await chain settled via another route) must
   // NOT surface as a process-level unhandledRejection. Without the defensive
@@ -279,6 +442,310 @@ describe("http2-client", () => {
     const p = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
     setTimeout(() => ac.abort(), 30)
     await expect(p).rejects.toThrow(/abort/i)
+  })
+
+  /**
+   * A4-3: a GOAWAY is the one termination the peer explains, and until now the frame's arguments were dropped on the floor — `session.on("goaway", retire)` used the event only to stop routing.
+   * The ledger that stores it has existed (and been unit-tested) since A4; what was missing was a producer feeding it and a consumer leasing it. These two drive both halves against a real h2 server.
+   */
+  test("a session GOAWAY reaches the terminating stream's snapshot, with its code and lastStreamID", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("part")
+      const session = stream.session
+      // GOAWAY first, then end the stream: the snapshot freezes at the stream's terminal, so a frame
+      // arriving after that point is correctly NOT in it. This orders the peer's explanation before it.
+      session?.goaway(http2.constants.NGHTTP2_NO_ERROR, stream.id, Buffer.from("bye-now"))
+      setTimeout(() => stream.end(), 60)
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/goaway-observed`, {
+      onTermination: (snapshot) => snapshots.push(snapshot),
+      dispatch: compatDispatchHandleForTests("goaway"),
+    })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    const goaway = snapshots[0].goaway
+    expect(goaway.availability).toBe("observed-before-snapshot")
+    if (goaway.availability !== "observed-before-snapshot") throw new Error("expected an observed GOAWAY")
+    expect(goaway.events).toHaveLength(1)
+    // The code is the whole point: "the peer said NO_ERROR" and "the peer said ENHANCE_YOUR_CALM" are
+    // different diagnoses, and before this wiring both arrived as an unexplained termination.
+    expect(goaway.events[0]).toMatchObject({ sequence: 1, errorCode: http2.constants.NGHTTP2_NO_ERROR, lastStreamIdOrder: "first" })
+    expect(goaway.events[0].opaqueDataLength).toEqual({ availability: "observed", value: Buffer.byteLength("bye-now") })
+    expect(goaway.events[0].evidence.availability).toBe("captured")
+  })
+
+  test("without a dispatch owner the snapshot reports no GOAWAY rather than attributing a shared session event", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("part")
+      stream.session?.goaway(http2.constants.NGHTTP2_NO_ERROR, stream.id, Buffer.from("bye-now"))
+      setTimeout(() => stream.end(), 60)
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    // Same server behaviour as above, minus the dispatch handle. A GOAWAY is a SESSION event shared by
+    // every stream on the connection, so with no owner to attribute it to we must report nothing seen —
+    // not silently hand one stream's snapshot an event that belonged to the whole session.
+    const res = await http2Fetch(`${url}/goaway-unowned`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    expect(snapshots[0].goaway).toMatchObject({ availability: "not-observed-before-snapshot", events: [] })
+  })
+
+  /**
+   * A4-3: the keepalive ack was a no-op, so an upstream that had stopped answering control frames was indistinguishable from a healthy one in the status surface.
+   * The unit tests cover the observer's arithmetic against a fake; this one is here because a fake can report any RTT it likes — only a real h2 peer proves the number came from an actual round trip.
+   */
+  test("a real PING round trip lands in the session status snapshot", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Ping fast so the test does not wait on the production interval; cadence is config, not behaviour under test.
+    // The setting is in SECONDS (getUpstreamH2PingIntervalMs multiplies) — an invented ms-shaped key is
+    // silently ignored and leaves the 15s default, which reads as "pings never ack".
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.02 })
+
+    const res = await http2Fetch(`${url}/ping-observed`, {})
+    expect(await res.text()).toBe("ok")
+    await waitUntil(() => (getH2SessionStatusSnapshot()[0]?.ping.acked ?? 0) >= 1)
+
+    const ping = getH2SessionStatusSnapshot()[0].ping
+    expect(ping.sent).toBeGreaterThanOrEqual(1)
+    expect(ping.acked).toBeGreaterThanOrEqual(1)
+    expect(ping.lastError).toBeUndefined()
+    // A genuine round trip against a loopback peer: real, non-negative, and not the fabricated
+    // constant a no-op ack would leave behind (it left nothing at all).
+    expect(typeof ping.lastRttMs).toBe("number")
+    expect(ping.lastRttMs).toBeGreaterThanOrEqual(0)
+    expect(ping.lastAckEpochMs).toBeGreaterThan(0)
+  })
+
+  /**
+   * A4-3: the sharpest way to tell a CONNECTION-level event apart from a per-stream cancel is whether siblings on the same connection died together — and `rstCode` cannot answer it, because a local abort, a genuine peer CANCEL and a dead connection all arrive as 8 (measured, exp/h2-termination-observability/).
+   * That question needs a shared key in the persisted record, which is what the session snapshot supplies. This drives the property the correlation depends on: streams pooled onto one connection report the SAME id, and a different connection reports a different one.
+   */
+  test("streams sharing a connection report the same session id, so siblings can be correlated", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    const collect = (snapshot: (typeof snapshots)[number]): number => snapshots.push(snapshot)
+
+    const first = await http2Fetch(`${url}/sibling-a`, { onTermination: collect })
+    await first.text()
+    const second = await http2Fetch(`${url}/sibling-b`, { onTermination: collect })
+    await second.text()
+    await waitUntil(() => snapshots.length === 2)
+
+    const [a, b] = snapshots
+    expect(a.session).not.toBeNull()
+    expect(a.session!.sessionId).toBe(b.session!.sessionId)
+    expect(a.session!.sessionId).toBe(getH2SessionStatusSnapshot()[0].sessionId)
+    // Ties the persisted record back to the live pool: an incident in History can be matched to the
+    // connection that produced it, which is the entire point of carrying the id.
+    expect(a.session!.origin).toBe(getH2SessionStatusSnapshot()[0].origin)
+  })
+
+  test("a fresh connection gets a distinct session id, so correlation cannot silently over-group", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    const collect = (snapshot: (typeof snapshots)[number]): number => snapshots.push(snapshot)
+
+    const first = await http2Fetch(`${url}/gen-1`, { onTermination: collect })
+    await first.text()
+    // Drop the pooled connection: the next request must build a new one.
+    closeHttp2Sessions()
+    const second = await http2Fetch(`${url}/gen-2`, { onTermination: collect })
+    await second.text()
+    await waitUntil(() => snapshots.length === 2)
+
+    // A constant or reused id would make every stream in the process look like one connection, which
+    // would turn the sibling test above green while destroying its meaning.
+    expect(snapshots[0].session!.sessionId).not.toBe(snapshots[1].session!.sessionId)
+  })
+
+  test("the terminal snapshot carries the connection's ping counters at the moment the stream ended", async () => {
+    // The stream must OUTLIVE at least one ping cycle: the snapshot is sampled at the terminal, so a
+    // server that ends immediately would (correctly) report zero pings and prove nothing.
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      setTimeout(() => stream.end(), 90)
+    }
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.02 })
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/ping-in-snapshot`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    await res.text()
+    await waitUntil(() => snapshots.length === 1)
+
+    const session = snapshots[0].session
+    expect(session).not.toBeNull()
+    // This is what makes the ping data diagnostic rather than merely operational: it is attributed to
+    // a dispatch and persisted, instead of living only in a live /api/status poll.
+    expect(session!.ping.sent).toBeGreaterThanOrEqual(1)
+    expect(session!.activeStreamCountAtSnapshot).toBeGreaterThanOrEqual(1)
+    expect(session!.lifecycleAtSnapshot).toBe("active")
+  })
+
+  /**
+   * A4-4: the stream slot's exactly-once latch existed from the previous batch but had no second releaser, so it could not be tested. `forceClose` is that second releaser, and this is the pair of orders it has to survive.
+   *
+   * Why it matters: the pool counts slots, and the counter has no floor. A double release makes the pool believe it holds a slot it does not, and nothing surfaces until the concurrency cap starts admitting streams it should have queued — long after the cause.
+   */
+  test("forcing a stuck stream reclaims its slot exactly once, even when the peer closes afterwards", async () => {
+    let releaseServerStream!: () => void
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      // The peer answers the RST only when we let it, so both orders are exercised deterministically.
+      releaseServerStream = () => stream.end()
+    }
+    let control: import("~/lib/transport/upstream-fetch").H2StreamControl | undefined
+
+    const res = await http2Fetch(`${url}/forced-teardown`, { onStreamOpened: (c) => (control = c) })
+    expect(control).toBeDefined()
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+
+    // Force: RST_CANCEL closes our side straight away, so `close` releases the slot almost immediately;
+    // the fixed teardown tail then fires a SECOND release for the case where the peer never answered.
+    control!.forceClose()
+    await waitUntil(() => getH2SessionStatusSnapshot()[0]?.activeStreamCount === 0)
+    releaseServerStream()
+
+    // The wait must outlast that tail. An earlier draft asserted after 80ms and passed even with the
+    // latch removed — the second release simply had not landed yet, which made the test decorative.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    // A second decrement would drive this negative: the counter has no floor, and that is precisely
+    // the silent pool corruption the latch prevents.
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+
+    await res.body?.cancel().catch(() => {})
+  })
+
+  /**
+   * A4-4: when RST_CANCEL does not get the stream closed either, the connection carrying it cannot be handed to the next request — so it is destroyed. Siblings die with it, and that cost is reported rather than hidden, because "we killed a connection and took N other requests down" is the operator-visible consequence.
+   */
+  test("a stream that ignores RST_CANCEL gets its session evicted, and the sibling cost is reported", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      // Never ends, and never answers the RST: the unclosable stream this path exists for.
+    }
+    let control: import("~/lib/transport/upstream-fetch").H2StreamControl | undefined
+
+    const res = await http2Fetch(`${url}/unclosable`, { onStreamOpened: (c) => (control = c) })
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+    const sessionId = getH2SessionStatusSnapshot()[0].sessionId
+
+    const outcome = await control!.forceClose()
+
+    // Under Bun the client's own req.close() resolves the stream locally, so this asserts the SHAPE of
+    // the outcome rather than pinning which branch a given runtime takes — both are legitimate, and a
+    // test that demanded eviction here would be asserting a runtime quirk, not our contract.
+    if (outcome.streamClosed) {
+      expect(outcome.sessionEvicted).toBeNull()
+    } else {
+      expect(outcome.sessionEvicted).toMatchObject({ sessionId })
+      expect(outcome.sessionEvicted!.affectedStreams).toBeGreaterThanOrEqual(0)
+      // Evicted means gone from the pool: leaving it routable is exactly the leak this prevents.
+      expect(getH2SessionStatusSnapshot().some((row) => row.sessionId === sessionId)).toBe(false)
+    }
+    // Either way the slot must not stay held.
+    await waitUntil(() => (getH2SessionStatusSnapshot()[0]?.activeStreamCount ?? 0) === 0)
+
+    await res.body?.cancel().catch(() => {})
+  })
+
+  /**
+   * The eviction bookkeeping, driven directly against a REAL pooled session.
+   *
+   * It is tested here rather than through `forceClose` because that branch is unreachable from a loopback test: the client's own `req.close()` resolves the stream locally, so the public path always takes "closed in time" (measured — asserting `streamClosed === false` there fails with `true`). Testing the destructive bookkeeping directly is honest; routing the assertion through a path that never arrives would not be.
+   */
+  test("evicting an unclosable stream's session removes it from the pool and reports the sibling cost", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+    }
+
+    // The per-session stream cap defaults to 1, which would put these on two separate connections and
+    // leave the eviction with no sibling to account for — the exact thing under test.
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 4 })
+
+    // Two streams on ONE pooled session, so the eviction has a genuine sibling to account for.
+    const first = await http2Fetch(`${url}/evict-a`, {})
+    const second = await http2Fetch(`${url}/evict-b`, {})
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].activeStreamCount).toBe(2)
+    const sessionId = rows[0].sessionId
+
+    const evicted = evictSessionForTests(sessionId)
+
+    expect(evicted).toMatchObject({ sessionId })
+    // Both streams were live, and the connection dying takes both down — the cost the operator needs.
+    expect(evicted.affectedStreams).toBe(2)
+    // Gone from the pool entirely: leaving a connection with an unkillable stream routable is exactly
+    // the leak this exists to stop, and a "retiring" entry would still be reclaimable.
+    expect(getH2SessionStatusSnapshot().some((row) => row.sessionId === sessionId)).toBe(false)
+
+    await first.body?.cancel().catch(() => {})
+    await second.body?.cancel().catch(() => {})
+  })
+
+  test("reports an immutable first-terminal snapshot before late physical close", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      schemaVersion: 1,
+      firstObservedSignal: "end",
+      headersReceived: true,
+      physicalClose: "not-observed-before-snapshot",
+      goaway: {
+        availability: "not-observed-before-snapshot",
+        events: [],
+        protocolViolation: { availability: "none" },
+      },
+    })
+  })
+
+  test("termination observes trailers even without a separate trailers callback", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 }, { waitForTrailers: true })
+      stream.on("wantTrailers", () => stream.sendTrailers({ "x-fact": "present" }))
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination-trailers`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].trailers).toBe("observed-before-snapshot")
   })
 
   test("captures HTTP/2 response trailers via onTrailers (after body, before end)", async () => {

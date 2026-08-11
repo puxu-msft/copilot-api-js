@@ -23,6 +23,7 @@
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
+import { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 import {
   //
   type ErrorWireFormat,
@@ -30,7 +31,6 @@ import {
   mapHttpErrorToEnvelope,
 } from "~/lib/error"
 import { getCancellationCause } from "~/lib/error/cancellation-reason"
-import { isShutdownCausedAbort } from "~/lib/shutdown"
 
 const ANTHROPIC: ErrorWireFormat = "anthropic"
 
@@ -95,17 +95,15 @@ export function anthropicRejectErrorFrame(status: number, reason: string): Clien
 }
 
 /** Build an Anthropic SSE `error` frame from an explicit type+message (header-wait timeout,
- *  reaper-cancel, or an unknown non-HTTP error) — not an HTTPError, so hand-built canonical. */
-export function anthropicErrorFrame(type: string, message: string): ClientFrame {
-  return { event: "error", data: JSON.stringify({ type: "error", error: { type, message } }) }
-}
+ *  reaper-cancel, or an unknown non-HTTP error) — re-exported for route compatibility. */
+export { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 
 /** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
 export type PostCommitAbortKind =
   | "client-abort"
-  | "shutdown"
   | "header-timeout"
-  | "request-deadline"
+  | "client-request-deadline"
+  | "upstream-request-deadline"
   | "reaper-cancel"
   | "request-cancel"
   | "dispatch-cancel"
@@ -113,9 +111,9 @@ export type PostCommitAbortKind =
 
 /** The terminal SSE error-frame message for each abort kind (`client-abort` writes nothing — the client is gone). */
 const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abort">, string> = {
-  shutdown: "Server is shutting down",
   "header-timeout": "Upstream timed out before sending response headers",
-  "request-deadline": "Request exceeded its hard deadline",
+  "client-request-deadline": "Request exceeded its hard deadline",
+  "upstream-request-deadline": "Upstream attempt exceeded its hard deadline",
   "reaper-cancel": "Request cancelled by the stale-request reaper",
   "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
@@ -162,8 +160,11 @@ export function classifyPostCommitAbort(clientAborted: boolean, lifecycleSignal:
   if (clientAborted) return "client-abort"
   const fromCause = (candidate: unknown): PostCommitAbortKind | undefined => {
     switch (getCancellationCause(candidate)) {
-      case "request-deadline": {
-        return "request-deadline"
+      case "client-request-deadline": {
+        return "client-request-deadline"
+      }
+      case "upstream-request-deadline": {
+        return "upstream-request-deadline"
       }
       case "stale-reaper": {
         return "reaper-cancel"
@@ -180,7 +181,6 @@ export function classifyPostCommitAbort(clientAborted: boolean, lifecycleSignal:
     }
   }
   if (error !== undefined) {
-    if (isShutdownCausedAbort(error)) return "shutdown"
     if (error instanceof Error && error.name === "TimeoutError") return "header-timeout"
     const tagged = fromCause(error)
     if (tagged !== undefined) return tagged

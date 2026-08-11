@@ -28,6 +28,7 @@ import type { GeminiCodec } from "~/lib/codec/gemini/codec"
 import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -66,6 +67,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import {
   //
@@ -77,10 +79,12 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -96,6 +100,7 @@ import {
 } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
@@ -133,7 +138,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   // gemini codec's internal cc delegate so its reverse prepareWire records the outbound Anthropic betas.
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, vendor)
-  const codec = createGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder })
+  const codec = createGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder, translationConfigSnapshot: readTranslationConfigSnapshot(c) })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({
@@ -144,7 +149,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`
     // cell). The reverse leg's sanitize rewrite + Anthropic stack are assembled by OUTBOUND_LEGS from the
-    // shared beta probe + mapper holder the codec threads onto env.requestState.
+    // shared beta probe + mapper holder the codec threads onto env.candidate.
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
@@ -158,6 +163,20 @@ async function runGeminiRequest(
   geminiBody: GenerateContentRequest,
   modelId: string,
   stream: boolean,
+): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
+  return await withHistoryAdmission(
+    c.req.raw,
+    "generation",
+    async (historyReservation) => await runGeminiRequestAdmitted(c, geminiBody, modelId, stream, historyReservation),
+  )
+}
+
+async function runGeminiRequestAdmitted(
+  c: Context,
+  geminiBody: GenerateContentRequest,
+  modelId: string,
+  stream: boolean,
+  historyReservation: HistoryReservation,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
   const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
@@ -179,6 +198,7 @@ async function runGeminiRequest(
       path: c.req.path,
       query: resolveInboundQuery(c.req.url),
       preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      historyReservation,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -218,16 +238,17 @@ type GeminiCandidateResponseSnapshot =
 
 const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const startedAtMs = Date.now()
-  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+  if (input.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createGeminiDeliveryProtocolAdapter(),
       createState: () => ({ anthropicAcc: createAnthropicStreamAccumulator(), diag: createUpstreamFrameDiagnostics(startedAtMs) }),
       onUpstreamFrame(state, frame) {
         const raw = frame as ServerSentEventMessage
         state.diag.observe(raw)
         if (!raw.data || raw.data === "[DONE]") return
         try {
-          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+          accumulateAnthropicStreamEvent(nameAnthropicEventFromWire(raw, JSON.parse(raw.data)) as never, state.anthropicAcc)
         } catch (error) {
           consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
         }
@@ -281,7 +302,7 @@ export async function handleGenerateContentV4(c: Context, modelId: string): Prom
     const ccResp = driver.runResponseNonStreaming(result.upstream, result.env) as ChatCompletionResponse
     // REVERSE `@messages` leg (Phase 5): the client body is CC→Gemini, but the OUTBOUND leg recorded is
     // the honest Anthropic upstream (richest-data-flow).
-    if (result.env.targetEndpoint === ENDPOINT.MESSAGES) {
+    if (result.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
       return renderReverseGeminiNonStreamingV4(c, result.env, ccResp, result.upstream.nonStream as AnthropicMessageResponse, modelId)
     }
     return renderGeminiNonStreamingV4(c, result.env, ccResp, modelId)
@@ -310,7 +331,7 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     try {
       // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic — accumulate the raw Anthropic frames
       // for the honest outbound while forwarding the rendered Gemini frames (no heartbeat).
-      if (result.env.targetEndpoint === ENDPOINT.MESSAGES)
+      if (result.env.attempt.targetEndpoint === ENDPOINT.MESSAGES)
         await pumpReverseGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env, modelId })
       else await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
@@ -421,7 +442,7 @@ function geminiUsageFromMeta(meta: ReturnType<GeminiCodec["getStreamMeta"]>): Us
  */
 async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as ChatCompletionsPayload).model
+  const model = (env.attempt.body as ChatCompletionsPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
@@ -449,7 +470,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     recordForwarded()
     consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(model, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -476,7 +497,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -509,7 +530,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -522,7 +543,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     stop_reason: meta.finishReason,
     content: null,
   })
-  sink.finalize?.()
+  await sink.finalize?.()
 }
 
 /**
@@ -626,7 +647,7 @@ interface PumpReverseGeminiStreamingV4Options {
  */
 async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as MessagesPayload).model
+  const model = (env.attempt.body as MessagesPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
@@ -652,7 +673,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     recordForwarded()
     consola.debug("[gemini:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -676,7 +697,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -690,7 +711,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     consola.error(`[gemini:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   // Truncation (F2): a clean drain WITHOUT the mandatory `message_stop`. Drop the geminiTranslator's
@@ -717,7 +738,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
   if (terminal.kind === "contentless-refusal") {
@@ -725,12 +746,12 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   // The processor finish boundary already emitted the geminiTranslator's stream-end frames.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
-  sink.finalize?.()
+  await sink.finalize?.()
 }

@@ -9,6 +9,7 @@
 
 import type { Context } from "hono"
 
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   Content as GeminiContent,
@@ -24,6 +25,7 @@ import {
   HTTPError,
   isAbortError,
 } from "~/lib/error"
+import { withHistoryAdmission } from "~/lib/history/worker/http-admission"
 import { resolveModelName } from "~/lib/models/resolver"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
@@ -41,6 +43,10 @@ import { state } from "~/lib/state"
  * real Gemini clients to display false "over quota" UI states.
  */
 export async function handleCountTokens(c: Context, modelId: string): Promise<Response> {
+  return await withHistoryAdmission(c.req.raw, "count_tokens", async (historyReservation) => await handleCountTokensAdmitted(c, modelId, historyReservation))
+}
+
+async function handleCountTokensAdmitted(c: Context, modelId: string, historyReservation: HistoryReservation): Promise<Response> {
   const body = await c.req.json<CountTokensRequest>()
   const semanticInput = structuredClone(body)
   const operation = createLightweightModelOperation({
@@ -49,6 +55,7 @@ export async function handleCountTokens(c: Context, modelId: string): Promise<Re
     semanticRequest: semanticInput,
     format: "gemini",
     requestedModel: modelId,
+    historyReservation,
     metadata: { source: "gemini", requestedModel: modelId },
   })
   const resolved = resolveModelName(modelId)

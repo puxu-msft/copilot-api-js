@@ -55,7 +55,10 @@ onMounted(() => {
 const proxy = topLevelField("proxy", null)
 const fetchTimeout = nestedField("timeouts", "response_header", null)
 const streamIdleTimeout = nestedField("timeouts", "stream_idle", null)
-const staleRequestMaxAge = nestedField("timeouts", "stale_request_max_age", null)
+const upstreamRequestDeadline = nestedField("timeouts", "upstream_request_deadline", null)
+const clientRequestDeadline = nestedField("timeouts", "client_request_deadline", null)
+const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
+const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
 const modelRefreshInterval = topLevelField("model_refresh_interval", null)
 const systemPromptPrepend = topLevelField("system_prompt_prepend", null)
 const systemPromptAppend = topLevelField("system_prompt_append", null)
@@ -73,9 +76,6 @@ const autoCacheControl = nestedField("anthropic", "auto_cache_control", true)
 
 const normalizeCallIds = nestedField("openai_responses", "normalize_call_ids", true)
 const upstreamWebSocket = nestedField("openai_responses", "upstream_ws", false)
-
-const shutdownGracefulWait = nestedField("shutdown", "graceful_wait", null)
-const shutdownAbortWait = nestedField("shutdown", "abort_wait", null)
 
 const historySuccessLimit = nestedField("history", "success_limit", null)
 const historyFailureLimit = nestedField("history", "failure_limit", null)
@@ -147,7 +147,7 @@ function setTopLevel<K extends keyof EditableConfig>(key: K, value: EditableConf
 }
 
 function setNested<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "shutdown">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, value: NonNullable<EditableConfig[P]>[K]): void {
   const config = ensureConfig()
@@ -169,7 +169,7 @@ function topLevelField<K extends keyof EditableConfig>(key: K, fallback: NonNull
 }
 
 function nestedField<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "shutdown">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, fallback: NonNullable<EditableConfig[P]>[K]) {
   return computed({
@@ -375,9 +375,30 @@ function nestedField<
               :min="0"
             />
             <ConfigNumber
-              v-model="staleRequestMaxAge"
-              label="Stale Request Max Age"
-              description="Force-fail active requests that outlive this threshold."
+              v-model="upstreamRequestDeadline"
+              label="Upstream Request Deadline"
+              description="Abort ONE upstream attempt that outlives this. Retry/hedge budget is untouched."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="clientRequestDeadline"
+              label="Client Request Deadline"
+              description="Fail the whole client request once it outlives this, across every retry."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="shutdownGracefulWait"
+              label="Shutdown Graceful Wait"
+              description="Wait this long for accepted requests during shutdown, then abandon the drain losslessly."
+              suffix="s"
+              :min="0"
+            />
+            <ConfigNumber
+              v-model="shutdownAbortWait"
+              label="Shutdown Abort Wait"
+              description="After abandoning the drain, wait this long before hard-exiting WITHOUT flushing. Starts only once Graceful Wait expires."
               suffix="s"
               :min="0"
             />
@@ -385,24 +406,6 @@ function nestedField<
               v-model="modelRefreshInterval"
               label="Model Refresh Interval"
               description="Refresh the cached model list in the background. Set to 0 to disable."
-              suffix="s"
-              :min="0"
-            />
-          </ConfigSection>
-
-          <ConfigSection
-            title="Shutdown"
-            description="Graceful shutdown timings for in-flight request handling."
-          >
-            <ConfigNumber
-              v-model="shutdownGracefulWait"
-              label="Graceful Wait"
-              suffix="s"
-              :min="0"
-            />
-            <ConfigNumber
-              v-model="shutdownAbortWait"
-              label="Abort Wait"
               suffix="s"
               :min="0"
             />

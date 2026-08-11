@@ -4,7 +4,11 @@ import type {
   UpstreamDispatchLifecycle,
 } from "~/lib/pipeline/types"
 
-import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+import {
+  //
+  cancellationAbortError,
+  UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON,
+} from "~/lib/error/cancellation-reason"
 
 export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   readonly signal: AbortSignal
@@ -12,6 +16,23 @@ export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   complete(): void
   /** Wrap the owned response body so natural EOF/throw/return settles quiescence. */
   ownFrames<T>(source: AsyncIterable<T>): AsyncIterable<T>
+  /**
+   * Register the transport's PHYSICAL teardown wait, so `dispose()` reports quiescence only once the underlying stream is actually gone.
+   *
+   * Without this, `dispose()` resolves as soon as the body iterator is closed — which is a claim about OUR bookkeeping, not about the wire. The pooled connection may still be carrying a half-dead stream, and the contract `dispose()` advertises ("no local callbacks remain") is not yet true.
+   *
+   * Bounded by `graceMs`: a peer that never closes must not wedge teardown. On expiry the dispatch is reported NOT reusable, because the honest answer is that we no longer know the connection's state.
+   */
+  registerTeardownBarrier(barrier: TeardownBarrier): void
+}
+
+export interface TeardownBarrier {
+  /** Resolves when the transport's physical stream has closed. */
+  closed: Promise<void>
+  /** Upper bound on the wait; `<= 0` disables the barrier entirely. */
+  graceMs: number
+  /** Invoked exactly once if the grace expires before `closed` — the seam A4-4's forced disposal hangs off. */
+  onTimeout?: () => void
 }
 
 /**
@@ -24,27 +45,51 @@ function abortReason(reason?: string): DOMException {
   return cancellationAbortError("dispatch-cancel", reason ?? "The operation was aborted.")
 }
 
+export interface DispatchLifecycleOptions {
+  /**
+   * Wall-clock cap for this ONE upstream attempt (`timeouts.upstream_request_deadline`, ms).
+   * 0/undefined = disabled and nothing is armed. On fire the dispatch is aborted with an
+   * `upstream-request-deadline` cause and torn down like any other disposal — the owning
+   * candidate's retry/hedge budget is untouched, so this bounds the attempt, not the request.
+   */
+  readonly deadlineMs?: number
+}
+
 /**
  * Own one HTTP-style physical dispatch without owning the pooled connection.
  * Cancellation reaches the fetch/body stream; disposal closes only the body iterator.
  */
-export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchLifecycleOwner {
+export function createDispatchLifecycle(externalSignal?: AbortSignal, options?: DispatchLifecycleOptions): DispatchLifecycleOwner {
   const controller = new AbortController()
   let activeIterator: AsyncIterator<unknown> | undefined
   let settled = false
   let cleanupPromise: Promise<void> | undefined
   let disposalPromise: Promise<DispatchDisposalResult> | undefined
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
   let resolveQuiesced!: () => void
-  const quiesced = new Promise<void>((resolve) => {
+  let rejectQuiesced!: (error: unknown) => void
+  const quiesced = new Promise<void>((resolve, reject) => {
     resolveQuiesced = resolve
+    rejectQuiesced = reject
   })
+  // Observe internally so external-abort cleanup cannot create an unhandled rejection when no caller joins quiesced.
+  void quiesced.catch(() => {})
   let onExternalAbort = (): void => {}
+  let teardownBarrier: TeardownBarrier | undefined
 
-  const complete = (): void => {
+  const clearDeadline = (): void => {
+    if (deadlineTimer === undefined) return
+    clearTimeout(deadlineTimer)
+    deadlineTimer = undefined
+  }
+
+  const complete = (error?: unknown, failed = false): void => {
     if (settled) return
     settled = true
+    clearDeadline()
     externalSignal?.removeEventListener("abort", onExternalAbort)
-    resolveQuiesced()
+    if (failed) rejectQuiesced(error)
+    else resolveQuiesced()
   }
 
   const cancel = (reason?: string): void => {
@@ -58,9 +103,9 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
       if (iterator?.return) {
         try {
           await iterator.return()
-        } catch {
-          // The lifecycle error already owns the terminal result. Cleanup is best-effort,
-          // but quiescence is later than the cleanup attempt.
+        } catch (error) {
+          complete(error, true)
+          throw error
         }
       }
       complete()
@@ -73,9 +118,38 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
       cancel(reason)
       await ensureIteratorCleanup()
       await quiesced
+      // Only now is OUR bookkeeping done. The physical stream may still be closing, and until it is,
+      // "no local callbacks remain" is not yet true — so the barrier, not `quiesced`, decides reusability.
+      const closedInTime = await awaitTeardownBarrier()
+      // Reusability is a REPORT to the caller, never an action on the pool: an expired grace means we
+      // no longer know this connection's state, and guessing "fine" would put the next request on it.
+      if (!closedInTime) return { quiesced: true, connectionReusable: false }
       return { quiesced: true, connectionReusable: true }
     })()
     return disposalPromise
+  }
+
+  /** Resolves true if the transport closed within its grace, false if the grace expired (or `true` when no barrier was registered — nothing to wait for). */
+  async function awaitTeardownBarrier(): Promise<boolean> {
+    const barrier = teardownBarrier
+    if (barrier === undefined || barrier.graceMs <= 0) return true
+
+    let timer: NodeJS.Timeout | undefined
+    const expired = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), barrier.graceMs)
+      // Teardown must never be the reason the process stays alive at shutdown.
+      timer.unref()
+    })
+    try {
+      const closedInTime = await Promise.race([barrier.closed.then(() => true), expired])
+      if (!closedInTime) barrier.onTimeout?.()
+      return closedInTime
+    } catch {
+      // A rejected barrier is still a finished wait; the connection's state is unknown, so: not reusable.
+      return false
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   onExternalAbort = () => {
@@ -87,12 +161,33 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true })
   if (externalSignal?.aborted) onExternalAbort()
 
+  // Per-attempt hard deadline. Abort FIRST with our own tagged error so the cause survives:
+  // `dispose` → `cancel` only aborts when the signal is still unaborted, so it will not overwrite
+  // this tag with the generic `dispatch-cancel` one. `unref` keeps it from holding the process up.
+  const deadlineMs = options?.deadlineMs ?? 0
+  if (deadlineMs > 0) {
+    deadlineTimer = setTimeout(() => {
+      deadlineTimer = undefined
+      if (settled || controller.signal.aborted) return
+      controller.abort(
+        cancellationAbortError("upstream-request-deadline", `Upstream attempt exceeded ${deadlineMs / 1000}s (${UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON})`),
+      )
+      void dispose(UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON).catch(() => {})
+    }, deadlineMs)
+    ;(deadlineTimer as unknown as { unref?: () => void }).unref?.()
+  }
+
   return {
     signal: controller.signal,
     cancel,
     dispose,
     quiesced,
     complete,
+    registerTeardownBarrier(barrier: TeardownBarrier): void {
+      // Registered once, by the transport that owns the physical stream. A second registration would
+      // mean two owners disagree about what "closed" means, so the first one wins rather than racing.
+      teardownBarrier ??= barrier
+    },
     ownFrames<T>(source: AsyncIterable<T>): AsyncIterable<T> {
       if (settled || controller.signal.aborted) {
         return {

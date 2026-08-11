@@ -1,9 +1,20 @@
-import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import {
+  //
+  afterEach,
+  expect,
+  test,
+} from "bun:test"
+import {
+  //
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  //
   isProcessAlive,
   readLivePredecessor,
   readPidfile,
@@ -19,7 +30,7 @@ function tmp(): string {
   return join(d, "copilot-api.pid")
 }
 afterEach(() => {
-  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
+  while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true })
 })
 
 test("write→read round-trip", () => {

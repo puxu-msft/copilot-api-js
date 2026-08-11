@@ -1,9 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { prepareAnthropicRequest } from "~/lib/anthropic/client"
-import { restoreStateForTests, setStateForTests, snapshotStateForTests } from "~/lib/state"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 const originalState = snapshotStateForTests()
 afterEach(() => restoreStateForTests(originalState))
@@ -20,9 +31,7 @@ function payloadWith(system: MessagesPayload["system"]): MessagesPayload {
 describe("sanitize 收窄（新行为）", () => {
   test("保留客户端 ttl:1h（extended 未激活，不再误降 5m）", () => {
     setStateForTests({ cacheControlMode: "sanitize", copilotToken: "t", vsCodeVersion: "1.100.0", accountType: "individual" })
-    const prepared = prepareAnthropicRequest(
-      payloadWith([{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } as never }]),
-    )
+    const prepared = prepareAnthropicRequest(payloadWith([{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } as never }]))
     const sys = prepared.wire.system as Array<{ cache_control?: unknown }>
     expect(sys[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
   })
@@ -52,9 +61,7 @@ describe("sanitize 收窄（新行为）", () => {
 
   test("头部 delta（M2）：sanitize 保留 1h → 发 extended-cache-ttl beta（旧语义降 5m 不发）", () => {
     setStateForTests({ cacheControlMode: "sanitize", copilotToken: "t", vsCodeVersion: "1.100.0", accountType: "individual" })
-    const prepared = prepareAnthropicRequest(
-      payloadWith([{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } as never }]),
-    )
+    const prepared = prepareAnthropicRequest(payloadWith([{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } as never }]))
     expect(prepared.headers["anthropic-beta"] ?? "").toContain("extended-cache-ttl-2025-04-11")
   })
 })
@@ -72,7 +79,6 @@ describe("proxied 也不泄漏 scope", () => {
     })
     // 断言 wire 里任何 cache_control 都不含 scope（proxied 重建的断点是干净的）。
     const json = JSON.stringify(prepared.wire)
-    expect(json).not.toContain("\"scope\"")
+    expect(json).not.toContain('"scope"')
   })
 })
-

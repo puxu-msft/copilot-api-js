@@ -13,7 +13,12 @@ import fs from "node:fs/promises"
 import { z } from "zod"
 
 import { resolveBufferedCaps } from "~/lib/config/model-overrides"
-import { setV3PersistRetryConfig } from "~/lib/history/v3"
+import { setHistoryStartupDeadlineMs } from "~/lib/history/startup-deadline-config"
+import {
+  //
+  DEFAULT_V3_PERSIST_RETRY_CONFIG,
+  setV3PersistRetryConfig,
+} from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
@@ -40,7 +45,6 @@ import {
   setNegotiationConfig,
   setResponsesConfig,
   setResponsesWsIngressConfig,
-  setShutdownConfig,
   setReactiveRetryConfig,
   setTelemetryConfig,
   setTimeoutConfig,
@@ -76,27 +80,9 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type {
-  AnthropicConfig,
-  Config,
-  EndpointScope,
-  HistoryConfig,
-  RateLimiterConfig,
-  ResponsesConfig,
-  RewriteRule,
-  ShutdownConfig,
-  SystemPromptEntry,
-} from "./schema"
+export type { AnthropicConfig, Config, EndpointScope, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, SystemPromptEntry } from "./schema"
 
-export {
-  AnthropicConfigSchema,
-  ConfigSchema,
-  HistoryConfigSchema,
-  RateLimiterConfigSchema,
-  ResponsesConfigSchema,
-  RewriteRuleSchema,
-  ShutdownConfigSchema,
-} from "./schema"
+export { AnthropicConfigSchema, ConfigSchema, HistoryConfigSchema, RateLimiterConfigSchema, ResponsesConfigSchema, RewriteRuleSchema } from "./schema"
 
 export {
   _resetConfigValidationWarnTrackingForTests,
@@ -707,6 +693,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (a.stream_keepalive_escalate_sec !== undefined) setAnthropicBehavior({ streamKeepaliveEscalateSec: a.stream_keepalive_escalate_sec })
       if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
       if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampCommitWindowSec(a.stream_commit_after_sec) })
+      if (a.precontent_recovery?.enabled !== undefined) setAnthropicBehavior({ preContentRecovery: { enabled: a.precontent_recovery.enabled } })
       if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
       // Per-vendor buffered-retry cap override for Anthropic (legacy
       // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via
@@ -964,18 +951,30 @@ export async function applyConfigToState(): Promise<Config> {
           )
         }
       }
+      if (h.persistence_queue_capacity !== undefined) setHistoryConfig({ historyPersistenceQueueCapacity: h.persistence_queue_capacity })
+      // Startup-only knob, read once by the process entry point before it listens — same
+      // shape as the persist-retry budget below: a module setter, no state field, because
+      // there is nothing for a running instance to react to after startup has finished.
+      // An explicit `null` means "delete this key", not "wait forever" — only a real number moves the deadline.
+      if (h.startup_deadline_ms !== undefined && h.startup_deadline_ms !== null) setHistoryStartupDeadlineMs(h.startup_deadline_ms)
       if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
       if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
       if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
       // DI-5 transient retry budget — consumed only by the V3 store drain (no state
       // field / listener needed), so feed the module setter directly like the other
-      // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
-      // (DI-5-followup-2) defaults inside the setter when omitted.
-      if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
+      // module-local config knobs (setReactiveRetryConfig above). Defaults come from
+      // the store's single authoritative object so config apply cannot drift from it.
+      if (
+        h.persist_retry?.max_attempts !== undefined
+        || h.persist_retry?.backoff_ms !== undefined
+        || h.persist_retry?.max_backoff_ms !== undefined
+        || h.persist_retry?.max_total_ms !== undefined
+      ) {
         setV3PersistRetryConfig({
-          maxAttempts: h.persist_retry.max_attempts ?? 3,
-          backoffMs: h.persist_retry.backoff_ms ?? 10,
-          maxTotalMs: h.persist_retry.max_total_ms,
+          maxAttempts: h.persist_retry.max_attempts ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxAttempts,
+          backoffMs: h.persist_retry.backoff_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.backoffMs,
+          maxBackoffMs: h.persist_retry.max_backoff_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxBackoffMs,
+          maxTotalMs: h.persist_retry.max_total_ms ?? DEFAULT_V3_PERSIST_RETRY_CONFIG.maxTotalMs,
         })
       }
     }
@@ -1023,28 +1022,21 @@ export async function applyConfigToState(): Promise<Config> {
       if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
     }
 
-    // Shutdown timing (scalar: override only when present)
-    if (config.shutdown) {
-      const s = config.shutdown
-      if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
-      if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
-    }
-
     // Timeouts section (scalar: override only when present)
     if (config.timeouts) {
-      // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
-      // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
-      // than inferred. Pure observation — reads state, records a diff, no behavior change.
+      // Snapshot timeout scalars before/after apply so a hot reload that changes an upstream guard
+      // is observable rather than inferred. Pure observation — reads state, records a diff.
       const timeoutBefore = {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       }
       const t = config.timeouts
       if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
       if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-      if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
-      if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
+      if (t.client_request_deadline !== undefined) setTimeoutConfig({ clientRequestDeadline: t.client_request_deadline })
+      if (t.upstream_request_deadline !== undefined) setTimeoutConfig({ upstreamRequestDeadline: t.upstream_request_deadline })
       // Per-model override maps (already bundled+user per-key merged upstream).
       // Replace semantics per field; app-guard only (no dispatcher rebuild).
       if (t.stream_idle_overrides !== undefined) {
@@ -1056,10 +1048,21 @@ export async function applyConfigToState(): Promise<Config> {
         })
       }
       recordConfigReloadTimeoutDiff(timeoutBefore, {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       })
+    }
+
+    // Shutdown's own wall-clock bounds. Hot-reloadable like every other scalar, but note that a
+    // reload landing DURING a shutdown cannot move an already-armed timer — the values are read
+    // once when the lifecycle is claimed, which is the only reading that gives an operator a
+    // stable answer to "how long will this take at most".
+    if (config.shutdown) {
+      const sd = config.shutdown
+      if (sd.graceful_wait !== undefined) setTimeoutConfig({ shutdownGracefulWait: sd.graceful_wait })
+      if (sd.abort_wait !== undefined) setTimeoutConfig({ shutdownAbortWait: sd.abort_wait })
     }
     if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
@@ -1195,23 +1198,32 @@ export async function applyConfigToState(): Promise<Config> {
       consola.info("[config] Reloaded config.yaml")
     }
 
-    // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
-    // With `response_header: 0` the TTFB abort signal is undefined, so a silently
-    // hung GHC upstream keeps a single streaming request pending for MINUTES until
-    // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
-    // mechanism itself is sound — disabling it is the footgun, see
-    // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
-    // (mid-stream silence unbounded). Warn at first apply / on actual change only —
-    // gated like the reload log so the per-request hot-reload path never spams.
+    // Guardrail: positive wall-clock terminators deliberately trade the frozen
+    // never-false-kill guarantee for bounded waiting. Warn at first apply / on an
+    // actual config change only, so the per-request hot-reload path never spams.
     if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
-      const disabledGuards: Array<string> = []
-      if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
-      if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
-      if (disabledGuards.length > 0) {
+      const boundedWaits: Array<string> = []
+      const timeouts = config.timeouts
+      if ((timeouts?.response_header ?? 0) > 0) boundedWaits.push("response_header (TTFB / time-to-first-byte)")
+      if ((timeouts?.stream_idle ?? 0) > 0) boundedWaits.push("stream_idle (mid-stream silence)")
+      if ((timeouts?.upstream_request_deadline ?? 0) > 0) boundedWaits.push("upstream_request_deadline (one upstream attempt)")
+      if ((timeouts?.client_request_deadline ?? 0) > 0) boundedWaits.push("client_request_deadline (whole client request)")
+      for (const [model, seconds] of Object.entries(timeouts?.response_header_overrides ?? {})) {
+        if (seconds > 0) boundedWaits.push(`response_header_overrides.${model}=${seconds}s`)
+      }
+      for (const [model, seconds] of Object.entries(timeouts?.stream_idle_overrides ?? {})) {
+        if (seconds > 0) boundedWaits.push(`stream_idle_overrides.${model}=${seconds}s`)
+      }
+      // Shutdown's own bounds belong in the same warning: `graceful_wait` expiring terminates live
+      // operations exactly as the other terminators do. It is losslessly attributed, but a request
+      // that was still legitimately thinking is still cut short.
+      if ((config.shutdown?.graceful_wait ?? 0) > 0) boundedWaits.push("shutdown.graceful_wait (drain wait before abandoning it)")
+      if ((config.shutdown?.abort_wait ?? 0) > 0) boundedWaits.push("shutdown.abort_wait (post-abandon wait before hard exit)")
+      if (boundedWaits.length > 0) {
         consola.warn(
-          `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
-            + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
-            + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+          `[config] bounded-wait override enabled: ${boundedWaits.join(", ")}. `
+            + `A live upstream may still be performing legitimate unbounded thinking when a wall-clock terminator fires; `
+            + `use positive values only when that bounded-wait tradeoff is intentional.`,
         )
       }
     }

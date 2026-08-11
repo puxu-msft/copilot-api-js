@@ -214,10 +214,10 @@
 
 ### Task 6.3：实现 TerminalSession并收敛raw lifecycle
 
-- 主要文件：新建 `src/lib/tui/terminal-session.ts`、`tests/tui/terminal-session.unit.test.ts`；修改 `src/lib/tui/terminal-ui.ts`、`src/lib/shutdown.ts`、`tests/tui/terminal-restore.unit.test.ts`、`tests/shutdown/shutdown-signals.it.test.ts`。
+- 主要文件：新建 `src/lib/tui/terminal-session.ts`、`tests/tui/terminal-session.unit.test.ts`；修改 `src/lib/tui/terminal-ui.ts`、`src/lib/shutdown.ts`、`tests/tui/terminal-restore.unit.test.ts`、`tests/shutdown/shutdown-signals.pty.test.ts`。
 - Tests-first oracle：attach/detach、raw/cooked、resize source、exit hook unregister、shutdown begin restore idempotence；第一次signal同步restore，不依赖active request；stdout fault也不能跳过stdin cooked finally。
 - Commit invariant：TerminalSession独占stdin/raw/TTY lifecycle；TerminalUi不再直接setRawMode或注册process exit/resize hook；destroy成对解除所有listener。
-- 命令：`bun test tests/tui/terminal-session.unit.test.ts tests/tui/terminal-restore.unit.test.ts tests/shutdown/shutdown-signals.it.test.ts && bun run typecheck && rg 'setRawMode|SIGTSTP|SIGCONT' src/lib/tui && git diff --check`。
+- 命令：`bun test tests/tui/terminal-session.unit.test.ts tests/tui/terminal-restore.unit.test.ts tests/shutdown/shutdown-signals.pty.test.ts && bun run typecheck && rg 'setRawMode|SIGTSTP|SIGCONT' src/lib/tui && git diff --check`。
 - 建议提交：`refactor: extract terminal session lifecycle`。
 
 ### Task 6.4：收敛 TerminalUi为薄编排器
@@ -230,7 +230,7 @@
 
 ### Phase 6 gate
 
-`bun test tests/tui tests/shutdown/shutdown-signals.it.test.ts tests/observability && bun run test:pty && bun run typecheck && bun run lint:all && git diff --check`。
+`bun test tests/tui tests/shutdown/shutdown-signals.pty.test.ts tests/observability && bun run test:pty && bun run typecheck && bun run lint:all && git diff --check`。
 
 ## Phase 7：Detail/capability——viewport、sanitizer、fallback与job control
 
@@ -265,12 +265,12 @@
 - 主要文件：`src/lib/tui/terminal-session.ts`、`src/lib/tui/input/key-decoder.ts`；新建 `tests/tui/pty/suspend-resume.pty.test.ts`、`tests/tui/pty/fixtures/suspend_resume_pty.py`。
 - Tests-first oracle：Python真PTY用`waitpid(WUNTRACED)`与`WIFSTOPPED`证明进程真挂起；顺序为drain restore→离alt→reset DECSTBM→显光标→detach→cooked→临时移除listener→self SIGTSTP；SIGCONT后重读size、attach、raw、rebuild、full repaint。无SIGTSTP平台Ctrl-Z no-op并提示一次。
 - Commit invariant：仅state=`suspended`响应SIGCONT；重复signal与destroy幂等；恢复后输入与resize各只有一个listener。
-- 命令：`bun test tests/tui/pty/suspend-resume.pty.test.ts tests/shutdown/shutdown-signals.it.test.ts && bun run test:pty && bun run typecheck && git diff --check`。
+- 命令：`bun test tests/tui/pty/suspend-resume.pty.test.ts tests/shutdown/shutdown-signals.pty.test.ts && bun run test:pty && bun run typecheck && git diff --check`。
 - 建议提交：`feat: support terminal suspend and resume`。
 
 ### Phase 7 gate
 
-`bun test tests/tui tests/config tests/shutdown/shutdown-signals.it.test.ts && bun run test:pty && bun run typecheck && bun run lint:all && git diff --check`。
+`bun test tests/tui tests/config tests/shutdown/shutdown-signals.pty.test.ts && bun run test:pty && bun run typecheck && bun run lint:all && git diff --check`。
 
 ## Phase 8：Performance——以真实probe决定coalescing与buffer caps
 

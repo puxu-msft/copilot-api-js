@@ -79,6 +79,6 @@ WAL 存活期间 runtime segment prune 禁用，避免 WAL 删除前 committed l
 | Primitive | generation、progress、failure、fsync、roll、marker、close | `counting-destination.unit.test.ts`、`durable-writer.unit.test.ts` |
 | Sink | Pino level、record union、threshold、权限、drop | `structured-file-sink.it.test.ts` |
 | Production seam | WAL、digest、claim、corrupt、failure/retry、generation、rotation | `bootstrap-spool.it.test.ts`、`shutdown-barrier.it.test.ts`、`multiprocess-rotation.it.test.ts`、`segment-files.it.test.ts` |
-| Process | 真 SIGINT exit code、artifact、raw/cooked terminal | `tests/shutdown/shutdown-signals.it.test.ts` |
+| Process | 真 SIGINT exit code、artifact、raw/cooked terminal | `tests/shutdown/shutdown-signals.pty.test.ts` |
 
 通用正样本、测试分层和 exactly-once 纪律归 [coding-conventions.md](coding-conventions.md)「测试组织」节；本文只维护本域的真相矩阵与入口。

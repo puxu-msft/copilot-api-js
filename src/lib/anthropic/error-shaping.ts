@@ -247,9 +247,9 @@ export type AnthropicErrorCauseKind = StreamErrorKind | "header-timeout" | "unkn
 const ANTHROPIC_STREAM_ERROR_TYPE: Record<AnthropicErrorCauseKind, string> = {
   "idle-timeout": "timeout_error",
   "header-timeout": "timeout_error",
-  "request-deadline": "timeout_error",
+  "client-request-deadline": "timeout_error",
+  "upstream-request-deadline": "timeout_error",
   "reaper-cancel": "timeout_error",
-  shutdown: "overloaded_error",
   "client-abort": "api_error",
   "request-cancel": "api_error",
   "dispatch-cancel": "api_error",

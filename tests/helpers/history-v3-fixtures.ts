@@ -1,12 +1,67 @@
 import type { HistoryEntry } from "~/lib/history/types"
 
+import { PATHS } from "~/lib/config/paths"
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
-import { getDatabase } from "~/lib/history/sqlite/connection"
 import {
   //
+  getDatabase,
+  isDatabaseOpen,
+  openDatabase,
+  openOwnedHistoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import {
+  //
+  clearV3Store,
   commitPreparedOperation,
+  ensureV3Schema,
   prepareModelOperation,
 } from "~/lib/history/v3/store"
+import {
+  //
+  detachHistoryReadDatabaseForTests,
+  installHistoryReadDatabase,
+} from "~/lib/history/sqlite/read-connection"
+import { state } from "~/lib/state"
+
+let seedDb: { path: string, db: ReturnType<typeof openOwnedHistoryDatabase> } | undefined
+/** The seed handle outlives every individual test by design (reopening per test would be pure cost), so the close has to hang off process exit — the same shape `historyTestDbPath` uses for its temp dir. */
+let seedDbExitHookInstalled = false
+
+/**
+ * A short-lived WRITE handle on the artifact under test, for seeding rows directly.
+ *
+ * Since the Batch 2b cutover the main thread has no write handle to borrow — `getDatabase()` throws, because the semantic write connection moved to the Worker. A seeding fixture is still legitimately a writer, so it opens its own connection to the same file; SQLite's WAL mode serializes it against the Worker's connection, and the main thread's readonly handle sees the rows on its next read. This is a test-only second connection, not a second production writer: nothing in `src/` may do this (see the architecture guard on `state.ts`).
+ */
+function seedWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
+  // A test that opened its OWN write singleton (`openInMemoryDatabase()`, or `openDatabase()` on its own artifact) is asserting against THAT database — it is also what the query layer reads, because `openInMemoryDatabase` publishes it as the read handle. Seeding anywhere else would write one database and read another, which looks exactly like "the rows vanished".
+  if (isDatabaseOpen()) return getDatabase()
+  // Otherwise seed the artifact the app under test opened. Same resolution `initHistory` uses, so an empty `historyDbPath` means the sandboxed default, not "no database".
+  const path = state.historyDbPath || PATHS.HISTORY_V3_DB
+  if (seedDb?.path === path) return seedDb.db
+  seedDb?.db.close()
+  const db = openOwnedHistoryDatabase(path)
+  ensureV3Schema(db)
+  seedDb = { path, db }
+  if (!seedDbExitHookInstalled) {
+    seedDbExitHookInstalled = true
+    process.on("exit", () => seedDb?.db.close())
+  }
+  return db
+}
+
+/**
+ * The fixtures' WRITE handle on the artifact under test, for tests that assert or seed with direct SQL.
+ *
+ * Replaces `getDatabase()` in test bodies: the main thread stopped opening the write singleton at the Batch 2b cutover, so that accessor now throws. Reads could go through `getHistoryReadDatabase()` instead, but a test that also writes needs one handle for both, and mixing the two invites assertions that read a different connection than they wrote.
+ */
+export function historyTestWriteDatabase(): ReturnType<typeof openOwnedHistoryDatabase> {
+  return seedWriteDatabase()
+}
+
+/** Wipe every V3 table on the artifact under test. Backs `clearHistory()`'s persisted half, which production can no longer perform itself (see `setHistoryStoreWipeForTests`). */
+export function clearHistoryStoreForTests(): void {
+  clearV3Store(seedWriteDatabase())
+}
 
 /** Persist a terminal History-shaped fixture through the canonical V3 store. */
 export function commitV3HistoryEntry(entry: HistoryEntry): void {
@@ -131,5 +186,19 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
     error: entry._index?.derived?.failureReason,
     metadata: { durationMs: entry.durationMs },
   })
-  commitPreparedOperation(getDatabase(), prepareModelOperation(terminal))
+  commitPreparedOperation(seedWriteDatabase(), prepareModelOperation(terminal))
+}
+
+/**
+ * Open an on-disk V3 artifact as the write singleton AND publish it as the process-wide read handle.
+ *
+ * A test that seeds a database and then exercises the query APIs needs both ends pointing at the same file. Before the Batch 2b cutover one call did that implicitly, because the read paths resolved the write singleton; now they resolve `getHistoryReadDatabase()`, so the publication has to be explicit. This is the on-disk sibling of `openInMemoryDatabase()`, which has always done exactly this.
+ *
+ * Detaching first rather than closing: whatever is published belongs to whoever installed it — a live `initHistory` owns its readonly handle and will close it on its next transition. `closeDatabase()` withdraws this publication again.
+ */
+export function openTestDatabaseAsReadSource(dbPath: string): ReturnType<typeof openDatabase> {
+  detachHistoryReadDatabaseForTests()
+  const database = openDatabase(dbPath)
+  installHistoryReadDatabase(database)
+  return database
 }

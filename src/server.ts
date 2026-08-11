@@ -16,7 +16,11 @@ import type { ErrorWireFormat } from "./lib/error"
 
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
-import { observabilityMiddleware } from "./lib/observability/middleware"
+import {
+  //
+  observabilityMiddleware,
+  shutdownConnectionCloseMiddleware,
+} from "./lib/observability/middleware"
 import {
   //
   classifyUnknownEndpoint,
@@ -24,6 +28,11 @@ import {
   UNKNOWN_ENDPOINT_CTX_KEY,
   unknownEndpointFinalizer,
 } from "./lib/observability/unknown-endpoint"
+import {
+  //
+  captureTranslationConfigSnapshot,
+  setTranslationConfigSnapshot,
+} from "./lib/pipeline/semantic/config-snapshot"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 
@@ -124,6 +133,10 @@ export function createServer() {
   // 200 during graceful shutdown since it sits ahead of the shutdown gate.
   server.get("/health/liveness", (c) => c.json({ status: "alive" }))
 
+  // Outermost ingress rule: anything we reject while shutting down tells the client to drop the connection.
+  // Registered BEFORE the config/token middleware below because that middleware's awaits are themselves a rejection path during shutdown — see shutdownConnectionCloseMiddleware's doc comment.
+  server.use(shutdownConnectionCloseMiddleware())
+
   // Config hot-reload: re-apply config.yaml settings before each request.
   // loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.
   // Also proactively ensure the Copilot token is valid — if the last background
@@ -137,6 +150,8 @@ export function createServer() {
     // which starts at the client's dispatch — see handler-v4's commit window).
     ;(c as Context).set("ingressAtMs", Date.now())
     await applyConfigToState()
+    // Pinned here, between the two awaits, because this is the first instant at which "which model_translation generation is this request decided against" has exactly one answer: applyConfigToState() has settled it, and the token refresh below can spend real seconds during which a hot reload may land. RFC 2026-08-08 §6 requires the capture to precede any route or candidate fork, so that a retry leg cannot be translated under a different policy than the first attempt. Codecs read it from here; none of them captures its own.
+    setTranslationConfigSnapshot(c as Context, captureTranslationConfigSnapshot())
     await peekTokenRuntime()?.ensureValidCopilotToken()
     await next()
   })

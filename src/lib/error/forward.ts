@@ -24,11 +24,6 @@ import {
   gapSurfaceForPath,
   recordAbortProvenanceGap,
 } from "~/lib/observability/abort-provenance-gaps"
-import {
-  //
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
@@ -526,6 +521,18 @@ function finalizeErrorDelivery(c: Context, body: Record<string, unknown>, status
   return response
 }
 
+/**
+ * Operator-facing name of OUR clock, for the cancellation causes that mean "we gave up on time",
+ * as opposed to an upstream or client-driven failure. A Record (not a ternary chain) so adding a
+ * fourth self-inflicted cause is a compile error here rather than a silently mislabelled log line.
+ * Values are thunks because two of them read live config.
+ */
+const OUR_CLOCK_LABELS: Record<"client-request-deadline" | "upstream-request-deadline" | "stale-reaper", () => string> = {
+  "client-request-deadline": () => `client request deadline ${state.clientRequestDeadline}s`,
+  "upstream-request-deadline": () => `upstream attempt deadline ${state.upstreamRequestDeadline}s`,
+  "stale-reaper": () => "operator-abandoned drain",
+}
+
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {
   const helpers = pickHelpers(format)
 
@@ -567,13 +574,6 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
       return finalizeErrorDelivery(c, helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
     }
-    if (isShutdownCausedAbort(error)) {
-      // Our own shutdown cancelled it. 529 (overloaded) is retryable, so the client backs
-      // off and lands on the restarted instance — same contract as the send layer's
-      // `rewriteShutdownAbort`, applied here for the callers that don't opt into it.
-      consola.warn(`[shutdown] Cancelled in-flight ${c.req.method} ${c.req.path} during shutdown`)
-      return finalizeErrorDelivery(c, helpers.defaultError(SHUTDOWN_ABORT_MESSAGE, true, 529), 529 as ContentfulStatusCode)
-    }
     if (error.name === "TimeoutError") {
       // The response-header watchdog itself fired (`AbortSignal.timeout` → TimeoutError,
       // preserved end-to-end by http2-client's abortError). This is the ONLY evidence that
@@ -582,13 +582,13 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
     }
     const cancellation = getCancellationCause(error)
-    if (cancellation === "request-deadline" || cancellation === "stale-reaper") {
-      // Both are OUR clock running out, not a generic unavailability: `request_deadline` is
-      // the precise per-request one, `stale_request_max_age` the leak-safety net above it
-      // (its config even carries a TODO to rename it `upstream_request_deadline`). They keep
-      // 504 and say WHICH clock ran out — the same grouping the SSE `error.type` tables use,
-      // so a cause does not change category depending on where it was caught.
-      const clock = cancellation === "request-deadline" ? `request deadline ${state.requestDeadline}s` : `stale-request reaper ${state.staleRequestMaxAge}s`
+    if (cancellation === "client-request-deadline" || cancellation === "upstream-request-deadline" || cancellation === "stale-reaper") {
+      // All three are OUR clock running out, not a generic unavailability: `client_request_deadline`
+      // bounds the whole client request, `upstream_request_deadline` bounds one upstream attempt, and
+      // a `stale-reaper` cancel is today's operator-abandoned shutdown drain. They keep 504 and say
+      // WHICH clock ran out — the same grouping the SSE `error.type` tables use, so a cause does not
+      // change category depending on where it was caught.
+      const clock = OUR_CLOCK_LABELS[cancellation]()
       consola.warn(`Request cancelled by our own clock (${clock}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
       return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 504), 504 as ContentfulStatusCode)
     }
@@ -603,7 +603,12 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)
   }
 
-  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)
+  // Nobody recognized this error, so the message alone rarely locates it: an invariant guard that
+  // throws from deep inside a settle path reads as a bare 500. Internal-tool posture — add the stack.
+  // FRAMES ONLY: `error.stack` starts with the raw, unsanitized message, and re-emitting it here
+  // would put back exactly what `errorMessage` was cleaned of (Bun's `verbose: true` hint).
+  const frames = error instanceof Error && error.stack !== undefined ? error.stack.slice(error.stack.indexOf("\n    at ") + 1) : ""
+  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage, frames)
 
   return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 500), 500)
 }

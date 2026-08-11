@@ -37,18 +37,13 @@ import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 function envFor(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): RequestEnvelope {
   return {
-    clientFormat,
-    targetEndpoint,
-    model: undefined as unknown as RequestEnvelope["model"],
-    stream: true,
-    body: { model: "m", messages: [] },
+    request: { clientFormat: clientFormat, model: undefined as unknown as RequestEnvelope["request"]["model"], stream: true } as RequestEnvelope["request"],
+    attempt: { body: { model: "m", messages: [] }, targetEndpoint: targetEndpoint, prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {} as RequestEnvelope["view"],
-    prepareHints: {},
     ctx: {} as RequestContext,
-    with(patch) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
-  } as RequestEnvelope
+    createView: () => ({}) as RequestEnvelope["view"],
+  } as unknown as RequestEnvelope
 }
 
 const names = (clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): Array<string> =>

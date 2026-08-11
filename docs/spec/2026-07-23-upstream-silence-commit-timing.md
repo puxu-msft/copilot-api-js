@@ -1,6 +1,6 @@
-# Spec 草案：上游 pre-response 静默与 delayed-commit 时机 —— A（挂起）vs B（长思考）判别问题
+# Spec：上游 pre-response 静默与 delayed-commit 时机 —— A（挂起）vs B（长思考）判别问题
 
-- **状态：草案（draft）。architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）→ Q5 直读实测闭合（2026-07-23，见 §0 ✅ / §3）。核心假设「等 header 判别」现已由直读 `upstreamHeadersAt` **实测证伪**（34 条正样本、header@47-231s ∩ success）。B2 主线既凭「commit 后失去内部恢复能力」的架构问题独立成立、又有实测支撑。需用户裁决方向 + 授权两个待实测门（§8 Q1/Q2）。**
+- **状态：已接受，部分实施。** architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）→ Q5 直读实测闭合（2026-07-23，见 §0 ✅ / §3）。direct Anthropic live B2 已实现：pre-ready delayed-commit、ready transport close 和 ready clean EOF before `message_stop`；buffered B2 与 translated publication 仍 deferred、fail-closed。backend gate 已通过，最终验证状态见 [Task 4.3b 报告](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md)。核心假设「等 header 判别」现已由直读 `upstreamHeadersAt` **实测证伪**（34 条正样本、header@47-231s ∩ success）。B2 主线既凭「commit 后失去内部恢复能力」的架构问题独立成立、又有实测支撑。2026-08-08 合并态审计补齐两个遗漏：bundled `config.yaml` 的活请求 wall-clock terminator 默认全部关闭，避免配置层违背 never-false-kill；real `content_block_start` 成功写出即关闭 B2 gate，避免 delta 前死亡时 fresh R 在 primary open block 旁再开冲突 block。Q2 事故类 fresh-retry 对真实 GHC 的效力、Q3 Responses 路径 header 时序和 Q8 GHC pre-content 状态面仍未验证，故不能将离线实现覆盖表述为事故根治结论。
 - **日期：** 2026-07-23
 - **Owner：** 排查会话（起于第二波事故 req_57/58/63 —— 0 帧干挂 126/164/206 秒后 rstCode=0，用户等 2-3 分钟拿硬失败）
 - **前身 / 相关：**
@@ -66,9 +66,9 @@ h2 传输的 open 在 **`req.once("response")`**（响应头帧到达）时 `res
 
 （细微点：scheduler 的 reactive-retry 循环基于**状态码**重试 —— 但对「静默无状态码」的挂起/思考，无状态码可判、不触发 pre-header retry，故 `p` 的 resolve ≈ 首次成功响应头到达。）
 
-### 2.3 header-timeout（300s）vs commit 窗口（20s）的关系
+### 2.3 header-timeout vs commit 窗口的关系
 
-`responseHeaderTimeout` 默认 300s（`state.ts:1994`），是 undici headersTimeout + app-guard（`proxy.ts:133` / `timeout-resolver.ts`）。commit 窗口 20s **远早于** header-timeout 300s，且二者**正交**：commit 不依赖响应头（COMMIT 分支注释 `handler-v4.ts:556-560` 明说 200 在上游 settle 之前 flush、无法转发上游头）。事故 RST 在 126-206s 先于 300s header-timeout 触发 —— GHC 网关自己的 RST 打赢了我方 300s backstop。
+commit 窗口与 `responseHeaderTimeout` **正交**：commit 不依赖响应头（COMMIT 分支会在 upstream settle 前 flush 200，无法转发上游头）。本 spec 初稿时 bundled header timeout 是正值；用户随后冻结 `never-false-kill-legit-thinking`，2026-08-08 合并态审计将 bundled `response_header` 改为 `0`，因为 deferred-header 合法思考没有可证明安全的上界。运维显式配置的正 header timeout仍会终止 attempt，但 B2 必须把它视为 fail-closed abort，不能据此 fresh dispatch。事故 RST 在 126-206s 已是确定性 transport death，直接进入 B2，不需要 timeout 猜测。
 
 ### 2.4 hedge 只在 **post-header** 触发 —— 对 pre-header 干挂无效
 
@@ -151,7 +151,7 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
   - **定位**：低成本、鲁棒、正确方向的**第一层**，但非完整解。
 
 - **B2【推荐核心】post-commit pre-semantic-content 内部重试（拼接进合成脚手架）** —— 见 §4 框定。
-  - **原理**：commit 后若上游在**产出任何真实语义内容之前**失败（RST / header-timeout / clean-EOF），此时客户端只收到合成脚手架（无真实内容）→ 发起**一次全新上游 dispatch**（fresh attempt），成功则把真实内容缝进**同一条 committed 客户端流**。
+  - **原理**：commit 后若上游在**产出任何真实语义内容之前**确定性死亡（RST / transport-close / clean-EOF），且客户端尚未收到任何真实 block structure（`content_block_start`）或 content delta，此时客户端只收到合成脚手架 → 发起**一次全新上游 dispatch**（fresh attempt），成功则把真实内容缝进**同一条 committed 客户端流**。`header-timeout` 后续已由用户 `never-false-kill-legit-thinking` 裁决排除：它不能证明活连接上的合法思考已经死亡。
   - **可行性（对抗审 HIGH-3/4 订正，别高估复用度）**：中偏难。这是一个**新拓扑：post-commit、pre-ready / pre-semantic-content recovery**，**不是** continuation-retry 的小变体。可复用的是 candidate/recovery、history/dispatch、reconcile 的**部分**机件；但 continuation `runContinuation` gated 在 `committedAny=true` 且需一个已 ready 的 parent candidate（`coordinator.ts:143-153`），而 pre-header RST 时 `runRequest` 尚未返回 ready upstream/binding —— 故需**新建**「pre-ready failure 重新发起 + 同 sink splice + 预算/History verdict/abort/header-timeout/sink 所有权」拓扑。**wire contract 须按三种 keepalive mode 分支**（§4：默认 ping 让 fresh `message_start` 正常成首消息 / `enveloped_ping` dedup / `empty_text` close+remap），每模式建协议级验收矩阵。
   - **⚠ server-side tool 重复执行边界（对抗审 HIGH-4，必须纳入触发条件）**：「客户端未收到真实内容」**不等于**「上游未执行 server tool」——含 server-executed / unknown-typed tool 的 fresh retry 可能**重复触发远端副作用**。B2 触发条件须是「**尚未向客户端交付语义内容，且不存在 server execution risk**」，复用/等价 `hedge-policy.ts` 的 `classifyServerExecutionRisk` gate（默认拒 server-executed 与 unknown typed tools，仅在有 idempotency key 或可证明未执行时开放）——**不能只写「没有 content_block_delta」**。
   - **误伤 B**：**零**（B 若成功产出真实内容，压根不触发）。

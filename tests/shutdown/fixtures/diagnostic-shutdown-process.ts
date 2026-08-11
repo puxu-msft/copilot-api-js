@@ -53,11 +53,9 @@ setupShutdownHandlers({
     gracefulShutdown(signal, {
       tracker: { getActive: () => [] },
       server: { close: async () => {} },
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
+      closeTokenRuntimeFn: async () => {},
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
       shutdownHistoryFn: async () => {},
       shutdownRequestTelemetryFn: async () => {},
       // Intentionally omit shutdownDiagnosticLoggingFn: this fixture proves

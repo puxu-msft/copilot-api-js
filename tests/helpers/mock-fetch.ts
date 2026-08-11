@@ -57,7 +57,7 @@ export type FetchHandler = (input: string | URL | Request, init?: RequestInit) =
  * so a later `setFetchMock` swap is honoured.
  */
 function installUpstreamBridge(): void {
-  setUpstreamFetchForTests((url, init) => globalThis.fetch(url, init as RequestInit))
+  setUpstreamFetchForTests((url, init) => Promise.resolve(globalThis.fetch(url, init as RequestInit)))
 }
 
 /** Restore `globalThis.fetch` to the real implementation captured at load. */

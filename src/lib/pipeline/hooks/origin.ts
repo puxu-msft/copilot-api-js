@@ -14,7 +14,10 @@ export const HOOK_ORIGIN = Symbol("hookOrigin")
 export type HookOrigin = "hook-mock" | "hook-replay"
 
 /** Tag an UpstreamStream with its hook origin (read by the driver at sampling to mark history synthetic). */
-export function tagStream(s: UpstreamStream, origin: HookOrigin): UpstreamStream {
+export function tagStream<Frame extends import("~/lib/pipeline/types").TransportUpstreamFrame>(
+  s: UpstreamStream<Frame>,
+  origin: HookOrigin,
+): UpstreamStream<Frame> {
   return Object.assign(s, { [HOOK_ORIGIN]: origin })
 }
 
@@ -60,8 +63,9 @@ export function readOrigin(s: UpstreamStream): HookOrigin | undefined {
  * A hook that MUTATES `frame` in place and returns the SAME reference is also unmarked (there
  * is no way to observe "it changed" without a deep-equality check this module deliberately
  * skips, matching the plan's own "≠ 原 frame" reference-inequality criterion) — hook authors
- * wanting provenance should return a fresh object, mirroring the codebase's other
- * immutable-rewrite conventions (`RequestEnvelope.with`, `ResponseRewrite.transform`).
+ * wanting provenance should return a fresh object, mirroring `ResponseRewrite.transform`. (The
+ * request side is no longer a parallel here: `RequestEnvelope` scopes became mutable 2026-08-11, so
+ * `writeAttempt` returns the SAME env with a new body rather than a new envelope.)
  *
  * "hook-rewrite" is one {@link SyntheticOriginKind}; these two functions are thin, back-compat
  * wrappers over the generalized {@link tagFrameSynthetic}/{@link readSyntheticKind} primitive

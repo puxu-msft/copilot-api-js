@@ -13,8 +13,9 @@
  * rewrites). Until then there are no consumers — pure addition.
  */
 
+import type { SseFrame } from "~/lib/stream"
+
 import type { RequestEnvelope } from "./envelope"
-import type { UpstreamFrame } from "./types"
 
 // ============================================================================
 // Request-side rewrites (S3)
@@ -23,9 +24,12 @@ import type { UpstreamFrame } from "./types"
 /**
  * One named request rewrite. The driver applies these in `order` after
  * assembly. `appliesTo` is the format + config(state) + context gate; `apply`
- * is a pure immutable transform returning the new envelope plus a `changed`
- * flag (drives the `request.rewrite_applied` diagnostic — `changed:false` is not
- * recorded).
+ * returns the envelope plus a `changed` flag (drives the
+ * `request.rewrite_applied` diagnostic — `changed:false` is not recorded).
+ *
+ * `apply` is NOT a pure transform over an immutable envelope: since 2026-08-11 the scopes are
+ * mutable and `writeAttempt` returns the SAME env object with a new `attempt.body`. Rewrites
+ * therefore compare BODIES (`sanitized !== baseline`) to fill `changed`, never envelope identity.
  */
 export interface RequestRewrite {
   /** Unique name; enters history sanitization diagnostics. */
@@ -34,13 +38,13 @@ export interface RequestRewrite {
   readonly order: number
   /** Format + config(state) + context gate. */
   appliesTo(env: RequestEnvelope): boolean
-  /** Pure transform over the envelope. */
+  /** Apply the rewrite. May mutate `env` in place (see the interface docstring). */
   apply(env: RequestEnvelope): RewriteResult
 }
 
 /** The outcome of a {@link RequestRewrite.apply}. */
 export interface RewriteResult {
-  /** Immutably-updated envelope. */
+  /** The envelope carrying the rewrite. Usually the SAME object as the input — see the {@link RequestRewrite} docstring. */
   env: RequestEnvelope
   /** Whether anything actually changed (`false` → diagnostic not recorded). */
   changed: boolean
@@ -73,7 +77,25 @@ export interface RewriteState {
  *   `emit` with the accumulated frames at that boundary; `flush` is only the
  *   stream-end drain.
  */
-export type FrameAction = { kind: "emit"; frames: Array<UpstreamFrame> } | { kind: "suppress" } | { kind: "buffer" }
+export type FrameAction =
+  | {
+      kind: "emit"
+      frames: Array<SseFrame>
+      /** New production rewrites declare this explicitly; legacy test fixtures default to fresh. */
+      provenance?: "preserve" | "fresh"
+    }
+  | { kind: "suppress" }
+  | { kind: "buffer" }
+
+/** Re-emit one unchanged semantic frame while preserving parser-owned provenance. */
+export function preserveFrame(frame: SseFrame): FrameAction {
+  return { kind: "emit", frames: [frame], provenance: "preserve" }
+}
+
+/** Emit constructed frame(s), which own wire fields and synthetic provenance themselves. */
+export function freshFrames(...frames: Array<SseFrame>): FrameAction {
+  return { kind: "emit", frames, provenance: "fresh" }
+}
 
 /**
  * One named response rewrite. Applied per-frame in `order`; may emit / replace /
@@ -109,9 +131,9 @@ export interface ResponseRewrite {
    */
   createState?(env: RequestEnvelope): RewriteState
   /** Per-frame transform; may emit/replace/suppress/buffer. */
-  transform(frame: UpstreamFrame, state: RewriteState): FrameAction
+  transform(frame: SseFrame, state: RewriteState): FrameAction
   /** Flush buffered frames at stream end (e.g. tool-input decoder at content_block_stop). */
-  flush?(state: RewriteState): Array<UpstreamFrame>
+  flush?(state: RewriteState): Array<SseFrame>
   /**
    * Non-streaming (whole-response) counterpart of {@link transform} (design §3.1). The
    * driver's `runResponseWhole` applies these in the SAME ascending-`order` chain as the

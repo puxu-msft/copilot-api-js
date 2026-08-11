@@ -24,9 +24,8 @@ import {
   setLearnedLimitsPathForTests,
 } from "~/lib/models/calibration"
 import { createBus } from "~/lib/observability"
-import { setStateForTests } from "~/lib/state"
-
 import { attachCalibrationFailureSink } from "~/lib/observability/sinks/calibration-failure"
+import { setStateForTests } from "~/lib/state"
 
 const MODEL = "claude-test-model"
 

@@ -25,9 +25,8 @@ import {
   setLearnedLimitsPathForTests,
 } from "~/lib/models/calibration"
 import { createBus } from "~/lib/observability"
-import { setStateForTests } from "~/lib/state"
-
 import { attachCalibrationSink } from "~/lib/observability/sinks/calibration"
+import { setStateForTests } from "~/lib/state"
 
 // A minimal Model — no `capabilities`, so `countTotalTokens` falls back to the
 // default o200k_base tokenizer (see lib/models/tokenizer.ts:137).

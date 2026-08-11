@@ -167,7 +167,8 @@ describe("assembleRetryStrategies", () => {
     const unsupportedBeta = strategies.find((s) => s.name === "unsupported-beta-retry")
     expect(unsupportedBeta).toBeDefined()
     const laconicError = { type: "bad_request" as const, status: 400, message: "invalid beta flag", raw: undefined }
-    await expect(unsupportedBeta!.handle(laconicError, {} as never)).rejects.toThrow(/betaProbe/)
+    // The env needs an `attempt` now: the strategy reads `env.attempt.body` before it ever reaches the lazy betaProbe closure, so a bare `{}` would throw the wrong error and the assertion would pass for the wrong reason.
+    await expect(unsupportedBeta!.handle(laconicError, { attempt: { body: {} } } as never)).rejects.toThrow(/betaProbe/)
   })
 
   test("resanitize 缺失时 system-reject 的 create 显式 throw（非静默 ?? [] 兜底）", () => {
@@ -257,14 +258,15 @@ describe("getRetryStrategyRegistryDiagnostics", () => {
 // ============================================================================
 
 /** Minimal fake `RequestEnvelope` — the shared-3 payload strategies only read `env.body`
- *  (via the adapter's `env.body as TPayload`) and return `env.with(patch)`. */
+ *  (via the adapter's `env.attempt.body as TPayload`) and return `writeAttempt(env, patch)`. */
 function makeFakeEnv(body: unknown): RequestEnvelope {
   return {
-    body,
-    prepareHints: {},
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    attempt: {
+      body: body,
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

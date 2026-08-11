@@ -27,7 +27,6 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import { setModels } from "~/lib/models/cache"
 import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
-import { gracefulShutdown } from "~/lib/shutdown"
 import { setStateForTests } from "~/lib/state"
 import {
   //
@@ -39,8 +38,6 @@ import { closeAllClients } from "~/lib/ws"
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { createMockServer } from "../helpers/mock-server"
-import { createMockTracker } from "../helpers/mock-tracker"
 import {
   //
   createSseResponse,
@@ -514,88 +511,6 @@ describe("Responses WebSocket transport", () => {
 
     const result = await closePromise
     expect((result.messages[0] as { error: { message: string } }).error.message).toContain("64 byte limit")
-  })
-
-  test("mid-stream shutdown sends a retryable error frame and closes with 1011", async () => {
-    setModels({
-      object: "list",
-      data: [
-        mockModel("gpt-4o", {
-          vendor: "OpenAI",
-          supported_endpoints: ["/chat/completions", "/responses"],
-        }),
-      ],
-    })
-
-    // Upstream emits response.created then STALLS forever (no more events). The
-    // forwarding loop parks on the next read BEFORE shutdown begins — the genuine
-    // "case b" scenario. With the stable shutdown signal, the Phase 3 abort still
-    // wakes the already-blocked read.
-    const hangingUpstream = mock((_input: string | URL | Request, init?: RequestInit) => {
-      capturedPayload = typeof init?.body === "string" ? (JSON.parse(init.body) as ResponsesPayload) : undefined
-      const encoder = new TextEncoder()
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(
-            encoder.encode(
-              `event: response.created\ndata: ${JSON.stringify({
-                type: "response.created",
-                sequence_number: 0,
-                response: createBaseResponsesResponse("gpt-4o", "in_progress"),
-              })}\n\n`,
-            ),
-          )
-          // Leave the body open forever — only the shutdown abort can end it.
-        },
-      })
-      return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }))
-    })
-    applyFetchMock(hangingUpstream)
-
-    server = startWsServer()
-    const ws = new WebSocket(`${server.url}/responses`)
-    const closePromise = waitForSocketClose(ws)
-
-    await waitForOpen(ws)
-    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "stream please" } }))
-
-    // Wait until the first frame is forwarded and the loop has PARKED on the
-    // stalled read — establishing the case-b precondition before shutdown starts.
-    await new Promise((r) => setTimeout(r, 60))
-
-    // The WS leg must ALSO emit the [upstream-diagnostics] disconnect line with REAL signals (this leg
-    // previously emitted none). response.created arrived before the shutdown abort → frames>0, honest last-frame.
-    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
-
-    // Fire Phase 3 abort via a fast-timing graceful shutdown (mock tracker keeps
-    // one "active" request so Phase 2 → Phase 3 transition runs).
-    const shutdownPromise = gracefulShutdown("SIGTERM", {
-      tracker: createMockTracker([{ status: "streaming" }]),
-      server: createMockServer(),
-      rateLimiter: null,
-      stopTokenRefreshFn: () => {},
-      closeAllClientsFn: () => {},
-      getClientCountFn: () => 0,
-      gracefulWaitMs: 40,
-      abortWaitMs: 500,
-      drainPollIntervalMs: 10,
-      drainProgressIntervalMs: 50_000,
-    })
-
-    const result = await closePromise
-
-    // The shutdown abort surfaced as a retryable server_error frame (not a fake
-    // 1000 "done" close) so the client can back off and retry.
-    const errorFrame = result.messages.find((m) => m.type === "error") as { error: { type: string; message: string } } | undefined
-    expect(errorFrame?.error.type).toBe("server_error")
-    expect(result.code).toBe(1011)
-    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
-    diagSpy.mockRestore()
-    expect(diagLine).toBeDefined()
-    expect(diagLine).toContain("model=gpt-4o")
-    expect(diagLine).not.toContain("frames=0")
-    expect(diagLine).toContain("last-frame=response.created@")
-    await shutdownPromise
   })
 
   test("mid-stream client-abort → history aborted, no error frame, socket left OPEN (unlike H3/shutdown 1011)", async () => {

@@ -28,6 +28,7 @@ import {
 import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/models/cache"
 import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -63,11 +64,11 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     const codec = makeCodec()
     const env = codec.parse(rawReq(anthropicBody({ stream: true })))
 
-    expect(env.clientFormat).toBe("anthropic")
-    expect(env.model?.id).toBe("claude-sonnet-4")
-    expect(env.stream).toBe(true)
-    expect(env.targetEndpoint).toBe("/v1/messages")
-    expect((env.body as MessagesPayload).messages[0]?.role).toBe("user")
+    expect(env.request.clientFormat).toBe("anthropic")
+    expect(env.request.model?.id).toBe("claude-sonnet-4")
+    expect(env.request.stream).toBe(true)
+    expect(env.attempt.targetEndpoint).toBe("/v1/messages")
+    expect((env.attempt.body as MessagesPayload).messages[0]?.role).toBe("user")
   })
 
   test("parse registers a RequestContext (manager tracks it) with the inbound body size + exposes getContext", () => {
@@ -109,8 +110,8 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     const codec = createAnthropicCodec({ betaProbe, preprocessInfo: NO_PREPROCESS })
     const env = codec.parse(rawReq(anthropicBody(), { headers: new Headers({ "content-length": "42", "anthropic-beta": "beta-from-client" }) }))
     // Outbound wire preparation moved off the codec onto the (anthropic × /v1/messages) CELL
-    // (RFC 2026-07-13 inbound/outbound split); it reads the shared betaProbe from env.requestState.
-    const wire = resolveCellAssembly("anthropic", env.targetEndpoint).prepareWire(env)
+    // (RFC 2026-07-13 inbound/outbound split); it reads the shared betaProbe from env.candidate.
+    const wire = resolveCellAssembly("anthropic", env.attempt.targetEndpoint).prepareWire(env)
 
     expect(wire.url).toBe("/v1/messages")
     expect(wire.headers).toBeInstanceOf(Headers)
@@ -122,7 +123,7 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
   test("sampleWireTrack yields both tracks as anthropic-messages + captures effective messages", () => {
     const codec = makeCodec()
     const env = codec.parse(rawReq(anthropicBody()))
-    const cell = resolveCellAssembly("anthropic", env.targetEndpoint)
+    const cell = resolveCellAssembly("anthropic", env.attempt.targetEndpoint)
     const wire = cell.prepareWire(env)
     const sample = cell.sampleWireTrack(wire, env)
 
@@ -132,15 +133,15 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     expect(Array.isArray(sample.wire.messages)).toBe(true)
     // §12.5: the effective track carries the latest effective messages for retry message-mapping rebuild
     // (the codec's dead getLatestEffectiveMessages accessor is gone — the sample carries it directly).
-    expect(sample.effective.messages).toBe((env.body as MessagesPayload).messages as unknown as Array<unknown>)
+    expect(sample.effective.messages).toBe((env.attempt.body as MessagesPayload).messages as unknown as Array<unknown>)
   })
 
   test("envelope.with() patches the given key and preserves the rest (incl. ctx + stream)", () => {
     const codec = makeCodec()
     const env = codec.parse(rawReq(anthropicBody({ stream: true })))
-    const patched = env.with({ body: { ...(env.body as MessagesPayload), max_tokens: 200 } })
-    expect((patched.body as MessagesPayload).max_tokens).toBe(200)
-    expect(patched.stream).toBe(true)
+    const patched = writeAttempt(env, { body: { ...(env.attempt.body as MessagesPayload), max_tokens: 200 } })
+    expect((patched.attempt.body as MessagesPayload).max_tokens).toBe(200)
+    expect(patched.request.stream).toBe(true)
     expect(patched.ctx).toBe(env.ctx)
   })
 })

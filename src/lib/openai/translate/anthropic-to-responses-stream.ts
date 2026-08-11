@@ -69,9 +69,11 @@ import type {
 
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
 import {
+  //
   refusalCategoryForDiagnostics,
   type RefusalTranslationDegradationReporter,
 } from "~/lib/anthropic/refusal-detail"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 
 import {
   //
@@ -224,7 +226,7 @@ export function createAnthropicToResponsesStreamTranslator(
 
       let event: StreamEvent
       try {
-        event = JSON.parse(ev.data) as StreamEvent
+        event = nameAnthropicEventFromWire(ev, JSON.parse(ev.data) as StreamEvent)
       } catch {
         consola.debug("[responses←anthropic] skipping unparseable upstream SSE frame:", ev.data.slice(0, 200))
         return out
@@ -239,7 +241,7 @@ export function createAnthropicToResponsesStreamTranslator(
           // ONLY) on message_start (stream-accumulator.ts:211); the terminal message_delta.usage typically
           // carries just output_tokens. Seed terminalUsage HERE so the message_delta spread-merge preserves
           // the input/cache legs — otherwise mapUsage sees totalInput=undefined → NaN → client usage `null`.
-          if (msg.usage) terminalUsage = msg.usage
+          terminalUsage = msg.usage
           break
         }
 

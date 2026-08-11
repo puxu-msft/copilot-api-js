@@ -7,7 +7,7 @@
  * tests that fed a KIND STRING to a formatter were all green while the actual bytes on the
  * wire still said `api_error` / `INTERNAL`.
  *
- * So these drive the real thing: fire `ctx.cancel(request_deadline)` on an in-flight,
+ * So these drive the real thing: fire `ctx.cancel(client_request_deadline)` on an in-flight,
  * actively-streaming request and read the client's bytes. Each surface asserts BOTH the
  * value it must now emit AND, negatively, the value it used to emit — a mapper that
  * regresses to a private copy fails here even if every codec table stays correct.
@@ -26,7 +26,7 @@ import type { RequestContext } from "~/lib/context/request"
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { abortLifecycleUntaggedForTests } from "~/lib/context/request"
-import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
+import { CLIENT_REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
 import { setModels } from "~/lib/models/cache"
 import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
 import {
@@ -84,7 +84,7 @@ async function cancelMidStreamAndReadWire(request: () => Promise<Response> | Res
     await tick()
     const ctx = contexts.at(-1)
     expect(ctx).toBeDefined()
-    ctx!.cancel(REQUEST_DEADLINE_CANCEL_REASON)
+    ctx!.cancel(CLIENT_REQUEST_DEADLINE_CANCEL_REASON)
     return await response.text()
   } finally {
     restore()
@@ -407,7 +407,7 @@ describe("delayed-commit gaps are counted, and only when the cause really is unk
         body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
       })
       await tick()
-      contexts.at(-1)?.cancel(REQUEST_DEADLINE_CANCEL_REASON)
+      contexts.at(-1)?.cancel(CLIENT_REQUEST_DEADLINE_CANCEL_REASON)
       return await response.text()
     } finally {
       restore()

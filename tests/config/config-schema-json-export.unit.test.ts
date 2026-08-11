@@ -36,9 +36,23 @@ describe("ConfigSchema → JSON Schema export", () => {
   test("known top-level keys are present in JSON Schema properties", () => {
     const json = toJsonSchema()
     const props = json.properties as Record<string, unknown>
-    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_mappings", "timeouts", "retry"]) {
+    for (const key of ["proxy", "anthropic", "history", "rate_limiter", "openai_responses", "model_mappings", "timeouts", "retry", "shutdown"]) {
       expect(props[key]).toBeDefined()
     }
+  })
+
+  test("the shutdown section carries both of its bounds", () => {
+    // This assertion is the INVERSE of what stood here until 2026-08-11. The old one
+    // (`expect(props.shutdown).toBeUndefined()`) was installed by the 2026-08-07 removal to keep
+    // the deleted section from creeping back — a real guard, not an accident. The user's
+    // 2026-08-11 ruling reinstates the section deliberately (ADR
+    // `2026-08-11-shutdown-owns-bounded-waits-again`), so the guard is inverted rather than
+    // dropped: an accidental removal of either leaf is still a red test.
+    const props = toJsonSchema().properties as Record<string, unknown>
+    const shutdown = pickObjectSchema(props.shutdown)
+    const shutdownProps = shutdown.properties as Record<string, unknown>
+    expect(shutdownProps.graceful_wait).toBeDefined()
+    expect(shutdownProps.abort_wait).toBeDefined()
   })
 
   test("removed deprecated keys are NOT in JSON Schema", () => {

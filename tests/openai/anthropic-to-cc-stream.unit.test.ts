@@ -14,6 +14,8 @@
  *      POSITIVE CONTROL (a sabotaged translator variant) proves the oracle is not a no-op.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
@@ -21,11 +23,13 @@ import {
   test,
 } from "bun:test"
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
-
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
-import { accumulateOpenAIStreamEvent, createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import {
+  //
+  accumulateOpenAIStreamEvent,
+  createOpenAIStreamAccumulator,
+} from "~/lib/openai/stream-accumulator"
 import { createAnthropicToCcStreamTranslator } from "~/lib/openai/translate/anthropic-to-cc-stream"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -77,7 +81,10 @@ function toolCallsOf(acc: ReturnType<typeof createOpenAIStreamAccumulator>): Arr
 // ── the Anthropic frame classes ───────────────────────────────────────────────
 
 function messageStart(usage: Record<string, number>): ServerSentEventMessage {
-  return aev({ type: "message_start", message: { id: "msg_rev", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage } })
+  return aev({
+    type: "message_start",
+    message: { id: "msg_rev", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage },
+  })
 }
 function blockStart(index: number, block: Record<string, unknown>): ServerSentEventMessage {
   return aev({ type: "content_block_start", index, content_block: block })
@@ -232,8 +239,13 @@ describe("anthropic-to-cc-stream — usage gross-up (shared mapUsage, no W-rev u
       messageDelta("end_turn", { output_tokens: 20 }),
       messageStopEvent,
     ])
-    const usageFrame = frames.find((f) => (data(f).usage as unknown) !== undefined)!
-    const usage = data(usageFrame).usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details?: { cached_tokens?: number } }
+    const usageFrame = frames.find((f) => data(f).usage !== undefined)!
+    const usage = data(usageFrame).usage as {
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      prompt_tokens_details?: { cached_tokens?: number }
+    }
     // NET input 70 + cache_read 30 + cache_creation 10 = 110 prompt_tokens TOTAL (never under-counted — W-rev).
     expect(usage.prompt_tokens).toBe(110)
     expect(usage.completion_tokens).toBe(20)
@@ -282,7 +294,14 @@ describe("anthropic-to-cc-stream — usage gross-up (shared mapUsage, no W-rev u
 
   test("getMeta: finishReason + grossed-up usage + sawMessageStop after a clean stream", () => {
     const t = createAnthropicToCcStreamTranslator("claude-x")
-    for (const e of [messageStart({ input_tokens: 40, output_tokens: 0, cache_read_input_tokens: 10 }), blockStart(0, { type: "text", text: "" }), textDelta(0, "hi"), blockStop(0), messageDelta("end_turn", { output_tokens: 5 }), messageStopEvent]) {
+    for (const e of [
+      messageStart({ input_tokens: 40, output_tokens: 0, cache_read_input_tokens: 10 }),
+      blockStart(0, { type: "text", text: "" }),
+      textDelta(0, "hi"),
+      blockStop(0),
+      messageDelta("end_turn", { output_tokens: 5 }),
+      messageStopEvent,
+    ]) {
       for (const _ of t.renderFrame(e)) void _
     }
     const meta = t.getMeta()
@@ -308,9 +327,33 @@ describe("anthropic-to-cc-stream — INDEPENDENT consumer oracle is not a no-op 
     // block's input_json_delta (index 0), as a naive translator would. The real accumulator then rebuilds
     // a PHANTOM tool_call at index 0 — proving the oracle genuinely detects the loss the swallow avoids.
     const buggyFrames: Array<ServerSentEventMessage> = [
-      { data: JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: "claude-x", choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }), event: "message" },
+      {
+        data: JSON.stringify({
+          id: "x",
+          object: "chat.completion.chunk",
+          created: 0,
+          model: "claude-x",
+          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+        }),
+        event: "message",
+      },
       // phantom: a tool_call for what was really a server_tool_use
-      { data: JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: "claude-x", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "srv_1", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } }] }, finish_reason: null }] }), event: "message" },
+      {
+        data: JSON.stringify({
+          id: "x",
+          object: "chat.completion.chunk",
+          created: 0,
+          model: "claude-x",
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: "srv_1", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } }] },
+              finish_reason: null,
+            },
+          ],
+        }),
+        event: "message",
+      },
     ]
     const acc = ccAccumulate(buggyFrames)
     expect(acc.toolCallMap.size).toBe(1) // the phantom exists in the buggy variant

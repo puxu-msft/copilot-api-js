@@ -20,18 +20,20 @@
 
 目标边界因此必须同时满足四点：semantic intent 是 command 的一等输入；classifier 独立归一 actual effect；owner 以 private authorization state 校验 intent × effect × authority；只有校验后 envelope 才能到达 raw transport emitter。classifier 在全量方案中仍然承重，但不再独自猜测 caller intent；这正是已裁决的 full command algebra 相对隐式 `write(frame)` 吸收方案的长期优势。
 
+> ⚠️ **本轮范围**：上述四点中的第二、三点（classifier 独立归一 actual effect、owner 校验 intent × effect × authority）**本轮不做**，见 ADR [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。第一点（intent 是 command 的一等输入）与第四点（唯一发射咽喉）照做，且它们本身不依赖前两点：**咽喉唯一靠的是「旧 write 路径被真删、population 归零」，不靠运行时拦截。** 本文其余章节凡描述 classifier 校验或 mismatch 拒绝之处，均按该 ADR 读作「已登记的恢复入口」而非本轮交付项。
+
 ### 1.2 具体债务清单
 
 | # | `file:line` 证据 | 现状 | 为什么是债 | 守不住的不变量 |
 |---|---|---|---|---|
 | D1 | `src/lib/pipeline/delivery/session.ts:483-490`、`src/lib/pipeline/delivery/session.ts:127-137` | owner 对外返回的 `clientSink` 仍有无条件 `write(frame)`；generic 入口把任意 frame 包装后送入 serializer，只更新 ledger／clock。 | API 没有表达 caller 的 semantic intent，也没有把 owner-governed effect 与 generic effect 分开。一个与 active anchor index 同字节的 stop 可成为 client-visible effect，却不执行 canonical anchor transition。 | “wire stop 与 lease 清除在同一 command 原子完成”以及 intent／effect mismatch 必须在 external write 前 fail loud。 |
-| D2 | `src/lib/pipeline/delivery/session.ts:248-272` | `WireEnvelopeFactory.anchor(frame)` 允许 caller 选择 `kind: "anchor"`；owner 再据这个 caller-supplied kind 铸 synthetic provenance。 | provenance 的 authority 来自调用方声明，而不是 owner 的 active lease／mapping registry。协议 payload 与 provenance 混成一个可声称的标签。 | anchor／real provenance 必须由 owner 根据 canonical authorization record 铸造，caller 只能提交 owner 无法推导的具名来源事实。 |
+| D2 | `src/lib/pipeline/delivery/session.ts:248-272` | `WireEnvelopeFactory.anchor(frame)` 允许 caller 选择 `kind: "anchor"`；owner 再据这个 caller-supplied kind 铸 synthetic provenance。 | provenance 的 authority 来自调用方声明，而不是 owner 的 active lease／mapping registry。协议 payload 与 provenance 混成一个可声称的标签。 | anchor／real provenance 必须由 owner 根据 canonical authorization record 铸造，caller 只能提交 owner 无法推导的具名来源事实。**本轮不做**（ADR [trust-the-caller](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)）：synthetic／real 的 provenance 仍取自 caller 声明的 `kind`。缺陷判断本身不变，只是不在本轮修；恢复只需把 `WireEnvelopeFactory.anchor` 的 caller 参数换成 owner 查询。 |
 | D3 | `src/lib/pipeline/driver.ts:947-952`、`src/lib/pipeline/driver.ts:1033-1052`、`src/lib/pipeline/driver.ts:1235-1266`、`src/lib/pipeline/driver.ts:1305-1320` | live、winner／hedge、buffered flush 与 retreat 都最终调用裸 `sink.write`；buffered 路径还在 caller 侧先 close、再循环写 real frames。 | driver 持有的是“可写任意 client frame”的能力，不是按 profile 收窄的 command capability；close→real-start 分成多个 owner operation，heartbeat 或其他 command 可在缝中插入。 | 所有 emission 先经 owner effect validation；close-before-real 与 real start 必须是一个 serialized compound command，客户端任一时刻 `maxOpen <= 1`。 |
 | D4 | `src/lib/anthropic/live-reconcile.ts:138-165` | live decorator 先调用 `closeOpenAnchor`，随后把 remap 后的 frame 交给 `inner.write`；它还逐项转发 generic／synthetic／heartbeat 方法。 | decorator 同时承担 decision、stateful close orchestration 与 emission forwarding；两个 operation 之间不是原子事务，且 public sink capability 继续向下游扩散。 | live close→real-start 不得被 heartbeat 插帧；decorator 应退化为纯 decision，compound transition 由 owner command 完成。 |
 | D5 | `src/lib/pipeline/client-sink.ts:187-215`、`src/lib/pipeline/client-sink.ts:311-370` | `makeSseSink` 是公开 raw factory，自带第二个 serializer；raw adapter同时做 frame 分类、block tracking、sampling 和 `stream.writeSSE`。 | generation owner 之外仍存在公开 physical writer 和另一套排序／状态机制；隐藏 `writeAnchor` 也不能阻止普通 `write` 或直接 factory 使用。 | 一个 operation 只能有一个 serializer、一次 sampling 和一次 physical emit；raw adapter只能消费 owner-validated envelope。 |
 | D6 | `src/lib/pipeline/client-sink.ts:618-692` | `makeWsSink` 同样公开并自带 serializer；heartbeat 与 handler synthetic frame可直接走 `sendRaw`，最终调用 `ws.send`。 | WS physical send、sampling、heartbeat 与 generation state 分属不同 owner；任何一方都能在另一方不知道的情况下产生 wire effect。 | Responses WS generation frame与terminal effect必须经 operation owner；socket composition只拥有 socket lifetime与typed close intent。 |
 | D7 | `src/lib/pipeline/delivery/types.ts:10-13`、`src/lib/pipeline/client-sink.ts:187-188` | `OwnerRawSink` 与 raw SSE factory均为 exported production API；`OwnerRawSink` 还继承完整 `ClientSink`。 | raw capability 的模块边界只是注释约定，合法 production import即可绕过 owner。更根本地，即便私有化，它仍只是降低 capability 泄漏概率，不能单独证明行为闭合。 | generation runner、driver、handler terminal helper与decorator都不得取得 raw emitter／transport handle；私有化必须与 composition-root 反转共同验收。 |
-| D8 | `src/lib/pipeline/delivery/session.ts:581-601` | owner→raw dispatch按 synthetic kind回落到多个 raw sink方法，最后仍以裸 frame 调用 `sink.write`；validated command identity、expected／actual effect与authorization record没有进入 envelope。 | physical emitter 无法证明每次发送来自哪个 command，也无法在 History／trace 中区分 intentional command、classifier result与 accidental payload。 | 每次 physical emit必须携 owner-minted command identity和validated effect；一帧一次采样，任何无 command identity 的 generation send为零。 |
+| D8 | `src/lib/pipeline/delivery/session.ts:581-601` | owner→raw dispatch按 synthetic kind回落到多个 raw sink方法，最后仍以裸 frame 调用 `sink.write`；validated command identity、expected／actual effect与authorization record没有进入 envelope。 | physical emitter 无法证明每次发送来自哪个 command，也无法在 History／trace 中区分 intentional command、classifier result与 accidental payload。 | 每次 physical emit必须携 owner-minted command identity（**本轮做**，但作为诊断标识而非授权凭据——不存在「校验 identity 后才放行」的一层，见 ADR [trust-the-caller](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)）和 validated effect（**本轮不做**，随 classifier 一并推迟）；一帧一次采样，任何无 command identity 的 generation send为零（**本轮做**：靠旧路径真删、population 归零达成）。 |
 | D9 | `src/routes/responses/ws.ts:133-178`、`src/routes/responses/ws.ts:434-506` | 同一个 `sendErrorAndClose` 同时服务 pre-owner rejection与 post-owner stream-error／truncation；post-owner分支仍直接 `ws.send`／`ws.close`，之后另行 finalize sink。 | 一个词法 capability跨越两个不同 authority domain；generation owner已存在时，terminal frame、anchor balancing、observation、settle与socket close不在同一事务。 | active operation 的terminal effect必须先经 owner并返回 typed socket close intent；socket composition只能在该 intent之后关闭连接。 |
 | D10 | `src/routes/responses/ws.ts:634-683` | 坏 JSON／超长 frame 在 `inFlight` 协调之前直接 error+close；并发 `response.create` 在已有 operation 时直接 `ws.send`，随后还会 arm idle timer。 | socket-control输入并非天然 pre-owner：这些分支可与一个已打开 anchor、仍在 generation 的 operation 共存，direct close／timer可撕裂活 owner。 | control-with-inflight必须先协调 typed abort／terminal与owner seal，不得留下 orphan anchor或由idle timer误杀活operation。 |
 | D11 | `src/routes/chat-completions/handler-v4.ts:636-665`、`src/lib/pipeline/driver.ts:1036` | driver明确丢弃 upstream `[DONE]`，handler再通过 `sink.write`补一个 terminal；同类 synthetic error仍经可选 `writeSynthetic`。 | terminal intent只存在于 handler控制流，不在 command类型中；generic／synthetic方法无法强制“active anchor先平衡、terminal一次、settle前已采样”。 | terminal必须是 owner command：同一callback内平衡active anchor、发terminal、seal heartbeat／operation，并保持 `recordForwarded → settle` 顺序。 |
@@ -80,7 +82,7 @@ HTTP新结构的性质如下：
 streamSSE callback(stream)
   └─ HTTP generation composition root
        ├─ lexical-private RawTransportEmitter holding stream
-       ├─ format profile + classifier
+       ├─ format profile + builders
        ├─ GenerationDeliveryOwner
        └─ run generation with owner.commandPort only
 ```
@@ -103,7 +105,7 @@ owner只seal一个response operation，不拥有可复用socket。generation ter
 
 | 约束 | 冻结性质 | 验收方式 |
 |---|---|---|
-| 语义唯一 | generation producer没有无条件`ClientSink.write(ClientFrame)`；每次发送先选择类型允许的command，owner再以classifier交叉验证actual effect。 | 真实HTTP与WS production path分别发送generic、keepalive、terminal及适用的block effect；adversarial `emitGeneric(block-stop)`必须在external write前以`CommandEffectMismatchError`失败。mutation恢复generic passthrough后，wire／owner-state双oracle转红。 |
+| 语义唯一 | generation producer没有无条件`ClientSink.write(ClientFrame)`；每次发送先选择类型允许的command。**本轮由类型层承担**：非Anthropic profile在类型层就构造不出indexed-block command；Anthropic profile内的intent／effect错配不再于runtime拒绝（ADR trust-the-caller）。 | 真实HTTP与WS production path分别发送generic、keepalive、terminal及适用的block effect。mutation恢复generic passthrough后，wire／owner-state双oracle转红。 |
 | 排序唯一 | 所有commands共用owner的一个serializer；raw SSE／WS adapter不得再有第二个generation serializer。 | FakeClock把heartbeat、compound close→real-start与terminal并发，让点后wire全序仍符合command顺序且无插帧；mutation在raw adapter恢复独立queue或拆成两个enqueue必须转红。 |
 | 供给唯一 | runner、driver、terminal helper、decorator只获得profile-shaped command port；raw handle和emitter不进入参数、closure返回值或可恢复registry；也不存在能从已传出的sink／wrapper／observer反查完整session、allocation port或raw authority的lookup。窄port若可被lookup还原，只是形式收窄。 | 从真实composition callback走一遍第一人称capability审计，并用test-only adversarial runner证明既无法direct send，也无法从已获得值resolve回session／port；mutation重新传raw handle或恢复`getDownstreamDeliverySession(sink)` production lookup后，production witness必须复现authority泄漏或wire／state分裂。源码／类型扫描只作presence ratchet。 |
 | 物理唯一 | transport handle只由composition root闭包持有；raw factory、raw type和emitter不export、不挂returned object。 | physical fault recorder必须包裹composition root实际取得的`stream`／`ws` handle，位于raw emitter之下，记录该响应／socket上的全部physical sends；先经test-only direct-send seam自检recorder确实看得见绕过owner的发送，再断言每个validated frame恰好一次、无`commandId`的generation send为零。注入owner的test raw adapter只能测envelope／observation，不能裁决physical uniqueness。模块边界守卫另阻止production import并带违规正样本；私有化单独只算降低概率。 |
@@ -124,7 +126,7 @@ owner只seal一个response operation，不拥有可复用socket。generation ter
 
 ### 2.6 依赖方向与组件边界
 
-主会话已裁决：delivery层只依赖窄`DeliveryEffectClassifier`与`FormatDeliveryProfile`契约；concrete codec实现格式知识，由composition root注入owner。`src/lib/pipeline/delivery/**`不得import任何concrete codec。当前`FormatCodec`本就是driver消费的格式抽象（`src/lib/pipeline/types.ts:942-1031`），本RFC沿用“格式方提供知识、driver／delivery消费窄口”的依赖方向，而不是让承重delivery层反向依赖Anthropic／Responses／Gemini实现。
+主会话已裁决：delivery层只依赖窄`FormatDeliveryProfile`契约（全量方案中还含`DeliveryEffectClassifier`，本轮不做）；concrete codec实现格式知识，由composition root注入owner。`src/lib/pipeline/delivery/**`不得import任何concrete codec。当前`FormatCodec`本就是driver消费的格式抽象（`src/lib/pipeline/types.ts:942-1031`），本RFC沿用“格式方提供知识、driver／delivery消费窄口”的依赖方向，而不是让承重delivery层反向依赖Anthropic／Responses／Gemini实现。
 
 理由有三点：delivery→codec会给仍在拆分的core SCC增加反向边；format-specific知识今天已经由codec和composition提供；capability-shaped port必须从profile类型推导，不能由delivery内部import concrete codec后runtime分支。验收包含两条不同强度的门：
 
@@ -152,7 +154,6 @@ interface CommonDeliveryProfile<Format extends ClientFormat, Transport extends "
   readonly format: Format
   readonly transport: Transport
   readonly indexedBlockLifecycle: "none" | "anthropic"
-  readonly classifier: DeliveryEffectClassifier
   readonly builders: CommonDeliveryBuilders
 }
 
@@ -186,7 +187,7 @@ type FormatDeliveryProfile =
   | GeminiDeliveryProfile
 ```
 
-`indexedBlockLifecycle` 是compile-time discriminant，不是runtime feature flag。所有profile都必须显式给值；缺省配置不能被解释为`none`。classifier与builders由concrete codec实现、composition root注入，delivery层只消费上述窄接口。
+`indexedBlockLifecycle` 是compile-time discriminant，不是runtime feature flag。所有profile都必须显式给值；缺省配置不能被解释为`none`。builders由concrete codec实现、composition root注入，delivery层只消费上述窄接口。
 
 ### 3.3 共同 command port
 
@@ -211,7 +212,7 @@ interface CommonGenerationCommandPort<P extends FormatDeliveryProfile> {
   **`selectWinner`不是纯telemetry更新——它是非Anthropic格式唯一的candidate provenance来源，必须承载它。** 实测`driver.ts:882-888`：`beginLeg`包在`if (allocationPort?.wireState)`里，而`wireState`只有Anthropic profile才有；`noteWinner`则**无条件**调用。于是Chat Completions、Azure、Responses HTTP、Responses WS、Gemini这五种格式**从不调`beginLeg`**，它们的candidate／dispatch provenance只经这一条路。若把`selectWinner`实现成只更新snapshot／telemetry，这五种格式的forwarded记录会退回`session.ts:570-579`的`legacy` provenance——**一个客户端不可见、但把History与遥测的归因悄悄打平的回归**。
 
   因此冻结：`selectWinner`提交的candidate／dispatch identity**必须成为owner为该operation后续real frame铸造provenance的依据**，与Anthropic经`beginLeg`得到的效果等价。C11原表述的论域是Anthropic三腿形状，本条把它扩到非Anthropic：**任何profile在有winner的情况下都不得退化为`legacy`**。对应验收见R-14——**这条判据必须存在**：R-1～R-13无一断言非Anthropic的candidate provenance，缺了它，本节的回归会全绿交付。
-- `emitGeneric`冻结三态：①structured payload parse failure在external write前拒绝；②已登记为owner-governed、terminal或indexed-block的effect若误走generic，在external write前报`CommandEffectMismatchError`；③payload可解析、但其effect尚未登记时，按richest-data-flow默认允许发送，使用bounded `actualEffect=unknown`并把原始type／frame detail写入trace／History。未知effect不是已知generic的证明，也不是默认拒绝理由；后续registry识别其owner语义时必须新增command compatibility与回归，而不能重解释历史样本。
+- `emitGeneric`冻结三态：①structured payload parse failure在external write前拒绝（**本轮做**：这是内容真的坏了，属于「该报错时自然报错」）；②已登记为owner-governed、terminal或indexed-block的effect若误走generic，在external write前报`CommandEffectMismatchError`（**本轮不做**：它需要classifier归一actual effect才能判定，见ADR trust-the-caller；本轮该形状按③放行）；③payload可解析、但其effect尚未登记时，按richest-data-flow默认允许发送，把原始type／frame detail写入trace／History（全量方案还会打bounded `actualEffect=unknown`，本轮该字段不发，见§4.8）。未知effect不是已知generic的证明，也不是默认拒绝理由；后续registry识别其owner语义时必须新增command compatibility与回归，而不能重解释历史样本。
 - `emitKeepalive`：只表达无indexed target的generic ping／application keepalive。Anthropic anchor／real-block target keepalive不走它，而走indexed capability的pulse commands。
 - `runEmissionBatch`：owner-scoped coordination API；在一个serializer callback内`suspend heartbeat → 全量build／validate → 顺序执行一批commands → fresh interval重臂`。它承载buffered boundary／retreat的可恢复flush，替代caller直接`freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`；若batch包含terminal则不得重臂。caller拿不到timer控制方法。
 - `terminate`：携带complete、upstream exhausted／nonretryable、request cancelled或client-aborted等terminal intent；owner在同一command内平衡active anchor、按lifecycle preflight决定是否发terminal frames并永久停止heartbeat，返回typed `TerminalEmissionResult`。结果至少含bounded `terminalFrameDisposition: "emitted" | "suppressed_client_gone" | "suppressed_session_terminating"`，以及已attempt／成功segments、forwarded snapshot material与socket close intent；原8个handler＋2个driver terminal-close decisions必须映射到这里，不再在caller先close。**它不调用ctx settle，也不运行delivery-finalized callback**，从而保留既有顺序`anchor balance／terminal attempt／sampling → recordForwarded → ctx.fail／complete → finalize`。
@@ -344,7 +345,7 @@ owner canonical state分成两个职责相反的层，已由主会话裁决为�
 
 不能让ledger充当authority：一条绕过owner的frame一旦被记录，就会为自己制造下一次写入的“授权”，把本轮从表示／观测层迁走的不变量重新装回错误层。具体到content keepalive，`pulseOpenBlock`必须从active mapping registry选择已授权且仍open的real block，再由codec按mapping构造delta；它不能因为post-wire ledger曾见过某index就向该index写keepalive。
 
-两层不能合并还有一个机械理由：回滚语义相反。阶段A build／classifier validation失败时，authorization层必须整体回滚——reservation rollback、frontier不变、lease不变、mapping不登记；observation层此时也应无external-attempt记录。进入阶段B后，首次external call前同步跨过C9 commit point，此后的attempt与partial delivery不可撤销：即使send promise失败，也必须保留attempt observation与committed diagnostic，不能把客户端可能已经见到的字节当作从未发生。把二者塞进同一状态机会迫使一侧接受错误的回滚例外。
+两层不能合并还有一个机械理由：回滚语义相反。阶段A build失败时，authorization层必须整体回滚——reservation rollback、frontier不变、lease不变、mapping不登记；observation层此时也应无external-attempt记录。进入阶段B后，首次external call前同步跨过C9 commit point，此后的attempt与partial delivery不可撤销：即使send promise失败，也必须保留attempt observation与committed diagnostic，不能把客户端可能已经见到的字节当作从未发生。把二者塞进同一状态机会迫使一侧接受错误的回滚例外。
 
 ### 4.3 双层分离的验收
 
@@ -352,7 +353,7 @@ owner canonical state分成两个职责相反的层，已由主会话裁决为�
 
 1. **keepalive授权来源**：把`pulseOpenBlock`改成从post-wire ledger选target，构造“ledger仍有该block的历史记录，但真实block stop已成功、mapping已释放”的状态；正确实现必须拒绝／返回`none`，不得向已关闭index发送delta。mutation若成功发送，测试转红。
 2. **旁路自授权**：注入一个被observation看见但从未进入mapping／lease registry的block frame；随后所有indexed commands仍必须fail loud或返回无target，不能因为ledger存在而获得authority。
-3. **pre-write rollback**：让compound command的第二段builder／classifier在阶段A失败，断言wire零attempt、reservation rollback、lease与mapping不变。
+3. **pre-write rollback**：让compound command的第二段builder在阶段A失败，断言wire零attempt、reservation rollback、lease与mapping不变。
 4. **post-commit不可回滚**：让首次physical send调用后失败，断言attempt／partial diagnostic保留、已commit index不复用；authorization只更新已经确认成功的state transition，不伪装后续段完成。
 
 类型上把`AuthorizationState`与`PostWireLedger`分成不同private fields只能算presence ratchet；行为witness才是结构性闭合候选。更小方案是保留裸`openAnchorIndex`并补旁表存diagnostic，但会产生两个必须锁步的anchor事实源，无法用单record identity验证generation／epoch。更大方案是append-only／event-sourced owner：authorization是record stream的fold，observation是不可变事件本身；它确实可以同时满足pre-write不追加／rollback与post-attempt不可撤销，而不靠错误的回滚例外，但只有需要跨进程恢复／replay owner state时才值得引入，本RFC没有该契约。可被评审证伪的有界命题仅限：在本RFC采用的朴素in-process可变状态模型下，把authorization与observation塞进同一可变事实会迫使一侧接受错误回滚语义，因此保持双层；这不是对所有可能状态模型的“不可能”主张。
@@ -361,7 +362,7 @@ owner canonical state分成两个职责相反的层，已由主会话裁决为�
 
 **命题：** 对一个generation的全部active authorization records取并集——当前`OpenAnchorLease`与所有active real-block `WireBlockMapping`——按`wireIndex`分组后，每组基数必须小于等于1。换言之，同一wire index不得同时命中anchor lease与real mapping，也不得命中两个real mappings。leg／upstream index不同不构成豁免，因为客户端wire只观察最终wire index。
 
-该检查属于每个可能创建、查找、pulse、close或释放indexed authorization的owner command阶段A：lifecycle preflight之后，构造／classifier validation与authorization resolution期间，第一次external write调用之前。具体包括：新reservation准备登记前验证其wire index不与任一active record碰撞；`closeOpenAnchor`／`pulseAnchor`确认current lease的index只有该lease命中；`openRealBlock`／`writeRealBlockFrame`／`pulseOpenBlock`确认目标mapping的index只有该mapping命中；compound close→real-start对阶段A的“关闭前active集合”和“按预验证顺序应用后的拟议集合”都验证。检查输入必须来自owner private registries的完整population，不能只查当前leg或先anchor后mapping短路。
+该检查属于每个可能创建、查找、pulse、close或释放indexed authorization的owner command阶段A：lifecycle preflight之后，构造与authorization resolution期间，第一次external write调用之前。具体包括：新reservation准备登记前验证其wire index不与任一active record碰撞；`closeOpenAnchor`／`pulseAnchor`确认current lease的index只有该lease命中；`openRealBlock`／`writeRealBlockFrame`／`pulseOpenBlock`确认目标mapping的index只有该mapping命中；compound close→real-start对阶段A的“关闭前active集合”和“按预验证顺序应用后的拟议集合”都验证。检查输入必须来自owner private registries的完整population，不能只查当前leg或先anchor后mapping短路。
 
 违反时抛具名`AuthorizationCardinalityError`，零wire副作用，reservation rollback，lease／mapping／frontier保持阶段A进入前状态。错误至少携低基数的command／format／target kind与诊断用的冲突record kinds、wire index、generation／state version；高基数record identities只进trace／History detail。该错误与`CommandEffectMismatchError`及C10 missing mapping同属接线／state-corruption错误：直接throw，不进入`OwnerResult`的`client-gone | session-terminating | wire-torn`生命周期失败通道，也不被改写成可重试的transport failure。错误类名称是RFC草案；实施可采用同一state-corruption基类，但不得丢失可判别的cardinality kind。
 
@@ -393,11 +394,11 @@ C1的唯一generation-scoped单调frontier、committed index永不复用，是au
 | `commandId` | trace／History detail only | operation内唯一，近似每command一个新值，进入label会产生无界cardinality。 |
 | `formatProfile` | bounded dimension | 使用profile registry的canonical枚举：`anthropic_messages`、`responses_http`、`responses_ws`、`chat_completions`、`azure_chat_completions`、`gemini`；不直接用route path或client输入。 |
 | `expectedEffect` | bounded dimension／counter key | 由`command × profile` compatibility registry产生的canonical effect family；不存payload type任意字符串。 |
-| `actualEffect` | bounded dimension／counter key | classifier必须返回同一effect registry的枚举；unknown／parse-failure各有固定bucket，不把原始type变label。 |
+| `actualEffect` | **本轮不发** | 它原本的唯一生产者是classifier，而classifier本轮不做（ADR [trust-the-caller](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)）。**不要退化成「等于`expectedEffect`」**——那样字段名声称的「独立观测到的实际effect」与它实际承载的「调用方声明的意图」不符，是比缺字段更坏的名实不符。恢复入口：classifier引入时同时恢复本字段与下面三个outcome值。 |
 | `targetKind` | bounded dimension | 固定为`none`、`anchor`、`real_block`、`operation`、`socket`等小枚举；具体record identity不在这里。 |
 | `wireIndex` | trace／History detail only | generation内单调且跨请求无界；聚合侧若需要“是否有target”，用bounded `targetKind`，不能bucket化index冒充语义。 |
 | `legKind` | bounded dimension | 只用`none`、`primary`、`continuation`、`recovery`；leg token本体另存detail。 |
-| `outcome` | bounded dimension／counter key | 固定为`success`、`noop`、`preflight_refused`、`effect_mismatch`、`authorization_corrupt`、`client_gone`、`wire_error`、`closed_then_wire_torn`、`finalized`等registry枚举。 |
+| `outcome` | bounded dimension／counter key | 本轮发射：`success`、`noop`、`client_gone`、`wire_error`、`closed_then_wire_torn`、`finalized`。`preflight_refused`、`effect_mismatch`、`authorization_corrupt` 三值**本轮不产生**——它们的唯一发射点是被推迟的运行时授权层，登记在registry里只为恢复时不必改schema。 |
 | `committed` | bounded boolean | 表示是否跨过C9首次external-attempt commit point；不能由`outcome`事后猜测。 |
 | `wireTorn` | bounded boolean | 记录command结束时owner torn状态；state transition本身由state fields表达。 |
 | `stateBefore` | bounded dimension | 不是完整snapshot，而是canonical owner lifecycle class，例如`open_clean`、`open_torn`、`terminating`、`closed`加独立active-target flags；完整registry内容另存detail。 |
@@ -417,7 +418,7 @@ partial failure不能只记`outcome=wire_error`。最细不可重算因子必须
 
 当前generic allocation write失败统一记录`[delivery] owner wire write failed`（`src/lib/pipeline/delivery/session.ts:311-355`），snapshot只有state、winner、wire ledger、rounds与总`writeCount`（`src/lib/pipeline/delivery/types.ts:44-51`），partial History只有`operation + cause + committed`（`src/lib/history/types.ts:212-218`）。它回答不了：
 
-1. **producer想做什么，payload实际是什么？** 新schema以`command／expectedEffect／actualEffect／outcome=effect_mismatch`回答“`emitGeneric`误产了anchor stop”；旧日志只有一次write failure，无法区分intentional close与codec bug。
+1. **producer想做什么，payload实际是什么？** 新schema以`command／expectedEffect／outcome`回答“这次发射的意图是什么、走到哪一步”，原始frame detail进trace／History；旧日志只有一次write failure，无法区分intentional close与codec bug。**本轮的边界**：`actualEffect`与`outcome=effect_mismatch`不发（§4.8），所以“`emitGeneric`误产了anchor stop”这一具体判定**不会由遥测自动给出**——遥测记下了意图与原始payload，由人对照，而不是由系统裁决。
 2. **compound command失败在哪一段？** 新schema以`phaseReached + committed + outcome`区分“validation前零副作用”“stop已成功、real start失败”“terminal已发送、finalize失败”；旧`committed:true`只有一位信息，无法决定是否可以再close或哪个index已消费。
 3. **target authority为何拒绝？** 新detail携`targetKind`、wire index、lease／mapping identities和state before／after，bounded outcome区分missing mapping、cardinality corruption与wire torn；旧统一error string无法区分接线错误、state损坏和transport失败。
 4. **哪种profile／command持续发生partial？** 新bounded`formatProfile`、`command`、`outcome`与phase measures可经既有rollup看长期分布；旧总`writeCount`与单条History detail不能跨请求聚合。
@@ -447,7 +448,7 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 | 边界单元与inventory证据 | 处置 | 当前闭合等级 | 升级所需behavior witness与mutation正控 |
 |---|---|---|---|
 | owner→raw唯一physical emit：现有`src/lib/pipeline/delivery/session.ts:600`调用`OwnerRawSink.write`，raw adapters在`src/lib/pipeline/client-sink.ts:209,645`分别physical SSE／WS（inventory `:24-41,123-126`） | 词法私有`RawTransportEmitter.emit(validatedEnvelope)`成为owner之后唯一generation physical入口；删除raw第二serializer，attempt前单点sampling，success后更新post-wire state。 | 仅降低概率 | recorder必须包裹composition root实际`stream`／`ws` handle、位于raw emitter之下；先用已知test-only direct-send seam证明它看得见绕过owner的发送，再由真实HTTP SSE与Responses WS发送generic／synthetic／terminal，断言每个validated frame恰好一次、无command id发送为零。注入owner的raw adapter不用于本门；owner外direct-send／raw第二queue mutation必须出现无id、多帧或错序。 |
-| generic generation writes：10点／4文件，含driver winner／live／buffered／retreat、injector、decorator及CC terminal（inventory `:24-39`） | 删除production裸`ClientSink.write`；各producer按profile选择`emitGeneric`、indexed command或`terminate`，classifier复核actual effect。 | 仅降低概率 | 从真实route覆盖ordinary primary、hedge winner、buffered boundary、retreat与terminal；mutation逐一改回legacy passthrough，O-1／O-2、lease／mapping与History provenance至少一项转红。adversarial generic block effect必须pre-write mismatch。 |
+| generic generation writes：10点／4文件，含driver winner／live／buffered／retreat、injector、decorator及CC terminal（inventory `:24-39`） | 删除production裸`ClientSink.write`；各producer按profile选择`emitGeneric`、indexed command或`terminate`。**本轮不做**：classifier归一actual effect后与caller声明的intent比对并拒绝mismatch（`CommandEffectMismatchError`）；D2（owner从active lease／mapping铸造provenance取代caller声明的`kind`）——用户裁决 [2026-08-10-trust-the-caller-over-emission-authorization.md](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。诚实边界：intent与actual effect不一致时不在command port当场fail loud，只经既有测试／wire golden／客户端行为暴露或不暴露。**恢复入口**：classifier可作为owner内一层校验后置引入，不要求重做本行其余command形状。 | 仅降低概率 | 从真实route覆盖ordinary primary、hedge winner、buffered boundary、retreat与terminal；mutation逐一改回legacy passthrough，O-1／O-2、lease／mapping与History provenance至少一项转红。 |
 | driver live／winner／hedge：`src/lib/pipeline/driver.ts:948,952,1048`（inventory `:28-32`） | winner helpers与live drain接command port，不接sink；每个rendered frame由profile dispatcher产生显式intent。 | 仅降低概率 | 真实HTTP ordinary primary与hedge winner各跑anchor→real序列，断言command intent、candidate provenance和wire全序；mutation仅把winner helper或live drain恢复`write`，必须复现duplicate／orphan stop或lease未清。 |
 | driver buffered／retreat：`src/lib/pipeline/driver.ts:1265,1319`（inventory `:33-34`） | buffered flush按frame effect批量预分类；anchor close→real start用compound command；retreat后继续使用同一mapping authority，不回落raw write。 | 仅降低概率 | production boundary flush与buffer-cap retreat各造anchor→real→stop，断言mapping登记／释放、lease、O-1／O-2；mutation任一分支恢复legacy write或拆开compound operation必须转红。 |
 | live reconciler：`src/lib/anthropic/live-reconcile.ts:145,157`分别build stop并写real frame（inventory `:35-36,149-153`） | decorator退化为纯decision／transform；close→real-start由owner一个compound command完成，不转发任何emission capability。 | 仅降低概率 | FakeClock先在unpark对照推进N×interval并观察恰好N个keepalive，证明新owner timer活；再把tick停在旧两operation之间，新production live HTTP只见相邻`stop@leaseIndex → real-start@next`且`maxOpen<=1`；mutation拆回两个enqueue必须产生插帧并红。 |
@@ -616,7 +617,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
 ### 7.6 Commit 3 — Producer builders、LegHandle数据流与publish harness准备
 
 - **前置调查：** §9.4的composition返回类型、already-rendered frame／builder boundary、LegHandle在5个lexical sites／3 leg kinds／4 source scenarios中的数据流、10个anchor terminal-close decisions、heartbeat controls映射全部有file:line或PoC。
-- **目标：** 增加各profile的pure classifiers／builders、producer-to-command转换helpers、candidate binding中的opaque LegHandle承载、10-root cutover harness与test-only handle recorder；所有helpers尚未被production roots调用。
+- **目标：** 增加各profile的pure builders、producer-to-command转换helpers、candidate binding中的opaque LegHandle承载、10-root cutover harness与test-only handle recorder；所有helpers尚未被production roots调用。
 - **不改变可观察行为：** 不替换任何live call site，不读取准备态handle影响routing，不发frame、不采样、不启动timer。旧API population与Commit 0精确相等。
 - **验证：** builders用真实vendor bytes做unit／SDK校准；publish harness在isolated test composition中完整演练，但production route goldens、O-6与全套保持原样。
 
@@ -708,7 +709,9 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 ### 9.2 已裁决、不得重开的事项
 
-以下不是open questions：full command algebra胜出；public port按capability分型；classifier仍保留作intent／effect交叉验证；`wireTorn`只禁止推进frontier且compound command close-only返回`closedThenWireTorn`；delivery只依赖codec实现并由composition注入的窄profile；authorization与observation双层分离；M1代码在分支上被重塑而非丢弃或原样冻结。
+以下不是open questions：full command algebra胜出；public port按capability分型；`wireTorn`只禁止推进frontier且compound command close-only返回`closedThenWireTorn`；delivery只依赖codec实现并由composition注入的窄profile；authorization与observation双层分离；M1代码在分支上被重塑而非丢弃或原样冻结。
+
+> ⚠️ **本节原有一条「classifier仍保留作intent／effect交叉验证」，已被用户 2026-08-10 裁决推翻，不再是「不得重开」的既定事项**——见 [2026-08-10-trust-the-caller-over-emission-authorization.md](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)：classifier归一actual effect后与caller intent比对并拒绝mismatch，本轮不做；只保留per-command telemetry／调试信息。该行在此处删除而非改写措辞，避免读者把「已推翻」误读成仍然生效的表述变体。§5.2、§10.2 R-2、§11.1、§11.4 已按新裁决同步。
 
 - **Q3 warmup fake／drop已裁决采用方案A：** 真实route behavior test纳入Commit 0，覆盖完整字节、upstream零调用、delivery observer零session、一次响应及提前创建owner／双写mutation。它是§5唯一没有现成behavior witness的出口，也是composition-root互斥性的gatekeeper；本项目禁止静默砍掉gatekeeper requirement，因此不留作后续可选项。
 - **Q4 History schema已裁决采用方案B：** `wirePartialDelivery`保持稳定摘要`operation + cause + committed`；另在generation operation detail中保存完整per-command records，包含command、phaseReached、outcome、expected／actual effect、state before／after及高基数identity。Commit 5同步后端SSOT schema、ui-v4 re-export与相关tests，不再等待Q4。
@@ -746,7 +749,7 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 | ID | 断言什么 | 层级 | 怎么测 | mutation正控（防false-green） | false-red对照 | 本RFC关系／归属commit |
 |---|---|---|---|---|---|---|
 | R-1 | 每个generation frame有且只有一个owner command id、一次sampling、一次physical emit；无command id发送为零 | producer全序／HTTP＋WS | recorder包裹composition root实际`stream`／`ws` handle，位于raw emitter之下；Commit 0仅用test-only direct-send自检探测层，Commit 4原子authority发布后再跑四vendor HTTP roots与Responses WS的zero／exactly-once断言。注入owner的raw adapter不用于本判定 | 在owner外恢复direct `stream.writeSSE`／`ws.send`或raw第二serializer，必须被handle-level recorder记为无id／重复／错序 | 合法pre-owner AUQ／warmup／connection-cap writer仍完整响应；recorder自检先看见已知direct send，防zero断言平凡为真 | Commit 0只激活recorder自检；production硬门在Commit 4 authority发布 |
-| R-2 | intent × classified effect × profile compatibility在external write前匹配 | producer全序 | 每profile从真实route发送generic、keepalive、terminal与适用indexed effects；转发腿另由不复用共享谓词的O-2状态机／wire golden／真SDK检查实际wire | 除wrong-command mutations外，直接破坏producer与classifier共用的frame谓词，使其漏一种合法block shape；O-2／wire／SDK oracle必须转红 | ordinary metadata与合法opaque payload成功发送；注入全新、可解析但未登记的vendor event，断言照常送达、`actualEffect=unknown`且detail可见 | 本RFC必须；classifier三态unit门在Commit 1，production门在Commit 4 authority发布 |
+| R-2 | 每profile的producer从真实route正确调用`emitGeneric`／`emitKeepalive`／`terminate`与适用indexed effects；未登记effect默认按richest-data-flow允许发送并标`actualEffect=unknown` | producer全序 | 每profile从真实route发送generic、keepalive、terminal与适用indexed effects，断言送达且未登记effect不被拒绝 | mutation恢复legacy raw write passthrough，必须被A集population-zero机械审计（Commit 6 T6.1／T6.2）或O-1／O-2／lease-mapping／History provenance转红 | ordinary metadata与合法opaque payload成功发送；注入全新、可解析但未登记的vendor event，断言照常送达、`actualEffect=unknown`且detail可见 | 本RFC必须；production门在Commit 4 authority发布。**本行原含「intent×classified effect×profile compatibility在external write前匹配」的classifier校验与拒绝、以及转发腿共享谓词的独立oracle子任务（原T4.14），按用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md) 本轮不做，恢复入口见该ADR** |
 | R-3 | anchor close的wire stop、lease清除、heartbeat／diagnostic更新同command原子发生 | producer全序 | Commit 0只冻结旧边界分裂的red characterization（**“red”=缺陷仍在，测试自身 rc=0；见§7.3 的澄清**）；Commit 4 indexed接线后，从真实Anthropic live consumer先交付real block再开gap anchor，按actual lease index走非法generic stop与合法close，联合wire O-2＋owner snapshot | 恢复legacy generic passthrough，必须复现“wire closed、lease still open”或duplicate stop | 合法real block stop同字节但按mapping command处理，不被误判anchor；错误index样本明确标成未触达active lease | Commit 0旧缺陷characterization；production修复硬门在Commit 4 |
 | R-4 | close→real-start compound不可被heartbeat插入，阶段A失败零wire，partial phase诚实 | producer全序／FakeClock | 先在不park的对照中推进N×interval并断言恰有N个keepalive，证明clock驱动新owner timer；再park heartbeat运行compound command，并在validation、stop后、real-start后注入失败 | 把compound拆成两个enqueue，或把第二段validation移到首写后，必须出现插帧／partial误报 | 无active anchor时compound仍可合法open real block；terminal-only close不被强迫open real；unpark活性对照防timer零触发假绿 | 本RFC必须；Commit 4 |
 | R-5 | authorization registry同wire index至多一个record，mapping／lease而非ledger授权pulse | producer全序／owner state | Commit 1用test-only预损坏state测assertion；Commit 4按5 sites／3 kinds／4 source scenarios完成mapping接线后，必须从production registration mutation造anchor＋real或两个real双命中；另造ledger有记录但mapping已释放后pulse | 破坏allocator／registration复用index；若采用单一registry则破坏insert-conflict守卫；把`pulseOpenBlock`改读ledger，必须pre-write红 | 跨leg相同upstream index映到不同wire index合法；released mapping后的`none`不是失败 | 辅助门Commit 1；production硬门Commit 4，不再延后M2 |
@@ -784,12 +787,12 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 
 - **不证明恶意同进程代码无法重新取得transport handle。** Composition反转证明合法production供给不把`stream`／`ws`／raw emitter交给generation runner，不是进程沙箱。JavaScript reflection、未来新import或主动破坏模块边界仍可造旁路；要证明更强性质需独立writer进程／受控RPC与capability token。
 - **不证明client完整收到send promise所代表的字节。** C9仍以首次external attempt为不可逆commit；promise成功最多证明本地transport接受，promise失败也不证明远端零接收。中途断开只能诚实记录partial delivery。
-- **不证明classifier天然正确，也不证明producer intent与classifier相互独立。** Proxy自合成emission的业务intent可独立于payload分类，但上游转发腿常以与classifier同族的frame谓词选择command；共享谓词漏形态时，两侧会共因判绿。Builder／producer predicate与classifier若共享错误假设，自洽测试会一起绿；必须用不复用该谓词的O-2状态机、wire golden、独立fixtures或真实SDK／client校准。本文列出的effect taxonomy也会随vendor协议演进而增长。
+- **本轮根本没有classifier，此条不再适用于当前范围。** 原表述（不证明classifier天然正确，也不证明producer intent与classifier相互独立）是针对「classifier归一actual effect后与caller intent比对并拒绝mismatch」这一机制的诚实边界；该机制已由用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md) 排除出本轮范围，本轮不存在这样一个classifier可供讨论其是否天然正确、是否与producer intent独立。转发腿仍然存在的、与本条无关的独立风险——上游转发腿的producer谓词若与其他自洽测试共享同一错误假设，两者会共因判绿——仍需O-2状态机、wire golden、独立fixtures或真实SDK／client校准兜底，理由与本条原先给出的一致，只是不再归因于「classifier」这个不存在的组件。若classifier按ADR的恢复入口在未来重新引入，本条限定须一并恢复。
 - **不证明pre-owner complete-response writer的协议正确性。** AUQ、warmup fake／drop、connection-cap与真正pre-operation WS rejection各有自己的route／wire oracle；“零owner”只证明authority domain互斥，不证明响应帧顺序、字段或客户端接受度正确。
 - **不证明任意transport teardown都能补齐wire。** Client abort、process shutdown、socket failure或内核断开可在anchor open时截断；owner应记录真实active authorization与partial attempt，不能伪造stop已到达client。Terminal command只能在transport仍允许attempt时尽力平衡。
 - **不证明History等于客户端实际完整接收。** Observation在attempt前记录是为了不丢partial事实；History表示proxy尝试发送的richest track，不是delivery receipt。`committed`／`partial`字段必须保留，UI／诊断不得把forwarded record解读为远端ack。
 - **不证明整个socket lifetime只有一个writer。** Responses WS admission与pre-operation control仍由socket composition写；精确claim只覆盖已创建owner的response operation及与其并存control的协调，不外推到管理broadcast或所有WS traffic。
-- **不证明所有vendor streaming protocol都被完整验证。** 本RFC classifier只覆盖本次承重owner-governed、terminal、keepalive与generic边界；不检查每个payload字段、vendor业务状态或未来event。
+- **不证明所有vendor streaming protocol都被完整验证。** 本RFC的command port与owner canonical state只覆盖本次承重owner-governed、terminal、keepalive与generic边界（原表述为「classifier只覆盖……」；本轮不存在classifier，见上一条）；不检查每个payload字段、vendor业务状态或未来event。
 - **不证明telemetry是验收oracle。** Per-command records可漏接、延迟flush或在错误实现上照样记录“看似正确”；行为闭合只由production wire／owner state witness及mutation裁决。
 - **不证明剩余gap anchor lifecycle／feature gate／multi-gap、P7多轮回传或P8真客户端验收已完成。** 本RFC已包含5个leg sites／3 kinds／4 source scenarios的mapping lifecycle与C3／C4／C10接线，但不打开gap feature；O-3／O-5／O-7／O-9仍为后续硬门。
 
@@ -812,7 +815,9 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 
 ### 11.4 不可接受残余
 
-以下任一状态存在时只能称“仅降低概率”，并阻止cutover合并：generation runner仍取得raw handle；旧passthrough generic write仍能造成wire／lease分裂；post-owner WS terminal直接send／close；control-with-inflight可绕过owner；live close与real start可被heartbeat插入；active anchor后terminal未平衡；classifier只打标不拒绝command／effect mismatch；authorization从post-wire ledger反推；同wire index出现多个active records；finalize成为第二emission入口。
+以下任一状态存在时只能称“仅降低概率”，并阻止cutover合并：generation runner仍取得raw handle；旧passthrough generic write仍能造成wire／lease分裂；post-owner WS terminal直接send／close；control-with-inflight可绕过owner；live close与real start可被heartbeat插入；active anchor后terminal未平衡；authorization从post-wire ledger反推；同wire index出现多个active records；finalize成为第二emission入口。
+
+> ⚠️ **本节原有一条「classifier只打标不拒绝command／effect mismatch」列在不可接受残余里，已被用户 2026-08-10 裁决排除**——见 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)：classifier只打标（若存在per-command telemetry所需的effect标注）而不拒绝mismatch，本轮是**接受的既定行为**，不是需要阻止合并的残余状态。诚实边界改记在§9.2、§5.2、§10.2 R-2与本节上一条：intent与actual effect不一致时不会在command port当场fail loud。
 
 更强的进程隔离方案未采纳不是因为工程量，而是当前claim与威胁模型不要求；更弱的factory私有化／类型墙未采纳为终态，是因为已有普通write与`as` witness证明它们不足。诚实完成标准不是“代码看起来只有一个入口”，而是上述限定claim全部有可判别的production behavior证据。
 

@@ -28,9 +28,11 @@ import {
 } from "~/lib/openai/response-session-store"
 import { setStateForTests } from "~/lib/state"
 
+import { historyTestDbPath } from "../helpers/test-bootstrap"
+
 describe("history session resolution", () => {
   beforeEach(async () => {
-    setStateForTests({ historyDbPath: ":memory:" })
+    setStateForTests({ historyDbPath: historyTestDbPath() })
     openInMemoryDatabase()
     await initHistory(true, 200)
   })

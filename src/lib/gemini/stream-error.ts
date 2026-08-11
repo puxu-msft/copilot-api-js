@@ -29,9 +29,9 @@ import {
  */
 const GEMINI_STREAM_ERROR_STATUS: Record<StreamErrorKind, string> = {
   "idle-timeout": "DEADLINE_EXCEEDED",
-  "request-deadline": "DEADLINE_EXCEEDED",
+  "client-request-deadline": "DEADLINE_EXCEEDED",
+  "upstream-request-deadline": "DEADLINE_EXCEEDED",
   "reaper-cancel": "DEADLINE_EXCEEDED",
-  shutdown: "UNAVAILABLE",
   "client-abort": "CANCELLED",
   "request-cancel": "CANCELLED",
   "dispatch-cancel": "CANCELLED",

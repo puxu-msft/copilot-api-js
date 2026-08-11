@@ -1,7 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { createBus } from "~/lib/observability/bus"
 import { createRequestContext } from "~/lib/context/request"
+import { createBus } from "~/lib/observability/bus"
 
 function makeCtx() {
   const bus = createBus()

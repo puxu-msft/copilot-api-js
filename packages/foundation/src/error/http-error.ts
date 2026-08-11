@@ -10,8 +10,16 @@ export class HTTPError extends Error {
   /** Tool-schema diagnostics attached on suspicious 400 responses (hint-only) */
   diagnostics?: ToolDiagnostics
 
-  constructor(message: string, status: number, responseText: string, modelId?: string, responseHeaders?: Headers, diagnostics?: ToolDiagnostics) {
-    super(message)
+  constructor(
+    message: string,
+    status: number,
+    responseText: string,
+    modelId?: string,
+    responseHeaders?: Headers,
+    diagnostics?: ToolDiagnostics,
+    cause?: unknown,
+  ) {
+    super(message, cause === undefined ? undefined : { cause })
     this.name = "HTTPError"
     this.status = status
     this.responseText = responseText

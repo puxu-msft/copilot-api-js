@@ -305,18 +305,32 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   },
   {
-    configKey: "timeouts.stale_request_max_age",
-    stateKey: "staleRequestMaxAge",
+    configKey: "timeouts.upstream_request_deadline",
+    stateKey: "upstreamRequestDeadline",
     sampleYamlValue: "1234",
     expectedStateValue: 1234,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamRequestDeadline,
   },
   {
-    configKey: "timeouts.request_deadline",
-    stateKey: "requestDeadline",
+    configKey: "timeouts.client_request_deadline",
+    stateKey: "clientRequestDeadline",
     sampleYamlValue: "1800",
     expectedStateValue: 1800,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.clientRequestDeadline,
+  },
+  {
+    configKey: "shutdown.graceful_wait",
+    stateKey: "shutdownGracefulWait",
+    sampleYamlValue: "900",
+    expectedStateValue: 900,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+  },
+  {
+    configKey: "shutdown.abort_wait",
+    stateKey: "shutdownAbortWait",
+    sampleYamlValue: "90",
+    expectedStateValue: 90,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   },
   {
     configKey: "model_refresh_interval",
@@ -457,6 +471,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "15",
     expectedStateValue: 15,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+  },
+  {
+    configKey: "anthropic.precontent_recovery.enabled",
+    stateKey: "preContentRecovery",
+    sampleYamlValue: "false",
+    expectedStateValue: { enabled: false },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.preContentRecovery,
   },
   {
     configKey: "anthropic.protect_streaming_generation",
@@ -910,6 +931,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
+    configKey: "history.persistence_queue_capacity",
+    stateKey: "historyPersistenceQueueCapacity",
+    sampleYamlValue: "17",
+    expectedStateValue: 17,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity,
+  },
+  {
     configKey: "history.raw_capture.enabled",
     stateKey: "historyRawCaptureEnabled",
     sampleYamlValue: "true",
@@ -930,22 +958,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 1048576,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  // ── shutdown.* ─────────────────────────────────────────────────────
-  {
-    configKey: "shutdown.graceful_wait",
-    stateKey: "shutdownGracefulWait",
-    sampleYamlValue: "33",
-    expectedStateValue: 33,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
-  },
-  {
-    configKey: "shutdown.abort_wait",
-    stateKey: "shutdownAbortWait",
-    sampleYamlValue: "66",
-    expectedStateValue: 66,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
-  },
-
   // ── hooks.* (declarative only — see applyConfigToState) ─────────────
   {
     configKey: "hooks.upstream_module",
@@ -1105,6 +1117,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
       "STARTUP-ONLY master switch: applied to state.historyEnabled only at boot (hasApplied=false); read once in start.ts to gate initHistory. A runtime change warns + requires a restart (mirrors proxy / ghc_api_base_url). Boot-apply + hot-reload-warn covered in tests/config/history-enabled-config.unit.test.ts",
   },
   {
+    configKey: "history.startup_deadline_ms",
+    reason:
+      "Startup-only give-up bound, read once by the process entry point before it listens; fed to a module-local via setHistoryStartupDeadlineMs (no state field — nothing can usefully react to it after startup). config→setter wiring covered by tests/config/history-startup-deadline-config.unit.test.ts; deadline→failure behavior by tests/history/worker/startup-deadline.it.test.ts",
+  },
+  {
     configKey: "history.limit",
     reason:
       "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
@@ -1117,6 +1134,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "history.persist_retry.backoff_ms",
     reason: "DI-5 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
+  },
+  {
+    configKey: "history.persist_retry.max_backoff_ms",
+    reason: "DI-5 exponential-backoff cap — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
   },
   {
     configKey: "history.persist_retry.max_total_ms",

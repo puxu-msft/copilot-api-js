@@ -1,7 +1,7 @@
 /**
  * Retryable transport error strategy.
  *
- * Handles transient connection failures (ECONNRESET, ETIMEDOUT, socket closures, etc.) and upstream HTTP 499 responses with an empty body by retrying once after a brief delay.
+ * Handles transient connection failures (ECONNRESET, ETIMEDOUT, socket closures, etc.), empty upstream HTTP 499 responses, and GHC HTTP 408 request-body read timeouts by retrying once after a brief delay.
  * A single retry bounds duplicate-processing exposure while recovering from transient transport and gateway failures.
  */
 
@@ -22,7 +22,7 @@ const NETWORK_RETRY_DELAY_MS = 1000
 /**
  * Create a retryable transport error strategy.
  *
- * On `network_error` (connection failures or an upstream empty-body HTTP 499), waits briefly and retries with the same payload.
+ * On `network_error` (connection failures, an upstream empty-body HTTP 499, or a narrowly matched GHC request-body read timeout), waits briefly and retries with the same payload.
  * Only retries once per pipeline execution to avoid prolonged retry loops on persistent failures.
  */
 export function createNetworkRetryStrategy<TPayload>(): RetryStrategy<TPayload> {

@@ -30,13 +30,6 @@ export class StreamIdleTimeoutError extends Error {
  * Anthropic → `overloaded_error`, Gemini → `UNAVAILABLE`/503, OpenAI (Chat
  * Completions / Responses) → `server_error` (a 5xx-class transient type).
  */
-export class StreamShutdownError extends Error {
-  constructor() {
-    super("Server is shutting down")
-    this.name = "StreamShutdownError"
-  }
-}
-
 /**
  * Error thrown when an in-flight stream is interrupted by the DOWNSTREAM CLIENT
  * disconnecting (client abort signal). Distinct from shutdown: there is no
@@ -78,15 +71,27 @@ export class StreamDispatchCancelError extends Error {
 }
 
 /**
- * The per-request HARD DEADLINE (`request_deadline`) fired mid-stream. It shares
- * `ctx.lifecycleSignal` with the stale reaper, so before the cancellation cause was
+ * The whole-request HARD DEADLINE (`timeouts.client_request_deadline`) fired mid-stream. It shares
+ * `ctx.lifecycleSignal` with the other request-level cancels, so before the cancellation cause was
  * carried ON the abort reason this was indistinguishable from a reaper cancel and
  * got reported to the client as one. It is a TIMEOUT, not an age-based reap.
  */
-export class StreamRequestDeadlineError extends Error {
+export class StreamClientRequestDeadlineError extends Error {
   constructor(reason?: string) {
     super(reason ?? "Request exceeded its hard deadline")
-    this.name = "StreamRequestDeadlineError"
+    this.name = "StreamClientRequestDeadlineError"
+  }
+}
+
+/**
+ * ONE upstream attempt outlived `timeouts.upstream_request_deadline`. Attempt-scoped: it only
+ * reaches a client when no retry/hedge candidate was left, which is why it is a distinct kind
+ * from the whole-request deadline rather than folded into it.
+ */
+export class StreamUpstreamRequestDeadlineError extends Error {
+  constructor(reason?: string) {
+    super(reason ?? "Upstream attempt exceeded its hard deadline")
+    this.name = "StreamUpstreamRequestDeadlineError"
   }
 }
 
@@ -120,10 +125,10 @@ export class StreamUnknownCancelError extends Error {
 /** Coarse classification of a stream lifecycle error, protocol-agnostic. */
 export type StreamErrorKind =
   | "idle-timeout"
-  | "shutdown"
   | "client-abort"
   | "reaper-cancel"
-  | "request-deadline"
+  | "client-request-deadline"
+  | "upstream-request-deadline"
   | "request-cancel"
   | "dispatch-cancel"
   | "unknown-cancel"
@@ -139,10 +144,10 @@ export type StreamErrorKind =
  */
 export const STREAM_ERROR_KIND_MESSAGES: Record<StreamErrorKind, string> = {
   "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
-  "request-deadline": "Request exceeded its hard deadline",
+  "client-request-deadline": "Request exceeded its hard deadline",
+  "upstream-request-deadline": "Upstream attempt exceeded its hard deadline",
   "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
   "unknown-cancel": "Request aborted without a recorded cause",
@@ -163,10 +168,10 @@ export const STREAM_ERROR_KIND_MESSAGES: Record<StreamErrorKind, string> = {
  */
 export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamIdleTimeoutError) return "idle-timeout"
-  if (error instanceof StreamShutdownError) return "shutdown"
   if (error instanceof StreamClientAbortError) return "client-abort"
   if (error instanceof StreamReaperCancelError) return "reaper-cancel"
-  if (error instanceof StreamRequestDeadlineError) return "request-deadline"
+  if (error instanceof StreamClientRequestDeadlineError) return "client-request-deadline"
+  if (error instanceof StreamUpstreamRequestDeadlineError) return "upstream-request-deadline"
   if (error instanceof StreamRequestCancelError) return "request-cancel"
   if (error instanceof StreamDispatchCancelError) return "dispatch-cancel"
   if (error instanceof StreamUnknownCancelError) return "unknown-cancel"
@@ -199,8 +204,11 @@ function requestLifecycleStreamError(reason: unknown): Error {
     case "stale-reaper": {
       return new StreamReaperCancelError()
     }
-    case "request-deadline": {
-      return new StreamRequestDeadlineError(message)
+    case "client-request-deadline": {
+      return new StreamClientRequestDeadlineError(message)
+    }
+    case "upstream-request-deadline": {
+      return new StreamUpstreamRequestDeadlineError(message)
     }
     case "request-cancel": {
       return new StreamRequestCancelError(message)
@@ -325,29 +333,10 @@ export function iterateSseEvents(response: unknown): AsyncIterator<SseFrame> {
  * Wrap an async-iterable SSE source so each `.next()` is raced against an
  * idle-timeout and abort signals.
  *
- * `shutdownSignal` is the process-global, long-lived shutdown signal (stable
- * from process start, aborted at Phase 3). `clientSignal` is the per-request
- * downstream-disconnect signal. Both are forwarded into a single per-stream
- * local `AbortController` via explicit `addEventListener`/`removeEventListener`
- * (NOT `AbortSignal.any`): this keeps exactly one listener on the long-lived
- * shutdown signal per stream and removes it deterministically on every exit
- * path, rather than leaving cleanup to GC.
- *
- * Because the shutdown signal is stable (never undefined, never replaced
- * mid-stream), a `.next()` already blocked on a stalled upstream when shutdown
- * begins is still woken by the Phase 3 abort — no per-iteration recomputation
- * is needed.
- *
- * On idle timeout: rejects with `StreamIdleTimeoutError`.
- * On abort, the two signals have OPPOSITE semantics:
- * - **client abort** (downstream disconnected): yields `{ done: true }` cleanly —
- *   nobody is listening, so there is no one to notify.
- * - **shutdown abort** (server closing, client still connected): throws
- *   `StreamShutdownError` so the consumer's `catch` can emit a terminal error
- *   event instead of silently truncating the stream.
- * The abort source is resolved by querying the two ORIGINAL signals directly;
- * `client` is checked first (if the client is gone, a concurrent shutdown is
- * moot).
+ * The request-owned client, lifecycle, and dispatch signals feed one local
+ * `AbortController` through explicit listeners that are removed on every exit.
+ * On idle timeout this rejects with `StreamIdleTimeoutError`; on cancellation it
+ * preserves the source-specific client, request, or dispatch error taxonomy.
  *
  * Inner-iterator cleanup: `for await` only calls our `return()` when the
  * consumer `break`s or throws — NOT when our `next()` throws (idle-timeout /
@@ -361,31 +350,28 @@ export function guardSseIterable<T>(
   source: AsyncIterable<T>,
   opts: {
     idleTimeoutMs: number
-    shutdownSignal?: AbortSignal
     clientSignal?: AbortSignal
     reaperSignal?: AbortSignal
     dispatchSignal?: AbortSignal
   },
 ): AsyncIterable<T> {
-  const { idleTimeoutMs, shutdownSignal, clientSignal, reaperSignal, dispatchSignal } = opts
+  const { idleTimeoutMs, clientSignal, reaperSignal, dispatchSignal } = opts
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       const inner = source[Symbol.asyncIterator]()
 
       const local = new AbortController()
       const onAbort = () => local.abort()
-      shutdownSignal?.addEventListener("abort", onAbort, { once: true })
       clientSignal?.addEventListener("abort", onAbort, { once: true })
       reaperSignal?.addEventListener("abort", onAbort, { once: true })
       dispatchSignal?.addEventListener("abort", onAbort, { once: true })
       // Fast-path: a source was already aborted before the first next().
-      if (shutdownSignal?.aborted || clientSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) local.abort()
+      if (clientSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) local.abort()
 
       let detached = false
       const detach = () => {
         if (detached) return
         detached = true
-        shutdownSignal?.removeEventListener("abort", onAbort)
         clientSignal?.removeEventListener("abort", onAbort)
         reaperSignal?.removeEventListener("abort", onAbort)
         dispatchSignal?.removeEventListener("abort", onAbort)
@@ -438,7 +424,6 @@ export function guardSseIterable<T>(
             // there is no one to receive the terminal error frame, so a
             // concurrent client-gone takes precedence (silent abort); a live
             // client + reaper → StreamReaperCancelError → `stream-error` → frame.
-            if (shutdownSignal?.aborted) throw new StreamShutdownError()
             if (clientSignal?.aborted) throw new StreamClientAbortError()
             if (reaperSignal?.aborted) throw requestLifecycleStreamError(reaperSignal.reason)
             if (dispatchSignal?.aborted) throw new StreamDispatchCancelError()

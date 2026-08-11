@@ -41,7 +41,7 @@ import {
   attemptUpstreamResponsesWs,
   canUseUpstreamWebSocket,
 } from "~/lib/openai/upstream-ws-attempt"
-import { getShutdownSignal } from "~/lib/shutdown"
+import { state } from "~/lib/state"
 import {
   //
   combineAbortSignals,
@@ -76,7 +76,7 @@ async function selectAndSend(
 ): Promise<UpstreamStream> {
   const responsesPayload = wire.body as ResponsesPayload
   const headers = Object.fromEntries(wire.headers.entries())
-  const model = env.model as Model | undefined
+  const model = env.request.model as Model | undefined
   // Reaper signal (缺陷④): DISTINCT provenance from clientAbort, folded into BOTH the
   // upstream WS request / HTTP fetch (cancel the in-flight) and the stream guard (a
   // mid-stream reap reaches a live client as reaper-cancel → stream-error → error frame).
@@ -96,7 +96,7 @@ async function selectAndSend(
       }
     }
     // Request-wide cancellation must never be converted into a fresh HTTP dispatch.
-    if (deps.clientAbortSignal?.aborted || reaperSignal.aborted || options?.signal?.aborted || getShutdownSignal().aborted) {
+    if (deps.clientAbortSignal?.aborted || reaperSignal.aborted || options?.signal?.aborted) {
       throw attempt.error instanceof Error ? attempt.error : new DOMException("The operation was aborted.", "AbortError")
     }
     throw new UpstreamTransportFallbackError("ws-before-first-event", attempt.error)
@@ -119,7 +119,9 @@ async function sendViaHttp(
   dispatchSignal?: AbortSignal,
   forwardedQuery = "",
 ): Promise<UpstreamStream> {
-  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal, getShutdownSignal()))
+  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal), {
+    deadlineMs: state.upstreamRequestDeadline * 1000,
+  })
   // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
   // so we can surface upstream response headers as `UpstreamStream.headers` (read by
   // the driver to write ctx.httpHeaders.outboundResponse).
@@ -164,7 +166,6 @@ function guardWsOrHttp(
 ): AsyncIterable<UpstreamFrame> {
   return guardSseIterable(source, {
     idleTimeoutMs: deps.idleTimeoutMs,
-    shutdownSignal: getShutdownSignal(),
     clientSignal: deps.clientAbortSignal,
     reaperSignal,
     dispatchSignal,

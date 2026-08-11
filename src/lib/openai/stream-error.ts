@@ -45,9 +45,9 @@ import { classifyStreamError } from "~/lib/stream"
  */
 const OPENAI_STREAM_ERROR_TYPE: Record<StreamErrorKind, string> = {
   "idle-timeout": "timeout_error",
-  "request-deadline": "timeout_error",
+  "client-request-deadline": "timeout_error",
+  "upstream-request-deadline": "timeout_error",
   "reaper-cancel": "timeout_error",
-  shutdown: "server_error",
   "client-abort": "server_error",
   "request-cancel": "server_error",
   "dispatch-cancel": "server_error",

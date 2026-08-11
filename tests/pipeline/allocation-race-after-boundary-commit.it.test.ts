@@ -10,6 +10,7 @@ import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 const frame = (type: string, index?: number, blockType?: string): ClientFrame => ({
   event: type,
@@ -29,8 +30,8 @@ test("after boundary resume, the pre-M6 gate emits ping without invoking the anc
   clock.install()
   const written: Array<ClientFrame> = []
   const stream = {
-    writeSSE: async (value: { data: string; event?: string }) => {
-      written.push(value)
+    write: async (input: Uint8Array | string) => {
+      written.push(decodeSseWrite(input))
     },
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   let injectorCalls = 0

@@ -25,7 +25,8 @@ OpenAI 是本项目的**内部规范格式**——Chat Completions 就是各格�
 
 - **入站认证不校验**：`Authorization` / `api-key` 传占位符即可（如 `dummy`）；真正认证在上游（GitHub → Copilot token），见 [authentication.md](authentication.md)。
 - **模型 ID 是 Copilot 目录 ID**（非 OpenAI 官方 ID）：如 `gpt-4o`、`gpt-5.5`、`claude-sonnet-4.6`、`gemini-2.5-pro`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名、`model_mappings` 同样适用（`src/lib/models/resolver.ts`）。
-- **未知 `gpt-*` 回退**：不在模型目录里的 `gpt-*` 名也能透传上游（`env.model` 解析容忍目录外模型，codec P2.2-D5）。
+- **目录外的模型名被拒绝**（用户 2026-08-11 裁决：**这就是正确处理方式**）：不在模型目录里的名字返回 `404 model not found: <name>`。理由是本地持有完整的 available models——「信任调用方」针对的是**我们无从判断**的输入，而模型名恰恰是我们查得到的，查得到就该当场说不。目录以 `GET /v1/models` 为准。
+  此前本文宣称「未知 `gpt-*` 名也能透传上游」，**该宣称从未成立**——实测（2026-08-11，改动前的 master）返回的是 `500 undefined is not an object (evaluating 'env.model.id')`，因为 `env.model` 为 `undefined` 会在 `dispatch-scheduler` 处崩溃。当时的守卫只断言 codec 的 `parse` 不抛错，覆盖不到这一层。「透传目录外模型」（原 P2.2-D5 的登记方向）**已被上述裁决否决，不再是待办**。
 
 ## 模型列表扩展字段
 
@@ -60,7 +61,7 @@ Codex CLI 的一等公民路径，也是偏差最集中处。每请求由 codec�
 `src/lib/openai/embeddings.ts`。偏差：
 
 - **input 归一化**：裸 string input 会被规整成单元素数组（部分上游 provider 拒裸 string）。
-- 始终非流式，折入 shutdown signal（Phase 3 abort 可中断）。
+- 始终非流式，只折入 response-header timeout；首个 shutdown signal 不取消已接纳请求。
 - 支持 `encoding_format`（`float`/`base64`）、`dimensions`。
 - Embeddings 不建 `RequestContext`、不进 V2 History sink；History V3 旁路 lifecycle 会生成完整 canonical `ModelOperation` terminal record（terminal 同时进入 bounded registry 与独立 V3 store，可经 V3 read API 查询）。
 

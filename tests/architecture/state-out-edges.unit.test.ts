@@ -62,7 +62,10 @@ const ALLOWED: Record<string, Array<{ specifier: string; removedBy: string }>> =
   "packages/foundation/src/state.ts": [
     { specifier: "./state-defaults", removedBy: "never — same unit, moves together" },
     { specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" },
-    { specifier: "./ghc-model-types", removedBy: "never — the GHC catalog wire types sank into foundation (user decision 2026-07-28); a package-internal sibling now" },
+    {
+      specifier: "./ghc-model-types",
+      removedBy: "never — the GHC catalog wire types sank into foundation (user decision 2026-07-28); a package-internal sibling now",
+    },
   ],
   "packages/foundation/src/state-defaults.ts": [{ specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" }],
   "packages/foundation/src/state-vocabulary.ts": [],

@@ -41,6 +41,7 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { guardSseIterable } from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 // ── minimal identity driver scaffolding ──────────────────────────────────────
 
@@ -60,15 +61,20 @@ function makeDriver(): ReturnType<typeof createPipelineDriver> {
   })
 }
 
-/** Minimal env — runResponse only touches `env.ctx.setSseEvents`. */
+/** Minimal env — runResponse only touches `env.ctx.setSseEvents`, but `attempt` must exist: reading `env.attempt.body` off an absent scope throws, and that throw would be classified as a stream-error instead of the abort under test. */
 function makeEnv(): RequestEnvelope {
-  return { ctx: { setSseEvents: () => undefined } } as unknown as RequestEnvelope
+  return {
+    request: { clientFormat: "anthropic" } as RequestEnvelope["request"],
+    attempt: {} as RequestEnvelope["attempt"],
+    candidate: {},
+    ctx: { setSseEvents: () => undefined },
+  } as unknown as RequestEnvelope
 }
 
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
-    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+    write: (input: Uint8Array | string) => (written.push(decodeSseWrite(input)), Promise.resolve()),
   } as unknown as Parameters<typeof makeSseSink>[0]
   return { stream, written }
 }
@@ -117,6 +123,15 @@ describe("owns-sink two-racer integration (heartbeat SOFT vs upstream-idle HARD)
 
     // Pings are proxy→client frames: they appear in the forwarded track.
     expect(forwarded.filter((f) => f.type === "ping").length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("decoder probe observes an encoded ping written by the sink", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { streamStartMs: clock.now })
+
+    await sink.write(PING)
+
+    expect(written).toEqual([{ event: "ping", data: '{"type":"ping"}' }])
   })
 
   test("client-abort → settled-abort, zero terminal bytes written to the dead stream", async () => {

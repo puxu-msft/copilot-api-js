@@ -10,6 +10,7 @@ import {
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
+  HistoryPinUnavailableError,
   getSessionEntries,
   getSessionSummaries,
   initHistory,
@@ -24,7 +25,6 @@ import {
 import {
   //
   closeDatabase,
-  getDatabase,
 } from "~/lib/history/sqlite/connection"
 import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
@@ -35,6 +35,9 @@ import {
   resetV3WriterForTests,
 } from "~/lib/history/v3/store"
 import { setStateForTests } from "~/lib/state"
+
+import { clearHistoryStoreForTests, historyTestWriteDatabase } from "../../helpers/history-v3-fixtures"
+import { historyTestDbPath } from "../../helpers/test-bootstrap"
 
 function record(
   id: string,
@@ -70,11 +73,13 @@ function record(
 
 beforeEach(async () => {
   closeDatabase()
-  setStateForTests({ historyDbPath: ":memory:" })
+  setStateForTests({ historyDbPath: historyTestDbPath() })
   await initHistory(true)
   resetV3WriterForTests()
+  // The artifact is a file now, not a fresh `:memory:` database per open, so last test's rows are still there and re-seeding the same ids would be a commit conflict.
+  clearHistoryStoreForTests()
   for (const item of [record("generation-1", "generation"), record("tokens-1", "count_tokens")]) {
-    commitPreparedOperation(getDatabase(), prepareModelOperation(item))
+    commitPreparedOperation(historyTestWriteDatabase(), prepareModelOperation(item))
   }
 })
 
@@ -123,7 +128,7 @@ describe("History V3 read cutover", () => {
       },
     })
     const operation = recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt })
-    commitPreparedOperation(getDatabase(), prepareModelOperation(operation))
+    commitPreparedOperation(historyTestWriteDatabase(), prepareModelOperation(operation))
 
     const stored = getV3StoredOperation("timed-generation")!
     const entry = recordToHistoryEntry(stored.record, stored)
@@ -142,11 +147,11 @@ describe("History V3 read cutover", () => {
 
   test("builds session summaries and chronological detail solely from V3 records", () => {
     commitPreparedOperation(
-      getDatabase(),
+      historyTestWriteDatabase(),
       prepareModelOperation(record("session-first", "generation", { createdAt: 10, sessionId: "session-v3", inputTokens: 3, outputTokens: 2 })),
     )
     commitPreparedOperation(
-      getDatabase(),
+      historyTestWriteDatabase(),
       prepareModelOperation(
         record("session-last", "generation", { createdAt: 20, sessionId: "session-v3", agentId: "agent-1", inputTokens: 5, outputTokens: 4 }),
       ),
@@ -181,12 +186,11 @@ describe("History V3 read cutover", () => {
     })
   })
 
-  test("persists V3 pin state and projects it into detail and summaries", () => {
-    expect(setPinned("generation-1", true)).toBe(true)
-    expect(getEntry("generation-1")?.pinned).toBe(true)
-    expect(getHistorySummaries().entries.find((entry) => entry.id === "generation-1")?.pinned).toBe(true)
-
-    expect(setPinned("generation-1", false)).toBe(true)
-    expect(getEntry("generation-1")?.pinned).toBe(false)
+  // Pinning has no writer between the Batch 2b cutover and the Batch 6 set-pinned RPC (user ruling, 2026-08-09). The V3 pin contract this used to assert — `setPinned` returns true, then detail AND the summary projection both report `pinned: true`, and setting it back to false clears both — is recorded in docs/todo/deferred-backlog.md for Batch 6 to reinstate. What remains verifiable now is that the read path still projects the column, so only the writer is missing.
+  test("refuses to pin while the write connection lives in the Worker", () => {
+    expect(() => setPinned("generation-1", true)).toThrow(HistoryPinUnavailableError)
+    // The projection still carries the column, unpinned, rather than dropping the field.
+    expect(getEntry("generation-1")?.pinned).toBeFalsy()
+    expect(getHistorySummaries().entries.find((entry) => entry.id === "generation-1")?.pinned).toBeFalsy()
   })
 })

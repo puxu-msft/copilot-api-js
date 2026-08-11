@@ -36,6 +36,7 @@ import { readOrigin } from "~/lib/pipeline/hooks/origin"
 import { replayFromHistory } from "~/lib/pipeline/hooks/toolkit"
 import { generateId } from "~/lib/utils"
 
+import { historyTestReservation } from "../../helpers/history-terminal-publication"
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
@@ -138,7 +139,7 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
     })
     const driver = makeRealAnthropicDriver(transport)
 
-    const result = await driver.runRequest(anthropicRawRequest(anthropicToolBody("claude-x")))
+    const result = await driver.runRequest(anthropicRawRequest(anthropicToolBody("claude-x"), historyTestReservation()))
     expect(result.ok).toBe(true)
     if (!result.ok) return
 

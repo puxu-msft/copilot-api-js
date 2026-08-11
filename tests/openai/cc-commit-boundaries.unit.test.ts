@@ -1,4 +1,9 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
+
 import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
 
 const f = (o: unknown) => ({ data: JSON.stringify(o) })
