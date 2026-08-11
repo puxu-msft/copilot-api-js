@@ -723,6 +723,14 @@ orphan IDs: none
 
 ## Commit 0 — Legacy 基线、旧缺陷 characterization 与 oracle 分型
 
+> 🛑 **本 commit 已被用户 2026-08-11 裁决全面推迟，不执行。** 原话：「**显然不该继续 commit 0，这些验证设施全面推迟，业务代码完成后，选择一部分在主线的实施，其他的彻底推迟**」。
+>
+> **理由**：T0.3–T0.9 全部是证据基础设施——physical recorder、route observer 基线、旧缺陷 characterization、capability 类型双向闭包、测试面四分类、golden 冻结——**零生产行为**。它与本项目 2026-08-11 起的「快做快合，放弃 SDD／TDD，只补主路径与已报错路径」正面冲突，也撞 user-rule `40-dev-workflow` 的 `solve-the-task-before-building-proof-infrastructure` `[hard]`。
+>
+> **改为**：直接进 Commit 1–3 的准备与 Commit 4 的原子发布。验证靠**已有**资产：O-6 字节门（双向自检已通过）、现有 anthropic／terminal goldens、`setDeliverySessionObserverForTests`、以及 semantic-bridge 的 wire golden。
+>
+> **推迟项的处置**：业务代码完成后，从下表中**挑一部分在主线实施**，其余**彻底推迟**（不进 backlog 排期）。挑选时点与清单见本节末的「推迟项分流」。下表原样保留，仅供那一次挑选时参考，**不再是待执行清单**。
+
 **目标**（RFC §7.3）：不改 production；冻结 O-1／O-2／O-6 与现有 goldens、搭建 handle-level physical recorder 并自检、把测试面分四类、并把「旧生成 delivery 的完整能力面」按 §7.2 的双向闭包冻结成 A／B／C／D 四集。
 
 ### 逐 task
@@ -780,7 +788,21 @@ orphan IDs: none
 
 ### commit invariant
 
+> 🛑 **随 Commit 0 一并推迟，不作为门执行。** 下段原文保留供日后分流时参考。
+
 production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据**：tracked 全集减排除表，输出为空）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
+
+### 推迟项分流（业务代码完成后做这一次挑选）
+
+**时点**：Commit 4 的原子发布落地、且主路径行为经真实 route 验证之后。**不早于**，因为在那之前挑不出「哪些验证真的守住了东西」。
+
+**挑选口径**（用户 2026-08-11：「选择一部分在主线的实施，其他的彻底推迟」）：
+
+- **优先进主线的**：**已经报错过的路径**的回归，以及**主路径**的行为断言。判据是「它对应一个真实发生过的缺陷或一条用户可观察的主路径」，不是「它覆盖了某个理论出口」。
+- **彻底推迟的**：为证明覆盖面而存在的分类／闭包／冻结类设施——T0.7 的双向不动点闭包、T0.8 的测试面四分类、T0.9 的 golden 清单冻结。**彻底推迟 = 不进 backlog 排期**，需要时再从本文档取回。
+- **T0.6 的 characterization 有一条特殊性**：它「绿 = 缺陷仍在」，Commit 4 之后必须反转成正确性断言。既然 Commit 0 不做，**这条 characterization 不存在**，那么 Commit 4 的正确性就直接由「反转后的那条断言」承担——即在 Commit 4 里**直接写正确性断言**（stop 与 anchor index 同字节时，wire 关闭与 lease 清除必须同一 command 内完成），跳过中间的「先证明缺陷在」这一步。这是本次推迟里**唯一需要在 Commit 4 补一条测试**的项。
+
+**下列 R-x 的 C0 门随本次推迟失效**，其覆盖改由 Commit 4 的 C4 门承担或一并推迟：R-13（C0 production 硬门 → 归 C4）、R-1（recorder 自检 → 彻底推迟）、R-3（旧缺陷 characterization → 按上一条转为 C4 的正确性断言）。
 
 ---
 
