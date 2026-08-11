@@ -26,6 +26,7 @@ import path from "node:path"
 import {
   //
   parseDiscoveryBaseline,
+  skipIdentityKey,
   type SuiteSkip,
   type TestcaseSkip,
 } from "./entry-evidence-schema"
@@ -162,21 +163,9 @@ function formatIdentity(identity: TestcaseSkip | SuiteSkip | SkippedIdentity): s
   return JSON.stringify(identity)
 }
 
-function baselineSkipKey(skip: TestcaseSkip | SuiteSkip): string {
-  return skip.kind === "testcase" ?
-      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
-    : [skip.kind, skip.file, skip.suite_name].join("\0")
-}
-
-function runtimeSkipKey(skip: SkippedIdentity): string {
-  return skip.kind === "testcase" ?
-      [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
-    : [skip.kind, skip.file, skip.suite_name].join("\0")
-}
-
 function assertSkippedMultiset(expected: Array<TestcaseSkip | SuiteSkip>, actual: Array<SkippedIdentity>): void {
-  const expectedByKey = new Map(expected.map((skip) => [baselineSkipKey(skip), skip]))
-  const actualByKey = new Map(actual.map((skip) => [runtimeSkipKey(skip), skip]))
+  const expectedByKey = new Map(expected.map((skip) => [skipIdentityKey(skip), skip]))
+  const actualByKey = new Map(actual.map((skip) => [skipIdentityKey(skip), skip]))
   const missing = [...expectedByKey.keys()]
     .filter((key) => !actualByKey.has(key))
     .map((key) => formatIdentity(requireMapValue(expectedByKey, key, "expected skip identity is missing")))
@@ -282,6 +271,11 @@ try {
     cwd: options.tree,
     env: {
       ...process.env,
+      // Structural, not a reminder: `RUN_PERF_TESTS=1` un-skips the wall-clock perf case, which
+      // changes the skip multiset and makes the gate fail as an opaque "multiset mismatch" that
+      // points nowhere near the cause. Inheriting the caller's environment would carry it straight
+      // in, so clear it here rather than relying on anyone remembering to unset it.
+      RUN_PERF_TESTS: undefined,
       OUT: options.out,
       RUNS: String(options.runs),
       MIN_RUNS: String(options.runs),

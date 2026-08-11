@@ -87,8 +87,8 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
 
   const settleCandidate = (settlement: { verdict: CandidateVerdict; reason?: string }): void => {
     if (settled) return
-    settled = true
     input.recording.settleCandidate(handle, settlement)
+    settled = true
   }
 
   return {
@@ -135,10 +135,12 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
 
     async cancel(reason) {
       if (!controller.signal.aborted) controller.abort(new OperationCancelledError(reason))
+      let cleanupFailed = false
       let cleanupError: unknown
       try {
         await input.scheduler.cancelActive(reason)
       } catch (error) {
+        cleanupFailed = true
         cleanupError = error
       }
       if (runPromise) {
@@ -150,7 +152,7 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
         }
       }
       settleCandidate({ verdict: "cancelled", reason })
-      if (cleanupError !== undefined) throw cleanupError instanceof Error ? cleanupError : new Error("Candidate cleanup failed", { cause: cleanupError })
+      if (cleanupFailed) throw cleanupError
     },
 
     settle(settlement) {

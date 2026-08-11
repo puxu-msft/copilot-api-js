@@ -1,0 +1,17 @@
+diff --git a/src/lib/history/v3/store.ts b/src/lib/history/v3/store.ts
+index 6ae7efdd..70db1338 100644
+--- a/src/lib/history/v3/store.ts
++++ b/src/lib/history/v3/store.ts
+@@ -332,7 +332,11 @@ export function ensureV3Schema(db: Database = getDatabase()): void {
+   }
+
+   const version = db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get() as { value: string } | undefined
+-  if (version?.value !== SCHEMA_VERSION) return
++  if (version?.value !== SCHEMA_VERSION) {
++    db.exec(V3_SCHEMA_SQL)
++    db.prepare("UPDATE v3_meta SET value=? WHERE key='schema_version'").run(SCHEMA_VERSION)
++    return
++  }
+
+   // Current-floor reconciliation is additive/idempotent and never owns a version
+   // transition. It is safe after migrations and on every ordinary store access.

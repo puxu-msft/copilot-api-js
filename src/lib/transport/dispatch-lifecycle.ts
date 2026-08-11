@@ -35,16 +35,21 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
   let cleanupPromise: Promise<void> | undefined
   let disposalPromise: Promise<DispatchDisposalResult> | undefined
   let resolveQuiesced!: () => void
-  const quiesced = new Promise<void>((resolve) => {
+  let rejectQuiesced!: (error: unknown) => void
+  const quiesced = new Promise<void>((resolve, reject) => {
     resolveQuiesced = resolve
+    rejectQuiesced = reject
   })
+  // Observe internally so external-abort cleanup cannot create an unhandled rejection when no caller joins quiesced.
+  void quiesced.catch(() => {})
   let onExternalAbort = (): void => {}
 
-  const complete = (): void => {
+  const complete = (error?: unknown, failed = false): void => {
     if (settled) return
     settled = true
     externalSignal?.removeEventListener("abort", onExternalAbort)
-    resolveQuiesced()
+    if (failed) rejectQuiesced(error)
+    else resolveQuiesced()
   }
 
   const cancel = (reason?: string): void => {
@@ -58,9 +63,9 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchL
       if (iterator?.return) {
         try {
           await iterator.return()
-        } catch {
-          // The lifecycle error already owns the terminal result. Cleanup is best-effort,
-          // but quiescence is later than the cleanup attempt.
+        } catch (error) {
+          complete(error, true)
+          throw error
         }
       }
       complete()

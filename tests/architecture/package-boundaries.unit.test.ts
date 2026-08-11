@@ -2,6 +2,7 @@ import {
   //
   describe,
   expect,
+  setDefaultTimeout,
   test,
 } from "bun:test"
 import {
@@ -295,13 +296,21 @@ function stateUnitForbiddenSpecifiers(source: string, fileName = "state.ts"): Ar
   )
 }
 
+// Every case here scans production source; none of them is timed. Under the 16-shard runner one
+// was measured at 5069.44ms against bun's 5s default while its slowest isolated run is 691ms --
+// the process was simply busy, which a static source guard's result cannot depend on. Per the
+// B-class rule frozen in docs/tmp/2026-08-08-load-sensitive-test-dispositions.md, take the larger
+// of 10x the isolated worst (6.9s) and 3x the sharded worst (15.2s) and round up to the 30/60s
+// tier. Do not shrink the scan surface to fit a budget -- the surface is the point.
+setDefaultTimeout(30_000)
+
 describe("state unit: only language/system builtins", () => {
   test("整个相对依赖闭包只 import node: 与 foundation 包内相对路径", async () => {
     expect(
       await stateUnitClosureViolations(),
       "state 单元的立身之本就是「只依赖语言/系统内置」。注意判据是**闭包**且**解析后**的位置——只查三个入口文件的直接 specifier，或把「以点开头」当成「包内」，都是更弱的另一个命题。",
     ).toEqual([])
-  }, 30_000)
+  })
 
   test("闭包确实包含被传递依赖的文件（否则「零违规」只说明扫描没走到）", async () => {
     // `state.ts` → `./ghc-model-types`。第一版守卫漏的正是这个节点，而它零违规地绿着。

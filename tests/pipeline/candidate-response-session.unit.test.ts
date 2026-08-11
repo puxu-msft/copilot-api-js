@@ -10,6 +10,7 @@ import type {
   CandidateHandle,
   DispatchHandle,
 } from "~/lib/context/model-operation-record"
+import type { DeliveryProtocolAdapter } from "~/lib/pipeline/delivery/protocol"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -18,6 +19,8 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { ResponseCodecRenderError } from "~/lib/pipeline/stream/response-processor"
 
@@ -78,10 +81,7 @@ async function collect(
     })(),
   }
   const output: Array<ClientFrame> = []
-  for await (const frame of session.processor.stream(upstream, session.responseOpts)) {
-    const transformed = session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(frame) : frame
-    if (transformed) output.push(transformed)
-  }
+  for await (const frame of session.processor.stream(upstream, session.responseOpts)) output.push(frame)
   return output
 }
 
@@ -93,6 +93,7 @@ function createSession(id: string) {
     env: env(),
     responseRewrites: [],
     renderer: renderer(id),
+    adapter: createChatCompletionsDeliveryProtocolAdapter(),
     createState: () => state,
     onUpstreamFrame(current, frame) {
       current.upstream.push(frame.data ?? "")
@@ -191,6 +192,7 @@ describe("CandidateResponseSession", () => {
           return []
         },
       },
+      adapter: createAnthropicDeliveryProtocolAdapter(),
       createState: () => ({ transformed: 0 }),
       onRenderedFrame(state, frame) {
         state.transformed++
@@ -209,5 +211,118 @@ describe("CandidateResponseSession", () => {
 
     expect(session.boundary.result?.frame.frame.data).toContain('"index":7')
     expect(session.snapshot()).toEqual({ transformed: 4 })
+  })
+
+  test("publishes ordered grammar outcomes and derives legacy projections only from them", async () => {
+    const session = createCandidateResponseSession({
+      candidate: "candidate:typed" as CandidateHandle,
+      dispatch: "dispatch:typed" as DispatchHandle,
+      env: env("anthropic"),
+      responseRewrites: [],
+      renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+      adapter: createAnthropicDeliveryProtocolAdapter(),
+      createState: () => undefined,
+      snapshot: () => undefined,
+    })
+
+    const frames = await collect(session, [
+      { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index: 3, content_block: { type: "text", text: "" } }) },
+      { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 3, delta: { type: "text_delta", text: "x" } }) },
+      { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 3 }) },
+      { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+    ])
+
+    expect(session.outcomes.map((outcome) => outcome.kind)).toEqual(["buffer-real-frame", "buffer-real-frame", "complete-unit", "response-terminal"])
+    expect(session.boundary.result?.kind).toBe("successful-boundary")
+    expect(session.responseOpts.commitBoundaries?.(frames[2])).toBe(true)
+    expect(session.responseOpts.commitBoundaries?.(frames[1])).toBe(false)
+    expect(session.responseOpts.sawMessageStop?.()).toBe(true)
+    expect(session.responseOpts.sawUpstreamError?.()).toBe(false)
+    expect(session.adapter.deliveryMode).toBe("unit")
+  })
+
+  test("classifies a finish terminal exactly once on the production session seam", async () => {
+    const base = createAnthropicDeliveryProtocolAdapter()
+    let frameCalls = 0
+    let finishCalls = 0
+    const adapter: DeliveryProtocolAdapter = {
+      ...base,
+      classify(input) {
+        frameCalls++
+        return base.classify(input)
+      },
+      classifyFinish(result) {
+        finishCalls++
+        return base.classifyFinish(result)
+      },
+    }
+    const session = createCandidateResponseSession({
+      candidate: "candidate:finish" as CandidateHandle,
+      dispatch: "dispatch:finish" as DispatchHandle,
+      env: env("anthropic"),
+      responseRewrites: [],
+      renderer: {
+        renderResponse: (frame) => frame,
+        flushResponse: () => [{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }],
+      },
+      adapter,
+      createState: () => undefined,
+      snapshot: () => undefined,
+    })
+
+    const frames = await collect(session, [])
+
+    expect(frames).toHaveLength(1)
+    expect({ frameCalls, finishCalls }).toEqual({ frameCalls: 1, finishCalls: 1 })
+    expect(session.outcomes.filter((outcome) => outcome.kind === "response-terminal")).toHaveLength(1)
+    expect(session.responseOpts.sawMessageStop?.()).toBe(true)
+    expect(session.responseOpts.sawUpstreamError?.()).toBe(false)
+  })
+
+  test("converts frame and finish adapter throws into typed adapter-exception outcomes", async () => {
+    const frameCause = new Error("frame classifier exploded")
+    const frameSession = createCandidateResponseSession({
+      candidate: "candidate:frame-throw" as CandidateHandle,
+      dispatch: "dispatch:frame-throw" as DispatchHandle,
+      env: env("anthropic"),
+      responseRewrites: [],
+      renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+      adapter: {
+        ...createAnthropicDeliveryProtocolAdapter(),
+        classify() {
+          throw frameCause
+        },
+      },
+      createState: () => undefined,
+      snapshot: () => undefined,
+    })
+    await collect(frameSession, [{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }])
+    expect(frameSession.outcomes).toContainEqual({
+      kind: "protocol-error",
+      error: { semantic: "adapter-exception", detail: frameCause.message, sourceFrame: expect.any(Object), cause: frameCause },
+    })
+
+    const finishCause = new Error("finish classifier exploded")
+    const finishSession = createCandidateResponseSession({
+      candidate: "candidate:finish-throw" as CandidateHandle,
+      dispatch: "dispatch:finish-throw" as DispatchHandle,
+      env: env("anthropic"),
+      responseRewrites: [],
+      renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+      adapter: {
+        ...createAnthropicDeliveryProtocolAdapter(),
+        classifyFinish() {
+          throw finishCause
+        },
+      },
+      createState: () => undefined,
+      snapshot: () => undefined,
+    })
+    await expect(collect(finishSession, [])).resolves.toEqual([])
+    expect(finishSession.outcomes).toContainEqual({
+      kind: "protocol-error",
+      error: { semantic: "adapter-exception", detail: finishCause.message, sourceFrame: null, cause: finishCause },
+    })
+    expect(finishSession.responseOpts.sawUpstreamError?.()).toBe(true)
   })
 })

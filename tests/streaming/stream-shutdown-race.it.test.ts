@@ -102,6 +102,9 @@ function stalledIterator<T>(): AsyncIterator<T> {
   }
 }
 
+/** Sentinel for the time-free "this promise has not settled yet" probe (see the abort-signal case). */
+const STILL_PENDING = Symbol("still-pending")
+
 function makeSseMsg(data: string, event?: string): ServerSentEventMessage {
   return { data, event, id: undefined, retry: undefined }
 }
@@ -149,19 +152,38 @@ describe("raceIteratorNext", () => {
     const controller = new AbortController()
     const iter = stalledIterator<number>()
 
-    // Abort after 50ms
-    setTimeout(() => controller.abort(), 50)
-
-    const start = Date.now()
-    const result = await raceIteratorNext(iter.next(), {
+    const racePromise = raceIteratorNext(iter.next(), {
       idleTimeoutMs: 0,
       abortSignal: controller.signal,
     })
-    const elapsed = Date.now() - start
+
+    // Causal half, and the part the old `elapsed < 200` never supplied: the race had not settled at
+    // the instant this line ran, and the abort is issued on the very next line. Be precise about how
+    // little that is — measured, `Promise.race([p, Promise.resolve(S)])` reports SETTLED only when
+    // `p` was ALREADY settled as the race was constructed; a `p` resolving one, two or three
+    // microtasks later, or on a `setTimeout(0)`, is still reported pending. So this probe covers an
+    // instant, NOT a tick and not "never". It is enough here because the iterator never resolves and
+    // the idle timeout is off, so there is no mechanism that could settle the race before the abort;
+    // the idle-timeout case below, where such a mechanism does exist, adds a second probe after a
+    // real stall. Reads no clock, so contention cannot move it.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+
+    const abortedAt = Date.now()
+    controller.abort()
+    const result = await racePromise
 
     expect(result).toBe(STREAM_ABORTED)
-    // Should complete quickly after abort, not hang
-    expect(elapsed).toBeLessThan(200)
+    // Outlier tripwire only — the causal proof is above. This still catches a POLLED abort path (one
+    // that returns STREAM_ABORTED eventually rather than on the event), which the assertion above
+    // cannot: any poll interval of ~1s or more trips it. A never-wired abort path is caught by the
+    // per-test budget instead, since the race would simply never settle.
+    //
+    // Why 1s is generous rather than tight: measured from the abort itself, this window contains NO
+    // timer at all — synchronous listener dispatch plus one microtask — so contention has almost
+    // nothing to stretch. The old form started its clock before a `setTimeout(..., 50)` and allowed
+    // 200ms total, leaving 150ms to cover that timer's scheduling; that framing is what made it
+    // fragile, not the bound being small.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
   })
 
   test("rejects with StreamIdleTimeoutError when idle timeout fires first", async () => {
@@ -622,20 +644,30 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
     const controller = new AbortController()
     const iter = stalledIterator<ServerSentEventMessage>()
 
-    // Simulate: abort signal fires 50ms into the stall
-    setTimeout(() => controller.abort(), 50)
-
-    const start = Date.now()
-    const result = await raceIteratorNext(iter.next(), {
+    const racePromise = raceIteratorNext(iter.next(), {
       idleTimeoutMs: 0, // No idle timeout (default config)
       abortSignal: controller.signal,
     })
-    const elapsed = Date.now() - start
+
+    // Nothing settles this on its own — not immediately, and not across a real stall. The second
+    // probe is what the old `expect(elapsed).toBeGreaterThanOrEqual(40)` was inferring indirectly
+    // ("it must have waited for the setTimeout"), asserted directly instead. Both are one-sided:
+    // contention can only make the stall longer, which only makes "still pending" more true.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+    await new Promise((resolve) => setTimeout(resolve, 50)) // the same 50ms stall as before
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+
+    const abortedAt = Date.now()
+    controller.abort()
+    const result = await racePromise
 
     expect(result).toBe(STREAM_ABORTED)
-    // Must complete promptly after abort, not hang until TCP timeout
-    expect(elapsed).toBeLessThan(200)
-    expect(elapsed).toBeGreaterThanOrEqual(40) // Sanity: waited for the setTimeout
+    // Must complete promptly after abort, not hang until TCP timeout. Outlier tripwire only — see
+    // the abort-signal case above for why 1s is generous here: measured from the abort itself, this
+    // window holds no timer, just listener dispatch and a microtask. The previous form started its
+    // clock before the 50ms stall and capped the total at 200ms, so the stall's own scheduling ate
+    // most of the margin.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
   })
 
   test("processAnthropicStream breaks out when idle timeout fires on stalled upstream", async () => {
@@ -682,19 +714,39 @@ describe("shutdown signal interrupts stalled stream (the core bug fix)", () => {
     const controller = new AbortController()
     const iter = stalledIterator<number>()
 
-    // Abort at 30ms, idle timeout at 5000ms
-    setTimeout(() => controller.abort(), 30)
-
-    const start = Date.now()
-    const result = await raceIteratorNext(iter.next(), {
+    const racePromise = raceIteratorNext(iter.next(), {
       idleTimeoutMs: 5000,
       abortSignal: controller.signal,
     })
-    const elapsed = Date.now() - start
 
+    // Not settled at the instant this line runs. Unlike the two cases above this one has no lower
+    // bound, so it had no cover at all for "resolves without being aborted" — measured: mutating the
+    // already-aborted fast path to misfire on a live signal left this case fully green.
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+    // ...and still not settled after a real stall. This second probe is NOT redundant, because the
+    // first one is weaker than it looks: `Promise.race([p, Promise.resolve(S)])` reports SETTLED only
+    // when `p` was ALREADY settled as the race was constructed — measured, a `p` resolving one, two
+    // or three microtasks later is still reported pending. So a path that resolves spontaneously a
+    // tick after construction slips past the first probe entirely. Sleeping drains the microtask
+    // queue, after which an already-settled `p` does win the race. Measured: with the race made to
+    // resolve STREAM_ABORTED one microtask after construction whenever an idle timeout is armed, the
+    // first probe alone left this case green and this one reddens. One-sided — a longer stall only
+    // makes "still pending" more true — and 50ms is far below the 5000ms idle timeout.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(await Promise.race([racePromise, Promise.resolve(STILL_PENDING)])).toBe(STILL_PENDING)
+
+    const abortedAt = Date.now()
+    controller.abort()
+    const result = await racePromise
+
+    // The idle-timeout leg REJECTS, so getting the sentinel back at all already proves the abort
+    // won the race — this case's causal assertion is stronger than the other two's.
     expect(result).toBe(STREAM_ABORTED)
-    // Should resolve at ~30ms (abort), not ~5000ms (timeout)
-    expect(elapsed).toBeLessThan(200)
+    // Should resolve on the abort, not by outlasting something. Outlier tripwire only, but note the
+    // extra constraint here: it must stay well under `idleTimeoutMs` (5000), or "abort beats the
+    // idle timeout" would degrade into the idle timeout covering for it. A lazy abort that still
+    // beats 5000ms is exactly what this catches — verified at 3039ms against the old bound.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
   })
 })
 

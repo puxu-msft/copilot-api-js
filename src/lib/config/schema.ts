@@ -894,6 +894,18 @@ export const HistoryConfigSchema = z
     enabled: nullableBoolean(),
     /** Maximum admitted History operations. Strictly positive; 0 is never unlimited. */
     persistence_queue_capacity: nullablePositiveInt(),
+    /**
+     * How long process startup waits for History to become ready before failing
+     * the whole start with a non-zero exit. The Worker's startup retries are
+     * rate-limited but uncapped on purpose (a locked database may clear on the
+     * next attempt), and the server may not listen before History is ready — so
+     * without this bound a persistently locked database leaves the process
+     * neither serving nor exiting. `0` waits forever, restoring that hang; it
+     * exists for operators who would rather block than restart. Capped at the
+     * JS timer ceiling (2^31-1 ms): a larger delay does not wait longer, it
+     * wraps to ~1ms and would make every healthy start report a deadline.
+     */
+    startup_deadline_ms: z.number().int().min(0).max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms").nullable().optional(),
     raw_capture: nullableSection(
       z
         .object({

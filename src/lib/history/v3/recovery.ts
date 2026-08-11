@@ -21,7 +21,7 @@ function recoveredFrames(
   recorder: ReturnType<typeof createModelOperationRecorder>,
   events: ReadonlyArray<SseEventRecord> | undefined,
   track: "upstream" | "client",
-  attempt?: Parameters<ReturnType<typeof createModelOperationRecorder>["registerFrame"]>[1]["origin"]["attempt"],
+  dispatch?: Parameters<ReturnType<typeof createModelOperationRecorder>["registerFrame"]>[1]["origin"]["dispatch"],
 ): Pick<OperationTrackInput, "frames" | "frameObservations"> {
   const frames: Array<FrameNodeHandle> = []
   const frameObservations: Array<OperationFrameObservation> = []
@@ -39,7 +39,7 @@ function recoveredFrames(
         origin: {
           stage: "recovery-projection",
           track,
-          ...(attempt === undefined ? {} : { attempt }),
+          ...(dispatch === undefined ? {} : { dispatch }),
           detail: "wire event name/id/retry and original offset were unavailable in the projected backup",
         },
         mediaType: "text/event-stream",
@@ -121,9 +121,16 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
   })
 
   let lastUpstreamTrack: OperationTrackInput | undefined
-  // Recovery intentionally targets the deprecated transition adapter until the P4-P8 migration removes this projection path.
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  let committedAttempt: ReturnType<typeof recorder.beginAttempt> | undefined
+  let committedDispatch: ReturnType<typeof recorder.beginDispatch> | undefined
+  // Created lazily at the first dispatch, exactly where the adapter this replaced
+  // created its implicit candidate — inside beginAttempt, i.e. AFTER that attempt's
+  // payloads are registered. Creating it eagerly before the loop shifts every
+  // following event's sequence, which changes the timeline and the manifest digest
+  // of a recovered record. Its metadata and settle reason are the adapter's own
+  // strings for the same reason: they are part of the hashed record, so changing
+  // them would make re-running recovery produce a different digest for input that
+  // has not changed.
+  let candidate: ReturnType<typeof recorder.beginCandidate> | undefined
   for (const [index, projected] of (entry.attempts ?? []).entries()) {
     const effectiveBody = projected.effectiveSource?.body
     const wireBody = projected.upstreamRequest?.body
@@ -141,9 +148,9 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
           mediaType: "application/json",
         })
       )
-    // Recovery intentionally targets the deprecated transition adapter until the P4-P8 migration removes this projection path.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    const handle = recorder.beginAttempt({
+    candidate ??= recorder.beginCandidate({ role: "primary", metadata: { compatibility: "attempt-adapter" } })
+    const handle = recorder.beginDispatch({
+      candidate,
       strategy: projected.strategy,
       ...(projected.transport === "http" || projected.transport === "upstream-ws" || projected.transport === "upstream-ws-fallback" ?
         { transport: projected.transport }
@@ -182,14 +189,14 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
     const finalAttempt = index === (entry.attempts?.length ?? 0) - 1
     let verdict: "committed" | "discarded" | "failed" = "discarded"
     if (finalAttempt) verdict = entry.state === "completed" ? "committed" : "failed"
-    recorder.settleAttempt(handle, {
+    recorder.settleDispatch(handle, {
       verdict,
       upstreamResponse: lastUpstreamTrack,
       ...(projected.error === undefined ? {} : { error: { message: projected.error } }),
       reason: "recovered from projected History V3 entry",
       extensions: { "history-v3.recovery": { projectedAttemptIndex: index } },
     })
-    if (verdict === "committed") committedAttempt = handle
+    if (verdict === "committed") committedDispatch = handle
   }
 
   const clientBodyResponse = entry.clientResponse?.body
@@ -214,10 +221,26 @@ export function recoverProjectedHistoryEntry(entry: HistoryEntry, capturedAt: nu
     extensions: { "history-v3.recovery": { projected: true } },
   })
 
+  // After recordEgress, matching the adapter this replaced: it settled its
+  // implicit candidate inside commitTerminal, i.e. after egress. Settling
+  // earlier would shift every following event's sequence and change the
+  // manifest digest of a recovered record — a silent non-equivalence.
+  if (candidate !== undefined) {
+    recorder.settleCandidate(candidate, {
+      verdict: committedDispatch === undefined ? "failed" : "winner",
+      reason: "attempt adapter terminal",
+    })
+  }
+
   const failureReason = entry._index?.derived?.failureReason
   return recorder.commitTerminal({
     outcome: terminalOutcome(entry.state),
-    ...(committedAttempt === undefined ? {} : { committedAttempt }),
+    // winnerCandidate and committedDispatch travel together. A recovered entry
+    // that never committed a dispatch has a candidate settled `failed`, and
+    // naming it the winner would make the terminal contradict its own candidate.
+    // The adapter this replaced passed only committedAttempt and let
+    // commitTerminal decline to infer a winner when none was committed.
+    ...(committedDispatch === undefined || candidate === undefined ? {} : { winnerCandidate: candidate, committedDispatch }),
     ...(failureReason === undefined ? {} : { error: { message: failureReason } }),
     extensions: { "history-v3.recovery": { projected: true, originalState: entry.state } },
   })

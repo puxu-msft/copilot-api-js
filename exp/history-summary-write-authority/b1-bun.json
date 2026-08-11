@@ -1,0 +1,51 @@
+{
+  "runtime": "Bun 1.3.14",
+  "extension": "/home/xp/src/copilot-api-js/.worktree/agent-a0b5eee4b161ab9ab/exp/history-summary-write-authority/maintenance_mode_extension.local",
+  "hostToggle": "bun:ffi dlopen exported maintenance_mode_set(connection_id, enabled)",
+  "connectionIds": [
+    1,
+    2
+  ],
+  "attempts": {
+    "ordinarySqlCannotSetMode": {
+      "ok": false,
+      "error": "SQLiteError: wrong number of arguments to function maintenance_mode()"
+    },
+    "ordinaryWriteRejected": {
+      "ok": false,
+      "error": "SQLiteError: controlled maintenance mode required"
+    },
+    "hostToggleConnection1": {
+      "ok": true,
+      "value": 0
+    },
+    "connection1WriteAllowed": {
+      "ok": true,
+      "value": {
+        "changes": 1,
+        "lastInsertRowid": 1
+      }
+    },
+    "connection2StillRejected": {
+      "ok": false,
+      "error": "SQLiteError: controlled maintenance mode required"
+    },
+    "hostClearConnection1": {
+      "ok": true,
+      "value": 0
+    },
+    "connection1RejectedAfterClear": {
+      "ok": false,
+      "error": "SQLiteError: controlled maintenance mode required"
+    }
+  },
+  "rows": {
+    "connection1": [
+      {
+        "id": 1,
+        "value": "scoped"
+      }
+    ],
+    "connection2": []
+  }
+}

@@ -34,6 +34,7 @@ import {
 } from "~/lib/pipeline/driver"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 function frame(type: string, extra: Record<string, unknown> = {}): UpstreamFrame {
   return { event: type, data: JSON.stringify({ type, ...extra }) }
@@ -124,8 +125,8 @@ function makeResponsesStopTracker() {
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<ClientFrame> } {
   const written: Array<ClientFrame> = []
   const stream = {
-    writeSSE: (value: ClientFrame) => {
-      written.push(value)
+    write: (input: Uint8Array | string) => {
+      written.push(decodeSseWrite(input))
       return Promise.resolve()
     },
   } as unknown as Parameters<typeof makeSseSink>[0]

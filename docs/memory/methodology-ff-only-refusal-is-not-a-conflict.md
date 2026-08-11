@@ -39,4 +39,4 @@ metadata:
 
 **How to apply:** 撞到 `--ff-only` 被拒，先 `status` + `ls-files -u` 看有无前置状态（有则报告、确认归属，不自行解决），再按实际 stderr 分流；清除共享树重复编辑一律走 exact reverse patch。碰撞集这类「按列取值」的取证，先校准列序。
 
-**Related:** [[methodology-verify-the-mutation-actually-applied]]、[[git-commit-pathspec-commits-worktree-not-index]] 所在的共享树纪律簇；完整共享树协作规程见 skill `git-preference:coordinating-a-shared-git-worktree`，隔离树的合并边界见 [[worktree-isolated-session-cannot-merge-shared-master]]。
+**Related:** [[methodology-verify-the-mutation-actually-applied]]、[[git-commit-pathspec-commits-worktree-not-index]] 所在的共享树纪律簇；完整共享树协作规程见 skill `git-preference:coordinating-a-shared-git-worktree`，隔离树的合并边界见 [[worktree-isolated-session-merging-into-shared-master]]。

@@ -1,8 +1,12 @@
 # 首信号无损排空规格
 
-> 状态：已实施。
+> 状态：已实施，**信号分档部分已于 2026-08-10 被修订**。
 >
-> 用户裁决：2026-08-07。首个终止信号不得制造已接纳请求的失败；进程等待这些请求自行进入终态。第二个终止信号仍立即强退。
+> 用户裁决：2026-08-07。首个终止信号不得制造已接纳请求的失败；进程等待这些请求自行进入终态。~~第二个终止信号仍立即强退。~~
+>
+> **2026-08-10 修订（ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md)）**：本 spec 关于**第二信号**的全部条款（§2.4、§3.2 末段、§4 不变量 4、§6.1 末条，以及 §2.1 第 1 条的措辞）已被三档契约取代——仍在等**请求**时（`stopping`／`draining`）的第二个终止信号改为「中止残余 in-flight + 照常 finalize」，第三个才强退；已越过请求排空（`finalizing`／`notifying`／`failed`）的下一个信号仍立即强退。**本 spec 其余部分（无损 drain 本身、§2.2／§2.3／§2.5、不变量 1／2／3／5／6／7）继续成立且未被修订。**
+>
+> 阅读纪律：下文凡出现「第二信号必定强退」的表述，一律以本节与该 ADR 为准，不得按章节正文执行。
 
 ## 1. 问题
 
@@ -18,7 +22,7 @@
 
 首个 `SIGINT`、`SIGTERM` 或 `SIGUSR2` 必须完成以下动作：
 
-1. 同步认领 lifecycle，使紧邻的第二信号必定走强退路径。
+1. 同步认领 lifecycle，使紧邻的第二信号必定被识别为 post-claim 信号并进入分档路径（2026-08-07 冻结时该路径只有强退一档；分档见文首修订说明）。
 2. 将状态置为 `stopping`，随后进入 `draining`。
 3. 立即关闭 HTTP listener，并由 middleware 拒绝信号后进入的新请求。
 4. 停止只属于后台维护的 producer，例如 stale reaper、History maintenance 和 Telemetry rollup。
@@ -53,9 +57,13 @@ shutdown 不再拥有请求终止 deadline。首信号之后停止 stale reaper�
 
 ### 2.4 第二信号
 
-任何非 `stopped` 状态收到第二个终止信号，必须立即调用 `process.exit(128 + signal)`：SIGINT 为 130，SIGTERM 为 143。该路径不等待请求、持久化、通知或日志，也不尝试给客户端合成普通 API 错误。
+> **已被 2026-08-10 三档契约取代**（见文首修订说明）。以下为 2026-08-07 冻结时的原文，保留以说明当时的裁决；**当前行为以 ADR 为准**。
 
-这是 shutdown 唯一主动放弃在途请求的入口。
+~~任何非 `stopped` 状态收到第二个终止信号，必须立即调用 `process.exit(128 + signal)`：SIGINT 为 130，SIGTERM 为 143。该路径不等待请求、持久化、通知或日志，也不尝试给客户端合成普通 API 错误。~~
+
+现行契约：仍在等请求（`stopping`／`draining`）时的第二个终止信号**放弃 drain 但不退出**——用请求级原语中止残余 operation，随后照常走完全部 durability barrier；第三个才 `process.exit(128 + signal)`。已越过请求排空（`finalizing`／`notifying`／`failed`）时，下一个终止信号仍立即强退，因为那里在等的正是 durability barrier 本身。
+
+~~这是 shutdown 唯一主动放弃在途请求的入口。~~ 现在有两个入口，且都由操作者按键触发、shutdown 自己仍不拥有任何时限：第二信号（有损于请求、**无损于持久化**）与第三信号（两者皆放弃）。
 
 ### 2.5 请求排空后的资源收敛
 
@@ -90,14 +98,14 @@ generation 与 lightweight 两个 in-flight registry 均清零后，shutdown 按
 
 `Server is shutting down` 仍可用于首信号后拒绝新 ingress 的 503 响应；它不得再成为已接纳请求的终态原因。
 
-删除旧 `aborting`／`forcing` 生命周期状态及不再可达的 observer taxonomy。第二信号不发布阶段，因为它直接退出。
+删除旧 `aborting`／`forcing` 生命周期状态及不再可达的 observer taxonomy。~~第二信号不发布阶段，因为它直接退出。~~ **2026-08-10 起**：第三信号不发布阶段（直接退出）；第二信号也不发布新阶段——它不改变 phase，只中止残余请求，随后由既有的 drain→finalize 路径继续发布。
 
 ## 4. 不变量
 
 1. 首信号关闭 ingress，但不降低任何已接纳 operation 的能力。
 2. shutdown 不以任何固定时间值终止 operation。
 3. 请求级 deadline 仍能终止真正超时的 operation，防止首信号无限等待泄漏。
-4. 第二信号在所有非 `stopped` 状态立即强退。
+4. ~~第二信号在所有非 `stopped` 状态立即强退。~~ **已于 2026-08-10 被 ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md) 修订**：仍在等**请求**时（`stopping`／`draining`）的第二个终止信号改为「中止残余 in-flight + 照常 finalize」，第三个才强退；已越过请求排空后（`finalizing`／`notifying`／`failed`）的下一个信号仍立即强退。修订理由：本 spec 删掉 `graceful_wait`／`abort_wait` 时，连带删掉了旧四步实现里「有界墙钟 **且** 干净 finalize」这一档（旧 Step 2/3/4 无论走哪条分支都会执行 `finalize()`），而优雅重启的快速切换需要的正是那一档。**本 spec 的其余不变量（尤其 2「shutdown 不以任何固定时间值终止 operation」）继续成立**——第二档由操作者按下、走请求级原语，不是 shutdown 自己的时限。
 5. History、Telemetry 和 Diagnostic 在最后一个 operation 终态落盘前保持可用。
 6. observer 只在 durability barrier 成功后看到 `finalized`。
 7. `waitForShutdown()` 只在 `stopped` resolve；失败路径不 resolve 成功 latch。
@@ -122,7 +130,7 @@ generation 与 lightweight 两个 in-flight registry 均清零后，shutdown 按
 - generation 与 lightweight 两个 in-flight registry 均清零前，token runtime、上游 transport、History、Telemetry 和 Diagnostic 均未关闭。
 - 两个 registry 均清零后，资源按 §2.5 顺序关闭并发布唯一终态。
 - 新 ingress 在首信号后收到 503。
-- 第二信号在 draining、finalizing、notifying 和 failed 状态立即以对应信号退出码强退。
+- ~~第二信号在 draining、finalizing、notifying 和 failed 状态立即以对应信号退出码强退。~~ **2026-08-10 起**：第二信号在 `stopping`／`draining` 中止残余请求但**不**退出，第三个才以对应退出码强退；在 `finalizing`／`notifying`／`failed` 仍立即强退。
 
 ### 6.2 反向控制
 

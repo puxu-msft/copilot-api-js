@@ -4,8 +4,16 @@
  * Re-exports all history-related types and functions.
  */
 
+// Process-startup policy: how long a process entry point waits for History before failing loudly.
+export {
+  HISTORY_STARTUP_DEADLINE_MS,
+  HistoryStartupDeadlineError,
+  initHistoryWithinStartupDeadline,
+} from "./startup-deadline"
+
 // Store (persistence and query)
 export {
+  HistoryPinUnavailableError,
   clearHistory,
   exportHistory,
   getAgentIdFromHeaders,
@@ -29,6 +37,7 @@ export {
   searchContains,
   searchHistory,
   setHistoryPublisher,
+  setHistoryStoreWipeForTests,
   setPinned,
   shutdownHistory,
   startHistoryBackfills,

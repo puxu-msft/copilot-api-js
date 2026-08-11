@@ -32,7 +32,7 @@ import { PATHS } from "~/lib/config/paths"
 import {
   //
   DEFAULT_V3_PERSIST_RETRY_CONFIG,
-  getV3PersistRetryConfigForTests,
+  getV3PersistRetryConfig,
   setV3PersistRetryConfig,
 } from "~/lib/history/v3"
 import {
@@ -82,30 +82,30 @@ describe("history.persist_retry config wiring", () => {
   test("applyConfigToState feeds persist_retry into the V3 store retry budget", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n    max_backoff_ms: 2500\n    max_total_ms: 5000\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 7, backoffMs: 25, maxBackoffMs: 2500, maxTotalMs: 5000 })
+    expect(getV3PersistRetryConfig()).toEqual({ maxAttempts: 7, backoffMs: 25, maxBackoffMs: 2500, maxTotalMs: 5000 })
   })
 
   test("absent persist_retry keeps the default 10-attempt exponential retry budget", async () => {
     await writeConfig("history:\n  enabled: true\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000, maxTotalMs: 60_000 })
+    expect(getV3PersistRetryConfig()).toEqual({ maxAttempts: 10, backoffMs: 10, maxBackoffMs: 5000, maxTotalMs: 60_000 })
   })
 
   test("max_attempts is floored at 1 (a 0 in config never disables all attempts)", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_attempts: 0\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests().maxAttempts).toBe(1)
+    expect(getV3PersistRetryConfig().maxAttempts).toBe(1)
   })
 
   test("omitted caps use the 5s per-backoff and 60s total defaults", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests()).toMatchObject({ maxBackoffMs: 5000, maxTotalMs: 60_000 })
+    expect(getV3PersistRetryConfig()).toMatchObject({ maxBackoffMs: 5000, maxTotalMs: 60_000 })
   })
 
   test("max_total_ms: 0 disables the time cap (explicit opt-out survives)", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_total_ms: 0\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests().maxTotalMs).toBe(0)
+    expect(getV3PersistRetryConfig().maxTotalMs).toBe(0)
   })
 })

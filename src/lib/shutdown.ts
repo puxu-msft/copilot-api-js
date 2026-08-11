@@ -3,8 +3,11 @@
  *
  * SIGINT, SIGTERM, or SIGUSR2 received while idle stops ingress, losslessly
  * drains every accepted operation, and then closes runtime resources behind
- * durability barriers. Shutdown never cancels request work. While lifecycle is
- * active, SIGUSR2 is idempotent; SIGINT or SIGTERM is the immediate escape hatch.
+ * durability barriers. Shutdown never cancels request work on a timer of its own.
+ *
+ * While the lifecycle is active, SIGUSR2 stays idempotent and SIGINT/SIGTERM escalate in two tiers:
+ * the first such signal abandons the wait for REQUESTS (terminating them through request-level primitives) but still runs every durability barrier;
+ * the next one is the immediate escape hatch. Once past the request drain — in `finalizing`/`notifying`/`failed` — the very next signal exits immediately, because there the thing being awaited is the persistence barrier itself.
  */
 
 import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
@@ -83,6 +86,19 @@ let shutdownCompletion = createCompletionLatch()
 let shutdownPhase: ProcessLifecycleState = "idle"
 let shutdownPromise: Promise<void> | null = null
 let signalHandlers: { sigint: () => void; sigterm: () => void; sigusr2: () => void } | null = null
+
+/**
+ * Termination signals seen AFTER the lifecycle was claimed.
+ * 0 while the first signal is still the only one; 1 selects the drain-abandonment tier; 2+ is the hard escape.
+ * Counted separately from `shutdownPhase` because the tier depends on how many times the operator asked, not on how far shutdown has progressed.
+ */
+let postClaimTerminationSignals = 0
+
+/**
+ * The drain source the running `gracefulShutdown` is polling.
+ * Published so the second termination signal can reach exactly the operations the drain is waiting on — including a test-injected fake — instead of rebuilding the production union and diverging from what the drain actually watches.
+ */
+let activeDrainSource: ShutdownDrainSource | null = null
 
 /**
  * Scoped publisher for `system.shutdown_phase_changed` events. Set once at
@@ -305,12 +321,20 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // the explicit finalization barrier below surfaces seal rejection before History closes.
     getActive: () => [...getRequestContextManager().getTrackedOperations(), ...listInFlightLightweightModelOperations()],
   }
+  // Publish the source the drain is about to poll, so a second termination signal terminates exactly these operations rather than a separately-rebuilt union.
+  activeDrainSource = tracker
   const server = deps?.server ?? serverInstance
   const closeTokenRuntime = deps?.closeTokenRuntimeFn ?? (async () => await peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
+  // NOTE (Task 4 / Task 6 seam): the manager method this calls was renamed
+  // `drainModelOperationFinalizations` → `drainLifecycleFailures` in Task 4 (manager.ts). The
+  // `ShutdownDeps.drainModelOperationFinalizationsFn` field name, this local variable, and the
+  // `FinalizeDeps.drainModelOperationFinalizations` field below are Task 6's responsibility
+  // (plan: `Modify: src/lib/shutdown.ts` — dependency rename — Task 6 Step 3/5) and are left
+  // unchanged here; only the call target is updated so `bun run typecheck` passes for Task 4.
   const drainModelOperationFinalizations =
-    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
+    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainLifecycleFailures() ?? Promise.resolve())
   const stopAdmission = deps?.stopHistoryAdmissionFn ?? stopHistoryAdmission
   const drainAdmissionHandoffs = deps?.drainHistoryAdmissionHandoffsFn ?? drainHistoryAdmissionHandoffs
   const drainAdmission = deps?.drainHistoryAdmissionFn ?? drainHistoryAdmission
@@ -345,6 +369,24 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // ── Step 1: Stop accepting new requests ───────────────────────────────
   _isShuttingDown = true
+
+  // Stop listening for new connections (but keep existing ones alive).
+  // Do NOT await — server.close(false) stops accepting new connections immediately, but the returned promise won't resolve until all existing connections end.
+  // Upgraded WebSocket connections (even after close handshake) keep the HTTP server open indefinitely, which would block the entire shutdown sequence.
+  //
+  // This sits immediately after the flag above, BEFORE any await, on purpose.
+  // The flag makes the observability middleware answer 503; closing the listener is what stops the kernel handing us new connections at all.
+  // Every await between the two is a window where we still accept connections only to reject them, and under SO_REUSEPORT during a `--restart` takeover the kernel is load-balancing new connections across us and the successor, so a share of them fail here instead of being served next door.
+  // That window used to span `drainAdmissionHandoffs()` plus — on the handoff path specifically, which is exactly when a successor is competing for the port — the `freezeNegotiation`/`freezeCalibration` persistence I/O below. Neither is bounded: a process carrying a large History write backlog can sit in them for minutes, and while it does, it both rejects and keeps accepting.
+  // That is the likely shape of the 2026-08-09 incident, where clients were still getting the shutdown 503 seven minutes into a handoff; see the note on that 503 in src/lib/observability/middleware.ts, which closes the other path the evidence permits (a client whose pooled socket already points here). The two fixes cover different mechanisms — neither makes the other redundant.
+  // docs/lifecycle.md「优雅重启」specifies 旧进程立即停止 accept 新连接; this ordering is what makes "立即" true.
+  if (server) {
+    server.close(false).catch((error: unknown) => {
+      consola.error("Error stopping listener:", error)
+    })
+    consola.info("Stopped accepting new connections")
+  }
+
   // Reject only pre-context admission waiters. Already accepted operations own
   // bound reservations and continue losslessly through the operation registry.
   stopAdmission(new Error(`History admission stopped by ${signal}`))
@@ -382,20 +424,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
   // closing them in Phase 1 would prevent users from seeing phase2/3/4/finalized
-  // progress in the UI. They are torn down in Phase 4 along with the HTTP
-  // server (force close) so the operator can observe the full shutdown timeline.
-
-  // Stop listening for new connections (but keep existing ones alive).
-  // Do NOT await — server.close(false) stops accepting new connections immediately,
-  // but the returned promise won't resolve until all existing connections end.
-  // Upgraded WebSocket connections (even after close handshake) keep the HTTP
-  // server open indefinitely, which would block the entire shutdown sequence.
-  if (server) {
-    server.close(false).catch((error: unknown) => {
-      consola.error("Error stopping listener:", error)
-    })
-    consola.info("Stopped accepting new connections")
-  }
+  // progress in the UI. They are torn down by `closeAllClients()` in finalize, once every accepted operation has drained, so the operator can observe the full shutdown timeline.
+  // (This used to say they go down "in Phase 4 along with the HTTP server (force close)". There is no force close: `server.close(false)` above is the only `close` call in this file, and it deliberately leaves established connections alone.)
 
   // ── Step 2: Losslessly drain accepted operations ─────────────────────
   const activeCount = tracker.getActive().length
@@ -577,6 +607,77 @@ function writeEmergencyNoThrow(message: string): void {
   }
 }
 
+/**
+ * Operator-requested drain abandonment — the second termination signal.
+ *
+ * Terminates every accepted generation operation through the SAME request-level primitives the stale reaper and `timeouts.request_deadline` already use: `reapInFlight()` cancels the in-flight upstream work, `fail()` records the terminal state with its provenance.
+ * Shutdown still owns no deadline of its own; this runs only because a human explicitly gave up waiting, which is why the terminal is attributed to `shutdown`/`operator-abandoned-drain` rather than to a timeout.
+ *
+ * Each operation this DOES terminate stops holding the drain, so the drain loop can fall through to `finalize()` and History, Telemetry and Diagnostics still flush. That is the point of this tier: bounded by the operator, but not lossy.
+ *
+ * It is NOT a guarantee that the drain ends. Three shapes survive it, and the banner must not paper over them: an operation that is already settled but still finalizing (below); a lightweight operation (below); and the `stopping` awaits that run BEFORE the drain even starts (`drainAdmissionHandoffs`, the handoff freezes), where `activeDrainSource` is still null and there is nothing to reach. The third signal is the escape for all three.
+ *
+ * Scope limit — lightweight operations (count_tokens / embeddings) are NOT terminated here: `LightweightInFlightOperation` is a read-only descriptor with no cancellation surface. They are short by construction, and if one ever does wedge the drain the third signal remains the escape.
+ *
+ * @returns what this actually did, split so the operator banner cannot overstate it.
+ */
+function abandonDrain(signal: string): { started: boolean; terminated: number; finalizing: number; lightweight: number } {
+  const source = activeDrainSource
+  // The drain has not begun yet — we are still in the `stopping` awaits that precede it (admission handoff, freeze). There is nothing to abandon, and this tier cannot unblock those; say so rather than printing a count that implies we acted.
+  if (!source) return { started: false, terminated: 0, finalizing: 0, lightweight: 0 }
+
+  let terminated = 0
+  let finalizing = 0
+  let lightweight = 0
+  for (const operation of source.getActive()) {
+    // Same discriminator `formatActiveRequestsSummary` uses to tell the two registries apart. Counted, not just skipped: a lightweight operation still HOLDS the drain, so the banner has to be able to say what is keeping it open.
+    if ("operationId" in operation) {
+      lightweight++
+      continue
+    }
+    try {
+      // An operation can be settled and STILL tracked: `releaseTrackedOperationIfTerminal` is a deliberate no-op while `blocker !== "none"` (context/manager.ts), so the ctx stays visible instead of silently vanishing.
+      // Two reasons to leave those alone. The count: `fail()` early-returns on them (`if (settled) return`), so counting one as terminated is simply false. The risk: `reapInFlight()` aborts `lifecycleAbort`, and while the canonical finalizer itself does NOT read that signal (it waits on `whenOperationQuiesced()`), the operation body, transport and delivery paths that may still be winding down DO consume it — aborting there can disturb work that is still trying to finish.
+      if (operation.settled) {
+        finalizing++
+        continue
+      }
+      operation.reapInFlight()
+      operation.fail(
+        operation.resolvedModel ?? operation.originalRequest?.model ?? "unknown",
+        new Error(`Drain abandoned by operator (${signal}) before this request completed`),
+        undefined,
+        { attribution: { category: "shutdown", code: "operator-abandoned-drain" } },
+      )
+      terminated++
+    } catch (error) {
+      // One wedged context must not stop us reaching the others — the operator asked to stop waiting, so best-effort is the correct shape here.
+      consola.warn("[shutdown] could not terminate an operation while abandoning the drain:", error)
+    }
+  }
+  return { started: true, terminated, finalizing, lightweight }
+}
+
+/**
+ * Phrase the tier-2 outcome for the operator, WITHOUT overstating it.
+ *
+ * "I terminated your requests and I am flushing" is a promise, and it reads very differently at 3am from what actually happened. `now flushing` is therefore claimed ONLY when nothing is left holding the drain — otherwise the operator goes looking for a flush that has not started, or trusts a handoff that is still wedged.
+ */
+function describeDrainAbandonment(outcome: { started: boolean; terminated: number; finalizing: number; lightweight: number }): string {
+  if (!outcome.started) {
+    return "the drain has not started yet, so there is nothing to abandon — this phase is still stopping ingress and cannot be shortened by this signal."
+  }
+
+  const stillHolding: Array<string> = []
+  if (outcome.finalizing > 0) stillHolding.push(`${outcome.finalizing} already-settled operation(s) still persisting`)
+  if (outcome.lightweight > 0) stillHolding.push(`${outcome.lightweight} lightweight operation(s) that have no cancellation surface`)
+
+  const terminatedNote = `abandoning the drain wait — terminated ${outcome.terminated} in-flight request(s)`
+  if (stillHolding.length === 0) return `${terminatedNote}, now flushing.`
+  // Deliberately does NOT say "now flushing": the drain is still held, so persistence has not begun. Both remaining shapes are ones this tier refuses to interrupt by design, which is exactly what the third signal is for.
+  return `${terminatedNote}, but the drain is STILL HELD by ${stillHolding.join(" and ")} — not flushing yet.`
+}
+
 export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
   const shutdownFn = opts?.gracefulShutdownFn ?? ((shutdownSignal: string) => gracefulShutdown(shutdownSignal))
   const exitFn = opts?.exitFn ?? ((code: number) => process.exit(code))
@@ -586,10 +687,24 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   if (shutdownPhase !== "idle") {
     if (!isTerminationSignal(signal)) return shutdownPromise ?? undefined
 
+    postClaimTerminationSignals++
+
+    // Tier 2 — the operator gives up waiting for the drain, but NOT on durability.
+    // Terminate what is still in flight and let the drain loop fall through to finalize, so every persistence barrier still runs.
+    // Deliberately scoped to the phases that are still WAITING ON REQUESTS: once we are in `finalizing`/`notifying`/`failed` the thing being waited on IS the persistence barrier, which is exactly what the escape hatch exists to escape — so there the second signal must still exit immediately, as it always has.
+    const waitingOnRequests = shutdownPhase === "stopping" || shutdownPhase === "draining"
+    if (waitingOnRequests && postClaimTerminationSignals === 1) {
+      const outcome = abandonDrain(signal)
+      writeEmergencyNoThrow(
+        `[shutdown] Second termination signal (${signal}); ${describeDrainAbandonment(outcome)} Press Ctrl+C again to exit immediately WITHOUT flushing`,
+      )
+      return shutdownPromise ?? undefined
+    }
+
     // Deliberately bypass consola → observability bus → FileSink → History. The
     // escape hatch must remain visible and must not wait for any subsystem it is
     // intended to escape from.
-    writeEmergencyNoThrow(`[shutdown] Second termination signal (${signal}); exiting immediately`)
+    writeEmergencyNoThrow(`[shutdown] Termination signal (${signal}) during ${shutdownPhase}; exiting immediately`)
     exitFn(forcedExitCode(signal))
     return shutdownPromise ?? undefined
   }
@@ -599,7 +714,9 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   // the first is always recognized as the force-exit signal.
   _isShuttingDown = true
   setPhaseFireAndForget("stopping")
-  writeEmergencyNoThrow(`[shutdown] Received ${signal}; graceful shutdown started. Press Ctrl+C again to exit immediately`)
+  writeEmergencyNoThrow(
+    `[shutdown] Received ${signal}; graceful shutdown started, waiting for accepted requests. Press Ctrl+C again to stop waiting and flush, or twice to exit immediately`,
+  )
 
   shutdownPromise = shutdownFn(signal).catch((error: unknown) => {
     writeEmergencyNoThrow(`[shutdown] Fatal error during shutdown: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
@@ -641,6 +758,8 @@ export function _resetShutdownState(): void {
   shutdownPromise = null
   serverInstance = null
   _shutdownPublisher = undefined
+  postClaimTerminationSignals = 0
+  activeDrainSource = null
   if (signalHandlers) {
     process.removeListener("SIGINT", signalHandlers.sigint)
     process.removeListener("SIGTERM", signalHandlers.sigterm)

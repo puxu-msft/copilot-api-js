@@ -39,7 +39,7 @@ import type {
   ResponseRewrite,
   RewriteState,
 } from "~/lib/pipeline/rewrite-registry"
-import type { UpstreamFrame } from "~/lib/pipeline/types"
+import type { SseFrame } from "~/lib/stream"
 import type {
   //
   MessagesPayload,
@@ -78,6 +78,11 @@ import {
 } from "~/lib/anthropic/server-tool-filter"
 import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  freshFrames,
+  preserveFrame,
+} from "~/lib/pipeline/rewrite-registry"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
 
@@ -93,9 +98,15 @@ function parseFrame(data: string | undefined): StreamEvent | undefined {
   }
 }
 
-/** Map a factory's `processEvent` output to a FrameAction: `[]` = buffer, else emit. */
+/** Constructed Anthropic rewrite frames deliberately omit parser current-ID state unless the producer explicitly supplies an own wire ID. */
+function withoutParsedCurrentId(frame: SseFrame): Omit<SseFrame, "id"> {
+  const { id: _parsedCurrentId, ...withoutId } = frame
+  return withoutId
+}
+
+/** Map a factory's `processEvent` output to a FrameAction: `[]` = buffer, otherwise fresh constructed frames. */
 function bufferOrEmit(out: Array<ServerSentEventMessage>): FrameAction {
-  return out.length === 0 ? { kind: "buffer" } : { kind: "emit", frames: out as Array<UpstreamFrame> }
+  return out.length === 0 ? { kind: "buffer" } : freshFrames(...(out as Array<SseFrame>))
 }
 
 /**
@@ -167,7 +178,7 @@ const recoverRewrite: ResponseRewrite = {
     }
     return bufferOrEmit(out)
   },
-  flush: (st): Array<UpstreamFrame> => (st as RecoverState).recoverer.flush() as Array<UpstreamFrame>,
+  flush: (st): Array<SseFrame> => (st as RecoverState).recoverer.flush() as Array<SseFrame>,
   // Non-streaming: rebuild downgraded text → tool_use on the whole response. `enabled:true`
   // because `appliesTo` already gated `state.recoverToolCallText` (when off, the driver skips
   // this rewrite entirely = byte-identical to the helper's `enabled:false` early-return).
@@ -205,12 +216,12 @@ const thinkingRewrite: ResponseRewrite = {
   appliesTo: (env) => ANTHROPIC(env) && state.thinkingSignatureCompat !== false,
   transform: (frame): FrameAction => {
     const parsed = parseFrame(frame.data)
-    if (!parsed) return { kind: "emit", frames: [frame] }
+    if (!parsed) return preserveFrame(frame)
     const compat = applyThinkingSignatureCompat(parsed, state.thinkingSignatureCompat)
-    if (!compat) return { kind: "emit", frames: [frame] }
-    // Reshaped frames inherit the source frame's `event`/`id` (only `data` is replaced),
-    // matching streaming-pump.ts:216 (`{ ...recovered, data: JSON.stringify(repl) }`).
-    return { kind: "emit", frames: compat.map((repl) => ({ ...frame, data: JSON.stringify(repl) })) }
+    if (!compat) return preserveFrame(frame)
+    // These are fresh protocol frames. The producer deliberately keeps event and other wire fields;
+    // parser provenance is not inferred from value equality downstream.
+    return freshFrames(...compat.map((repl) => ({ ...withoutParsedCurrentId(frame), data: JSON.stringify(repl) })))
   },
 }
 
@@ -295,7 +306,7 @@ const decodeRewrite: ResponseRewrite = {
     ),
   }),
   transform: (frame, st): FrameAction => bufferOrEmit((st as DecodeState).decoder.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)),
-  flush: (st): Array<UpstreamFrame> => (st as DecodeState).decoder.flush() as Array<UpstreamFrame>,
+  flush: (st): Array<SseFrame> => (st as DecodeState).decoder.flush() as Array<SseFrame>,
   // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill + SendMessage
   // recipient recovery on the whole response (same config the streaming decoder reads). `appliesTo` gated
   // that at least one decode rule could fire, so this never runs as a pure passthrough.
@@ -332,7 +343,7 @@ const filterRewrite: ResponseRewrite = {
   transform: (frame, st): FrameAction => {
     const data = (st as FilterState).filter.rewriteEvent(parseFrame(frame.data), frame.data ?? "")
     if (data === null) return { kind: "suppress" }
-    return { kind: "emit", frames: [{ ...frame, data }] }
+    return freshFrames({ ...withoutParsedCurrentId(frame), data })
   },
   // Non-streaming: log (before stripping, so info is never lost) → filter server-tool blocks →
   // restore client tool_use names. Restore is bundled here (order 300) exactly as the streaming
@@ -376,10 +387,10 @@ const refusalRewrite: ResponseRewrite = {
   // Never buffers: emits the passthrough frame, or (at the contentless-refusal message_delta) the
   // chosen disposition — suppression's synthetic text triplet + rewritten end_turn delta, OR error's
   // single `event: error` frame replacing the terminator.
-  transform: (frame, st): FrameAction => ({
-    kind: "emit",
-    frames: (st as RefusalState).rewriter.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<UpstreamFrame>,
-  }),
+  transform: (frame, st): FrameAction => {
+    const frames = (st as RefusalState).rewriter.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<SseFrame>
+    return frames.length === 1 && frames[0] === frame ? preserveFrame(frame) : freshFrames(...frames.map((item) => withoutParsedCurrentId(item)))
+  },
   // Non-streaming: `end_turn` (suppression) appends a synthetic text block + flips stop_reason.
   // `error` and `refusal` leave the body UNCHANGED here — error's non-streaming failure is rendered
   // in renderNonStreamingV4, which must see the upstream-original refusal, so transformWhole must

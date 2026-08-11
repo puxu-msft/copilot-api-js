@@ -1,0 +1,74 @@
+# 收尾临时目录清单（job 36fcb851）
+
+> **终态：全部保留，一个文件都不删。** 独立评审（`docs/tmp/2026-08-10-closeout-temp-manifest-review.md`）判 3 blocker、给出 `RELEASE_DELETION: NO`。按 `closing-a-development-session` §5 fail closed。
+>
+> 下表的「长期价值 / 仓库载体」记录的是**内容有没有别的载体**，不是删除授权。
+>
+> ⚠️ **「载体」这一列是主张，不是已核验的结论。** 独立评审只逐项验过其中两类（三份 raw review 存在于 `HEAD`、两份评审件与 `docs/tmp` 同名文件逐字节相同）；**脚本、日志、中间快照、提交信息输入这几类的载体主张没有逐项复核过**。既然终态是全部保留，这个缺口不会造成损失——但**不得**把这一列当成「删了也没关系」的凭据。
+>
+> ✅ **2026-08-11 用户已裁决 incident 证据**：原话是「如果有必要，提炼出测试所需的关键部分，然后删除；如果测试用不到，直接删除，只保留（可能的证据样本）和结果，并要求阅读者『先相信，出问题再质疑』」。**已执行**：从 542 KB 原件里提炼出四级 settle 序列与终态（落在 HANDOVER「立案证据」节，含「先相信、出问题再质疑」的读者须知），随后**删除原件与解压副本**（`rm` 精确路径，无通配符；删前 sha256 前 32 位 `b621637b59317988cbac903495ccdcf1`，541,965 bytes）。
+>
+> **本目录其余文件的终态仍是「全部保留」**——它们随 job 删除而消失，且内容都另有载体（下表第四列，注意该列是主张、未逐项复核）。
+
+枚举命令与交叉验证（两法一致）：
+```
+find $T \( -type f -o -type l \) | wc -l    # 首次盘点 104，收尾自身又产出若干
+fd -H -I --type f --type l . $T | wc -l      # 同值（-I 必需：fd 默认遵守 .gitignore 会少报）
+```
+
+总数是**一条移动的读数，不是当前全量**：冻结时 109 → 评审时 110 → **05:26 实测 113** → **同日复评实测 118**（每次都 `find` 与 `fd -H -I` 两法一致）。**上面任何一个数字都只是它那一刻的历史测量**；要当前值就自己跑：
+
+```
+T=/home/xp/.claude/jobs/36fcb851/tmp
+find $T \( -type f -o -type l \) | wc -l ; fd -H -I --type f --type l . $T | wc -l
+```
+
+**这个持续增长正是评审第 1、2 条 blocker 的实证**：会话还活着，删除对象集合就还在长——所以「枚举完 → 评审 → 删除」这条链在会话内永远闭合不了。
+
+## 为什么终态是「全部保留」而不是补齐证据后删除
+
+三条 blocker 里第 2 条是**结构性**的：独立枚举用的事件源是本会话自己的 transcript，而它在评审期间被主会话持续追加（评审首末两次观测 9,604 → 9,648 行）。**只要会话还在运行，就不可能冻结出一份「diff 为空」的完整覆盖**——这道门在当前状态下不可闭合，不是取证不够努力。
+
+既然删除授权无法合法取得，正确动作是**不删**：保留不产生任何风险，删除才不可逆（`no-accidental-data-loss`）。这 113 个文件躺在 job 目录里，随 job 删除而消失，届时**内容有载体的那些已经在仓库里**（下表第四列），没有载体的只有 `incident-manifest.zst` 一个，它单独标了「交用户裁决」。
+
+## 分类与处置
+
+| 类别 | 文件 | 长期价值 | 仓库载体 / 替代证据 | 处置 |
+|---|---|---|---|---|
+| 原始 reviewer 输出 | `lifecycle-spec-review-claude.md`、`lifecycle-spec-rereview-claude.md`、`lifecycle-plan-review.md` | **有** | 已逐字提交 `docs/tmp/*-{spec-review,spec-rereview,plan-review}-raw.md`（`be10afc6`） | **本轮不删**；载体主张未逐项复核 |
+| 已有同名载体的评审件 | `handover-review.md`、`task-4-review.md` | 有 | 与 `docs/tmp/*-handover-review.md` / `*-task-4-review.md` **逐字节相同**（diff 验证） | **本轮不删**；载体主张未逐项复核 |
+| 失败/空产物 | `lifecycle-plan-rereview.md`(19B "Prompt is too long")、`lifecycle-plan-rereview-minimal.md`(0B)、`lifecycle-spec-review-gpt.md`(76B API Error)、`task3-overstrict-single-error.patch`(0B) | 无内容 | —— | **本轮不删**；载体主张未逐项复核 |
+| ~~**incident 原始导出**~~ | ~~`incident-manifest.zst` (542KB)~~ | 关键部分已提炼 | **已按用户 2026-08-11 裁决删除**（先提炼测试需要的部分、再删）。提炼结果在 HANDOVER「立案证据」节的事实表；服务端记录早已 404，故原件不可再生 | **已删除**（连同解压副本） |
+| agent transcript 切片 | `agent-a46e6c56981b3cd1b.{pre-trim*,trim-candidate*}.jsonl`（12 个，约 55MB） | 派生数据 | 技术已在记忆 `reference-subagent-transcript-5mib-gate-blocks-resume`；原 transcript 仍在 projects/ | **本轮不删**；载体主张未逐项复核 |
+| 处理脚本 | `trim_transcript_again.py`、`validate_transcript_slice.py`、`audit_b1_progress.sh`、`canon.ts`、`upd-*.py`、`fix-*.py`、`doc-sync.py`、`add-disables.py` | 一次性 | 产出全部已提交；`audit_b1_progress.sh` 的通用形态在 skill `writing-handover-docs` | **本轮不删**；载体主张未逐项复核 |
+| 测试/lint 日志 | `backend*.log`、`gate*.log`、`entry*.log`、`lint*.log`、`tc*.log`、`iso.log`、`cap.log`、`ab-*.log`、`backend-run.txt` | 派生 | 读数已写进提交信息与 HANDOVER 的门禁节 | **本轮不删**；载体主张未逐项复核 |
+| 提交信息输入 | `*-msg.txt`、`msg-*.txt`、`commit-msg*.txt` | 无 | 对应 commit 均已存在且含该信息 | **本轮不删**；载体主张未逐项复核 |
+| 中间快照 | `master-shutdown.ts`、`memory-head.md`、`memory-myline.patch`、`wt.txt`、`*-files.txt` | 派生 | 均可由 `git show` / `git worktree list` 重取 | **本轮不删**；载体主张未逐项复核 |
+
+## 文件清单看不见的候选（非文件类）
+
+| # | 类别 | 内容 | 来源事件 | 怎么复现 | 处置 |
+|---|---|---|---|---|---|
+| N1 | 被证否的因果 | A/B worktree 建在仓库外 → `0 pass / 4 fail / 122ms`，**差点断言「master 自己就是红的」**；真因是零 node_modules | 本会话 A/B 对照 | `git worktree add --detach <仓库外路径>` 后跑 bun test | 已提交记忆 `547bd3bb`+`11558f81` |
+| N2 | 已执行的正控 | entry-evidence 守卫先后因**两个不同的正确理由**变红（冻结集缺文件、JSON 字节非规范），修对后绿 | 合并期 baseline 同步 | 删 `files` 一项 / 用 Python `json.dumps` 重写该文件 | 已写入合并提交信息 |
+| N3 | 被证否的因果 | 我暂存的 MEMORY.md 行被 peer 并发提交带走，回显 files changed 与暂存数对不上 | `git apply --cached` + 无-pathspec 提交 | —— | 已提交记忆 `174f0dea` |
+| N4 | 修正的解析错误 | `bun test ... | tail` 触发 `WriteFailed`，退出码来自过滤器而非被测命令 | focused gate 首跑 | 带 coverage 的 bun test 接 `| tail` | 既有记忆 `methodology-output-filter-fakes-a-failure` 已覆盖，**未新增** |
+| N5 | 放弃的路线 | 反复 `--ff-only` 追移动的 master 不收敛（一天内前进数百提交）；改为「隔离树集成→立刻 ff」 | 四轮集成 | —— | 已写入 HANDOVER「仍然有效的纪律」 |
+| N6 | 放弃的路线 | `Edit` 工具在非 EnterWorktree 建的隔离树里被 bg-isolation 护栏拒绝；改用脚本做替换 | 解冲突时 | —— | **未落盘**，本清单是唯一记录 |
+
+## 评审独立枚举补登的候选（N7–N14）
+
+来源：`docs/tmp/2026-08-10-closeout-temp-manifest-review.md` 第 3 条 blocker——它拿本会话 transcript 做独立枚举，在 N1–N6 之外找到下列事件。全部**标记为 provisional**，与 N1–N6 同一处置字段。
+
+| # | 类别 | 内容 | 来源事件（transcript 行） | 怎么复现 | 处置 |
+|---|---|---|---|---|---|
+| N7 | 修正的 scope 错误 | 一次 History 查询的**范围**判错，随后被纠正 | 411→473 | —— | 仅本清单记录 |
+| N8 | runtime 探针 | Bun 的 `unhandledRejection` 行为实测，用于支撑一处设计裁决 | 4037–4049 | 在 Bun 下构造未处理 rejection 观察进程行为 | 仅本清单记录；**它不证明**其他 runtime 同行为 |
+| N9 | 变异对照 | 选错变异目标，被识破后换靶 | 4279、4406 | —— | 仅本清单记录（呼应「mutation 要自证改到了代码」） |
+| N10 | 修正的 scope 错误 | 命令跑在了**错误的 worktree** 上 | 4490 | —— | 既有记忆 `reference-worktree-...-after-merge` 第四方向已覆盖 |
+| N11 | 被证否的因果 | 撤回「据 output 文件 mtime 判定 agent 已死」这一推断 | 7059 | —— | 已写入 KICKOFF「这一轮反复踩的坑」首条 |
+| N12 | 被证否的因果 | 撤回「这处类型断言无取舍、可以删」 | 7219 | `bun run typecheck` | 已写入 KICKOFF「这一轮反复踩的坑」末条 |
+| N13 | 标定值 / runtime 探针 | subagent transcript **5 MiB 恢复闸门**与连续尾切片的**六轮**实测 | 4302–6420 | 见记忆 `reference-subagent-transcript-5mib-gate-blocks-resume` | 已提交该记忆；阈值带 CLI 版本前提 |
+| N14 | 已执行的正控 | M7–M9 三个变异正控 | 6824–6838 | —— | 仅本清单记录（符号→测试→失败形态未逐条留存，**这是已知缺口**） |
+
+**诚实边界**：这张补登表本身**没有再过一轮独立枚举**——评审说双向 diff 不为空，我补的是它点名的那些；**不能声称现在 diff 已空**。由于终态是「全部保留、不删除」，这个缺口不会造成不可逆后果。

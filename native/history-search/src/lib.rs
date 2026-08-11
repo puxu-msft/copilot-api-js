@@ -73,6 +73,14 @@ pub struct ListSearchResult {
     pub has_older: bool,
     pub has_newer: bool,
     pub invalid_cursor: bool,
+    /// The caller's query string is not one this index can parse.
+    ///
+    /// A RETURN VALUE rather than an error, for the same reason `invalid_cursor` is one: it is a
+    /// statement about the request, and the caller must be able to tell it apart from "this index
+    /// failed". Signalling it through the napi `Status` instead does NOT work — measured, that
+    /// status is shared with request-decoding faults such as a missing field, so a version skew
+    /// between caller and index would have been reported as a bad query.
+    pub invalid_query: bool,
 }
 
 /// The index's OWN commit state, read from Tantivy rather than from any marker this
@@ -309,11 +317,18 @@ impl SegmentColumns {
 /// `None` means "no filter". `Some(ordinals)` is the allowed set, and an EMPTY set is a
 /// meaningful answer — the value exists nowhere in this segment, so nothing here matches.
 ///
+/// An EMPTY STRING carries no filtering intent and is dropped rather than resolved. No document
+/// stores one, so resolving it produced an empty allowed set that rejected every document: a
+/// `?endpoint=` with no value silently emptied the persisted half of the page, while the SQL path
+/// treated the same URL as unfiltered. The pushdown builders already refuse to push an empty term,
+/// so dropping it here is what makes the two halves agree.
+///
 /// Filters are compared by ordinal rather than by string because a term lookup is not free:
 /// `Dictionary::ord_to_term` re-decodes an sstable block from its first ordinal on every
 /// call, so resolving per document is quadratic in block size. Resolving once per segment
 /// turns each per-document check into a single columnar `u64` read.
 fn resolve_any_of(column: Option<&StrColumn>, values: &[String]) -> Result<Option<Vec<u64>>> {
+    let values: Vec<&String> = values.iter().filter(|value| !value.is_empty()).collect();
     if values.is_empty() {
         return Ok(None);
     }
@@ -333,8 +348,10 @@ fn resolve_any_of(column: Option<&StrColumn>, values: &[String]) -> Result<Optio
     Ok(Some(ordinals))
 }
 
+/// Equality counterpart of [`resolve_any_of`], with the same empty-string rule: `Some("")` is
+/// "no filter", not "match the empty term".
 fn resolve_equals(column: Option<&StrColumn>, value: Option<&str>) -> Result<Option<Vec<u64>>> {
-    let Some(value) = value else {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
     let Some(column) = column else {
@@ -489,7 +506,19 @@ fn list_search_blocking(
         Box::new(AllQuery)
     } else {
         let parser = QueryParser::for_index(index, vec![fields.content]);
-        parser.parse_query(&request.query).map_err(native_error)?
+        match parser.parse_query(&request.query) {
+            Ok(query) => query,
+            Err(_) => {
+                return Ok(ListSearchResult {
+                    operation_ids: Vec::new(),
+                    total: 0,
+                    has_older: false,
+                    has_newer: false,
+                    invalid_cursor: false,
+                    invalid_query: true,
+                })
+            }
+        }
     };
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, content_query)];
     clauses.extend(
@@ -554,16 +583,19 @@ fn list_search_blocking(
         };
         // `Weight::for_each_no_score` walks the raw docset, which CAN contain deleted
         // documents — unlike a collector-driven search, where the searcher filters them.
+        // Only `Weight::count` consults the alive bitset on its own, so this path has to.
         //
-        // Unproven by test, deliberately kept: probed against tantivy 0.26.1 with this
-        // writer usage (`delete_term` then `add_document` on one long-lived writer, commit
-        // per flush), every live segment reports `deletes: null` — the delete is materialized
-        // during the commit, and a segment left with no live document is dropped outright.
-        // So no reachable fixture produces a tombstone here today, and a mutation disabling
-        // this branch does not turn any test red. It stays because the previous
-        // collector-driven path got this filtering for free: if tantivy's policy ever leaves
-        // a `.del` behind, dropping it would silently resurrect superseded operations, which
-        // is a data-correctness bug the read path must not be one policy change away from.
+        // This is REACHABLE and is exercised by the supersede regression in
+        // `tests/history/search/daemon.it.test.ts`. An earlier note here claimed the opposite,
+        // on the strength of a probe run that reported `deletes: null` for every live segment.
+        // Re-running that same probe six times produced a tombstone five times
+        // (`exp/history-search-list-perf/supersede-probe.ts`): a `flush` spreads documents over
+        // several segments, and whether a delete leaves a `.del` behind depends on whether the
+        // superseded document's segment still holds a live document afterwards. The run that
+        // saw nothing had hit the case where it did not, and the segment was dropped whole.
+        //
+        // Dropping this check would silently resurrect superseded operations whenever the
+        // tombstone does survive.
         let alive = segment_reader.alive_bitset();
         let mut docs: Vec<DocId> = Vec::new();
         weight
@@ -681,6 +713,7 @@ fn list_search_blocking(
             has_older: false,
             has_newer: false,
             invalid_cursor: true,
+            invalid_query: false,
         });
     }
     let on_requested_side = |candidate: &&ListCandidate| match cursor {
@@ -729,6 +762,7 @@ fn list_search_blocking(
         has_older,
         has_newer,
         invalid_cursor: false,
+        invalid_query: false,
     })
 }
 

@@ -62,6 +62,7 @@ import {
   refusalCategoryForDiagnostics,
   type RefusalTranslationDegradationReporter,
 } from "~/lib/anthropic/refusal-detail"
+import { nameAnthropicEventFromWire } from "~/lib/anthropic/wire-frame-type"
 
 import {
   //
@@ -176,7 +177,7 @@ export function createAnthropicToCcStreamTranslator(modelId: string, onDegradati
 
       let event: StreamEvent
       try {
-        event = JSON.parse(ev.data) as StreamEvent
+        event = nameAnthropicEventFromWire(ev, JSON.parse(ev.data) as StreamEvent)
       } catch {
         // Unparseable upstream frame — skip it (parity with the forward CC→Anthropic translator).
         consola.debug("[cc←anthropic] skipping unparseable upstream SSE frame:", ev.data.slice(0, 200))

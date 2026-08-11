@@ -22,6 +22,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { tagTransportError } from "~/lib/error/transport-reason"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import {
   //
@@ -77,6 +78,7 @@ function runtime(
   candidateNumber: number,
   gate?: Promise<void>,
   onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined,
+  settleError?: unknown,
 ) {
   const candidate = `candidate:${candidateNumber}` as CandidateHandle
   const dispatch = `dispatch:${candidateNumber}` as DispatchHandle
@@ -89,6 +91,7 @@ function runtime(
     env: requestEnv,
     responseRewrites: [],
     renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+    adapter: createAnthropicDeliveryProtocolAdapter(),
     createState: () => undefined,
     ...(onRenderedFrame && { onRenderedFrame: (_state, frame) => onRenderedFrame(frame) }),
     snapshot: () => ({ label }),
@@ -112,6 +115,8 @@ function runtime(
       cancelled = true
     },
     settle() {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error: this test drives the unknown-rejection path, where a thrown/rejected `undefined`/`NaN` is legal and must not be detectable by a value sentinel
+      if (settleError !== undefined) throw settleError
       settled = true
     },
     recovery(reason) {
@@ -217,6 +222,52 @@ describe("generation coordinator hedge race", () => {
     expect(failed.settled).toBe(true)
   })
 
+  test("a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe", async () => {
+    const probeError = new Error("primary failed")
+    const recordingError = new Error("candidate recording failed")
+    const failed = runtime("primary", "failed", 1, undefined, undefined, recordingError)
+    failed.ready.upstream.frames = {
+      // eslint-disable-next-line require-yield -- fault injection: fail before any frame
+      async *[Symbol.asyncIterator]() {
+        throw probeError
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: () => failed.runtime,
+    })
+    const primary = await coordinator.runPrimary()
+
+    const error = await coordinator.raceReadyCandidates([primary]).catch((rejection: unknown) => rejection)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([probeError, recordingError])
+    expect((error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: probeError, source: "upstream-transport" },
+    ])
+  })
+
+  test("a terminal-without-boundary candidate with a recording rejection surfaces an owner-only aggregate", async () => {
+    const recordingError = new Error("candidate recording failed")
+    const terminal = runtime("primary", "terminal", 1, undefined, undefined, recordingError)
+    terminal.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: () => terminal.runtime,
+    })
+    const primary = await coordinator.runPrimary()
+
+    const error = await coordinator.raceReadyCandidates([primary]).catch((rejection: unknown) => rejection)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([recordingError])
+    expect((error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([])
+  })
+
   test("all candidate failures surface one aggregate and a race cannot be replayed", async () => {
     const primary = runtime("primary", "primary", 1)
     const secondary = runtime("hedge", "secondary", 2)
@@ -281,6 +332,76 @@ describe("generation coordinator hedge race", () => {
     const recoveryFailure = classifyPreContentRecoveryFailure({ error: failure, clientAborted: false })
     expect(recoveryFailure).toEqual({ kind: "network-error" })
     expect(shouldAttemptPreContentRecovery({ failure: recoveryFailure, session: { hasEmittedRealClientContent: false }, config: { enabled: true } })).toBe(true)
+  })
+
+  test("delayed hedge: an owner-only terminal recording rejection surfaces failure, not terminal success", async () => {
+    const recordingError = new Error("hedge candidate recording failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
+    const primary = runtime("primary", "primary", 1)
+    primary.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 15))
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const hedge = runtime("hedge", "hedge", 2, undefined, undefined, recordingError)
+    hedge.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      generationBudget: budget,
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : hedge.runtime),
+    })
+    const primaryCandidate = await coordinator.runPrimary()
+
+    const result = await coordinator.racePrimaryWithDelayedHedge({ primary: primaryCandidate, delayMs: 0, hedgeEnv: env() })
+
+    expect(result.kind).toBe("failure")
+    if (result.kind !== "failure") throw new Error("expected owner-only failure result")
+    expect(result.error).toBeInstanceOf(AggregateError)
+    expect((result.error as AggregateError).errors).toEqual([recordingError])
+    expect((result.error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([])
+    expect(budget.snapshot().activeCandidates).toBe(0)
+  })
+
+  test("delayed hedge: a probe failure plus a candidate recording rejection surfaces both while hedgeFailures keeps only the probe", async () => {
+    const probeError = new Error("primary probe failed")
+    const recordingError = new Error("hedge candidate recording failed")
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 2, maxActiveDispatches: 2, maxTotalDispatches: 2 })
+    const primary = runtime("primary", "primary", 1)
+    primary.ready.upstream.frames = {
+      // eslint-disable-next-line require-yield -- fault injection: fail after threshold wins the race
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 15))
+        throw probeError
+      },
+    }
+    const hedge = runtime("hedge", "hedge", 2, undefined, undefined, recordingError)
+    hedge.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      generationBudget: budget,
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : hedge.runtime),
+    })
+    const primaryCandidate = await coordinator.runPrimary()
+
+    const result = await coordinator.racePrimaryWithDelayedHedge({ primary: primaryCandidate, delayMs: 0, hedgeEnv: env() })
+
+    expect(result.kind).toBe("failure")
+    if (result.kind !== "failure") throw new Error("expected probe+owner failure result")
+    expect(result.error).toBeInstanceOf(AggregateError)
+    expect((result.error as AggregateError).errors).toEqual([probeError, recordingError])
+    expect((result.error as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: probeError, source: "upstream-transport" },
+    ])
+    expect(budget.snapshot().activeCandidates).toBe(0)
   })
 
   test("terminal and failed candidates release shared generation capacity", async () => {

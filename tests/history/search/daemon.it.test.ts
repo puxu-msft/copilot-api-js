@@ -136,7 +136,7 @@ describe("history-search tail publication boundary", () => {
         return []
       },
       async listSearch() {
-        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false }
       },
       async generation() {
         return { docCount: committedDocs, opstamp }
@@ -215,7 +215,7 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
       direction: "older",
       limit: 10,
     })
-    expect(result).toEqual({ operationIds: ["op-b", "op-a"], total: 2, hasOlder: false, hasNewer: false, invalidCursor: false })
+    expect(result).toEqual({ operationIds: ["op-b", "op-a"], total: 2, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false })
 
     await index.close()
   })
@@ -225,11 +225,9 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
    * read path evaluates filters against columnar fast fields, so a stale version surviving
    * anywhere would show up as a duplicate id or a match on a superseded `state`.
    *
-   * What this does NOT cover: the alive-bitset branch in `list_search_blocking`. Probed
-   * against tantivy 0.26.1, this write pattern materializes the delete during the commit
-   * (live segments report `deletes: null`), so the superseded document is physically gone
-   * rather than tombstoned, and disabling that branch leaves this test green. See the
-   * comment on `let alive = ...` for why the branch is kept regardless.
+   * This two-document form does not reliably leave a tombstone behind: with so few documents
+   * the superseded one tends to be its segment's only occupant, and such a segment is dropped
+   * whole. The tombstone path is covered by the test below.
    */
   test("returns only the surviving version of a re-indexed operation, across segment boundaries", async () => {
     const indexPath = path.join(freshDir("native-list-supersede-index-"), "index")
@@ -259,6 +257,176 @@ describe.skipIf(!NATIVE)("history-search native list-search", () => {
     // The superseded document's state must not remain matchable.
     expect(await extended.listSearch({ ...query, states: ["streaming"] })).toMatchObject({ operationIds: [], total: 0 })
     expect(await extended.listSearch({ ...query, states: ["completed"] })).toMatchObject({ operationIds: ["op-a"], total: 1 })
+
+    await index.close()
+  })
+
+  /**
+   * Covers the alive-bitset branch in `list_search_blocking`: `for_each_no_score` walks the raw
+   * docset, so a document deleted but still tombstoned in a live segment is handed to us and must
+   * be filtered out here. Remove that filter and the superseded `state` becomes matchable again.
+   *
+   * Whether a delete leaves a tombstone is not something the caller controls — one `flush` spreads
+   * documents across several segments, and a segment with no live document left is dropped whole
+   * rather than tombstoned. That is why this fixture is large and supersedes many documents: the
+   * dominant segment held 65–99% of the corpus across every probe run, so at least one superseded
+   * document lands in a segment that still holds live ones. The assertion on `meta.json` is there
+   * to make that a stated precondition rather than an assumption — if tantivy's segment policy ever
+   * changes, this fails as "the fixture no longer builds the state" instead of quietly testing
+   * nothing.
+   */
+  test("excludes superseded documents that survive as tombstones in a live segment", async () => {
+    const indexPath = path.join(freshDir("native-list-tombstone-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    // `committedAt` sits strictly inside the frozen target, so every document is covered without
+    // having to enumerate a boundary set.
+    const base = { operationKind: "generation", committedAt: 5, content: "tombstone needle", sessionId: "s1" }
+    const total = 200
+    const supersededIds = Array.from({ length: 20 }, (_, index_) => `op-${String(index_ * 10).padStart(3, "0")}`)
+
+    for (let index_ = 0; index_ < total; index_ += 1) {
+      await extended.upsertSummary({ ...base, operationId: `op-${String(index_).padStart(3, "0")}`, createdAt: 1000 + index_, state: "streaming" })
+    }
+    await index.flush()
+    for (const operationId of supersededIds) {
+      const ordinal = Number(operationId.slice(3))
+      await extended.upsertSummary({ ...base, operationId, createdAt: 1000 + ordinal, state: "completed" })
+    }
+    await index.flush()
+
+    // Precondition: the delete really did leave a tombstone, so the branch under test is reached.
+    const meta = JSON.parse(fs.readFileSync(path.join(indexPath, "meta.json"), "utf8")) as {
+      segments: Array<{ deletes: { num_deleted_docs: number } | null }>
+    }
+    const tombstoned = meta.segments.reduce((sum, segment) => sum + (segment.deletes?.num_deleted_docs ?? 0), 0)
+    expect(tombstoned).toBeGreaterThan(0)
+
+    const query = {
+      query: "tombstone needle",
+      operationKinds: [],
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [],
+      direction: "older",
+      limit: 1000,
+    }
+    // Every operation appears exactly once, tombstones notwithstanding.
+    const all = await extended.listSearch(query)
+    expect(all.total).toBe(total)
+    expect(new Set(all.operationIds).size).toBe(total)
+    // The superseded versions must not remain matchable on their OLD state, and the survivors
+    // must carry the new one. This is the assertion the alive-bitset filter is load-bearing for.
+    const streaming = await extended.listSearch({ ...query, states: ["streaming"] })
+    expect(streaming.total).toBe(total - supersededIds.length)
+    expect(streaming.operationIds).not.toContain(supersededIds[0])
+    const completed = await extended.listSearch({ ...query, states: ["completed"] })
+    expect(completed.total).toBe(supersededIds.length)
+    expect([...completed.operationIds].sort()).toEqual([...supersededIds].sort())
+
+    await index.close()
+  })
+
+  /**
+   * An empty filter value carries no filtering intent, so it must read as "no filter" — not as an
+   * exact match on the empty term, which no document stores and which therefore rejected every
+   * document and silently emptied the persisted half of a page. The negative controls are the point:
+   * without them "empty means no filter" is indistinguishable from "filtering stopped working".
+   */
+  test("treats an empty filter value as no filter without loosening a real one", async () => {
+    const indexPath = path.join(freshDir("native-list-empty-filter-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number }>
+    }
+    await extended.upsertSummary({
+      operationId: "op-a",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 5,
+      content: "empty filter needle",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      sessionId: "s1",
+    })
+    await index.flush()
+
+    const query = {
+      query: "empty filter needle",
+      operationKinds: [] as Array<string>,
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [] as Array<string>,
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch(query)).toMatchObject({ total: 1 })
+    // Empty value on each shape of filter: equality, and a list.
+    expect(await extended.listSearch({ ...query, endpoint: "" })).toMatchObject({ total: 1 })
+    expect(await extended.listSearch({ ...query, sessionId: "" })).toMatchObject({ total: 1 })
+    expect(await extended.listSearch({ ...query, states: [""] })).toMatchObject({ total: 1 })
+    // Negative controls: a real value still filters, and an empty entry alongside a real one does
+    // not swallow the real one.
+    expect(await extended.listSearch({ ...query, endpoint: "gemini-generate-content" })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["failed"] })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["failed", ""] })).toMatchObject({ total: 0 })
+    expect(await extended.listSearch({ ...query, states: ["completed", ""] })).toMatchObject({ total: 1 })
+
+    await index.close()
+  })
+
+  /**
+   * A query string the parser refuses is reported as a RETURN VALUE, not an error, so the caller can
+   * tell "this request cannot be served" from "this index cannot serve requests". Inferring it from
+   * the napi status instead does not work: a missing field arrives as the same `InvalidArg`, so a
+   * caller/index version skew would have been reported as the user's bad query.
+   */
+  test("reports an unparsable query as invalidQuery, keeping a malformed request an error", async () => {
+    const indexPath = path.join(freshDir("native-list-invalid-query-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ total: number; invalidQuery: boolean }>
+    }
+    await extended.upsertSummary({
+      operationId: "op-a",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 5,
+      content: "parse needle",
+      sessionId: "s1",
+    })
+    await index.flush()
+
+    const query = {
+      query: "parse needle",
+      operationKinds: [] as Array<string>,
+      states: [] as Array<string>,
+      targetCommittedAt: 10,
+      targetOperationIds: [] as Array<string>,
+      direction: "older",
+      limit: 10,
+    }
+    expect(await extended.listSearch(query)).toMatchObject({ total: 1, invalidQuery: false })
+    for (const bad of ["foo:", "(x", "-lead", 'unclosed "quote']) {
+      expect(await extended.listSearch({ ...query, query: bad })).toMatchObject({ invalidQuery: true, total: 0 })
+    }
+    // A malformed REQUEST is a different failure and must stay one — not a reported bad query.
+    // Captured this way because the binding raises it synchronously rather than rejecting, and
+    // because the assertion worth keeping is the collision itself: it carries the SAME `InvalidArg`
+    // status as a query-syntax error, which is why the parse result travels as a field instead.
+    let malformedError: unknown
+    try {
+      await extended.listSearch({ ...query, limit: undefined })
+    } catch (error) {
+      malformedError = error
+    }
+    expect(malformedError).toBeInstanceOf(Error)
+    expect((malformedError as { code?: string }).code).toBe("InvalidArg")
 
     await index.close()
   })
@@ -562,7 +730,7 @@ describe("history-search cursor without a recorded index opstamp", () => {
         return []
       },
       async listSearch() {
-        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false, invalidQuery: false }
       },
       // A healthy-looking index — documents present, opstamp far ahead — so the discard
       // below can only come from the cursor being uncheckable, not from the index.

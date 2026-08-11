@@ -1,6 +1,50 @@
 # HANDOVER —— generation emission command algebra Commit -1 待正式合并
 
-**状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。**Pre-merge A 不存在**：下一动作是将该分支正式合入当时真实的 master；只有该 merge result 才定义 entry candidate **A**，随后执行 T0.0f → pointer **P** → T0.0d → T0.1。
+**状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
+
+**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出；**T0.0d 与 T0.1 随后也已通过**（详见下面两节）。下一动作是按 ADR 收窄 cutover-plan，然后才进 T0.2／Commit 0。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+
+**A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 与 `14f354ff` 的批次都 15 轮全绿却相继停在 validator 的 C9 上——producer 与 validator 同批冻结却从未端到端跑过，run log 先是缺 `canonical_command=`、补上后又缺 `verdict=`。三处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
+
+<!-- entry-evidence-pointer:v1 -->
+entry_sha=15c43e40d3c4c172425ec2356721b73bebd8315b
+manifest_path=/home/xp/.claude/jobs/757dc257/tmp/entry-evidence-A-15c43e40/evidence-manifest.json
+manifest_sha256=b33428643971347d3f824fa046004b9c392ca47f88bb18fe3ff3fe2cb470179d
+archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
+<!-- /entry-evidence-pointer:v1 -->
+
+`manifest_path` 指向产出它的那次运行的树外 OUT，**它才是 entry 的定义**；`archive_path` 是同一批产物的持久副本（job 目录会随 job 删除而消失），归档副本不定义 entry。两处 `evidence-manifest.json` 的 sha256 相同，已独立 `sha256sum` 复算。
+
+**T0.0d 已通过（2026-08-10）**：validator C1～C11 全绿、rc=0、receipt 原子写出。
+
+| 项 | 值 |
+|---|---|
+| receipt | `/home/xp/.claude/entry-evidence/A-15c43e40-receipt.json` |
+| receipt sha256 | `793eef39cb08d9103d07fae52a147938dd4c5c2b5cca93834896a22946712fc1`（已独立 `sha256sum` 复算） |
+| `entry_sha` | `15c43e40d3c4c172425ec2356721b73bebd8315b` |
+| `pointer_sha` | `26d21ccf0e8526a16f1609dc341ab56e1324a3a7` |
+| `validator_git_blob` | `282b1aa8700934e7305393e1a41b33cb201f89cf` |
+| `discovery_runner_git_blob` | `09a273247f2b2ef821dbc3b354d2bb350fcc861a` |
+| `verdict` | `green` |
+| 执行树 | `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover-a5`（detached 在 A，干净） |
+
+**T0.1 已通过（2026-08-10）**：正确状态七项全绿（receipt hash 与 T0.0d 记录一致、`entry_sha` == 执行树 HEAD、树干净、`pointer_sha` 可由 master 到达、manifest hash 未漂移、validator blob 与 entry 一致、`verdict=green`），六项注入 + 两项额外对照**全部 fail-closed 且各自点名**：
+
+| 注入 | rc | 消息 |
+|---|---|---|
+| receipt 缺失 | 11 | `receipt missing` |
+| `entry_sha` ≠ 执行树 HEAD | 14 | `entry_sha is not the execution tree HEAD` |
+| `pointer_sha` 不可由 master 到达 | 16 | `pointer_sha is not reachable from master` |
+| manifest hash 漂移 | 17 | `manifest hash drifted` |
+| validator blob 不同 | 18 | `validator blob differs from entry` |
+| `verdict != green` | 19 | `verdict is not green` |
+| receipt hash 与 T0.0d 记录不符 | 13 | `receipt hash differs from the one T0.0d recorded` |
+| 执行树 dirty | 15 | `execution tree is dirty` |
+
+判据脚本与注入产物在 `/home/xp/.claude/jobs/757dc257/tmp/t01/`（一次性入场确认，非常驻门，故不入库）。注入全部对**副本**做，entry 树未被弄脏；dirty 那条用临时未追踪文件触发后已移除并复验正样本仍绿。**T0.1 未重跑 15 次，未生成新的 manifest/P/receipt。**
+
+**范围裁决（2026-08-10，用户）**：cutover 只做原子性/并发、类型层收窄与遥测，不做 classifier 运行时授权与拒绝、不做 D2 的 owner-minted provenance。权威在 ADR [2026-08-10-trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)；cutover-plan 的 Commit 2–4 正按该 ADR 收窄，**收窄完成前不要照旧 plan 进 Commit 0**。
+
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
@@ -136,7 +180,12 @@ OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的�
 ### T3-b —— full-suite oracle 缺口（本轮新增，未实施）
 
 - **问题**：入场条件若要断言「全后端套件已执行」，需要一条**独立于 runner 自报计数**的执行证据通道。当前 `baseline-runs.sh` 的下限与被检查的计数同源，无法证明这一点（见 T3 的 ④ 与 `docs/tmp/2026-08-03-baseline-run-log.md` 第十四条）。
-- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（**独立于 runner**，用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- ⚠️ **「独立」的精确口径（2026-08-09 收窄，原文写作「独立于 runner」）**：它独立于 runner 的**实现**（换了语言与 glob 库），**不独立于 discovery 的规则**——两侧共享同一个 `tests/` 根与同一套 `{unit,it,http}` 后缀集。所以：
+  - **能守住**：runner 侧静默少跑／少报文件（本条真正要防的那个退化）。这个价值是实的，别因为下面的限制就放弃它。
+  - **守不住**：规则本身漏掉某类测试文件——那种文件两侧都看不见。因此它是**文件级的 coverage 绊线**，不是「仓库应有测试集合」的枚举者。
+  - **完全够不着**：用例级完整性（某文件加载期抛错时一行 JUnit 都不写，文件名却仍可能出现在 `<testsuite file>` 里）。
+  三层划分与判独立性的方法（交 provenance 图：每侧的生产者／观测点／上游）见 `docs/coding-conventions.md`「并行执行」节。
 - **验收**：注入「让某个 shard 静默少跑若干文件」的变异后，比对必须**报出缺失的文件名**；正确状态下两个集合相等。
 - **证伪**：**只比总数不比文件名集合**——总数相等而集合不同，正是这类退化最可能的形态；这也是本条与 `MIN_TESTS` 的本质区别，别用一个数替代一个集合。
 - **优先级**：不阻塞 Commit 0–8 的实施，但**入场条件的强度以它为上限**。在它落地前，T3 的 ④ 只能按上面那句缩小版命题引用。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。

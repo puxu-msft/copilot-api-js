@@ -56,7 +56,7 @@ async function collect(it: AsyncIterable<ClientFrame>): Promise<Array<ClientFram
 /** Minimal `SSEStreamingApi` stub — only `writeSSE` is exercised by `makeSseSink` (mirrors
  * `tests/pipeline/client-sink.unit.test.ts`'s `mockStream` helper). */
 function mockStream(): Parameters<typeof makeSseSink>[0] {
-  return { writeSSE: (_msg: unknown) => Promise.resolve() } as unknown as Parameters<typeof makeSseSink>[0]
+  return { write: (_msg: unknown) => Promise.resolve() } as unknown as Parameters<typeof makeSseSink>[0]
 }
 
 beforeEach(() => {

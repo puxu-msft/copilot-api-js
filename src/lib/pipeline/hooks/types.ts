@@ -3,9 +3,9 @@ import type {
   //
   ClientFrame,
   PreparedRequest,
-  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
+import type { SseFrame } from "~/lib/stream"
 
 /**
  * Symmetric four-point hook surface (RFC 2026-07-14-symmetric-four-point-hooks).
@@ -48,7 +48,7 @@ export interface UpstreamHook {
   /** upstream/target format. */
   upstream?: {
     /** Per upstream response frame (was `rewriteUpstreamFrame`). Return undefined to drop the frame. */
-    inbound?: (frame: UpstreamFrame, env: RequestEnvelope) => UpstreamFrame | undefined
+    inbound?: (frame: SseFrame, env: RequestEnvelope) => SseFrame | undefined
     /** Upstream-bound request, post-sanitize/pre-exchange, one-shot (was `onRequest`). */
     outbound?: (env: RequestEnvelope) => RequestEnvelope | undefined
   }

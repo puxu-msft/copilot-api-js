@@ -1,0 +1,180 @@
+{
+  "runtime": "Bun 1.3.14",
+  "nestedPolicy": "all nested scopes fail closed",
+  "errorPrecedence": "operational error > rollback/cleanup error; cleanup error propagates when no prior error",
+  "results": {
+    "normalScope": {
+      "passed": true,
+      "expectedError": null,
+      "observedError": null,
+      "value": {
+        "changes": 1,
+        "lastInsertRowid": 1
+      },
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "nestedSameModeFailClosed": {
+      "passed": true,
+      "expectedError": "nested controlled maintenance scope rejected",
+      "observedError": "Error: nested controlled maintenance scope rejected: active=maintenance, requested=maintenance",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "nestedDifferentModeFailClosed": {
+      "passed": true,
+      "expectedError": "nested controlled maintenance scope rejected",
+      "observedError": "Error: nested controlled maintenance scope rejected: active=maintenance, requested=other",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "promiseReturnRejected": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "thenableReturnRejected": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "promiseExecutorSideEffectPersistsWithoutTransaction": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "thenGetterSideEffectPersistsWithoutTransaction": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "promiseSideEffectRollsBackWithTransaction": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "thenGetterSideEffectRollsBackWithTransaction": {
+      "passed": true,
+      "expectedError": "must be synchronous",
+      "observedError": "TypeError: controlled maintenance scope callback must be synchronous",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "callbackThrow": {
+      "passed": true,
+      "expectedError": "callback failure",
+      "observedError": "Error: callback failure",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "transactionBodyThrow": {
+      "passed": true,
+      "expectedError": "transaction body failure",
+      "observedError": "Error: transaction body failure",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "commitThrow": {
+      "passed": true,
+      "expectedError": "commit failure",
+      "observedError": "Error: commit failure",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "rollbackThrowOriginalWins": {
+      "passed": true,
+      "expectedError": "body failure before rollback",
+      "observedError": "Error: body failure before rollback",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "cleanupThrowAfterClear": {
+      "passed": true,
+      "expectedError": "cleanup failure",
+      "observedError": "Error: cleanup failure",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "originalErrorWinsCleanupError": {
+      "passed": true,
+      "expectedError": "original failure",
+      "observedError": "Error: original failure",
+      "post": {
+        "mode": 0,
+        "ordinaryWriteRejected": true,
+        "secondConnectionMode": 0,
+        "secondConnectionWriteRejected": true
+      }
+    },
+    "triggerReentrantHostCallback": {
+      "applicable": false,
+      "reason": "Bun trigger invokes a native extension UDF synchronously; this extension has no public callback channel from native SQLite back into the JavaScript host helper. Fabricating a direct helper call would not test trigger reentrancy."
+    }
+  }
+}

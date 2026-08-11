@@ -1,0 +1,58 @@
+{
+  "identity": { "operationId": "legacy-transport-fixture", "kind": "generation", "createdAt": 100 },
+  "arena": {
+    "payloads": [
+      {
+        "handle": "payload:0",
+        "sequence": 1,
+        "occurredAt": 1000,
+        "value": { "prompt": "legacy evidence fixture" },
+        "origin": { "stage": "ingress", "track": "client" },
+        "provenance": "source"
+      }
+    ],
+    "frames": []
+  },
+  "ingress": { "sequence": 2, "occurredAt": 1001, "request": { "payload": "payload:0", "frames": [] } },
+  "routing": null,
+  "transforms": [],
+  "candidates": [
+    {
+      "handle": "candidate:0",
+      "sequence": 3,
+      "occurredAt": 1002,
+      "role": "primary",
+      "dispatches": ["dispatch:0"],
+      "verdict": "winner",
+      "settledSequence": 6,
+      "settledAt": 1004,
+      "reason": "attempt adapter terminal",
+      "metadata": { "compatibility": "attempt-adapter" }
+    }
+  ],
+  "dispatches": [
+    {
+      "handle": "dispatch:0",
+      "candidate": "candidate:0",
+      "sequence": 4,
+      "occurredAt": 1002,
+      "effectiveRequest": { "payload": "payload:0", "frames": [] },
+      "upstreamRequest": { "payload": "payload:0", "frames": [] },
+      "diagnostics": [],
+      "verdict": "committed",
+      "settledSequence": 5,
+      "settledAt": 1003
+    }
+  ],
+  "egress": null,
+  "terminal": {
+    "sequence": 7,
+    "occurredAt": 1004,
+    "outcome": "completed",
+    "winnerCandidate": "candidate:0",
+    "committedDispatch": "dispatch:0",
+    "committedAttempt": "dispatch:0"
+  },
+  "extensions": {},
+  "lastSequence": 7
+}

@@ -106,7 +106,7 @@ test("handoff barrier publishes a bound operation before the first registry snap
   await operation
   await drainHistoryAdmissionHandoffs()
   expect(handoffDrained).toBe(true)
-  await manager.drainModelOperationFinalizations()
+  await manager.drainLifecycleFailures()
   await controller.waitForQuiescence()
   await shutdownHistory()
 })
@@ -133,7 +133,7 @@ test("shutdown reports a finalizer failure from a context that binds after stop"
     noopDeps({
       tracker: { getActive: () => manager.getTrackedOperations() },
       drainHistoryAdmissionHandoffsFn: drainHistoryAdmissionHandoffs,
-      drainModelOperationFinalizationsFn: () => manager.drainModelOperationFinalizations(),
+      drainModelOperationFinalizationsFn: () => manager.drainLifecycleFailures(),
       drainHistoryAdmissionFn: () => controller.waitForQuiescence(),
     }),
   )

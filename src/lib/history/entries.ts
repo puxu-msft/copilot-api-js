@@ -15,14 +15,8 @@ import {
   toEntrySummary,
   updateInFlight,
 } from "./in-flight"
-import { getEntry } from "./queries"
 import { historyState } from "./state"
 import { getStats } from "./stats"
-import {
-  //
-  clearV3Store,
-  setV3OperationPinned,
-} from "./v3/store"
 import { clearRecentModelOperationTerminalsForTests } from "./v3/terminal-bus"
 
 /** Publish after persistence through the scoped history observability channel. */
@@ -109,12 +103,23 @@ export function updateEntry(
 }
 
 /**
+ * Wipe the persisted store, when a test has supplied a way to do it.
+ *
+ * Since the Batch 2b cutover the main thread holds no write connection to the semantic database — the Worker owns it — so `clearV3Store()` cannot run here any more. That is not a gap to paper over: a main-thread wipe of the semantic artifact IS the second writer this migration exists to remove, and the HTTP delete surface it once served was already removed (spec §3.6). So production installs nothing and the store wipe simply does not exist outside tests, while `resetTestRuntime` installs one backed by the test fixture's own write connection.
+ */
+let wipeStore: (() => void) | undefined
+
+export function setHistoryStoreWipeForTests(wipe: (() => void) | undefined): void {
+  wipeStore = wipe
+}
+
+/**
  * Wipe ALL history (in-flight map + every V3 table). **Test-only internal
  * primitive** (spec §3.6): the HTTP delete surface is removed — this stays
  * only as the isolation-reset used by resetTestRuntime + integration tests.
  * Logs LOUDLY (a silent full wipe is indistinguishable from a persistence
- * bug). `clearV3Store` replaces the deleted V2 `clearAllEntries`
- * (History V2 removal Phase 3) as the persisted-store wipe primitive.
+ * bug). The persisted half runs through the injected `wipeStore` seam above;
+ * with no seam installed this clears in-flight state only.
  */
 export function clearHistory(): void {
   const inFlightCount = listInFlight().length
@@ -124,7 +129,7 @@ export function clearHistory(): void {
   // surface. Do not touch an unopened DB and do not fabricate clear/stats notifications.
   if (!historyState.enabled) return
   try {
-    clearV3Store()
+    wipeStore?.()
     consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
   } catch (err: unknown) {
     consola.error("[history] failed to clear test sqlite entries", err)
@@ -134,23 +139,31 @@ export function clearHistory(): void {
 }
 
 /**
+ * Raised by {@link setPinned} for as long as pinning has no writer.
+ *
+ * Pinning is a WRITE to `v3_operations.pinned`, and the Batch 2b cutover moved the semantic write connection into the Worker while the corresponding `set-pinned` RPC is not scheduled until Batch 6 (plan §Batch 6 RPC surface). Ruled by the user on 2026-08-09: rather than pull that RPC forward, the endpoint is explicitly unavailable for the intervening batches — the project carries no backward-compatibility burden and prefers a short, loud outage to a rushed protocol addition. The route turns this into a 503 that says so, instead of the bare "database not initialized" crash the raw call would produce. Delete this class together with the Batch 6 `set-pinned` cutover.
+ */
+export class HistoryPinUnavailableError extends Error {
+  constructor() {
+    super("History pinning is unavailable: the semantic write connection now lives in the History Worker, and the set-pinned RPC lands in the query-RPC cutover (Batch 6).")
+    this.name = "HistoryPinUnavailableError"
+  }
+}
+
+/**
  * Toggle the debug-pin flag on a persisted entry, then broadcast the refreshed
  * summary so connected WS clients reflect the new state. Returns whether the
  * V3 operation exists. The V3 `pinned` column is the only product pin state;
  * there is no legacy-row fallback. No stats broadcast — pinning changes neither
  * the completed/failed counts nor token sums.
+ *
+ * Currently always throws {@link HistoryPinUnavailableError} when History is enabled; see that class for why and for when it goes away.
  */
 export function setPinned(id: string, pinned: boolean): boolean {
   if (!historyState.enabled) return false
-  const changed = setV3OperationPinned(id, pinned)
-  if (!changed) return false
-  // Sync a same-id in-flight copy defensively so broadcasts and immediate reads
-  // agree with the V3 column. A normal V3 pin targets a terminal operation and
-  // therefore has no in-flight twin.
-  updateInFlight(id, { pinned })
-  const entry = getInFlight(id) ?? getEntry(id)
-  if (entry) publishEntryUpdated(toEntrySummary(entry))
-  return true
+  void id
+  void pinned
+  throw new HistoryPinUnavailableError()
 }
 
 export function listInFlightEntries(): Array<HistoryEntry> {
