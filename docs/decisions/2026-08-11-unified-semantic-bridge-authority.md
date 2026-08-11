@@ -86,7 +86,7 @@ F7（不可伪造 Anthropic 签名结果）与 B 的 §7 红线一致，两线�
 
 ## 后果
 
-1. **C1 需要 retrofit，且现在是最便宜的时刻。** C1.1／C1.2 刚冻结类型、C1.3 刚落地。**理由不是「C2 已经在消费这些形状」**——C2 尚未落地（`src/`／`tests/` 搜 `TranslationConfigSnapshot`／`CandidateTranslationLineage`／`DeliveryAuthorityState`／`PairTranslationPolicy` 零命中），而是**趁消费者尚未扩散先把类型 retrofit 做掉**：每晚一片，要改的构造点与消费点就多一批。给 `SemanticItem` 加必填字段会打破刚写完的代码——这是有意的。
+1. **C1 需要 retrofit，越早越便宜。** 落点是 `PerOutputItemState`（实测 `SemanticItem` 全仓零构造点零消费点，只改它是空操作）。**理由是「趁消费者尚未扩散」**，不是某个具体后继片在等它：C2.1 已于 `b0eb7997` 先行落地，但它落的是 `config-snapshot.ts` 与 envelope/codec 接线、未触及 item 契约——`PerOutputItemState` 至今仍只出现在 `ledger.ts`／`snapshot.ts`／`types.ts`（复算：`rg -l 'PerOutputItemState' src/ tests/`）。排期要求：早于任何开始消费 item 契约的片，且必然早于 C5／C7。给它加必填字段会打破现有 finish fixture——这是有意的。
 2. **B 的 RFC 从 Accepted 变为 Accepted v2**，其冻结契约被本 ADR 授权修改。RFC 原有的「不在实现阶段重新裁决已冻结公共契约」仍然有效，本次修改走的是 ADR 授权，不是实现期自行裁决。
 3. **新增一个探针片**，作为 C5／C7 的前置门。
 4. **A 线 spec 与 plan 标注为已被本 ADR 取代**，保留为设计记录不删除（用户 2026-08-11 已裁决两份并列保留）。
