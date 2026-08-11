@@ -28,3 +28,16 @@
 - **双向 diff**：清单声称的 N1–N6 均能在 transcript 找到；反向发现的事件不为空，且 manifest 后新增 `fix-skillref.py` 使文件集合由 109 变为 110。
 
 RELEASE_DELETION: NO
+
+
+## 终态“全部保留”改写复核（2026-08-11）
+
+[major] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md:20-28` — “内容已有载体”被作为每一行（含处理脚本、日志、中间快照、提交信息输入）的处置结论，但本轮与上轮只实证核验了三份 raw review、两份逐字相同 review、5 MiB 技术记忆、incident 重取端点和 N4；没有逐项核验其余类别的“产出全部已提交”“读数已写入”“均可重取”“对应 commit 均存在”等断言 — 全部保留不需要以这些未核验断言作为理由，当前表述会把未审计 carrier 顺带洗白 — 修复建议：处置统一改为“本轮不删；载体断言仅按第四列记录，未逐项复核”，或逐条给 carrier 证据后再保留强断言。
+
+[核验通过] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md:49-64` — N7–N14 补登没有把 reviewer 列出的事件伪称为完整枚举：它标记为 provisional，明确说只是补了评审点名项、没有第二轮独立枚举、不能声称 diff 已空；并限定 N8 的 runtime 结论不外推、N14 明示未逐条保留失败形态。该边界足以避免“已补齐”或“diff 为空”的过度声称。
+
+[major] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md:13` — 文件数“113（05:26 实测）”已再次漂移；本次独立重枚举 `find` 与 `fd -H -I` 均为 **118** — 最近新增可见 `fix-manifest.py`、`m1.txt`、`m2.txt`、`m3.txt`、`m4.txt`；这再次实证 transcript/job 仍有活写入者。由于终态是不删除，漂移不造成数据丢失，但任何“当前总数”或“仅 incident 无载体”的全称快照都应删去或锚为过往测量。
+
+### 本轮结论
+
+终态“全部保留”本身：**YES**。但其文档表述目前：**NO（需修复上列 2 项 major）**；缺少的是对未核验 carrier 的诚实降级，以及把 113 改为“05:26 的历史测量”或停止写入后重取、而非冒充当前盘点。

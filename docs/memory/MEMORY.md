@@ -4,6 +4,10 @@
 
 **钩子写法**：症状词 + 防漏动作内核，**压到一行**（索引有加载上限、超出即静默失效）。只写「已升为 skill」会退化成目录项——skill 万一没浮现，这行是唯一兜底。
 
+## 工作节奏（2026-08-11 起，先读这条）
+
+- [快做快合，不做 SDD／TDD](feedback-ship-fast-no-sdd-no-tdd.md) — 想清楚就动手、做完就合；测试只覆盖主路径 + 已报错过的路径；评审只在「有规模的代码 + 主路径测试已通过 + 合并前」派一次对抗评审，**不再复评到 0 blocker**。权威正文在 CLAUDE.md「工作节奏」节。
+
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub）
 
 - [收尾与跨会话交接](session-closeout-and-handover.md) → skill `closing-a-development-session`（收尾编排）+ `writing-handover-docs`（HANDOVER/KICKOFF/进度文件/容量终态接力）

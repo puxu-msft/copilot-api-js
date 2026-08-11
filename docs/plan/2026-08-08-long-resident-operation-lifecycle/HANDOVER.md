@@ -11,8 +11,9 @@
   - **Task 1–4 实现期的断言**（硬事实表、各 Task 的评审结论与门禁读数）取证于特性分支 `3e418cdb` / `a8eeaf4c`（2026-08-08）。那些 commit 已随合并进入 master，结论未变。
 - **从哪起步**：从 **master** 新开隔离 worktree（放 `.worktrees/`）。历史分支 `fix-long-resident-operations` 与集成分支 `merge-long-resident-lifecycle` 都已被合并取代，**不要从它们起步**。
 - **主树状态**：合并落地时主树只有其他会话的 WIP（本特性零残留）。**接手时自己跑一次 `git status --short`**，别采信这句——它是快照。
-- **已跑门禁**：十文件 focused gate + **Task 4 焦点集（`tests/context/manager-dual-registry.unit.test.ts`、`tests/context/context-manager.it.test.ts`、`tests/shutdown/drain-waits-operation.unit.test.ts`）** + `tests/history/worker/admission-shutdown.unit.test.ts` + `tests/infra/entry-evidence-schema.unit.test.ts`，共 15 文件 → **`0 fail`**；`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。**可复制的完整 15 文件命令在 KICKOFF「测试门禁现状」节**——那里给的是命令，不是数字。
-  - **判据是 `0 fail`，不是某个通过数。** 通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**，两次都 `0 fail`。写死通过数只会让接手方把正常增长误判成回归（项目裁决：文档里直接写易变数字是怪味）。要当前值就跑那条命令。
+- **已跑门禁（`3df0e08d`，随后在 `e120a49c` 复测）**：`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。**这三项都是那两个 commit 上的读数，不是「此刻仍然如此」**——接手请自己重跑。
+- **focused gate 是 14 个文件，不是 15**（可复制的命令在 KICKOFF「测试门禁现状」节）。⚠️ **`tests/infra/entry-evidence-schema.unit.test.ts` 已被移出这道 gate**：它守的是**全树测试发现基线**，任何人（包括与本特性毫无关系的 peer）增删测试文件都会让它红——把它混进「我有没有弄坏自己的东西」这个判据里，会让接手方第一次复验就撞红，最坏跑去重生成别人在飞的基线。它单独的用法见 KICKOFF 同节。
+  - **判据是 `0 fail`，不是某个通过数。** 通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**，两次都 `0 fail`。⚠️ **那两个数是 15 文件时代的**（当时 `entry-evidence-schema` 还在门内）；**移出它之后同一命令是 234**——所以你跑出个比 239 小的数**不是回归**，是门变小了。写死通过数只会让接手方把正常增长误判成回归（项目裁决：文档里直接写易变数字是怪味）。要当前值就跑那条命令。
   - **口径必须说清**：`236` 那组读数取自 **`3df0e08d`**，而它比最终合并态 `0e0768ee` 早 **17 个提交**（`git rev-list --count 3df0e08d..0e0768ee`）——**这道 gate 没有在 `0e0768ee` 上原样跑过**；合并之后的实测是 `e120a49c` 上的 `239 pass / 0 fail`。别把「已跑门禁」读成「最终合并态已被这道门覆盖」。
   - **实现期的读数（分支上，供追溯，不要拿来当合并态判据）**：十文件 gate `197 pass / 0 fail / 687 expect`（`e397720a`）；Task 4 焦点集 `30 pass / 0 fail / 74 expect`（`a8eeaf4c` 之后，独立 reviewer 在自己的副本复现同一数字）。
   ⚠️ **不要引用更早的 `26 pass / 62 expect`**——那是 `3e418cdb`（修 blocker 之前）的真实读数，blocker 整改新增了用例后已变为 30/74。它不是错数，是**陈旧数**；照它核对会误判成回归。
@@ -33,7 +34,7 @@
 - **判定**：16 分片并发 + 本机同时有多个 peer 会话在跑各自的套件 → 负载敏感 flake。
 - **本轮的实证（比推断强）**：对其中最可疑的四个文件（`history/search` 两个、`architecture` 两个）做了定向 A/B——**纯 master 与合并态逐字相同**，均为 `24 pass / 20 skip / 0 fail`。全部三条最终失败也在隔离下通过（`28 pass / 0 fail`）。
 - **诚实边界**：**未**在纯 master 上以同等负载跑完整 `test:backend` 做全量 A/B。所以「非本次改动引入」依据的是「文件面不相交 + 隔离通过 + 签名不稳定 + 定向 A/B 相同」四条，**不是全量 A/B 实证**。
-- **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断自己是否破坏了东西，以十文件 focused gate 与 Task 4 焦点集为准（它们稳定绿）。红了先看失败文件**是否落在自己的改动面内**，不在就隔离复跑确认。
+- **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断自己是否破坏了东西，以 **14 文件 focused gate** 为准——它的成员全部落在本特性的改动面内，**所以它的红可以直接归因给你**，这才是它比 `test:backend` 好用的地方（不是因为它「稳定绿」——没有哪道门能保证这个）。红了先看失败文件**是否落在自己的改动面内**，不在就隔离复跑确认。
 - **旁证**：master 上有 peer 维护的 `docs/tmp/2026-08-08-load-sensitive-test-dispositions.md`（及其 `-review`），记录的是同一批用例——这个问题不是本特性独有的。
 
 ## 立案证据：那条 operation 的身份（此前没记，补上）
@@ -41,13 +42,14 @@
 本特性的立案证据是一条**真实的**长驻留 operation，此前只在 spec 里记了症状文本，**没记它是哪条记录**——后来人因此无法复查原始数据。
 
 - **operationId**：`req_1786064856101_137`（`sessionId` `529807d9-28f0-4e56-85c8-03adaf016bb7`，进程 `pid=597291`、`gitSha=ccb645f5`、`version=0.8.4-beta.18`）。
-- **怎么重取**：`GET /history/api/entries/req_1786064856101_137/export`（[API.md](../../API.md)「History REST」，返回服务端 zstd 压缩的 `.json.zst`）。
+- ⚠️ **这条记录已经取不回来了**：2026-08-11 只读实测 `GET /history/api/entries/req_1786064856101_137/export` → **`404 {"error":"Entry not found"}`**（同刻对照 `GET /history/api/entries?limit=1` → `200`，所以不是服务不可用，是记录本身没了）。端点本身仍然存在且与 [API.md](../../API.md)「History REST」一致——**失效的是这条记录，不是这条路径**。
+- **因此唯一副本是** `incident-manifest.zst`（542 KB，在 job 临时目录 `$CLAUDE_JOB_DIR/tmp/`，**未提交进仓库**，含用户真实请求/响应内容）。它随 job 删除而消失。要不要长期留存、留在哪，**由用户裁决**（见 `docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md`）。**在此之前不要清理那个目录。**
 - **调查期间导出过一份 manifest**（formatVersion 2，含完整 arena payload/frame 谱系），但它只存在于当时会话的临时目录、**未提交**——里面是用户的真实请求与响应内容，是否长期留存属用户决定，不由本次收尾代劳。若 History 已按保留策略淘汰该记录，该导出即不可再生。
 
 ## 入口指引（按序读）
 
 1. **本文**——先读「已确证的硬事实」与「各 Task 当前状态」；「必须最先做的事」那节已完成，只需扫一眼确认不要重做。
-2. `docs/plan/2026-08-08-long-resident-operation-lifecycle.md`——计划正文，Tasks 5–8 在第 384 行之后。**注意它对 `shutdown.ts` 的描述可能已陈旧，见下。**
+2. `docs/plan/2026-08-08-long-resident-operation-lifecycle.md`——计划正文。**别用行号定位**（待办 3 要求你改写这份计划，行号当场就会漂，而漂完之后从外观上看不出来）；用标题查：`rg -n '^#+ .*Task [5-8]' docs/plan/2026-08-08-long-resident-operation-lifecycle.md`。**注意它对 `shutdown.ts` 的描述可能已陈旧，见下。**
 3. `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`——逐轮进度、在途意图、**已作废路线（四条，别重试）**。
 4. 三份评审证据（都已进仓库，不会被 `git clean` 删）：`docs/tmp/*-task-3-report.md`（M1–M9 变异证据）、`*-b1-verification.md`（verifier 三轮）、`*-b1-merged-review.md`（reviewer 三轮）。
 
@@ -83,10 +85,10 @@
 | 3 dispatch cleanup failure ownership | ✅ 完成，历经六轮评审 | `4de3cd6e..cf8f4380` | |
 | **B1 合并态评审** | ✅ **已闭合** | — | reviewer approved（0 Critical / 0 Important / 1 Minor）；verifier 0 findings。那条 Minor 已在 `4b961615` 消除 |
 | 4 manager registry + lifecycle failure barrier | ✅ 完成并评审通过 | `3e418cdb` + `a8eeaf4c` | 首轮判 1 blocker + 1 major，整改后复评关闭（R1–R5 全部由 reviewer 独立探针复跑）。遗留 1 minor + 1 边界形态，见待办 1 |
-| 5 从真实 delivery owner 发布 begin/success/failure | ⬜ 未开工 | — | plan 第 384 行起 |
-| 6 暴露 tracked-operation 运维真相 | ⬜ 未开工 | — | plan 第 454 行起；**受 master 重写影响最大** |
-| 7 全 producer 与现场僵尸回归矩阵 | ⬜ 未开工 | — | plan 第 510 行起 |
-| 8 Mutation、全量验收、文档与最终评审 | ⬜ 未开工 | — | plan 第 557 行起；**文案断言需按 master 新措辞校准** |
+| 5 从真实 delivery owner 发布 begin/success/failure | ⬜ 未开工 | — | plan 内 `rg -n '^#+ .*Task 5'` |
+| 6 暴露 tracked-operation 运维真相 | ⬜ 未开工 | — | plan 内 `rg -n '^#+ .*Task 6'`；**受 master 重写影响最大** |
+| 7 全 producer 与现场僵尸回归矩阵 | ⬜ 未开工 | — | plan 内 `rg -n '^#+ .*Task 7'` |
+| 8 Mutation、全量验收、文档与最终评审 | ⬜ 未开工 | — | plan 内 `rg -n '^#+ .*Task 8'`；**文案断言需按 master 新措辞校准** |
 
 ## 待办（每条带验收判据与证伪方式）
 

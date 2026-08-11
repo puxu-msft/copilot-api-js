@@ -51,3 +51,19 @@
 ## 主观建议
 
 无。
+
+## `c3ff402f` 复评（2026-08-11）
+
+- **第 1 项：通过。** `/home/xp/src/copilot-api-js/docs/memory/git-commit-pathspec-commits-worktree-not-index.md:17-18` 明确保留“hunk 过滤必须无-pathspec commit”且新增“不可放宽”；`/home/xp/.claude/my/git-preference/skills/coordinating-a-shared-git-worktree/SKILL.md:37-38` 仍明确要求序列化共享 `git` index、用 filtered-patch／hold-and-order。其 `apply → 核验 → commit` 序列化、无法序列化转独立 worktree 与 `git show --name-status`＋目标 hunk 归属 postcondition 消除了原先“缩小窗口即门”的病灶。悬空指代已改为“没有这道序列化门时会怎样”，实例机制与“归属串了而非数据丢失”的处置均未改变。
+
+[major] `/home/xp/src/copilot-api-js/docs/memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md:52`（`c3ff402f`）— A/B 判据仍留下“两个 lockfile 相同就允许借根 `node_modules`、省安装”这一缝，却没有验证被借的根安装确实由该共同 lockfile 生成且未陈旧。
+证据：同文件 `:15-18` 已陈述 merge 后主树 `node_modules` 不会自动同步，且解析验证不能只看目录；新文字只以 `git diff <A> <B> -- '**/package.json' bun.lock` 判断 A、B 彼此相同，不能判断根 `node_modules` 与它们相符。
+失败场景：A、B 都在同一新 lockfile 上，但根树仍停在旧安装（或有游离包）；规则允许 `.worktrees/` 借根并省安装，测试仍在错误依赖环境下假红／假绿。它也未消除上轮指出的环境对齐病灶。
+修复建议：保留 diff 作为“两侧可否共享”的第一步；只有根树已按这个相同 lockfile 成功 install，且对被测 import 做真实 resolver／build 验证，才可省“两侧各自”安装。否则 A、B 各自 clean install。建议由 `gpt-souls:instruction-smith` 补上。
+
+[major] `/home/xp/src/copilot-api-js/docs/memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md:54`（`c3ff402f`）— 三联症状已正确降级为分流信号，但四个条件的第 ① 条“`package.json`／lockfile 声明完整”仍是无可执行 oracle 的自评，故四条合起来尚不能机械排除“漏直接依赖声明”。
+证据：`/home/xp/src/copilot-api-js/docs/memory/reference-node-modules-presence-not-lockfile-truth.md:8-10,19` 已说明 resolver 能解析／`node_modules` 有包不证明该包可安全直接 import，且给出必须对 `bun.lock` 核验的动作。新文 `:54` 的②干净安装、③resolver、④重跑可排除坏 import 与 lockfile 漏项，但不单独证明 source 的裸 import 已有对应直接声明；传递 hoist 可使 resolver 通过。
+失败场景：被测代码直接 import 一个仅作为传递依赖存在的包；干净安装成功、resolver 也成功、重跑恢复，但 `package.json` 未声明直接依赖。执行者可把未经证据的“声明完整”当真，将产品缺陷误判为环境问题。
+修复建议：把①改成可执行的“从首条 missing specifier 回溯对应 consumer package，并核对其 `package.json` 的直接 dependency 与该提交 `bun.lock` 条目；必要时在 frozen install 中复验”；四项全绿前不得归为环境问题。建议由 `gpt-souls:instruction-smith` 修订。
+
+**复评 verdict：第 1 项整改通过；第 2、3 项各残留 1 条 major，修复这 2 条后可定稿。Blocker：0。**

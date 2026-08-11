@@ -35,13 +35,16 @@
 
 ## 测试门禁现状（`3df0e08d` 与 `e120a49c` 两次实测，**接手第一件事是复验而非采信**）
 
-- **15 文件 focused gate —— 整行复制即可跑，判据是 `0 fail`**（前十个是十文件 gate，含 Task 1 的 `operation-lifecycle.unit.test.ts`；接着三个是 Task 4 焦点集；最后两个是合并期补入的）：
+- **14 文件 focused gate —— 整行复制即可跑，判据是 `0 fail`**（前十个是十文件 gate，含 Task 1 的 `operation-lifecycle.unit.test.ts`；接着三个是 Task 4 焦点集；最后一个是 Task 4 改名波及的）。**成员全部落在本特性的改动面内，所以它红了可以直接归因给你**：
 
   ```
-  bun test tests/context/operation-lifecycle.unit.test.ts tests/context/operation-scope.unit.test.ts tests/context/request-context.unit.test.ts tests/context/generation-recorder-lifecycle.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/coordinator-hedge.unit.test.ts tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/infra/entry-evidence-schema.unit.test.ts
+  bun test tests/context/operation-lifecycle.unit.test.ts tests/context/operation-scope.unit.test.ts tests/context/request-context.unit.test.ts tests/context/generation-recorder-lifecycle.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/coordinator-hedge.unit.test.ts tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts tests/history/worker/admission-shutdown.unit.test.ts >/dev/null
   ```
 
-  **只看 `0 fail`，不要去对某个通过数**：`3df0e08d` 上是 236、`e120a49c` 上是 239，都是 `0 fail`——通过数随提交增长，拿它当判据会把增长误判成回归。
+  ⚠️ **末尾的 `>/dev/null` 是承重的，别删**：`bunfig.toml` 强制开覆盖率，而 stdout 是管道时 `bun test` 会在打印覆盖率表途中 `WriteFailed` 并 exit 1、**连汇总行都不打**——那是过滤器造出来的假红，不是测试失败（本会话亲历过一次）。**汇总在 stderr、覆盖率表在 stdout**，所以丢掉 stdout 反而稳定可读。
+
+  **只看 `0 fail`，不要去对某个通过数**：通过数随提交增长（`3df0e08d`=236、`e120a49c`=239，均含当时还在门内的 entry-evidence，两次都 `0 fail`），拿它当判据会把增长误判成回归。
 - `bun run typecheck` → exit 0；`bun run lint:all` → exit 0（全树）；`bun run test:backend` → 见上条「负载敏感」，判据只看 `0 fail` 且红的要逐条隔离复核。
-- **改测试文件集合时记得同步 `tests/infra/entry-test-discovery-baseline.json`**：它冻结了发现集，新增/删除测试文件不同步就会红；它要求**字节规范**（`JSON.stringify(parsed, null, 2) + "\n"`，键序 schema_version / runner_git_blob / minimum_executed / files / allowed_skipped），手工编辑极易写出非规范字节。
+- **`tests/infra/entry-evidence-schema.unit.test.ts` 单独跑，不进上面那道 gate**：它守的是**全树测试发现基线**（`tests/infra/entry-test-discovery-baseline.json`），**任何人**增删测试文件不同步都会让它红——包括与本特性完全无关的 peer。**你自己增删测试文件时必须跑它并同步基线**；它要求**字节规范**（`JSON.stringify(parsed, null, 2) + "\n"`，键序 schema_version / runner_git_blob / minimum_executed / files / allowed_skipped），手工编辑极易写出非规范字节。
+  - ⚠️ **它现在（2026-08-11，master `f2a44579` 一带）就是红的，而且不是你造成的**：基线比磁盘上的实际发现集**少 4 个文件**——`tests/helpers/protocol-oracles/anthropic-sdk-oracle.unit.test.ts`（`git log -1` 会返回 `588b0c09`，2026-08-09；**那是它的最近改动、不一定是引入它的那个 commit**——归属判据只需要「这个 commit 是不是我这轮的」，不需要追到引入点）与 `tests/openai/semantic-bridge/` 下的三个。**归属判据**：跑它拿到 diff 后，对每个多/少的文件跑 `git log --oneline -1 -- <该文件>`，再问**那个 commit 在不在你自己这轮的 `<你的起点>..HEAD` 里**——不在就不是你的问题。（**别按 author 分**：本仓所有提交都是同一个 author，分不出来。）**不要顺手重生成基线**——它同时冻结 `minimum_executed`，而那 4 个文件属于别人在飞的工作。
 - **禁区**：绝不杀死用户在 **4141 端口**的主服务器实例；要起测试服务器用别的端口，按 PID 精确清理自己起的那个。

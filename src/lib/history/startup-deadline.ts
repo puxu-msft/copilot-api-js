@@ -19,6 +19,8 @@ export {
  * The Worker's restart budget rate-limits startup retries but deliberately does not cap them: a retryable startup error (spec's transient set — `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_IOERR`) may well clear on attempt N+1, and turning "tried N times" into a permanent fatal would make a temporary fault unrecoverable for the lifetime of the process (the cap Batch 2a briefly had was withdrawn by user ruling on 2026-08-09 for exactly that reason). So the budget is right and the missing piece is elsewhere: SOMEONE has to decide when the process as a whole stops waiting, and that is the party that owns process startup, not the runtime.
  *
  * Without this, a peer holding the semantic write lock indefinitely leaves the process neither serving nor exiting — spec §8.1 forbids listening before History is ready, and the retry loop never terminates — which replaces a loud `exit 1` with a silent hang that no supervisor can act on.
+ *
+ * **It is off by default (user ruling, 2026-08-10).** The silent hang above is real, but the deadline's own failure mode turned out to be worse in practice: a graceful-restart overlap makes the successor wait for a predecessor whose drain is unbounded by design, so any fixed deadline eventually kills a restart that was going to succeed. That is not hypothetical — it happened, and the error carried `consecutive startup failures: 0, no retry scheduled`, i.e. nothing was wrong except that we stopped waiting. An operator who wants the loud exit sets `history.startup_deadline_ms` to a positive value; see `startup-deadline-config.ts` for why the default cannot be derived at build time.
  */
 
 /**
@@ -44,7 +46,7 @@ export class HistoryStartupDeadlineError extends Error {
  *
  * IMPORTANT — the caller's obligation on rejection is to END THE PROCESS. Losing this race does not cancel the bring-up: the Worker is still retrying, and `shutdownHistory()` cannot be used to clean up because it queues behind the very transition that is not finishing. A caller that caught this error and carried on would run without History AND without the exit that tells a supervisor something is wrong.
  *
- * `deadlineMs <= 0` disables the deadline (waits forever), which is only appropriate for callers that are not a process entry point.
+ * `deadlineMs <= 0` disables the deadline (waits forever). This is now the default for every caller including the process entry point — the caller's obligation below applies only when a deadline was actually configured.
  */
 export async function initHistoryWithinStartupDeadline(enable: boolean, deadlineMs: number = getHistoryStartupDeadlineMs()): Promise<void> {
   // Disabling History does no I/O and cannot hang; a deadline there would only add a timer to every startup that runs without History.
