@@ -264,7 +264,7 @@ const historyBodySnapshotBrand: unique symbol = Symbol("historyBodySnapshot")
  */
 export interface HistoryBodySnapshot {
   readonly body: unknown
-  readonly [historyBodySnapshotBrand]: true
+  readonly [historyBodySnapshotBrand]?: true
 }
 
 /** Create the private History snapshot required when a route will mutate its wire body. */

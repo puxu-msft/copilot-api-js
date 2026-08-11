@@ -28,7 +28,6 @@ import type { Context } from "hono"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
-import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
@@ -181,6 +180,7 @@ import {
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -894,6 +894,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     })
   }
 
+  // System-prompt/preprocess only rewrite `messages`; their contract preserves the client stream flag.
   // Non-streaming: await the upstream-settled runRequest, then render the real HTTP status.
   if (!wireBody.stream) {
     return runUpstreamSettledPath()
