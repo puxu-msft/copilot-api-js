@@ -149,22 +149,17 @@ function codec(): FormatCodec {
     parse() {
       const ctx = createRequestContext({ endpoint: "anthropic-messages" })
       const value = {
-        clientFormat: "anthropic" as const,
-        targetEndpoint: "/v1/messages" as const,
-        model: { id: "claude-test" },
-        stream: true,
-        body: { model: "claude-test", stream: true },
+        request: { clientFormat: "anthropic" as const, model: { id: "claude-test" }, stream: true } as RequestEnvelope["request"],
+        attempt: { body: { model: "claude-test", stream: true }, targetEndpoint: "/v1/messages" as const, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
         view: {} as never,
-        prepareHints: {},
-        ctx,
-        with(patch: Partial<RequestEnvelope>) {
-          return { ...this, ...patch } as RequestEnvelope
-        },
+        ctx: ctx,
+        createView: () => ({}) as RequestEnvelope["view"],
       }
       return value as unknown as RequestEnvelope
     },
     translateOut: (env) => env,
-    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.body, stream: true }),
+    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.attempt.body, stream: true }),
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (body) => body,
     formatError: () => ({ event: "error", data: "{}" }),

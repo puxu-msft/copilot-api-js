@@ -44,6 +44,7 @@ import {
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { getQuarantineStore } from "~/lib/anthropic/thinking-quarantine"
 import { toQuarantineKey } from "~/lib/anthropic/thinking-quarantine/session-key"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { state } from "~/lib/state"
 
 /**
@@ -71,7 +72,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
     },
     handle(error: ApiError, env: RequestEnvelope): Promise<RetryAction> {
       attempted = true
-      const payload = env.body as MessagesPayload
+      const payload = env.attempt.body as MessagesPayload
       const { messages, strippedCount } = stripAllThinking(payload.messages, state.separatorAcceptExtra)
       // Nothing to strip → the 400 is not actually about echoed thinking we can
       // remove; abort rather than retry an unchanged payload into the same 400.
@@ -90,7 +91,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
       }
       // review M1: `env.with()` is the only immutable-update method (envelope.ts:108);
       // a bare `{ ...env }` spread would drop the prototype method + shared ctx.
-      const nextEnv = env.with({ body: { ...payload, messages } })
+      const nextEnv = writeAttempt(env, { body: { ...payload, messages } })
       // `errorSample` (richest-data-flow) rides the retry meta → onResolved → the
       // store's `last_error_sample` diagnostic column. `strippedThinkingOnReject`
       // is the load-bearing signal onResolved gates on (OUR strip-all, not another

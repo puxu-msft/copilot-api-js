@@ -34,12 +34,15 @@ function makeCodec() {
   return createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: NO_PREPROCESS })
 }
 
-const fakeEnv = { clientFormat: "anthropic", targetEndpoint: "/v1/messages", body: { model: "claude-sonnet-4", messages: [] } } as unknown as RequestEnvelope
+const fakeEnv = {
+  request: { clientFormat: "anthropic" } as RequestEnvelope["request"],
+  attempt: { targetEndpoint: "/v1/messages", body: { model: "claude-sonnet-4", messages: [] } } as RequestEnvelope["attempt"],
+} as unknown as RequestEnvelope
 
 describe("anthropic codec — identity S2/S6", () => {
   test("translateOut is identity (bypass-direct, no translation)", () => {
     // translateOut moved off the codec onto the (anthropic × /v1/messages) CELL; the direct leg is identity.
-    expect(resolveCellAssembly("anthropic", fakeEnv.targetEndpoint).translateOut(fakeEnv)).toBe(fakeEnv)
+    expect(resolveCellAssembly("anthropic", fakeEnv.attempt.targetEndpoint).translateOut(fakeEnv)).toBe(fakeEnv)
   })
 
   test("renderResponse forwards the upstream frame verbatim", () => {
@@ -75,7 +78,9 @@ describe("anthropic codec — formatError (Anthropic-shaped, double-typed)", () 
 describe("anthropic codec — createResponseAccumulator", () => {
   test("direct leg returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
     const codec = makeCodec()
-    const acc = codec.createResponseAccumulator({ targetEndpoint: "/v1/messages" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    const acc = codec.createResponseAccumulator({
+      attempt: { targetEndpoint: "/v1/messages" } as RequestEnvelope["attempt"],
+    } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc.model).toBe("")
     expect(acc.inputTokens).toBe(0)
     expect(acc.outputTokens).toBe(0)
@@ -85,7 +90,9 @@ describe("anthropic codec — createResponseAccumulator", () => {
 
   test("FORWARD translate leg (@cc) returns a CC stream accumulator (RFC §4.1 per-leg dispatch)", () => {
     const codec = makeCodec()
-    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    const acc = codec.createResponseAccumulator({
+      attempt: { targetEndpoint: "/chat/completions" } as RequestEnvelope["attempt"],
+    } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     // CC accumulator has `toolCallMap`, the Anthropic one does not (proof it's the CC-leg accumulator).
     expect("toolCallMap" in acc).toBe(true)
     expect("stopReason" in acc).toBe(false)

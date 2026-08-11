@@ -60,8 +60,8 @@ export function buildOpenAiResponsesStrategies(deps: OpenAiResponsesStrategiesDe
 /** Build the strategies from the parsed envelope (the driver's per-request factory form). */
 export function buildOpenAiResponsesStrategiesForEnv(env: RequestEnvelope): ReadonlyArray<EnvRetryStrategy> {
   return buildOpenAiResponsesStrategies({
-    originalPayload: env.body as ResponsesPayload,
-    model: env.model as Model | undefined,
+    originalPayload: env.attempt.body as ResponsesPayload,
+    model: env.request.model as Model | undefined,
     maxRetries: 1,
   })
 }

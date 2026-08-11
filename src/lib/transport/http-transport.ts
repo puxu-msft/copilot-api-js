@@ -79,7 +79,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         body: wire.body,
         stream: wire.stream,
         errorLabel: errorLabelFor(wire.url),
-        modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
+        modelId: typeof body.model === "string" ? body.model : (env.request.model as Model | undefined)?.id,
         diagnosticsTools: body.tools,
         headersCapture,
         clientAbortSignal: deps.clientAbortSignal,

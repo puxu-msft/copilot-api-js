@@ -345,7 +345,7 @@ async function handleResponseCreateV4(
   const { upstream, env } = result
   // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
   env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel) })
-  const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+  const viaFallback = env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.
   if (viaFallback) {

@@ -119,7 +119,7 @@ function bufferOrEmit(out: Array<ServerSentEventMessage>): FrameAction {
  * leg (cc/responses/gemini → `/v1/messages`), where these must fire on the Anthropic wire
  * regardless of the inbound client format — which the `targetEndpoint` axis expresses.
  */
-const ANTHROPIC = (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES
+const ANTHROPIC = (env: RequestEnvelope): boolean => env.attempt.targetEndpoint === ENDPOINT.MESSAGES
 
 // ============================================================================
 // recover-tool-call (order 100, buffer/flush)
@@ -139,7 +139,7 @@ const recoverRewrite: ResponseRewrite = {
   // skipping the rewrite entirely is byte-identical to that passthrough).
   appliesTo: (env) => ANTHROPIC(env) && state.recoverToolCallText,
   createState: (env): RecoverState => {
-    const tools = (env.body as MessagesPayload).tools
+    const tools = (env.attempt.body as MessagesPayload).tools
     return {
       recoverer: createToolCallTextRecoverer({
         enabled: true,
@@ -183,7 +183,7 @@ const recoverRewrite: ResponseRewrite = {
   // because `appliesTo` already gated `state.recoverToolCallText` (when off, the driver skips
   // this rewrite entirely = byte-identical to the helper's `enabled:false` early-return).
   transformWhole: (response, env): unknown => {
-    const tools = (env.body as MessagesPayload).tools
+    const tools = (env.attempt.body as MessagesPayload).tools
     const original = response as AnthropicMessageResponse
     const recovered = recoverToolCallTextInResponse(original, {
       enabled: true,
@@ -381,7 +381,7 @@ const refusalRewrite: ResponseRewrite = {
       policy: env.ctx.refusalPolicy,
       // Static vars known at stream start (before any frame): resolved model + request id. The
       // rewriter self-supplies stop_details + usage from the refusal message_delta.
-      staticVars: { model: (env.body as MessagesPayload).model, request_id: env.ctx.id },
+      staticVars: { model: (env.attempt.body as MessagesPayload).model, request_id: env.ctx.id },
     }),
   }),
   // Never buffers: emits the passthrough frame, or (at the contentless-refusal message_delta) the

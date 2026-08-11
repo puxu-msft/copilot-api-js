@@ -26,11 +26,10 @@ const REMINDER = "The TodoWrite tool hasn't been used recently. Consider using i
 /** Minimal env stub: clientFormat + body + immutable `with`. */
 function env(clientFormat: string, body: unknown): RequestEnvelope {
   return {
-    clientFormat,
-    body,
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    request: { clientFormat: clientFormat } as RequestEnvelope["request"],
+    attempt: { body: body } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -43,7 +42,7 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
       ],
     }
     const out = stripMessageBlock(env("anthropic", body), (t) => t.role === "system" && TODO.test(t.text))
-    expect((out.body as typeof body).messages).toEqual([{ role: "user", content: "hi" }])
+    expect((out.attempt.body as typeof body).messages).toEqual([{ role: "user", content: "hi" }])
     expect(body.messages).toHaveLength(2) // original untouched (immutable)
     expect(out).not.toBe(env("anthropic", body)) // new env
   })
@@ -56,8 +55,8 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
       ],
     }
     const out = stripMessageBlock(env("openai-cc", body), (t) => t.role === "system" && TODO.test(t.text))
-    expect((out.body as typeof body).messages).toHaveLength(1)
-    expect((out.body as typeof body).messages[0].role).toBe("user")
+    expect((out.attempt.body as typeof body).messages).toHaveLength(1)
+    expect((out.attempt.body as typeof body).messages[0].role).toBe("user")
   })
 
   test("openai-responses: drops a matching input message item (input list, not messages)", () => {
@@ -71,8 +70,8 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
     // responses text projection reads `content` array {type,text}; input_text has no `text` under our
     // messageText (type!=="text"), so match on role for this shape.
     const out = stripMessageBlock(env("openai-responses", body), (t) => t.role === "system")
-    expect((out.body as typeof body).input).toHaveLength(1)
-    expect((out.body as typeof body).input[0].role).toBe("user")
+    expect((out.attempt.body as typeof body).input).toHaveLength(1)
+    expect((out.attempt.body as typeof body).input[0].role).toBe("user")
   })
 
   test("gemini: drops a matching contents turn (contents list + parts text projection)", () => {
@@ -83,7 +82,7 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
       ],
     }
     const out = stripMessageBlock(env("gemini", body), (t) => TODO.test(t.text))
-    expect((out.body as typeof body).contents).toEqual([{ role: "user", parts: [{ text: "real" }] }])
+    expect((out.attempt.body as typeof body).contents).toEqual([{ role: "user", parts: [{ text: "real" }] }])
   })
 
   test("no match → same env unchanged (identity)", () => {
@@ -95,22 +94,22 @@ describe("client-rewrite — stripMessageBlock (conversation-turn formats)", () 
 describe("client-rewrite — stripSystemText (out-of-band system carriers)", () => {
   test("anthropic top-level string system: strips the reminder text", () => {
     const out = stripSystemText(env("anthropic", { system: `You are helpful. ${REMINDER}`, messages: [] }), TODO)
-    expect((out.body as { system: string }).system).toBe("You are helpful.")
+    expect((out.attempt.body as { system: string }).system).toBe("You are helpful.")
   })
 
   test("anthropic system becoming empty → carrier removed", () => {
     const out = stripSystemText(env("anthropic", { system: REMINDER, messages: [] }), TODO)
-    expect("system" in (out.body as object)).toBe(false)
+    expect("system" in (out.attempt.body as object)).toBe(false)
   })
 
   test("openai-responses instructions: strips the reminder text", () => {
     const out = stripSystemText(env("openai-responses", { instructions: `Be terse. ${REMINDER}`, input: [] }), TODO)
-    expect((out.body as { instructions: string }).instructions).toBe("Be terse.")
+    expect((out.attempt.body as { instructions: string }).instructions).toBe("Be terse.")
   })
 
   test("gemini systemInstruction.parts: strips the reminder text", () => {
     const out = stripSystemText(env("gemini", { systemInstruction: { parts: [{ text: REMINDER }] }, contents: [] }), TODO)
-    expect("systemInstruction" in (out.body as object)).toBe(false) // parts emptied → carrier removed
+    expect("systemInstruction" in (out.attempt.body as object)).toBe(false) // parts emptied → carrier removed
   })
 
   test("openai-cc has no out-of-band system carrier → unchanged", () => {

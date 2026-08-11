@@ -21,6 +21,8 @@
 
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 
+import { writeAttempt } from "~/lib/pipeline/envelope"
+
 /** A conversation turn as seen by a `client.inbound` hook (format-native; role + opaque content). */
 export interface ClientTurn {
   readonly role: string
@@ -72,9 +74,9 @@ function turnListKey(format: string): { key: string; project: (turn: Record<stri
  * verbatim object and `turn.text`/`turn.role` for matching.
  */
 export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) => Record<string, unknown> | null): RequestEnvelope {
-  const spec = turnListKey(env.clientFormat)
+  const spec = turnListKey(env.request.clientFormat)
   if (!spec) return env
-  const body = env.body as Body
+  const body = env.attempt.body as Body
   const list = body[spec.key]
   if (!Array.isArray(list)) return env
 
@@ -92,7 +94,7 @@ export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) =
     out.push(kept)
   }
   if (!changed) return env
-  return env.with({ body: { ...body, [spec.key]: out } })
+  return writeAttempt(env, { body: { ...body, [spec.key]: out } })
 }
 
 /**
@@ -112,15 +114,15 @@ export function stripMessageBlock(env: RequestEnvelope, predicate: (turn: Client
  * a carrier that becomes empty is removed.
  */
 export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestEnvelope {
-  const body = env.body as Body
+  const body = env.attempt.body as Body
   const strip = (s: string): string => s.replace(pattern, "").trim()
 
-  switch (env.clientFormat) {
+  switch (env.request.clientFormat) {
     case "anthropic": {
       const sys = body.system
       if (typeof sys === "string") {
         const next = strip(sys)
-        return next === sys ? env : env.with({ body: next ? { ...body, system: next } : omit(body, "system") })
+        return next === sys ? env : writeAttempt(env, { body: next ? { ...body, system: next } : omit(body, "system") })
       }
       if (Array.isArray(sys)) {
         let changed = false as boolean
@@ -134,7 +136,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
             return b
           })
           .filter((b) => b !== null)
-        return changed ? env.with({ body: { ...body, system: kept } }) : env
+        return changed ? writeAttempt(env, { body: { ...body, system: kept } }) : env
       }
       return env
     }
@@ -142,7 +144,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
       const instr = body.instructions
       if (typeof instr !== "string") return env
       const next = strip(instr)
-      return next === instr ? env : env.with({ body: next ? { ...body, instructions: next } : omit(body, "instructions") })
+      return next === instr ? env : writeAttempt(env, { body: next ? { ...body, instructions: next } : omit(body, "instructions") })
     }
     case "gemini": {
       const si = body.systemInstruction as { parts?: Array<{ text?: string }> } | undefined
@@ -156,7 +158,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
         })
         .filter((p) => p !== null)
       if (!changed) return env
-      return env.with({ body: parts.length > 0 ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
+      return writeAttempt(env, { body: parts.length > 0 ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
     }
     default: {
       return env

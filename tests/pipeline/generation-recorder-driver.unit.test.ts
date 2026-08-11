@@ -52,7 +52,7 @@ describe("generation recorder v4 driver integration", () => {
         model: "gpt-5.5",
         resolvedModel: undefined,
         messages: [{ role: "user", content: "hello" }],
-        payload: env.body,
+        payload: env.attempt.body,
         format: "openai-chat-completions",
       },
       wire: {
@@ -71,7 +71,7 @@ describe("generation recorder v4 driver integration", () => {
       transport: makeTransport(async () => okStream([upstreamFrame])),
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected routing rejection")
     const { sink, frames } = makeArraySink()
     const outcome = await driver.runResponseSink(request.upstream, request.env, sink)
@@ -111,7 +111,7 @@ describe("generation recorder v4 driver integration", () => {
       })),
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected routing rejection")
     const identity = driver.getCandidateResponseIdentity(request.upstream)
     if (!identity) throw new Error("missing evaluation candidate identity")
@@ -138,7 +138,7 @@ describe("generation recorder v4 driver integration", () => {
       transport: makeTransport(async () => okStream([{ data: "candidate" }])),
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected routing rejection")
     const identity = driver.getCandidateResponseIdentity(request.upstream)
     if (!identity) throw new Error("missing evaluation candidate identity")
@@ -198,7 +198,7 @@ describe("generation recorder v4 driver integration", () => {
       transport,
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected routing rejection")
     const identity = driver.getCandidateResponseIdentity(request.upstream)
     if (!identity) throw new Error("missing recovery identity")
@@ -260,7 +260,7 @@ describe("generation recorder v4 driver integration", () => {
       transport,
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected routing rejection")
     const identity = driver.getCandidateResponseIdentity(request.upstream)
     if (!identity) throw new Error("missing recovery identity")
@@ -284,8 +284,8 @@ describe("generation recorder v4 driver integration", () => {
     const env = makeEnv(ctx, { model: "m", messages: [] })
     const { codec } = makeCodec({ env })
     codec.sampleRequest = () => ({
-      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.body, format: "openai-chat-completions" },
-      wire: { model: "m", messages: [], payload: env.body, headers: {}, format: "openai-chat-completions" },
+      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.attempt.body, format: "openai-chat-completions" },
+      wire: { model: "m", messages: [], payload: env.attempt.body, headers: {}, format: "openai-chat-completions" },
     })
     let seen = 0
     const buffered: Array<{ event?: string; data?: string; id?: string | number; retry?: number }> = []
@@ -339,7 +339,7 @@ describe("generation recorder v4 driver integration", () => {
       ),
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected rejection")
     const { sink } = makeArraySink()
     await driver.runResponseSink(request.upstream, request.env, sink)
@@ -376,8 +376,8 @@ describe("generation recorder v4 driver integration", () => {
     const env = makeEnv(ctx, { model: "m", messages: [] })
     const { codec } = makeCodec({ env })
     codec.sampleRequest = () => ({
-      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.body, format: "openai-chat-completions" },
-      wire: { model: "m", messages: [], payload: env.body, headers: {}, format: "openai-chat-completions" },
+      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.attempt.body, format: "openai-chat-completions" },
+      wire: { model: "m", messages: [], payload: env.attempt.body, headers: {}, format: "openai-chat-completions" },
     })
     let upstreamReachedEof = false
     async function* frames() {
@@ -403,7 +403,7 @@ describe("generation recorder v4 driver integration", () => {
       transport: makeTransport(async () => ({ frames: frames(), headers: new Headers() })),
     })
 
-    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
     if (!request.ok) throw new Error("unexpected rejection")
     const { sink, frames: written } = makeArraySink()
     const outcome = await driver.runResponseSink(request.upstream, request.env, sink)

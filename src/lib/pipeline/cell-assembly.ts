@@ -111,7 +111,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
   // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire).
   anthropic: (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicMessagesRetrySemantics()
       }
@@ -123,14 +123,14 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
   // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
   // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
   "openai-cc": (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -142,7 +142,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
@@ -150,7 +150,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
   // Anthropic stack). RETRY_SEMANTICS reads env.targetEndpoint to pick → a 2D function, NOT a cf scalar.
   "openai-responses": (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -162,13 +162,13 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return responsesDirectRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
   // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -180,7 +180,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },

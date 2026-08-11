@@ -203,10 +203,10 @@ async function handleResponsesV4Admitted(c: Context, historyReservation: History
   const { upstream, env } = result
   // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
   env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
-  const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
-  const reverseMessages = env.targetEndpoint === ENDPOINT.MESSAGES
+  const viaFallback = env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+  const reverseMessages = env.attempt.targetEndpoint === ENDPOINT.MESSAGES
 
-  if (!env.stream) {
+  if (!env.request.stream) {
     try {
       const resp = driver.runResponseNonStreaming(upstream, env) as ResponsesResponse
       // REVERSE `@messages` leg (Phase 5): the client body is the Responses render, but the OUTBOUND leg
@@ -331,7 +331,7 @@ interface PumpStreamingV4Options {
 
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env, viaFallback } = opts
-  const model = (env.body as ResponsesPayload).model
+  const model = (env.attempt.body as ResponsesPayload).model
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
@@ -601,7 +601,7 @@ interface PumpReverseAnthropicLegOptions {
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as MessagesPayload).model
+  const model = (env.attempt.body as MessagesPayload).model
   const streamStartMs = Date.now()
   const forwardedSseEvents: Array<SseEventRecord> = []
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）

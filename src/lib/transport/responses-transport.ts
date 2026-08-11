@@ -75,7 +75,7 @@ async function selectAndSend(
 ): Promise<UpstreamStream> {
   const responsesPayload = wire.body as ResponsesPayload
   const headers = Object.fromEntries(wire.headers.entries())
-  const model = env.model as Model | undefined
+  const model = env.request.model as Model | undefined
   // Reaper signal (缺陷④): DISTINCT provenance from clientAbort, folded into BOTH the
   // upstream WS request / HTTP fetch (cancel the in-flight) and the stream guard (a
   // mid-stream reap reaches a live client as reaper-cancel → stream-error → error frame).

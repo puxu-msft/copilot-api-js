@@ -39,13 +39,18 @@ import {
 
 function env(): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: { id: "claude-test" },
-    stream: true,
-    body: {},
+    request: {
+      clientFormat: "anthropic",
+      model: { id: "claude-test" },
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: "/v1/messages",
+      body: {},
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {} as never,
-    prepareHints: {},
     ctx: {
       captureGenerationDispatchFrameTransform() {},
       captureGenerationDispatchFrameAction() {},
@@ -53,9 +58,7 @@ function env(): RequestEnvelope {
       setGenerationDispatchSseEvents() {},
       setGenerationDispatchTimingEpoch() {},
     } as never,
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

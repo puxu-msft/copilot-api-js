@@ -53,10 +53,7 @@ import type {
   NeutralSystem,
   NeutralTool,
   RequestEnvelope,
-  ResolvedModel,
-  UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { RequestState } from "~/lib/pipeline/request-state"
 import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
@@ -67,7 +64,6 @@ import type {
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   ChatCompletionsPayload,
@@ -95,10 +91,6 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import {
-  //
-  type RouteOverride,
-} from "~/lib/models/resolver"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { streamErrorKindToOpenAIErrorType } from "~/lib/openai/stream-error"
@@ -111,6 +103,7 @@ import {
   //
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
+import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
@@ -203,20 +196,20 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     let responsesRenderer: ResponsesToCcFrameRenderer | null = null
     let reverseTranslator: ReverseStreamTranslator | undefined
     const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-      const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+      const modelId = (env.request.model as Model | undefined)?.id ?? (env.attempt.body as { model?: string }).model ?? ""
       return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, undefined, {
         onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
       }))
     }
     return {
       renderResponse(frame, env) {
-        if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
-        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
+        if (env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
+        if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
         responsesRenderer ??= createResponsesToCcFrameRenderer()
         return responsesRenderer.renderFrame(frame)
       },
       flushResponse(env) {
-        if (env.targetEndpoint !== ENDPOINT.MESSAGES) return []
+        if (env.attempt.targetEndpoint !== ENDPOINT.MESSAGES) return []
         return ensureReverseTranslator(env).flush()
       },
       getStreamMeta() {
@@ -232,20 +225,17 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     parse(raw) {
       const { env, baseline } = parseOpenAiCc(raw, (ctx) => (requestContext = ctx), args?.translationConfigSnapshot)
       truncateBaseline = baseline
-      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
-      // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
-      // baseline) is populated for EVERY CC request (C3 — the direct/forward `/chat/completions` cells read
-      // it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]`). The REVERSE `@messages` leg supply (C2b — the shared beta
-      // probe + mapper holder) is added when the handler injects them; both coexist on requestState. Populating
-      // requestState is also the driver's cell-keyed fork discriminator (an env without it stays legacy).
-      return env.with({
-        requestState: {
-          truncateBaseline: baseline,
-          sourceToolNameMapper: env.ctx.toolNameMapper,
-          ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
-          ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
-        },
+      // Attach the outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads it off the envelope's scopes instead of this codec closure. The `truncateBaseline` (the auto-truncate baseline) is populated for EVERY CC request (C3 — the direct/forward `/chat/completions` cells read it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]`). The REVERSE `@messages` leg supply (C2b) is added when the handler injects it; both coexist. `legSupplyReady` is the driver's cell-keyed fork discriminator — see RequestScope.legSupplyReady.
+      Object.assign(env.request, {
+        legSupplyReady: true,
+        truncateBaseline: baseline,
+        sourceToolNameMapper: env.ctx.toolNameMapper,
       })
+      Object.assign(env.candidate, {
+        ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+        ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+      })
+      return env
     },
 
     getTruncateBaseline() {
@@ -279,7 +269,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     createCandidateStateFactory(env) {
       return createCandidateStateFactory(env, {
         createBetaProbe,
-        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.request.model.id, env.request.model.vendor),
         createResanitize: ({ source, reverseMapperHolder }) =>
           reverseMapperHolder ?
             (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
@@ -291,11 +281,11 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → CC-canonical (the hub reverse render).
       // CC cannot carry `stop_details.category`; the raw Anthropic leg remains intact in History, while
       // this feature marker makes the client-wire degradation directly queryable.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES)
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES)
         return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream, {
           onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
         }).rendered
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return upstream
+      if (env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return upstream
       return translateResponsesResponseToCC(upstream as ResponsesResponse)
     },
 
@@ -319,7 +309,7 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       // The OUTBOUND-leg accumulator (RFC §4.1): the forward/via-responses legs' upstream is CC-shaped;
       // a REVERSE `@messages` leg's upstream is Anthropic → the Anthropic accumulator (feeding the wrong
       // format's frames would produce a malformed outboundResponse, violating richest-data-flow).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
       return createOpenAIStreamAccumulator()
     },
   }
@@ -418,13 +408,17 @@ function parseOpenAiCc(
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(renamedPayload)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
-    ...(routeOverride && { routeOverride }),
-    model: selectedModel,
-    stream: sanitizedPayload.stream ?? false,
-    body: sanitizedPayload,
+    request: {
+      clientFormat: CLIENT_FORMAT,
+      model: selectedModel,
+      stream: sanitizedPayload.stream ?? false,
+      ...(routeOverride && { routeOverride }),
+      ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    },
+    // targetEndpoint is initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    attempt: { body: sanitizedPayload, targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, prepareHints: {} },
     ctx,
-    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    createView: createCcLazyView,
   })
 
   // `renamedPayload` (post-tool-rename, PRE-sanitize) is the stable auto-truncate
@@ -457,60 +451,8 @@ function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
 }
 
 // ============================================================================
-// Envelope construction + lazy view
+// Lazy view
 // ============================================================================
-
-interface EnvelopeInit {
-  targetEndpoint: UpstreamEndpoint
-  routeOverride?: RouteOverride
-  model: ResolvedModel
-  stream: boolean
-  body: unknown
-  ctx: RequestContext
-  prepareHints?: PrepareHints
-  requestState?: RequestState
-  translationConfigSnapshot?: TranslationConfigSnapshot
-}
-
-/**
- * Build a {@link RequestEnvelope}. `with()` rebuilds a fresh envelope from the
- * current field values + patch (shallow copy + patch); `view` is a lazy CC
- * projection re-derived from the current `body`. No shared envelope factory
- * exists yet — the codec owns construction (the next codecs add their own).
- */
-function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
-  const env: RequestEnvelope = {
-    clientFormat: CLIENT_FORMAT,
-    targetEndpoint: init.targetEndpoint,
-    ...(init.routeOverride && { routeOverride: init.routeOverride }),
-    model: init.model,
-    stream: init.stream,
-    body: init.body,
-    prepareHints: init.prepareHints ?? {},
-    ...(init.requestState !== undefined && { requestState: init.requestState }),
-    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
-    ctx: init.ctx,
-    get view(): LazyMessageView {
-      return createCcLazyView(env.body)
-    },
-    with(patch) {
-      return makeEnvelope({
-        targetEndpoint: env.targetEndpoint,
-        routeOverride: env.routeOverride,
-        model: env.model,
-        stream: env.stream,
-        body: env.body,
-        ctx: env.ctx,
-        prepareHints: env.prepareHints,
-        requestState: env.requestState,
-        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
-        translationConfigSnapshot: env.translationConfigSnapshot,
-        ...patch,
-      })
-    },
-  }
-  return env
-}
 
 /**
  * Lazy, read-only neutral projection of a CC payload. **Not** a normalization IR

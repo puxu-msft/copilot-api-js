@@ -91,14 +91,19 @@ describe("retry-strategy assembly golden (pre-refactor lock, Task 1 / Commit 1)"
      *  reverse branch of `buildLegStrategies` reads only `env.body` + `env.requestState`. */
     function reverseEnv(clientFormat: "gemini" | "openai-cc" | "openai-responses"): RequestEnvelope {
       return {
-        clientFormat,
-        targetEndpoint: ENDPOINT.MESSAGES,
-        body: anthropicBaseline,
-        model: { id: "claude-sonnet-4" },
-        requestState: {
+        request: {
+          clientFormat: clientFormat,
+          model: { id: "claude-sonnet-4" },
+        } as RequestEnvelope["request"],
+        attempt: {
+          targetEndpoint: ENDPOINT.MESSAGES,
+          body: anthropicBaseline,
+        } as RequestEnvelope["attempt"],
+        candidate: {
           reverseMapperHolder: createReverseAnthropicMapperHolder("claude-sonnet-4"),
           betaProbe: createBetaProbe(undefined),
-        },
+        } as RequestEnvelope["candidate"],
+        createView: () => ({}) as RequestEnvelope["view"],
       } as unknown as RequestEnvelope
     }
 

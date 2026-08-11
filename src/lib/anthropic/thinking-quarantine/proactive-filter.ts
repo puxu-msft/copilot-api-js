@@ -34,6 +34,7 @@ import type {
 
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { state } from "~/lib/state"
 
 import type { ThinkingQuarantineStore } from "./store"
@@ -107,13 +108,13 @@ export function createQuarantineProactiveFilter(deps?: QuarantineProactiveFilter
     // (`targetEndpoint`), not the inbound `clientFormat`. Byte-identical in Phase 1 (anthropic-direct
     // has both axes co-true); on the future reverse leg (cc/responses/gemini→/v1/messages) it fires
     // on the Anthropic wire regardless of inbound format, and NOT on the forward anthropic→cc leg.
-    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
+    appliesTo: (env) => env.attempt.targetEndpoint === ENDPOINT.MESSAGES,
     apply(env): RewriteResult {
-      const payload = env.body as MessagesPayload
+      const payload = env.attempt.body as MessagesPayload
       const { messages, changed } = stripAllThinkingIfQuarantined(payload.messages, env.ctx.sessionId, env.ctx.agentId, deps?.store)
       if (!changed) return { env, changed: false }
       // review M1: env.with() is the only immutable-update method (NOT a bare spread).
-      return { env: env.with({ body: { ...payload, messages } }), changed: true }
+      return { env: writeAttempt(env, { body: { ...payload, messages } }), changed: true }
     },
   }
 }

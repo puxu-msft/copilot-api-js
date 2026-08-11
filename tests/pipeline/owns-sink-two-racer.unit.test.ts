@@ -61,9 +61,14 @@ function makeDriver(): ReturnType<typeof createPipelineDriver> {
   })
 }
 
-/** Minimal env — runResponse only touches `env.ctx.setSseEvents`. */
+/** Minimal env — runResponse only touches `env.ctx.setSseEvents`, but `attempt` must exist: reading `env.attempt.body` off an absent scope throws, and that throw would be classified as a stream-error instead of the abort under test. */
 function makeEnv(): RequestEnvelope {
-  return { clientFormat: "anthropic", ctx: { setSseEvents: () => undefined } } as unknown as RequestEnvelope
+  return {
+    request: { clientFormat: "anthropic" } as RequestEnvelope["request"],
+    attempt: {} as RequestEnvelope["attempt"],
+    candidate: {},
+    ctx: { setSseEvents: () => undefined },
+  } as unknown as RequestEnvelope
 }
 
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {

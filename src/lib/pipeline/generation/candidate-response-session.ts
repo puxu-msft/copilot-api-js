@@ -221,7 +221,7 @@ export function createCandidateResponseSession<State, Snapshot>(
     sawMessageStop: () =>
       sawTerminal
       || finishResolved?.kind === "valid-terminal-without-boundary"
-      || (input.env.clientFormat === "openai-responses" && finishResolved?.kind === "complete"),
+      || (input.env.request.clientFormat === "openai-responses" && finishResolved?.kind === "complete"),
     sawUpstreamError: () => sawFailure || finishResolved?.kind === "terminal-failure",
     ...(input.sawContentlessRefusal && { sawContentlessRefusal: () => input.sawContentlessRefusal?.(state) ?? false }),
     ...(adapter.deliveryMode === "unit" && { commitBoundaries: (frame: ClientFrame) => completedBoundaryFrames.has(frame) }),
@@ -270,7 +270,7 @@ function isUpstreamFailure(semantic: import("~/lib/pipeline/delivery/protocol").
 }
 
 function defaultAdapter(env: RequestEnvelope): DeliveryProtocolAdapter {
-  switch (env.clientFormat) {
+  switch (env.request.clientFormat) {
     case "anthropic": {
       return createAnthropicDeliveryProtocolAdapter()
     }
@@ -284,7 +284,7 @@ function defaultAdapter(env: RequestEnvelope): DeliveryProtocolAdapter {
       return createResponsesDeliveryProtocolAdapter({ transport: "http" })
     }
     default: {
-      return assertNeverClientFormat(env.clientFormat)
+      return assertNeverClientFormat(env.request.clientFormat)
     }
   }
 }

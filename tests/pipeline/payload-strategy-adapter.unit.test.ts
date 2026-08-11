@@ -32,11 +32,12 @@ interface P {
 
 function makeEnv(body: P): RequestEnvelope {
   return {
-    body,
-    prepareHints: {},
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    attempt: {
+      body: body,
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -59,8 +60,8 @@ describe("adaptPayloadStrategy", () => {
     const action = await adapted.handle(ERR, env)
     expect(action.kind).toBe("retry")
     if (action.kind === "retry") {
-      expect((action.env.body as P).v).toBe(11)
-      expect(action.env.prepareHints).toEqual({ excludeBetas: ["b1"] })
+      expect((action.env.attempt.body as P).v).toBe(11)
+      expect(action.env.attempt.prepareHints).toEqual({ excludeBetas: ["b1"] })
       expect(action.waitMs).toBe(7)
       expect(action.learning).toBe(true)
     }

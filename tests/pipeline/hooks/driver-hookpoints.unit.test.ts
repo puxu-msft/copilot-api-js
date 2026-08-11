@@ -21,6 +21,7 @@ import type { UpstreamStream } from "~/lib/pipeline/types"
 
 import { HTTPError } from "~/lib/error"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import {
   //
   resetUpstreamHook,
@@ -50,9 +51,9 @@ describe("hooks — upstream.outbound mount point (Task 1.1)", () => {
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
-    const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
+    const transport = makeTransport(async (_wire, e) => ((sentBody = e.attempt.body), okStream()))
     setUpstreamHookForTests({
-      upstream: { outbound: (e) => e.with({ body: { tag: "rewritten-by-hook" } }) },
+      upstream: { outbound: (e) => writeAttempt(e, { body: { tag: "rewritten-by-hook" } }) },
     })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
@@ -67,7 +68,7 @@ describe("hooks — upstream.outbound mount point (Task 1.1)", () => {
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
-    const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
+    const transport = makeTransport(async (_wire, e) => ((sentBody = e.attempt.body), okStream()))
     setUpstreamHookForTests({ upstream: { outbound: () => undefined } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
@@ -110,7 +111,7 @@ describe("hooks — upstream.outbound mount point (Task 1.1)", () => {
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
-    const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
+    const transport = makeTransport(async (_wire, e) => ((sentBody = e.attempt.body), okStream()))
     setUpstreamHookForTests({ exchange: async (_wire, _e, next) => next() })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 

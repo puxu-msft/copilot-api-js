@@ -40,22 +40,22 @@ import { buildOpenAiResponsesStrategies } from "./openai-responses/strategies"
  * anthropic clientFormat (this dispatcher's `openai-responses` branch above already covers that format).
  */
 function isAnthropicDirectResponsesLeg(env: RequestEnvelope): boolean {
-  return env.clientFormat === "anthropic" && (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES)
+  return env.request.clientFormat === "anthropic" && (env.attempt.targetEndpoint === ENDPOINT.RESPONSES || env.attempt.targetEndpoint === ENDPOINT.WS_RESPONSES)
 }
 
 /** Build the retry stack for a CC-family leg cell (`/chat` or `/responses`), dispatched by clientFormat. */
 export function buildCcFamilyLegStrategies(spec: RetrySemanticsSpec, env: RequestEnvelope): ReadonlyArray<RetryStrategy> {
-  const model = env.model as Model | undefined
-  if (env.clientFormat === "openai-responses" || isAnthropicDirectResponsesLeg(env)) {
+  const model = env.request.model as Model | undefined
+  if (env.request.clientFormat === "openai-responses" || isAnthropicDirectResponsesLeg(env)) {
     // openai-responses DIRECT/FALLBACK + anthropic DIRECT-bridge @responses: the Responses stack against
     // the Responses-shaped env.body (direct identity for openai-responses; the anthropic direct bridge
     // produced this shape at translateOut — RFC 2026-07-14 §3).
-    return buildOpenAiResponsesStrategies({ originalPayload: env.body as ResponsesPayload, model, maxRetries: spec.maxRetries })
+    return buildOpenAiResponsesStrategies({ originalPayload: env.attempt.body as ResponsesPayload, model, maxRetries: spec.maxRetries })
   }
   // openai-cc DIRECT + anthropic FORWARD @cc + gemini FORWARD (incl. via-responses): the CC stack against the CC baseline.
   const originalPayload =
-    env.clientFormat === "anthropic" ?
-      (env.body as ChatCompletionsPayload)
-    : ((env.requestState?.truncateBaseline as ChatCompletionsPayload | undefined) ?? (env.body as ChatCompletionsPayload))
+    env.request.clientFormat === "anthropic" ?
+      (env.attempt.body as ChatCompletionsPayload)
+    : ((env.request.truncateBaseline as ChatCompletionsPayload | undefined) ?? (env.attempt.body as ChatCompletionsPayload))
   return buildOpenAiCcStrategies({ originalPayload, model, maxRetries: spec.maxRetries })
 }

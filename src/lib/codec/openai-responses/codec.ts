@@ -55,15 +55,12 @@ import type {
   NeutralSystem,
   NeutralTool,
   RequestEnvelope,
-  ResolvedModel,
-  UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type {
   //
   ReasoningRoundTripOptions,
   ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
-import type { RequestState } from "~/lib/pipeline/request-state"
 import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
   //
@@ -74,7 +71,6 @@ import type {
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/retry-types"
 import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 import type {
   //
@@ -110,10 +106,6 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import {
-  //
-  type RouteOverride,
-} from "~/lib/models/resolver"
 import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
@@ -134,6 +126,7 @@ import {
   translateAnthropicResponseToResponses,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
+import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
@@ -207,7 +200,7 @@ function genShortId(): string {
  * factories in hub-translate.ts simply ignore an opts param they never read).
  */
 function reasoningRoundTripOpts(env: RequestEnvelope): ReasoningRoundTripOptions {
-  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
+  const modelId = modelIdFor(env.request.model as Model | undefined, (env.attempt.body as { model?: string }).model)
   return {
     stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages"),
     onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
@@ -235,7 +228,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
         return (scratch.exchange ??= {
           responseId: `resp_${genShortId()}`,
           itemId: `item_${genShortId()}`,
-          resolvedModel: resolvedModelName || (env.body as ResponsesPayload).model,
+          resolvedModel: resolvedModelName || (env.attempt.body as ResponsesPayload).model,
           rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
         })
       },
@@ -247,7 +240,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     let ccTranslator: CCToResponsesStreamTranslator | null = null
     let reverseExchange: TranslateExchangeContext | undefined
     let reverseTranslator: ReverseStreamTranslator | undefined
-    const candidateScratch = candidateEnv?.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined
+    const candidateScratch = candidateEnv?.candidate.responsesFallbackScratch as ResponsesFallbackScratch | undefined
     const ensureCcTranslator = (): CCToResponsesStreamTranslator | null => {
       // The default renderer is created before the fallback leg's prepareWire calls `ensure()`.
       // Resolve lazily so both legacy and candidate renderers observe the eventual exchange ids.
@@ -264,23 +257,23 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       (reverseExchange ??= {
         responseId: `resp_${genShortId()}`,
         itemId: `item_${genShortId()}`,
-        resolvedModel: resolvedModelName || (env.body as { model?: string }).model || "",
+        resolvedModel: resolvedModelName || (env.attempt.body as { model?: string }).model || "",
       })
     const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-      const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+      const modelId = modelIdFor(env.request.model as Model | undefined, (env.attempt.body as { model?: string }).model) ?? ""
       return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
     }
     return {
       renderResponse(frame, env) {
-        if (env.targetEndpoint === ENDPOINT.RESPONSES) return frame
-        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
+        if (env.attempt.targetEndpoint === ENDPOINT.RESPONSES) return frame
+        if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
         const translator = ensureCcTranslator()
         if (!translator) return []
         return translator.translate(frame.data ?? "").map((event): ClientFrame => ({ event: event.event, data: event.data }))
       },
       flushResponse(env) {
-        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).flush()
-        if (env.targetEndpoint === ENDPOINT.RESPONSES) return []
+        if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).flush()
+        if (env.attempt.targetEndpoint === ENDPOINT.RESPONSES) return []
         const translator = ensureCcTranslator()
         if (!translator) return []
         return translator.flush().map((event): ClientFrame => ({ event: event.event, data: event.data }))
@@ -298,7 +291,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     (reverseExchange ??= {
       responseId: `resp_${genShortId()}`,
       itemId: `item_${genShortId()}`,
-      resolvedModel: resolvedModelName || (env.body as { model?: string }).model || "",
+      resolvedModel: resolvedModelName || (env.attempt.body as { model?: string }).model || "",
     })
 
   return {
@@ -307,19 +300,17 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     parse(raw) {
       const parsed = parseOpenAiResponses(raw, (ctx) => (requestContext = ctx), args?.translationConfigSnapshot)
       resolvedModelName = parsed.resolvedModelName
-      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
-      // it from env.requestState. The shared fallback-exchange scratch (§11.2c) is always threaded (the CHAT
-      // fallback leg reads/writes it in C4a; inert on direct/reverse). The REVERSE `@messages` leg supply
-      // (C2b — beta probe + mapper holder) is added when the handler injects them; all coexist. Populating
-      // requestState is also the driver's cell-keyed fork discriminator (an env without it stays legacy).
-      return parsed.env.with({
-        requestState: {
-          responsesFallbackScratch: fallbackScratch,
-          sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
-          ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
-          ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
-        },
+      // Attach the outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads it off the envelope's scopes. The shared fallback-exchange scratch (§11.2c) is always threaded (the CHAT fallback leg reads/writes it in C4a; inert on direct/reverse). The REVERSE `@messages` leg supply (C2b) is added when the handler injects it; all coexist. `legSupplyReady` is the driver's cell-keyed fork discriminator — see RequestScope.legSupplyReady.
+      Object.assign(parsed.env.request, {
+        legSupplyReady: true,
+        sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
       })
+      Object.assign(parsed.env.candidate, {
+        responsesFallbackScratch: fallbackScratch,
+        ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+        ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+      })
+      return parsed.env
     },
 
     getContext() {
@@ -351,7 +342,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     createCandidateStateFactory(env) {
       return createCandidateStateFactory(env, {
         createBetaProbe,
-        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.request.model.id, env.request.model.vendor),
         createResponsesFallbackScratch: () => createFallbackScratch(),
         createResanitize: ({ source, reverseMapperHolder }) =>
           reverseMapperHolder ?
@@ -369,13 +360,13 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     },
 
     renderResponseNonStreaming(upstream, env) {
-      if (env.targetEndpoint === ENDPOINT.RESPONSES) return upstream
+      if (env.attempt.targetEndpoint === ENDPOINT.RESPONSES) return upstream
       // REVERSE `@messages` leg — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2,
       // Phase 4 subtask E): a single-hop Anthropic upstream → Responses walk, skipping the CC intermediate
       // entirely (was Anthropic→CC(hub)→Responses, 疑点 5). `upstream` here is the RAW Anthropic response
       // (the hub's CC bridge is no longer called on this leg) — reuses the SAME `ensureReverseExchange`
       // id-management the old two-hop path used (RFC §2.3: no new exchange contract).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
         return translateAnthropicResponseToResponses(upstream as AnthropicMessageResponse, ensureReverseExchange(env), reasoningRoundTripOpts(env))
       }
       if (!fallbackScratch.exchange) return upstream
@@ -393,7 +384,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     createResponseAccumulator(env): ResponseAccumulator {
       // REVERSE `@messages` leg's upstream is Anthropic → the Anthropic accumulator (honest outbound,
       // RFC §4.1). The direct/fallback legs' upstream is Responses-shaped.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
       return createResponsesStreamAccumulator()
     },
   }
@@ -488,13 +479,17 @@ function parseOpenAiResponses(
   })
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
-    ...(routeOverride && { routeOverride }),
-    model: selectedModel,
-    stream: processed.stream ?? false,
-    body: processed,
+    request: {
+      clientFormat: CLIENT_FORMAT,
+      model: selectedModel,
+      stream: processed.stream ?? false,
+      ...(routeOverride && { routeOverride }),
+      ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    },
+    // targetEndpoint is initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    attempt: { body: processed, targetEndpoint: ENDPOINT.RESPONSES, prepareHints: {} },
     ctx,
-    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    createView: createResponsesLazyView,
   })
 
   return { env, resolvedModelName: resolvedName }
@@ -515,55 +510,8 @@ function formatOpenAiResponsesError(err: ClassifiedStreamError): ClientFrame {
 }
 
 // ============================================================================
-// Envelope construction + lazy view
+// Lazy view
 // ============================================================================
-
-interface EnvelopeInit {
-  targetEndpoint: UpstreamEndpoint
-  routeOverride?: RouteOverride
-  model: ResolvedModel
-  stream: boolean
-  body: unknown
-  ctx: RequestContext
-  prepareHints?: PrepareHints
-  requestState?: RequestState
-  translationConfigSnapshot?: TranslationConfigSnapshot
-}
-
-/** Build a {@link RequestEnvelope} with a lazy Responses projection. */
-function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
-  const env: RequestEnvelope = {
-    clientFormat: CLIENT_FORMAT,
-    targetEndpoint: init.targetEndpoint,
-    ...(init.routeOverride && { routeOverride: init.routeOverride }),
-    model: init.model,
-    stream: init.stream,
-    body: init.body,
-    prepareHints: init.prepareHints ?? {},
-    ...(init.requestState !== undefined && { requestState: init.requestState }),
-    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
-    ctx: init.ctx,
-    get view(): LazyMessageView {
-      return createResponsesLazyView(env.body)
-    },
-    with(patch) {
-      return makeEnvelope({
-        targetEndpoint: env.targetEndpoint,
-        routeOverride: env.routeOverride,
-        model: env.model,
-        stream: env.stream,
-        body: env.body,
-        ctx: env.ctx,
-        prepareHints: env.prepareHints,
-        requestState: env.requestState,
-        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
-        translationConfigSnapshot: env.translationConfigSnapshot,
-        ...patch,
-      })
-    },
-  }
-  return env
-}
 
 /**
  * Lazy, read-only neutral projection of a Responses payload. **Not** a

@@ -39,7 +39,7 @@ describe("generation recorder ClientSink frame arena integration", () => {
     const { stream } = stubSseStream()
     const sink = makeSseSink(stream, {
       onForwarded: (record) => forwarded.push(record),
-      ...clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx }),
+      ...clientFirstRealSinkOpts({ request: { clientFormat: "anthropic" }, ctx }),
     })
     await sink.write(raw)
 

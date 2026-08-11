@@ -49,12 +49,12 @@ import { autoRestoreState } from "../helpers/state-fixture"
 
 function makeEnv(over?: { lifecycleSignal?: AbortSignal }): RequestEnvelope {
   const ctx = { addQueueWaitMs: () => {}, lifecycleSignal: over?.lifecycleSignal }
-  return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
+  return { request: { model: { id: "gpt-4o" }, clientFormat: "openai-cc" } as RequestEnvelope["request"], ctx } as unknown as RequestEnvelope
 }
 
 /** Envelope carrying a REAL `RequestContext`, for the tests that assert where a diagnostic landed. */
 function makeEnvWithCtx(ctx: ReturnType<typeof createRequestContext>): RequestEnvelope {
-  return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
+  return { request: { model: { id: "gpt-4o" }, clientFormat: "openai-cc" } as RequestEnvelope["request"], ctx } as unknown as RequestEnvelope
 }
 
 function makeWire(over?: Partial<PreparedRequest>): PreparedRequest {

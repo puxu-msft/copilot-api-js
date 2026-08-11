@@ -83,11 +83,10 @@ function makeParsedMessagesEnv(): {
  */
 function forwardLegEnv(leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: leg,
-    body: { model: MODEL, messages: [] },
-    model: { id: MODEL },
-    requestState: {},
+    request: { clientFormat: "anthropic", model: { id: MODEL } } as RequestEnvelope["request"],
+    attempt: { body: { model: MODEL, messages: [] }, targetEndpoint: leg } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

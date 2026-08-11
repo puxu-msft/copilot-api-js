@@ -61,17 +61,12 @@ function streamResponse(marker: string): PhysicalTransportResponse {
 
 function makeEnv(ctx: RequestContext): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: { id: "test-model" },
-    stream: true,
-    body: { messages: [] },
+    request: { clientFormat: "anthropic", model: { id: "test-model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { messages: [] }, targetEndpoint: "/v1/messages", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -80,7 +75,7 @@ function makeCodec(env: RequestEnvelope): FormatCodec {
     format: "anthropic",
     parse: () => env,
     translateOut: (current) => current,
-    prepareWire: (current) => ({ url: current.targetEndpoint ?? "/v1/messages", headers: new Headers(), body: current.body, stream: true }),
+    prepareWire: (current) => ({ url: current.attempt.targetEndpoint ?? "/v1/messages", headers: new Headers(), body: current.attempt.body, stream: true }),
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (upstream) => upstream,
     formatError: () => ({ data: "{}" }),

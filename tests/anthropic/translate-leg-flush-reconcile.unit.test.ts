@@ -64,10 +64,16 @@ const reconcileHooks = {
 
 function translateLegEnv(): RequestEnvelope {
   return {
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
-    body: { model: "claude-x" },
-    model: { id: "claude-x" },
+    request: {
+      model: { id: "claude-x" },
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
+      body: { model: "claude-x" },
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     ctx: { recordFeature: () => {} },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

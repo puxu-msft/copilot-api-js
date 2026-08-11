@@ -81,30 +81,28 @@ describe("translation config snapshot — a hot reload only reaches later reques
 })
 
 /**
- * `translationConfigSnapshot` is deliberately absent from `with()`'s patch type, so the only way a
- * retry or fallback leg keeps it is each codec's `with()` re-passing it by hand. A codec that forgets
- * would silently unpin that leg's config, and no behavioural test can see it until a hot reload lands
- * mid-request — which is exactly the case nobody reproduces on demand.
+ * Replaces the pre-2026-08-11 guard, which read each codec's `with()` body to check it re-passed `translationConfigSnapshot` by hand. That mechanism is gone: the envelope's three scopes are carried by object identity through one shared `makeEnvelope`, so there is no per-codec field list left to forget.
  *
- * The four paths are listed rather than globbed: a fifth codec must fail here and be added
- * deliberately, not be quietly excluded by a glob that never matched it.
+ * What still needs guarding is the thing that made the old hand-copying dangerous — a codec growing its own envelope builder again. The four paths are listed rather than globbed: a fifth codec must fail here and be added deliberately, not be quietly excluded by a glob that never matched it.
  */
-describe("translation config snapshot — every codec carries it across with()", () => {
+describe("every codec builds envelopes through the one shared factory", () => {
   const CODECS = ["anthropic", "openai-cc", "openai-responses", "gemini"]
 
   for (const codec of CODECS) {
-    test(`${codec} re-passes the snapshot when rebuilding the envelope`, () => {
+    test(`${codec} imports makeEnvelope and defines no builder of its own`, () => {
       const source = readFileSync(path.join(REPO_ROOT, "src/lib/codec", codec, "codec.ts"), "utf8")
-      const withBody = source.slice(source.indexOf("    with(patch) {"), source.indexOf("        ...patch,"))
 
-      expect(withBody).toContain("translationConfigSnapshot: env.translationConfigSnapshot,")
+      expect(source).toContain(`import { makeEnvelope } from "~/lib/pipeline/envelope"`)
+      expect(source).not.toContain("function makeEnvelope(")
     })
   }
 
-  test("the codec list matches what is on disk", () => {
+  test("the shared factory takes whole scopes, not a per-field list", () => {
     const source = readFileSync(path.join(REPO_ROOT, "src/lib/pipeline/envelope.ts"), "utf8")
 
-    // If the field ever enters the patch set, the hand re-passing above stops being the only path and this guard is measuring the wrong thing.
-    expect(source).toContain(`with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>)`)
+    // If EnvelopeInit ever starts enumerating scope members again, "a new field is carried automatically" stops being true and this guard is measuring the wrong thing.
+    expect(source).toContain("export function makeEnvelope(init: EnvelopeInit): RequestEnvelope")
+    expect(source).toContain("readonly request: RequestScope")
+    expect(source).toContain("readonly attempt: AttemptScope")
   })
 })

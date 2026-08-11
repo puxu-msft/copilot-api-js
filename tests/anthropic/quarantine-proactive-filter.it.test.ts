@@ -74,15 +74,18 @@ afterEach(() => {
 function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<unknown> }): RequestEnvelope {
   const body = { model: "claude-x", max_tokens: 8, messages: opts.messages } as unknown as MessagesPayload
   const env = {
-    clientFormat: "anthropic" as const,
-    // The proactive filter gates on the OUTBOUND leg (RFC §3.1) — anthropic-direct routes to
-    // /v1/messages, so the env must carry it for the rewrite to apply (mirrors the real codec).
-    targetEndpoint: "/v1/messages" as const,
+    request: {
+      clientFormat: "anthropic" as const,
+    } as RequestEnvelope["request"],
+    attempt: {
+      // The proactive filter gates on the OUTBOUND leg (RFC §3.1) — anthropic-direct routes to
+      // /v1/messages, so the env must carry it for the rewrite to apply (mirrors the real codec).
+      targetEndpoint: "/v1/messages" as const,
+      body: body,
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     ctx: { sessionId: opts.sessionId, agentId: opts.agentId },
-    body,
-    with(patch: { body?: unknown }) {
-      return { ...env, ...patch } as unknown as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -103,9 +106,9 @@ test("order 250 (< ORDER_SANITIZE 300) — runs before L1 de-stack", () => {
 
 test("appliesTo gates on the /v1/messages outbound leg (targetEndpoint axis, RFC §3.1)", () => {
   const filter = createQuarantineProactiveFilter({ store })
-  expect(filter.appliesTo({ targetEndpoint: "/v1/messages" } as unknown as RequestEnvelope)).toBe(true)
+  expect(filter.appliesTo({ attempt: { targetEndpoint: "/v1/messages" } as RequestEnvelope["attempt"] } as unknown as RequestEnvelope)).toBe(true)
   // A forward-translation leg (anthropic→cc) or any non-messages leg must NOT fire it.
-  expect(filter.appliesTo({ targetEndpoint: "/chat/completions" } as unknown as RequestEnvelope)).toBe(false)
+  expect(filter.appliesTo({ attempt: { targetEndpoint: "/chat/completions" } as RequestEnvelope["attempt"] } as unknown as RequestEnvelope)).toBe(false)
 })
 
 test("中毒会话 → strip 全部 thinking + touch 续期，changed=true", () => {
@@ -119,7 +122,7 @@ test("中毒会话 → strip 全部 thinking + touch 续期，changed=true", () 
   const result = filter.apply(env)
 
   expect(result.changed).toBe(true)
-  const outMessages = (result.env.body as MessagesPayload).messages
+  const outMessages = (result.env.attempt.body as MessagesPayload).messages
   expect(thinkingTypesIn(outMessages)).toEqual([]) // 无 thinking 残留
   expect((outMessages[0].content as Array<{ type: string }>).map((b) => b.type)).toEqual(["text"])
   expect(touchSpy).toHaveBeenCalledTimes(1) // slide-on-hit（独立 oracle，不靠 72h 窗口）
@@ -131,12 +134,12 @@ test("非中毒会话（store 空）→ changed=false，body 原样同引用不�
   const touchSpy = spyOn(store, "touch")
   const filter = createQuarantineProactiveFilter({ store })
   const env = makeEnv({ sessionId: "s1", messages: [{ role: "assistant", content: [think("sig"), text("hi")] }] })
-  const before = env.body
+  const before = env.attempt.body
 
   const result = filter.apply(env)
 
   expect(result.changed).toBe(false)
-  expect(result.env.body).toBe(before) // 未走 env.with()，返回原 env
+  expect(result.env.attempt.body).toBe(before) // 未走 env.with()，返回原 env
   expect(touchSpy).not.toHaveBeenCalled()
 })
 
@@ -146,12 +149,12 @@ test("state.poisonedThinkingQuarantine=false → no-op（总开关关闭，即�
   const touchSpy = spyOn(store, "touch")
   const filter = createQuarantineProactiveFilter({ store })
   const env = makeEnv({ sessionId: "s1", messages: [{ role: "assistant", content: [think("sig"), text("hi")] }] })
-  const before = env.body
+  const before = env.attempt.body
 
   const result = filter.apply(env)
 
   expect(result.changed).toBe(false)
-  expect(result.env.body).toBe(before)
+  expect(result.env.attempt.body).toBe(before)
   expect(touchSpy).not.toHaveBeenCalled()
 })
 
@@ -160,11 +163,11 @@ test("无 sessionId → no-op（无法跨轮量化，toQuarantineKey 返回 null
   const touchSpy = spyOn(store, "touch")
   const filter = createQuarantineProactiveFilter({ store })
   const env = makeEnv({ messages: [{ role: "assistant", content: [think("sig"), text("hi")] }] }) // 无 sessionId
-  const before = env.body
+  const before = env.attempt.body
 
   const result = filter.apply(env)
 
   expect(result.changed).toBe(false)
-  expect(result.env.body).toBe(before)
+  expect(result.env.attempt.body).toBe(before)
   expect(touchSpy).not.toHaveBeenCalled()
 })

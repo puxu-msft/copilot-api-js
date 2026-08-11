@@ -24,13 +24,18 @@ import { createChatCandidateResponseSession } from "~/routes/chat-completions/ha
 
 function env(): RequestEnvelope {
   return {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: { id: "gpt-5" },
-    stream: true,
-    body: { model: "gpt-5" },
+    request: {
+      clientFormat: "openai-cc",
+      model: { id: "gpt-5" },
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: "/chat/completions",
+      body: { model: "gpt-5" },
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
     ctx: {
       toolNameMapper: null,
       recordStreamProgress() {},
@@ -42,6 +47,7 @@ function env(): RequestEnvelope {
       setGenerationDispatchSseEvents() {},
       setGenerationDispatchTimingEpoch() {},
     } as never,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

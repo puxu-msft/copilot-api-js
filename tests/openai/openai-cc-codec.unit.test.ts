@@ -67,17 +67,16 @@ function makeCtxStub(): CtxStub {
 
 function makeEnv(opts: { model?: Model; targetEndpoint?: UpstreamEndpoint; body?: unknown; ctx?: CtxStub }): RequestEnvelope {
   return {
-    clientFormat: "openai-cc",
-    targetEndpoint: opts.targetEndpoint ?? "/chat/completions",
-    model: opts.model as unknown as RequestEnvelope["model"],
-    stream: true,
-    body: opts.body ?? { model: "gpt-4o", messages: [] },
+    request: { clientFormat: "openai-cc", model: opts.model as unknown as RequestEnvelope["request"]["model"], stream: true } as RequestEnvelope["request"],
+    attempt: {
+      body: opts.body ?? { model: "gpt-4o", messages: [] },
+      targetEndpoint: opts.targetEndpoint ?? "/chat/completions",
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {},
     view: {} as RequestEnvelope["view"],
-    prepareHints: {},
     ctx: (opts.ctx ?? makeCtxStub()) as unknown as RequestContext,
-    with(patch) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as RequestEnvelope
 }
 
@@ -94,7 +93,7 @@ function parseFrames(frames: Array<ClientFrame>): Array<Record<string, unknown>>
 // tests exercise the openai-cc cell for the env's targetEndpoint — the same object the
 // driver dispatches through.
 function outCell(env: RequestEnvelope) {
-  return resolveCellAssembly("openai-cc", env.targetEndpoint)
+  return resolveCellAssembly("openai-cc", env.attempt.targetEndpoint)
 }
 
 // ── decideRoute ──────────────────────────────────────────────────────────────
@@ -324,7 +323,9 @@ describe("openai-cc codec — formatError", () => {
 describe("openai-cc codec — createResponseAccumulator", () => {
   test("returns a fresh OpenAI stream accumulator", () => {
     const codec = createOpenAiCcCodec()
-    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    const acc = codec.createResponseAccumulator({
+      attempt: { targetEndpoint: "/chat/completions" } as RequestEnvelope["attempt"],
+    } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc).toMatchObject({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" })
   })
 })

@@ -70,11 +70,12 @@ const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => 
 /** Minimal real envelope (mirrors tests/pipeline/legacy-strategy-adapter's makeEnv). */
 function makeEnv(body: unknown): RequestEnvelope {
   return {
-    body,
-    prepareHints: {},
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    attempt: {
+      body: body,
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -116,7 +117,7 @@ describe("poisoned-thinking-retry wiring — v4 active path", () => {
     // Native env shape: { kind: "retry", env, learning } — NOT the legacy { action } shape.
     expect(action.kind).toBe("retry")
     if (action.kind !== "retry") return
-    expect(hasThinking(action.env.body as MessagesPayload)).toBe(false)
+    expect(hasThinking(action.env.attempt.body as MessagesPayload)).toBe(false)
     expect(action.meta?.strippedThinkingOnReject).toBe(1)
     expect(action.learning).toBe(true)
   })

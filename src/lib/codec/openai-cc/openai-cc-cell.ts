@@ -36,6 +36,7 @@ import type {
 
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
@@ -54,17 +55,17 @@ import {
 
 /** Is this the openai-responses FALLBACK `/chat` cell (Responses→CC wire), vs a CC-shaped direct/forward cell? */
 function isResponsesFallback(env: RequestEnvelope): boolean {
-  return env.clientFormat === "openai-responses"
+  return env.request.clientFormat === "openai-responses"
 }
 
 /** Is this a FORWARD `@cc` cell (anthropic/gemini client translated to the CC wire)? */
 function isForward(env: RequestEnvelope): boolean {
-  return env.clientFormat === "anthropic" || env.clientFormat === "gemini"
+  return env.request.clientFormat === "anthropic" || env.request.clientFormat === "gemini"
 }
 
 /** The shared fallback-exchange scratch parse put on requestState (the CHAT fallback cell reads it). */
 function fallbackScratch(env: RequestEnvelope): ResponsesFallbackScratch {
-  const scratch = env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined
+  const scratch = env.candidate.responsesFallbackScratch as ResponsesFallbackScratch | undefined
   if (!scratch)
     throw new Error("[openai-cc-cell] env.requestState.responsesFallbackScratch missing — openai-responses parse did not populate the fallback leg supply")
   return scratch
@@ -87,8 +88,11 @@ export const chatCompletionsLeg: OutboundLeg = {
       return env
     }
     if (!isForward(env)) return env
-    const ccBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
-    return env.with({ body: ccBody })
+    const ccBody = translateRequestVia(env.request.clientFormat, env.attempt.targetEndpoint, env.attempt.body, {
+      model: env.request.model as Model | undefined,
+      reqId: env.ctx.id,
+    })
+    return writeAttempt(env, { body: ccBody })
   },
 
   // S3: no request rewrite (the reverse-sanitize dep is MESSAGES-gated, inert on /chat; BUILTIN empty).

@@ -54,12 +54,12 @@ export interface RouteInput {
 
 /** Extract the narrow {@link RouteInput} from the envelope (the router's only env read). */
 function toRouteInput(env: RequestEnvelope): RouteInput {
-  const model = env.model as Model | undefined
-  const modelName = model?.id ?? (env.body as { model: string }).model
+  const model = env.request.model as Model | undefined
+  const modelName = model?.id ?? (env.attempt.body as { model: string }).model
   return {
-    clientFormat: env.clientFormat,
+    clientFormat: env.request.clientFormat,
     modelName,
-    ...(env.routeOverride && { routeOverride: env.routeOverride }),
+    ...(env.request.routeOverride && { routeOverride: env.request.routeOverride }),
     model,
   }
 }

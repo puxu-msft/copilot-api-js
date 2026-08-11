@@ -215,7 +215,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         const dispatchBudget = input.generationBudget?.reserveDispatch()
         const wire = input.prepareWire(current, { reason, forceHttp })
         const dispatch = input.recording.beginDispatch({ candidate, reason, ...(strategy !== undefined && { strategy }), wire, forceHttp, env: current })
-        const model = current.model.id || "unknown"
+        const model = current.request.model.id || "unknown"
         let admission
         try {
           admission = await input.admission.acquire({ model, candidateId: candidate, dispatchId: dispatch, signal })

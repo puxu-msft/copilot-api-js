@@ -160,7 +160,7 @@ export function isClientContentFrame(frame: RawFrame, clientFormat: ClientFormat
  * sink 保持格式无关，绑定在此单点（clientFormat 谓词 + ctx once setter）。
  */
 export function clientFirstRealSinkOpts(env: {
-  clientFormat: ClientFormat
+  request: { clientFormat: ClientFormat }
   ctx: {
     setClientTimingEpoch: (kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number) => void
     captureForwardedGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
@@ -173,7 +173,7 @@ export function clientFirstRealSinkOpts(env: {
   onDeliveryFinalized: () => void
 } {
   return {
-    isRealContentFrame: (frame) => isClientContentFrame(frame, env.clientFormat),
+    isRealContentFrame: (frame) => isClientContentFrame(frame, env.request.clientFormat),
     onFirstRealContent: () => env.ctx.setClientTimingEpoch("firstReal", Date.now()),
     onGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
     onDeliveryFinalized: () => env.ctx.finalizeModelOperationDelivery(),

@@ -113,17 +113,12 @@ function makeCodec(): FormatCodec {
 function makeEnv(): RequestEnvelope {
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: {},
-    stream: true,
-    body: {},
+    request: { clientFormat: "anthropic", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: {}, targetEndpoint: "/v1/messages", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

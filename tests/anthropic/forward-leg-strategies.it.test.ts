@@ -118,7 +118,7 @@ describe("T7.2 — forward-leg strategy factory does NOT throw (production seam,
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(`unexpected reject: ${result.rejection.reason}`)
     // The strategies factory ran (S4) without the `no strategy builder` / `cc supply` throw.
-    expect(result.env.targetEndpoint).toBe(ENDPOINT.CHAT_COMPLETIONS)
+    expect(result.env.attempt.targetEndpoint).toBe(ENDPOINT.CHAT_COMPLETIONS)
     // The outbound wire is CC-shaped at /chat/completions (the translation reached the upstream).
     expect(sentWire?.url).toBe(ENDPOINT.CHAT_COMPLETIONS)
     expect(Array.isArray((sentWire?.body as { messages?: unknown }).messages)).toBe(true)
@@ -129,7 +129,7 @@ describe("T7.2 — forward-leg strategy factory does NOT throw (production seam,
     const { result, sentWire } = await runForwardLeg("claude-x@responses")
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(`unexpected reject: ${result.rejection.reason}`)
-    expect(result.env.targetEndpoint).toBe(ENDPOINT.RESPONSES)
+    expect(result.env.attempt.targetEndpoint).toBe(ENDPOINT.RESPONSES)
     expect(Array.isArray((sentWire?.body as { input?: unknown }).input)).toBe(true)
     expect((sentWire?.body as { messages?: unknown }).messages).toBeUndefined()
   })
@@ -151,7 +151,7 @@ describe("T7.2 — forward-leg strategy factory does NOT throw (production seam,
     const result = await withCapturingManager(() => driver.runRequest(req)).result
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(`unexpected reject: ${result.rejection.reason}`)
-    expect(result.env.targetEndpoint).toBe(ENDPOINT.MESSAGES)
+    expect(result.env.attempt.targetEndpoint).toBe(ENDPOINT.MESSAGES)
     expect(sentWire?.url).toBe(ENDPOINT.MESSAGES)
   })
 })
@@ -163,11 +163,10 @@ describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a 
   // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no requestState needed).
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
     ({
-      clientFormat: "anthropic",
-      targetEndpoint: leg,
-      body: { model: "claude-x", messages: [] },
-      model: { id: "claude-x" },
-      requestState: {},
+      request: { clientFormat: "anthropic", model: { id: "claude-x" } } as RequestEnvelope["request"],
+      attempt: { body: { model: "claude-x", messages: [] }, targetEndpoint: leg } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
+      createView: () => ({}) as RequestEnvelope["view"],
     }) as unknown as RequestEnvelope
 
   test("a CC-target env yields the CC stack (network→server-error→token-refresh) — NOT a throw", () => {

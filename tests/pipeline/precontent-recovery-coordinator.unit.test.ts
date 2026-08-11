@@ -31,17 +31,12 @@ import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 function envelope(label: string): RequestEnvelope {
   return {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: { id: "model" },
-    stream: true,
-    body: { label },
+    request: { clientFormat: "openai-cc", model: { id: "model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { label }, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {},
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -104,7 +99,7 @@ function candidateFactory(
 }) => CandidateRuntime<{ role: CandidateRole }> {
   return ({ role, parentCandidate, metadata, env }) => {
     const scheduler = createDispatchScheduler({
-      prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+      prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.attempt.body, stream: true }),
       open: async (_wire: PreparedRequest) =>
         role === "primary" ? { kind: "failed-open", error: new Error("primary pre-ready failure"), lifecycle: lifecycle() } : streamResponse(role),
       admission: {
