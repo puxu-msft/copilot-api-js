@@ -215,7 +215,7 @@ git diff --name-status "$BASE" b5acce8f    # 期望：恰好 5 行，全部 docs
 
 | 接手 Task 4 立刻要用的东西 | 实际位置（我 grep 出来的，不是报告给的） |
 |---|---|
-| Task 4 的计划正文 | `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（`## Task 4：把现有 DownstreamDeliverySession 升级为 BlockDeliveryOwner`），同目录另有 `KICKOFF.md` |
+| Task 4 的计划正文 | `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（`## Task 4：把现有 DownstreamDeliverySession 升级为 BlockDeliveryOwner`），同目录另有 `plan-kickoff.md` |
 | 同一 commit 的硬约束 | 同文件 `:67`「Task 4 切换 driver 直接消费 grammar outcomes 的同一 commit 才删除 compatibility projection；禁止出现『旧 projection 已删、新 owner 尚未接管』的中间提交」 |
 | gated 探针（去掉 `.skip` 即为验收） | `tests/pipeline/i9-followup-midblock-error.http.test.ts:64` |
 | 那条最贵的警告 | `docs/todo/deferred-backlog.md:1417`（master 为 :1451 起的条目）：「⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；**只修 `failed` 会在同一位置再犯一次**」 |

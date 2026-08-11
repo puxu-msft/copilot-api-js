@@ -4,7 +4,7 @@
 >
 > 权威规格：[`docs/mandatory-block-delivery-h2-observability/spec.md`](spec.md)
 >
-> 本目录只定义实施方法；规格是 what/why 单一事实源，当前 live 架构仍以 [`docs/DESIGN.md`](../DESIGN.md) 为准。执行时必须先读 [`README.md`](README.md) 的 Global Constraints、冻结接口、阶段 DAG 与执行策略。
+> 本目录只定义实施方法；规格是 what/why 单一事实源，当前 live 架构仍以 [`docs/DESIGN.md`](../DESIGN.md) 为准。执行时必须先读 [`plan.md`](plan.md) 的 Global Constraints、冻结接口、阶段 DAG 与执行策略。
 
 复制以下内容到新的实施会话：
 

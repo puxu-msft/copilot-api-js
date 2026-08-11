@@ -17,7 +17,7 @@
 2. **Task 与步骤等价：通过。** 脚本按 `## Task N` 抽取比较，Task 1～12 全部 `EXACT`；源与拆分 checklist 均为 `103`，即 `103/103`。Phase 边界标题未混入 task body。
 3. **README 召回：通过。** Context／Global／Files／Interfaces／Invariants／Disposition／Coverage／Verification／Smells／Strategy 与获批源逐字 `EXACT`。四 phase 文件头和 KICKOFF 都强制先读 README 的承重章节；README DAG 链到全部 phase 与 KICKOFF。
 4. **KICKOFF：通过。** 忽略 Markdown 引用块开头的空 `>` 行后，引用提示词为 `4/4` 实质行逐字相等；`approved-not-implemented`、spec `confirmed-not-implemented`、Task 5／9／10／11 progress、隔离 worktree、4141／push禁区、Task 12前不改 DESIGN及双 reviewer门均未漂移。
-5. **评审转录：通过。** `review-implementer.md` 与 `review-falsification.md` 忠实保留各轮 verdict、finding和采纳 disposition，最终均为 `0 blocker / 0 major`；中间 0/0未冒充最终。README 明示两份是 Plan Mode单文件转录，拆分后需另行跨文件复核，未用原 verdict自动放行拆分。
+5. **评审转录：通过。** `2026-08-07-plan-review-implementer.md` 与 `2026-08-07-plan-review-falsification.md` 忠实保留各轮 verdict、finding和采纳 disposition，最终均为 `0 blocker / 0 major`；中间 0/0未冒充最终。README 明示两份是 Plan Mode单文件转录，拆分后需另行跨文件复核，未用原 verdict自动放行拆分。
 6. **状态边界：通过。** README、四 phase、KICKOFF均为 `approved-not-implemented`；spec仍为 `confirmed-not-implemented`。各入口指向 DESIGN 为 live事实源；DESIGN仍记录 `runResponseSink`、配置门控和cap retreat等当前态，未把目标态冒充已实施。
 7. **双向判据：通过。** 缺文件／断链、少 task／step、README章节漂移、KICKOFF状态或DAG漂移、单review／不同对象冒充双放行均会被上述独立检查捕获；合法 phase header、空引用行、approved plan与confirmed spec的有意状态差异不会被误拒。
 
