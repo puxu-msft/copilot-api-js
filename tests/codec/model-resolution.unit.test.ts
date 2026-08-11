@@ -18,6 +18,7 @@ import type { Model } from "~/lib/models/client"
 import type { RawHttpRequest } from "~/lib/pipeline/types"
 
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
+import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 
 import { mockModel } from "../helpers/factories"
@@ -79,5 +80,23 @@ describe("resolveCodecModel", () => {
   test("carries the resolved Model object and routeOverride", () => {
     const r = resolveCodecModel(raw({ bodyModel: "sonnet", resolvedName: "claude-sonnet-5" }))
     expect(r.selectedModel?.id).toBe("claude-sonnet-5")
+  })
+
+  // Regression: this used to return `selectedModel: undefined`, which all four codecs then laundered
+  // through `as ResolvedModel`. The request ran on until the dispatch scheduler read `env.model.id`,
+  // and the resulting TypeError arrived at the client as a 500 from an unrelated invariant guard.
+  test("rejects an unresolvable model at the boundary instead of carrying a hole", () => {
+    // No `preResolved` and no catalog entry: `state.modelIndex.get` finds nothing.
+    expect(() => resolveCodecModel(raw({ bodyModel: "not-a-real-model" }))).toThrow(/model not found: not-a-real-model/u)
+  })
+
+  test("the rejection is a 404 the client can act on", () => {
+    try {
+      resolveCodecModel(raw({ bodyModel: "not-a-real-model" }))
+      throw new Error("expected resolveCodecModel to throw")
+    } catch (error) {
+      expect(error).toBeInstanceOf(HTTPError)
+      expect((error as HTTPError).status).toBe(404)
+    }
   })
 })

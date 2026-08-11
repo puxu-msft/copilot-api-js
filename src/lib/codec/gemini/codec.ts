@@ -370,7 +370,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string, onContext: (ctx: Requ
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream,
     body: geminiSnapshot,
     ctx,

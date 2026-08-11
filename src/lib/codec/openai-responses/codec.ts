@@ -468,7 +468,7 @@ function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestConte
 
   // Tool-name sanitization (client → upstream). The mapper is stored on ctx so
   // the response-side restore can reverse it.
-  const toolNameMapper = buildResponsesToolNameMapper(processed, selectedModel?.vendor)
+  const toolNameMapper = buildResponsesToolNameMapper(processed, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
   processed = applyResponsesToolNameSanitization(processed, toolNameMapper)
 
@@ -480,7 +480,7 @@ function parseOpenAiResponses(raw: RawHttpRequest, onContext: (ctx: RequestConte
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: processed.stream ?? false,
     body: processed,
     ctx,

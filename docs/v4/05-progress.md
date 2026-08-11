@@ -301,8 +301,9 @@ v4 之后的下一个大重构 **Stage A：激活 transform registry**（设计 
 ### P2.2-D5 — env.model 非可选 vs OpenAI 未知 gpt-* fallback 模型（P2.3 评估放宽）
 
 - **根因**：`RequestEnvelope.model: ResolvedModel`（非可选，Anthropic 中心假设），但 CC 支持索引外的未知 gpt-* fallback（`modelIndex.get` 返回 undefined）。
-- **当前行为**：parse 把（可能 undefined 的）selectedModel cast 为 ResolvedModel 存 env.model；所有消费者（decideRoute/prepareWire）传给接受 `Model | undefined` 的 helper（`isEndpointSupported` 等），运行时正确，仅静态类型 over-claim。
-- **若做需改什么**：P2.3 可评估把 envelope.model 放宽为 `ResolvedModel | undefined`（待 Anthropic 非可选假设一并复核）。
+- **当前行为（2026-08-11 更正）**：~~parse 把（可能 undefined 的）selectedModel cast 为 ResolvedModel 存 env.model；所有消费者（decideRoute/prepareWire）传给接受 `Model | undefined` 的 helper（`isEndpointSupported` 等），**运行时正确**，仅静态类型 over-claim。~~ **「运行时正确」经实测为假。** 消费者不止那些容忍 undefined 的 helper：`src/lib/pipeline/generation/dispatch-scheduler.ts` 无条件读 `current.model.id`，于是目录外模型**必定 500**。实测（改动前的 master，`POST /v1/chat/completions`，`model: gpt-unknown-xyz`）：`500 undefined is not an object (evaluating 'env.model.id')`，且该 TypeError 随后被 `candidate.ts` 里 settle 路径的不变量守卫顶替。原判断只核到了「接受 `Model | undefined` 的 helper」那一层，没有走到调度层——这也是当时的守卫（只断言 `parse` 不抛错）看不见它的原因。
+- **本轮处置**：`resolveCodecModel` 改为在边界抛 404 `model not found`，`selectedModel` 收窄为非可选，四处 `as ResolvedModel` 转型删除。**这是把 500 换成 404，不是实现本条**——本条要的「透传目录外模型」仍未做。
+- **若做需改什么**：把 `envelope.model` 放宽为 `ResolvedModel | undefined`，并逐个处理调度层、admission control、telemetry model key、tokenizer、`isEndpointSupported`、History 的缺失情形（待 Anthropic 非可选假设一并复核）。A（拒绝）与 B（透传）的完整比较与**待用户裁决**记录见 `docs/tmp/2026-08-11-unresolvable-model-guard-disposition.md`。
 
 ### P2.2-D6 — decideRoute 是纯函数，`recordFeature("via-responses")` 须由 P2.3 driver/route 在 translate 决策时补发
 

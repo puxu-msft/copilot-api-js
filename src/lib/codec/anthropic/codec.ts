@@ -449,7 +449,7 @@ function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) =>
   // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
   // tools, so `incoming.tools` is still the client's set). Stored on ctx so the
   // response-side restore reverses it.
-  const toolNameMapper = buildAnthropicToolNameMapper(incoming.tools, resolvedName, selectedModel?.vendor)
+  const toolNameMapper = buildAnthropicToolNameMapper(incoming.tools, resolvedName, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
 
   ctx.setResolvedModel({
@@ -468,7 +468,7 @@ function parseAnthropic(raw: RawHttpRequest, onContext: (ctx: RequestContext) =>
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.MESSAGES,
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: anthropicPayload.stream ?? false,
     body: anthropicPayload,
     ctx,

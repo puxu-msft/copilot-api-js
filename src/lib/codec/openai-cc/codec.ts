@@ -33,8 +33,9 @@
  * - **P2.2-D4**: `formatError` receives only the classified kind (locked
  *   signature), so it cannot forward the raw upstream error message the legacy
  *   handler does. See `formatError` JSDoc.
- * - **P2.2-D5**: `env.model` is non-optional, but CC supports unknown gpt-*
- *   fallback models absent from the index. See `parse` JSDoc.
+ * - **P2.2-D5**: catalog-external models. `resolveCodecModel` now rejects them
+ *   with a 404; passing them through to upstream is still unimplemented. The
+ *   old "runtime is correct" premise was falsified — see `parse` JSDoc.
  */
 
 import consola from "consola"
@@ -337,13 +338,13 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
  * wires it as a route pre-step that `await`s the injection into `raw.body`
  * BEFORE calling `codec.parse(raw)`, keeping parse sync + pure.
  *
- * **P2.2-D5 (deferred):** `env.model` is non-optional `ResolvedModel`, but CC
- * supports unknown gpt-* fallback models absent from the index (`modelIndex.get`
- * returns undefined). We store the (possibly undefined) selected model cast to
- * `ResolvedModel`; every consumer here passes it to helpers that accept
- * `Model | undefined` (e.g. `isEndpointSupported`), so the runtime is correct —
- * only the static type over-claims. P2.3 may relax the envelope to
- * `ResolvedModel | undefined` once Anthropic's non-optional assumption is revisited.
+ * **P2.2-D5 (was deferred; premise falsified 2026-08-11):** the note here used to say that storing a
+ * possibly-undefined selected model cast to `ResolvedModel` was "runtime correct, only the static
+ * type over-claims". It is not. Consumers are not limited to the `Model | undefined`-tolerant helpers
+ * this file reaches for: `pipeline/generation/dispatch-scheduler.ts` reads `current.model.id`
+ * unconditionally, so a model outside the catalog always produced a 500. `resolveCodecModel` now
+ * rejects it at the boundary with a 404 instead. Passing catalog-external models THROUGH to upstream
+ * — what D5 actually wanted — still is not implemented; see docs/v4/05-progress.md P2.2-D5.
  */
 function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => void): { env: RequestEnvelope; baseline: ChatCompletionsPayload } {
   // `body` is the wire-logical inbound (system-prompt already injected by the
@@ -391,7 +392,7 @@ function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => 
   // Tool-name sanitization (client → upstream) over the wire-logical body. The
   // mapper is stored on ctx so the response-side restore can reverse it.
   const resolvedPayload: ChatCompletionsPayload = { ...incoming, model: resolvedName }
-  const toolNameMapper = buildChatCompletionsToolNameMapper(resolvedPayload, selectedModel?.vendor)
+  const toolNameMapper = buildChatCompletionsToolNameMapper(resolvedPayload, selectedModel.vendor)
   ctx.setToolNameMapper(toolNameMapper)
   const renamedPayload = applyChatCompletionsToolNameSanitization(resolvedPayload, toolNameMapper)
 
@@ -408,7 +409,7 @@ function parseOpenAiCc(raw: RawHttpRequest, onContext: (ctx: RequestContext) => 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
-    model: selectedModel as ResolvedModel,
+    model: selectedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
     ctx,
