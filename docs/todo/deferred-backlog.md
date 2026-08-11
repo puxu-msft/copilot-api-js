@@ -1550,3 +1550,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：三项各自独立可加，都不要求重做第一类的 command 形状。classifier 可作为 owner 内的一层后置校验引入；D2 只需把 `WireEnvelopeFactory.anchor` 的 caller 参数换成 owner 对自己 lease 的查询。
 - **触发条件（值得做）**：出现**真实的** intent/effect mismatch 缺陷——不是设想的。设想不构成触发条件，这正是本次裁决的内容。
 - **完整理由与诚实边界**：ADR [2026-08-10-trust-the-caller-over-emission-authorization](../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。
+
+## suspend / clock-drift 判别器随 stale reaper 一起失去了宿主，`recordReaperTick` 现在零生产调用点（2026-08-11，两档 deadline 重整时发现）
+
+- **根因 / 现状**：`src/lib/observability/reaper-diagnostics.ts` 的 tick 采集（`recordReaperTick` / `getReaperDiagnostics` / 64 槽 ring）原先由周期式 stale reaper 的每次扫描驱动。该 reaper 本轮被删除（它测的量与 `timeouts.client_request_deadline` 相同、动作也相同，只是走扫描、最坏晚约 1.33 倍），于是这套采集**没有任何生产调用点了**，只剩自己的单测在驱动。同模块的 `recordConfigReloadTimeoutDiff` 不受影响，仍在 `src/lib/config/config.ts` 的热重载路径上。
+- **当前行为**：功能无缺陷——它本来就是纯观测。真正的代价是**丢了一个判别器**：`suspectSuspend`（墙钟 gap 远超单调钟 gap ⇒ 进程/WSL2 suspend，两 gap 一致 ⇒ 事件循环阻塞）是本仓**唯一**能把「整机冻结」与「事件循环被卡住」区分开的手段。全仓没有第二个。
+- **需要说清楚的一件事**：它在删除之前就**已经不跑了**——bundled `config.yaml` 把 `stale_request_max_age` 设成 0，而 `startReaper()` 在阈值 ≤ 0 时直接 return，所以生产进程里这个 interval 从未启动过。所以本轮删除**没有造成能力回退**，只是把「这个判别器实际上是死的」这件事从隐性变成显性。
+- **为何暂缓**：给它随便找个宿主（比如无条件起一个 60s interval）会新增一个永远运行、而**没有任何读者**的定时器——`getReaperDiagnostics()` 至今没有生产消费者，没有 `/api/status` 字段、没有诊断端点。那是把「无用的死代码」换成「无用的活开销」，方向不对。要做就该连读者一起做。
+- **理想架构 / 若做需改什么**：① 先给它一个真读者（`/api/status` 或 diagnostic 端点暴露 `getReaperDiagnostics()`）；② 再决定 tick 的宿主——可以是一个独立的、名字诚实的 suspend probe（固定 cadence，与任何 deadline 无关），也可以挂在既有的某个周期任务上（`history/v3/maintenance` 的 tick 是现成的候选，省一个 timer）；③ 顺带把模块与 API 从 `reaper-*` 改名成它实际在做的事——reaper 已经不存在了，这批名字现在全是名实不符。
+- **触发条件（值得做）**：① 又遇到一次「timer 集体迟到 / 请求龄读数异常」而分不清是 suspend 还是事件循环阻塞；② 有人要做进程健康度面板，需要 event-loop delay 之外的挂起证据；③ 任何人下次动这个模块时顺手连读者一起补。
+- **发现方**：两档 deadline 重整（本轮）删 reaper 时的调用点盘查——`git grep startReaper` 当时还漏看了 `packages/` 下的生产调用点，第二次全仓 grep 才发现 `packages/cli/src/start.ts` 里有一个。

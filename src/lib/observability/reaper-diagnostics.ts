@@ -1,3 +1,16 @@
+// ⚠️ 2026-08-11：本模块名义上的被测对象——周期式 stale reaper——已被删除（它测的量与
+// `timeouts.client_request_deadline` 相同、动作也相同，只是走扫描、最坏晚约 1.33 倍）。因此：
+//
+// - `recordReaperTick` / `getReaperDiagnostics` / tick ring **当前没有任何生产调用点**，只被
+//   自己的单测驱动。它们没有被删掉，是因为「无消费者」不构成删除理由（CLAUDE.md
+//   `no-destructive-workspace-loss`），而下面 `suspectSuspend` 那条判别器是本仓**唯一**的
+//   event-loop-block vs 进程/WSL suspend 区分手段——想保住它就需要一个真有读者的宿主。
+//   登记在 `docs/todo/deferred-backlog.md`。
+// - `recordConfigReloadTimeoutDiff` / `getLastConfigReloadTimeoutDiff` **仍在生产路径上**
+//   （`src/lib/config/config.ts` 每次 timeouts 热重载都写），与 reaper 无关，照常维护。
+//
+// 下面是原始设计说明，保留以存档它当年要坐实的那个现象：
+//
 // Reaper 迟到诊断(坐实 RFC RC2 —— 2800.9s 请求越过 stale_request_max_age 的迟到机制)。
 //
 // 观测证据:一次 reaper force-fail 迟到 198s(age 1398s vs max 1200s)。两份独立 GPT
@@ -8,7 +21,7 @@
 // - `driftMs = actualAt - scheduledAt`:timer 实际迟到多久(墙钟)。
 // - `suspectSuspend`:墙钟 gap 远超单调时钟 gap = 进程/WSL suspend(整机冻结、单调钟也停);
 //   两 gap 一致 = 事件循环阻塞或正常抖动。这是 event-loop-block vs suspend 的判别器。
-// - `frozenIntervalMs` vs `liveMaxAgeSec`:reaper cadence 是否与 live 阈值脱节(RC2 候选①)。
+// - `frozenIntervalMs` vs `liveMaxAgeSec`:扫描 cadence 是否与 live 阈值脱节(RC2 候选①)。
 //
 // 纯观测、零生产行为变化。event-loop delay histogram 常驻(RFC §8.4)。
 
@@ -27,9 +40,9 @@ export interface ReaperTickInput {
   scanDurationMs: number
   /** 本次 scan 时 activeContexts 数量。 */
   activeCount: number
-  /** 本次 scan 读到的 live staleRequestMaxAge(秒)——检测热重载与 cadence 脱节。 */
+  /** 本次 scan 读到的 live 阈值(秒)——检测热重载与 cadence 脱节。 */
   liveMaxAgeSec: number
-  /** startReaper 时冻结的 setInterval 周期(ms)——与 live 阈值对比看 RC2 候选①。 */
+  /** 扫描启动时冻结的 setInterval 周期(ms)——与 live 阈值对比看 RC2 候选①。 */
   frozenIntervalMs: number
   /** 相邻 tick 间单调时钟推进(ms;performance.now / hrtime 差)。 */
   monotonicGapMs: number
