@@ -172,7 +172,7 @@ export interface CreateOpenAiCcCodecArgs {
   reverseBetaProbe?: BetaProbe
   /**
    * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
-   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
+   * `env.candidate` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
    * for both its sanitize rewrite and its resanitize (auto-truncate). Absent for the forward/direct CC legs.
    */
   reverseMapperHolder?: ReverseAnthropicMapperHolder

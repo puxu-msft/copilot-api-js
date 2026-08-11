@@ -108,6 +108,25 @@ describe("P1-T2 candidate state fork contract", () => {
     expect(primary.prepareHints).not.toBe(hedge.prepareHints)
   })
 
+  test("已经产出的 candidate 不受 fork 之后源 body 嵌套写入的影响", () => {
+    // 与上面那条的区别是时机：那条在**首次 fork 之前**改源对象，只证明了 factory 建立时取了快照。这条改在 fork **之后**，证明的是产出物与源之间没有残留别名——可变作用域下这是两件事，而此前只有前者有守卫。
+    const env = envelope()
+    const factory = createCandidateStateFactory(env, {})
+    const primary = factory.fork({ candidateId: "primary", role: "primary" })
+
+    const sourceMessages = (env.attempt.body as { messages: Array<{ role?: string; content: string }> }).messages
+    sourceMessages[0]!.content = "mutated-after-fork"
+    sourceMessages.push({ content: "appended-after-fork" })
+
+    expect((primary.body as { messages: Array<{ role?: string; content: string }> }).messages).toEqual([{ role: "user", content: "hello" }])
+
+    // 之后再 fork 的候选同样只看到源的当前值一次拷贝，且与已有候选互不相干。
+    const late = factory.fork({ candidateId: "late", role: "hedge" })
+    expect(late.body).not.toBe(primary.body)
+    ;(late.body as { messages: Array<{ role?: string; content: string }> }).messages[0]!.content = "written-by-late"
+    expect((primary.body as { messages: Array<{ role?: string; content: string }> }).messages[0]?.content).toBe("hello")
+  })
+
   test("fails with a named boundary when generation JSON cannot be snapshotted", () => {
     const env = envelope()
     env.attempt.body = { unsupported: () => undefined }

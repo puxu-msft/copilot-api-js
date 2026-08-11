@@ -258,7 +258,7 @@ describe("getRetryStrategyRegistryDiagnostics", () => {
 // ============================================================================
 
 /** Minimal fake `RequestEnvelope` — the shared-3 payload strategies only read `env.body`
- *  (via the adapter's `env.body as TPayload`) and return `env.with(patch)`. */
+ *  (via the adapter's `env.attempt.body as TPayload`) and return `writeAttempt(env, patch)`. */
 function makeFakeEnv(body: unknown): RequestEnvelope {
   return {
     attempt: {

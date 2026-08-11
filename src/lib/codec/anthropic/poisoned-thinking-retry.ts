@@ -89,8 +89,9 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
       ) {
         return Promise.resolve({ kind: "abort", error })
       }
-      // review M1: `env.with()` is the only immutable-update method (envelope.ts:108);
-      // a bare `{ ...env }` spread would drop the prototype method + shared ctx.
+      // Write through `writeAttempt`, never a bare `{ ...env }` spread: `view` is a GETTER that
+      // re-derives from `attempt.body`, so a spread would freeze it into a stale snapshot, and the
+      // copy would stop sharing the `request`/`candidate` scope objects every other reader holds.
       const nextEnv = writeAttempt(env, { body: { ...payload, messages } })
       // `errorSample` (richest-data-flow) rides the retry meta → onResolved → the
       // store's `last_error_sample` diagnostic column. `strippedThinkingOnReject`

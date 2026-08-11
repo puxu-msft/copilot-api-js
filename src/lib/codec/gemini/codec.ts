@@ -147,7 +147,7 @@ export interface CreateGeminiCodecArgs {
   reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
   /**
    * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
-   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
+   * `env.candidate` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
    * Absent for the direct/via-responses Gemini legs.
    */
   reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
@@ -229,7 +229,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
 
     // S1b (RFC 2026-07-14 §4): Gemini→CC translation + async system-prompt injection + sanitize +
     // O10 fill, moved off the route so `client.inbound` (Phase 4) sees the native `contents[]` body.
-    // Records the droppedParams warning + sets the CC auto-truncate baseline (closure + requestState,
+    // Records the droppedParams warning + sets the CC auto-truncate baseline (closure + request scope,
     // read by the forward `@cc` leg's OUTBOUND_LEGS at S4). One-shot, outside the retry loop.
     async translateInbound(env) {
       const geminiBody = env.attempt.body as GenerateContentRequest

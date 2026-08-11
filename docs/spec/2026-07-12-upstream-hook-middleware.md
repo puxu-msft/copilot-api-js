@@ -113,6 +113,10 @@
 - `clientRequest.body = orig.payload`（[context/request.ts:854](../../src/lib/context/request.ts#L854) 终态 + [observability/sinks/history.ts:207](../../src/lib/observability/sinks/history.ts#L207) eager insert）；`orig` 在 **context 创建时（S1 parse 处）即冻结**、eager insert 早于 exchange——客户端原样轨的 body 在 `client.inbound` 触发**之前**已捕获快照。
 - **`orig.payload` 已与 `env.body` 独立引用**：四种 codec 的 `parse` 均以 `structuredClone` 建立 `orig.payload`（[codec/anthropic/codec.ts](../../src/lib/codec/anthropic/codec.ts)、[openai-cc/codec.ts](../../src/lib/codec/openai-cc/codec.ts)、[openai-responses/codec.ts](../../src/lib/codec/openai-responses/codec.ts)、[gemini/codec.ts](../../src/lib/codec/gemini/codec.ts) 各自 parse），故**即便 `client.inbound` 原地 mutate `env.body`，`clientRequest.body` 当前也不受污染**——不变量在现有代码下已结构性成立。
 
+> **⚠️ 取代注记（2026-08-11，用户裁决）**：下面这组 v3 决策里，**第 2、3、4 条已作废** —— driver 的防御性 body snapshot 与「不可变返回契约」都已随 RequestEnvelope 改为可变作用域一并移除。用户裁决原文：不需要过于强大的安全保护，hook 写错就该错误继续、系统异常；核心系统应该相信 hook 知道自己在做什么。现行契约见 `src/lib/pipeline/hooks/types.ts` 的 `client.inbound` docstring：hook 拿到的是 **live env**，就地改 `env.attempt.body` 返回 `undefined` 与用 `writeAttempt` 返回 env **两种写法都成立、都到得了 wire**；配套测试在 `tests/pipeline/hooks/client-inbound.unit.test.ts`（断言方向与第 4 条相反）。
+>
+> **第 1 条仍然成立，而且正是移除之所以安全的理由**：客户端原样轨的独立性来自四个 codec `parse` 各自的 `structuredClone`，不依赖 driver 的 snapshot（2026-08-11 逐 codec 复验：anthropic/openai-cc/openai-responses/gemini 四处 `structuredClone` 均在）。它遗留的唯一缺口是第 1 条(a) 提到的那个假想风险——**未来新增 codec 忘记 structuredClone**；那道防线现在只剩 codec 自己，没有 driver 兜底。
+
 **决策（v3，硬化 = defense-in-depth，不改变已成立的现状）**：
 1. **clientRequest 客户端原样轨在现有代码下已结构性安全**（上述 structuredClone），不依赖 hook 行为。故 driver 的防御性 snapshot **不是**为了修一个当前存在的污染 bug——它是 **defense-in-depth**：（a）防未来新增 codec 忘记 structuredClone、让 `env.body` 与 `orig.payload` 共享引用而使 hook 原地改穿透；（b）配合「不返回=fallback 到原 env」把「原地 mutate + 返回 undefined」的改写安全丢弃，落实不可变返回语义。
 2. **driver 在 `client.inbound` 调用点对传入 hook 的 env 做防御性 body snapshot**：把 `parsed.with({ body: snapshotBody(parsed.body) })`（复用 driver 现成的容错 `snapshotBody`，非裸 `structuredClone`——不可克隆 body 回退原值）产出的 clone-env 交给 hook；hook 返回新 env 则用之、返回 undefined 则 driver 继续用**未改的原 `parsed`**。

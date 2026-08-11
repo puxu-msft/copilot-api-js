@@ -149,7 +149,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`
     // cell). The reverse leg's sanitize rewrite + Anthropic stack are assembled by OUTBOUND_LEGS from the
-    // shared beta probe + mapper holder the codec threads onto env.requestState.
+    // shared beta probe + mapper holder the codec threads onto env.candidate.
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })

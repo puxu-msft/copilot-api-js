@@ -92,7 +92,7 @@ export interface FallbackExchange {
  * The shared MUTABLE fallback-exchange scratch (RFC §11.2c) both the openai-responses InboundCodec (render
  * side — reads `exchange` ids) and the CHAT fallback leg (`translateOut` calls `ensure`, `prepareWire` reads
  * `exchange.rebuiltMessages`) reference — the SAME per-request instance the codec's parse threads onto
- * `env.requestState.responsesFallbackScratch`. `ensure` builds the exchange LAZILY + idempotently (the codec
+ * `env.candidate.responsesFallbackScratch`. `ensure` builds the exchange LAZILY + idempotently (the codec
  * owns the build closure — resolvedModelName / genShortId / rebuildConversationMessages).
  */
 export interface ResponsesFallbackScratch {

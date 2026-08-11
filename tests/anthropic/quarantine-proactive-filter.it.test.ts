@@ -139,7 +139,7 @@ test("非中毒会话（store 空）→ changed=false，body 原样同引用不�
   const result = filter.apply(env)
 
   expect(result.changed).toBe(false)
-  expect(result.env.attempt.body).toBe(before) // 未走 env.with()，返回原 env
+  expect(result.env.attempt.body).toBe(before) // body 未被改写，返回的 body 仍是原对象
   expect(touchSpy).not.toHaveBeenCalled()
 })
 

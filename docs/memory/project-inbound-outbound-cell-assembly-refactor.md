@@ -7,6 +7,8 @@ metadata:
   originSessionId: 8d7d43df-e5a9-408c-96f4-cd6335272573
 ---
 
+> **时效注记（2026-08-11）**：本文多处写的载体 `env.requestState` **已不存在**。RequestEnvelope 改为三作用域——纯值住 `env.request`、逐候选重建的不透明可变持有者住 `env.candidate`、下一次派发的输入住 `env.attempt`；cell-fork 判别式也从「`requestState` 存在性」换成显式 `env.request.legSupplyReady`。下文按当时状态原样保留（它记的是那轮重构的教训，不是当前形状）；**当前形状以 [DESIGN.md](../DESIGN.md)「活的架构现状」为准**。
+
 **codec 对象模型重构（cell-assembly）**——源起 Phase 7 前向腿生产 500 bug 暴露的**结构性轴错配**:通用翻译矩阵的两轴（clientFormat 入站 × targetEndpoint 出站）只活在数据层（env 两字段）,对象层只有一根轴（`FormatCodec` by clientFormat）,出站关切被打散进 `{strategy-registry 供料袋 + 4 handler 供料工厂 + codec 跨格 delegate + codec 内 isForwardTranslateLeg 分叉}`——漏填一腿供料 = 深埋 handler 静默 500,每加一格复发。用户授权全拆分、长远正确、评审委托 agents。
 
 **状态：C0-C6 全 landed 并 merged master（含与并发 remove-auto-truncate 项目的 reconcile）。全 12 出站 cell 走单一 `resolveCellAssembly`、driver cell-keyed fork 双向证成、字节等价、reviewed、全套件 4779 pass / 0 fail。全部清理项完成**：codec 出站方法删除 + 死 accessor 清理、HIGH-1 hub 提取、gemini 剥前缀（见下）。**gemini cc delegate 移除评估后不采纳**（RFC 判它反模式是因它兼做出站;出站已删后 delegate 收缩为纯响应侧复用 CC InboundCodec 归一化——passthrough/反向 translator/accumulator 三路 dispatch + gemini 加 CC→Gemini 跳,是合法组合非死码,移除=在 gemini 重复三路 dispatch 反损可维护性;HIGH-1 只提取其中一条叶子原语不改此结论）。权威进度 = [PROGRESS.md](../plan/inbound-outbound-split/PROGRESS.md)。**

@@ -728,11 +728,12 @@ describe("driver.runExchange — error-driven retry", () => {
     // deps.strategies for a MIGRATED cell — the legacy per-route factory carries recordFeature side effects
     // (via-responses / via-chat-completions-fallback) that the leg's translateOut now owns, so an eager call
     // would double-fire them on the live observability bus. A migrated env (openai-cc|/chat/completions, a
-    // real MIGRATED_CELLS entry, with the leg supply on requestState) drives the REAL chatCompletionsLeg.
+    // real MIGRATED_CELLS entry, with `request.legSupplyReady` set — the flag the REAL codecs' parse sets and
+    // the driver's `migratedCell()` discriminates on) drives the REAL chatCompletionsLeg.
     const { ctx } = makeCtx()
     const ccBody = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }
     const migratedEnv = {
-      request: { clientFormat: "openai-cc", model: { id: "gpt-4o" }, stream: true, truncateBaseline: ccBody } as RequestEnvelope["request"],
+      request: { clientFormat: "openai-cc", model: { id: "gpt-4o" }, stream: true, truncateBaseline: ccBody, legSupplyReady: true } as RequestEnvelope["request"],
       attempt: { body: ccBody, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
       candidate: {} as RequestEnvelope["candidate"],
       view: {},
@@ -745,7 +746,12 @@ describe("driver.runExchange — error-driven retry", () => {
       strategyFactoryCalls++
       return []
     }
-    const transport = makeTransport(async () => okStream())
+    // `resolveExchangeStrategies` is reached ONLY from the exchange's error handler (`candidateStrategies ??=`),
+    // so a happy-path transport leaves the legacy factory unevaluated no matter which branch ran — the assertion
+    // below would then be green for a NON-migrated env too. Throwing forces the resolution to actually happen.
+    const transport = makeTransport(async () => {
+      throw new Error("boom")
+    })
     const driver = createPipelineDriver({
       ...BASE,
       codec,
@@ -754,8 +760,9 @@ describe("driver.runExchange — error-driven retry", () => {
       strategies: strategiesFactory,
     })
 
-    const result = await driver.runRequest({ body: {}, headers: new Headers() })
-    expect(result.ok).toBe(true)
+    // No strategy in the cell's stack claims a bare Error, so the driver rethrows — that is the point: the stack
+    // that got consulted was the CELL's.
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     // The migrated cell composed its stack via the CellAssembly → the legacy factory was NEVER evaluated.
     expect(strategyFactoryCalls).toBe(0)
   })

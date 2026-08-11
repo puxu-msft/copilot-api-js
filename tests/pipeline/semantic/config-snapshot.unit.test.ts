@@ -5,8 +5,6 @@ import {
   expect,
   test,
 } from "bun:test"
-import { readFileSync } from "node:fs"
-import path from "node:path"
 
 import type { ModelTranslation } from "~/lib/state-vocabulary"
 
@@ -22,8 +20,6 @@ import {
   captureTranslationConfigSnapshot,
   type TranslationConfigSnapshot,
 } from "../../../src/lib/pipeline/semantic/config-snapshot"
-
-const REPO_ROOT = path.resolve(import.meta.dir, "../../..")
 
 const RULES_A: ModelTranslation = { "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }] }
 const RULES_B: ModelTranslation = { "anthropic-messages": [{ match: "gpt-5.6@openai-responses" }] }
@@ -81,28 +77,8 @@ describe("translation config snapshot — a hot reload only reaches later reques
 })
 
 /**
- * Replaces the pre-2026-08-11 guard, which read each codec's `with()` body to check it re-passed `translationConfigSnapshot` by hand. That mechanism is gone: the envelope's three scopes are carried by object identity through one shared `makeEnvelope`, so there is no per-codec field list left to forget.
+ * 「每个 codec 都把这个 snapshot 带到 leg 上」这条不变量的守卫**不在本文件**——它需要真跑四个 codec 的 parse，属跨模块集成，见 `./config-snapshot-carry.it.test.ts`。
  *
- * What still needs guarding is the thing that made the old hand-copying dangerous — a codec growing its own envelope builder again. The four paths are listed rather than globbed: a fifth codec must fail here and be added deliberately, not be quietly excluded by a glob that never matched it.
+ * 本文件此前有一条读 codec 源码文本的守卫（先查 `with()` 里手抄了没有，后改查有没有自建 `function makeEnvelope(`）。独立评审构造出反例证明它只守住某一种拼写：本地 builder 换个名字就能绕过且类型正确。守卫追不上合法写法时应当把不变量搬到行为层，而不是继续给正则加分支。
  */
-describe("every codec builds envelopes through the one shared factory", () => {
-  const CODECS = ["anthropic", "openai-cc", "openai-responses", "gemini"]
 
-  for (const codec of CODECS) {
-    test(`${codec} imports makeEnvelope and defines no builder of its own`, () => {
-      const source = readFileSync(path.join(REPO_ROOT, "src/lib/codec", codec, "codec.ts"), "utf8")
-
-      expect(source).toContain(`import { makeEnvelope } from "~/lib/pipeline/envelope"`)
-      expect(source).not.toContain("function makeEnvelope(")
-    })
-  }
-
-  test("the shared factory takes whole scopes, not a per-field list", () => {
-    const source = readFileSync(path.join(REPO_ROOT, "src/lib/pipeline/envelope.ts"), "utf8")
-
-    // If EnvelopeInit ever starts enumerating scope members again, "a new field is carried automatically" stops being true and this guard is measuring the wrong thing.
-    expect(source).toContain("export function makeEnvelope(init: EnvelopeInit): RequestEnvelope")
-    expect(source).toContain("readonly request: RequestScope")
-    expect(source).toContain("readonly attempt: AttemptScope")
-  })
-})

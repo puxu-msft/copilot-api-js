@@ -160,7 +160,7 @@ describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a 
   useIsolatedRuntime()
 
   // The anthropic FORWARD leg reads env.body (the hub-translated CC body) as the retry baseline —
-  // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no requestState needed).
+  // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no candidate supply needed).
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
     ({
       request: { clientFormat: "anthropic", model: { id: "claude-x" } } as RequestEnvelope["request"],

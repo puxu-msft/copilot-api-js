@@ -19,7 +19,7 @@
  * on the CellAssembly leg → ctx side-channels, not this closure (RFC 2026-07-13 §11).
  *
  * **betaProbe is a cross-component handle** (RFC §2.4): the handler builds it once
- * and injects the SAME instance into both `parse` (which threads it onto `env.requestState`
+ * and injects the SAME instance into both `parse` (which threads it onto `env.candidate`
  * for the anthropic-cell's `prepareWire` to record the outbound betas) and the strategies
  * (the unsupported-beta strategy reads
  * the candidates). The factory takes it as a parameter.

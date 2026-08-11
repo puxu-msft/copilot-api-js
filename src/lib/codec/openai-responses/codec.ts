@@ -177,7 +177,7 @@ export interface CreateOpenAiResponsesCodecArgs {
   reverseBetaProbe?: BetaProbe
   /**
    * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
-   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
+   * `env.candidate` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
    * for its sanitize rewrite + resanitize. Absent for the direct/fallback legs.
    */
   reverseMapperHolder?: ReverseAnthropicMapperHolder
@@ -219,7 +219,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
   // Fallback (Responses→CC) exchange SCRATCH (RFC §11.2c): a shared MUTABLE holder both this codec's render
   // side (reads exchange ids/resolvedModel) and — once C4a routes the CHAT cell through the assembly — the
   // OUTBOUND_LEGS[CHAT_COMPLETIONS] fallback leg (calls `ensure` in translateOut, reads rebuiltMessages in
-  // prepareWire) reference. parse threads it onto env.requestState so both sides see the SAME instance.
+  // prepareWire) reference. parse threads it onto env.candidate so both sides see the SAME instance.
   // `ensure` builds the exchange LAZILY + idempotently (the build closure lives here — it needs
   // resolvedModelName / genShortId / rebuildConversationMessages); undefined for a direct request.
   const createFallbackScratch = (): ResponsesFallbackScratch => {
@@ -331,7 +331,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     // S2 translateOut / S4 prepareWire / S4-sample are owned by the CellAssembly's `OUTBOUND_LEGS` for every
     // real request (direct `/responses` + fallback `/chat/completions` via the responses/cc cells, reverse
     // `@messages` via the anthropic cell); the codec no longer implements them. The RESPONSE-side render below
-    // stays here (InboundCodec): it reads the SAME per-request fallback scratch (`env.requestState`, populated
+    // stays here (InboundCodec): it reads the SAME per-request fallback scratch (`env.candidate`, populated
     // by the cell) + lazily builds the reverse-exchange (`??=`, observably equivalent to the old eager build).
 
     renderResponse(frame, env) {

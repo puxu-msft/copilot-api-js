@@ -3,9 +3,10 @@
  *
  * A `client.inbound` hook sees the client-NATIVE body of ONE of four inbound formats (Phase 3's
  * four-format downshift guarantees each is native at S1a→S1b). Each format lays its conversation
- * turns out differently, so these helpers dispatch on `env.clientFormat` to a per-format accessor
- * and rebuild the body IMMUTABLY (returning a NEW env via `env.with` — never mutating in place; the
- * driver also defends with a body snapshot, §3.5):
+ * turns out differently, so these helpers dispatch on `env.request.clientFormat` to a per-format
+ * accessor and rebuild the BODY rather than editing it in place (`writeAttempt` hands back the SAME
+ * env object carrying the new body — the envelope itself has been mutable since 2026-08-11, and the
+ * driver no longer takes a defensive body snapshot).
  *
  *   | clientFormat        | turn list        | system carrier        |
  *   |---------------------|------------------|-----------------------|
@@ -68,8 +69,8 @@ function turnListKey(format: string): { key: string; project: (turn: Record<stri
 }
 
 /**
- * Immutably map over the client-native conversation turns. `fn` returns the (possibly replaced) turn
- * object, or `null` to DROP it. Returns a NEW env (or the same env unchanged if nothing changed / the
+ * Map over the client-native conversation turns. `fn` returns the (possibly replaced) turn
+ * object, or `null` to DROP it. Returns the SAME env with a new body (or untouched if nothing changed / the
  * format has no walkable turn list). Format-native — the hook author reads `turn.raw` for the
  * verbatim object and `turn.text`/`turn.role` for matching.
  */
@@ -98,7 +99,7 @@ export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) =
 }
 
 /**
- * Drop every conversation turn a `predicate` matches (a NEW env, immutable). The common
+ * Drop every conversation turn a `predicate` matches (SAME env, new body — `writeAttempt`). The common
  * `client.inbound` use case: strip a client-injected boilerplate turn (e.g. a Claude-Code-injected
  * `role:"system"` TodoWrite reminder). Turns the predicate does not match pass through verbatim.
  */
@@ -110,7 +111,7 @@ export function stripMessageBlock(env: RequestEnvelope, predicate: (turn: Client
  * Strip text matching `pattern` from the format's SYSTEM carrier (Anthropic top-level `system`,
  * Responses `instructions`, Gemini `systemInstruction`) — for boilerplate injected as a system
  * prompt rather than a conversation turn. `openai-cc` has no system carrier (its system is a
- * `role:"system"` turn — use {@link stripMessageBlock} for that). Returns a NEW env (immutable);
+ * `role:"system"` turn — use {@link stripMessageBlock} for that). Returns the SAME env with a new body;
  * a carrier that becomes empty is removed.
  */
 export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestEnvelope {

@@ -8,7 +8,7 @@
  * direct cell through `AnthropicCellAssembly`) and the `OUTBOUND_LEGS[/v1/messages]` assembly call the
  * SAME functions — zero byte divergence. `anthropicPreSend` / `sampleAnthropicRequest` were ALREADY pure
  * (`env`-only); `prepareAnthropicWire` takes an explicit {@link PrepareWireDeps} the caller sources from
- * the codec closure today and from `env.requestState` + `env.ctx` under the assembly.
+ * the codec closure today and from `env.request` + `env.candidate` + `env.ctx` under the assembly.
  */
 
 import type { RequestContext } from "~/lib/context/request"

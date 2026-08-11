@@ -133,7 +133,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
 
   test("L1 (Phase-7 guard): the migrated anthropic|/v1/messages cell's buildStrategies is NON-EMPTY + does not throw", () => {
     // The exact Phase-7 bug class ("missing builder → silent 500"): a migrated cell MUST produce a
-    // non-empty strategy stack. Build a real env carrying the leg supply on requestState (what parse sets).
+    // non-empty strategy stack. Build a real env carrying the leg supply on the request + candidate scopes (what parse sets).
     const env = {
       request: {
         clientFormat: "anthropic" as const,
@@ -156,7 +156,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
   test("L1 (Phase-7 guard): the 3 migrated /chat/completions cells' buildStrategies are NON-EMPTY + do not throw", () => {
     // C3's direct Phase-7 guard: openai-cc DIRECT + anthropic/gemini FORWARD @cc must each produce a
     // non-empty CC strategy stack. env.body is CC-shaped for all three (direct native; forward hub-translated
-    // — here we hand a CC body directly, which is what the leg's buildLegStrategies reads). requestState
+    // — here we hand a CC body directly, which is what the leg's buildLegStrategies reads). The request scope
     // carries the truncateBaseline the cc/gemini legs read.
     const ccBody = { model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }
     for (const cf of ["openai-cc", "anthropic", "gemini"] as const) {
@@ -167,6 +167,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
           truncateBaseline: ccBody,
         } as RequestEnvelope["request"],
         attempt: { body: ccBody, targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
         createView: () => ({}) as RequestEnvelope["view"],
       } as unknown as RequestEnvelope
       const strategies = resolveCellAssembly(cf, ENDPOINT.CHAT_COMPLETIONS).buildStrategies(env)
@@ -221,6 +222,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
         truncateBaseline: ccBody,
       } as RequestEnvelope["request"],
       attempt: { body: ccBody, targetEndpoint: ENDPOINT.RESPONSES, prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const viaStrategies = resolveCellAssembly("openai-cc", ENDPOINT.RESPONSES).buildStrategies(viaEnv)

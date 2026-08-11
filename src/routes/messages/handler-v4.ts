@@ -737,7 +737,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     candidateResponseSessionFactory: createAnthropicCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`
-    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.requestState.preprocessInfo)
+    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.request.preprocessInfo)
     // + the Anthropic strategy stack (from the codec-threaded truncateBaseline / resanitize / betaProbe).
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
@@ -1216,9 +1216,9 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const ctx = codec.getContext()
   if (!ctx) return
 
-  // Data sources re-homed from the codec closure to env.requestState + ctx (RFC §11.2 / C2a): the
+  // Data sources re-homed from the codec closure to the envelope's request/candidate scopes + ctx (RFC §11.2 / C2a): the
   // direct `/v1/messages` cell is now dispatched through the CellAssembly (stateless), so the codec's
-  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on env.requestState and
+  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on those scopes and
   // the per-attempt side-channels on ctx.currentAttempt. The message-mapping / stripped-cache-control are
   // DIRECT-leg concerns only (a forward @cc/@responses leg's ctx attempt is CC-shaped), so gate them on
   // the direct target exactly as the codec's `!isForwardTranslateLeg` branch did.

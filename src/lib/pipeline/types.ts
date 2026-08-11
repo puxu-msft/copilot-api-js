@@ -1030,7 +1030,7 @@ export interface FormatCodec {
    * S2: translate body to the target-endpoint format (passthrough = identity). OPTIONAL since the
    * CellAssembly refactor — the outbound leg (`OUTBOUND_LEGS[targetEndpoint].translateOut`) owns this for
    * every real request (the driver dispatches through `migratedCell(env)`); a codec only implements it as
-   * the mock/legacy fallback for a driver-orchestration unit test whose env has no `requestState`.
+   * the mock/legacy fallback for a driver-orchestration unit test whose env has no leg supply (`request.legSupplyReady` unset).
    */
   translateOut?(env: RequestEnvelope): RequestEnvelope
 
@@ -1063,7 +1063,7 @@ export interface FormatCodec {
    */
   createCandidateRenderer?(env: RequestEnvelope): CandidateResponseRenderer
 
-  /** Fork opaque request-side state for one candidate; real codecs with mutable requestState implement this. */
+  /** Fork the opaque candidate-scope state for one candidate; real codecs with per-candidate mutable supply implement this. */
   createCandidateStateFactory?(env: RequestEnvelope): import("./generation/candidate-state").CandidateStateFactory
 
   /** S6 non-streaming: translate the whole upstream response back to the client. */
