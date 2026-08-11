@@ -19,6 +19,7 @@ import {
   asPartKey,
   asSegmentId,
   DEGRADATION_REASONS,
+  type ItemDisposition,
   type SourceRef,
 } from "../../../src/lib/pipeline/semantic/types"
 
@@ -29,6 +30,9 @@ const SOURCE: SourceRef = {
   turn: 0,
   blockOrOutputIndex: 0,
 }
+
+/** Neutral disposition for fixtures whose subject is the terminal machinery, not RFC §4.1. None of these items accumulate opaque state, so `none` is the honest reading rather than a placeholder. */
+const SETTLED: ItemDisposition = { presentation: { kind: "native" }, continuation: { kind: "none" } }
 
 function expectRejection(run: () => void, code: LedgerErrorCode): void {
   try {
@@ -57,7 +61,7 @@ describe("semantic ledger — the settled main path", () => {
     twoSummaryReasoning(ledger)
     ledger.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), text: "second", terminal: { kind: "complete" } })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
     ledger.apply({ type: "finish-response", terminal: { kind: "completed", provenance: "wire-terminal" } })
 
     const snap = ledger.snapshot()
@@ -81,7 +85,7 @@ describe("semantic ledger — the settled main path", () => {
     })
     ledger.apply({ type: "append-arguments", key: asItemKey("i1"), delta: '{"city":"S' })
     ledger.apply({ type: "set-final-arguments", key: asItemKey("i1"), arguments: '{"city":"SF"}' })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
 
     expect(ledger.snapshot().items.get(asItemKey("i1"))?.authoritativeArguments).toBe('{"city":"SF"}')
   })
@@ -91,7 +95,7 @@ describe("semantic ledger — the settled main path", () => {
     twoSummaryReasoning(ledger)
     ledger.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), terminal: { kind: "partial", provenance: "eof" } })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "partial", provenance: "eof" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "partial", provenance: "eof" } })
     ledger.apply({ type: "finish-response", terminal: { kind: "incomplete", reason: "upstream ended", provenance: "eof" } })
 
     expect(ledger.snapshot().responseTerminal).toEqual({ kind: "incomplete", reason: "upstream ended", provenance: "eof" })
@@ -104,7 +108,10 @@ describe("semantic ledger — terminal gates", () => {
     twoSummaryReasoning(ledger)
     ledger.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
 
-    expectRejection(() => ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } }), LEDGER_ERROR_CODES.openChildPart)
+    expectRejection(
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } }),
+      LEDGER_ERROR_CODES.openChildPart,
+    )
   })
 
   test("a complete item may not sit on top of a partial part", () => {
@@ -114,7 +121,7 @@ describe("semantic ledger — terminal gates", () => {
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), terminal: { kind: "partial", provenance: "abort" } })
 
     expectRejection(
-      () => ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } }),
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } }),
       LEDGER_ERROR_CODES.partialPartUnderCompleteItem,
     )
   })
@@ -133,7 +140,7 @@ describe("semantic ledger — terminal gates", () => {
     ledger.apply({ type: "append-arguments", key: asItemKey("i1"), delta: '{"city":"SF"}' })
 
     expectRejection(
-      () => ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } }),
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } }),
       LEDGER_ERROR_CODES.missingAuthoritativeValue,
     )
   })
@@ -145,7 +152,7 @@ describe("semantic ledger — terminal gates", () => {
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), terminal: { kind: "complete" } })
 
     expectRejection(
-      () => ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } }),
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } }),
       LEDGER_ERROR_CODES.missingAuthoritativeValue,
     )
   })
@@ -154,7 +161,7 @@ describe("semantic ledger — terminal gates", () => {
     const ledger = createSemanticLedger()
     ledger.apply({ type: "declare-item", key: asItemKey("i1"), segmentId: SEGMENT, source: SOURCE, ordinal: 0, kind: "reasoning" })
     ledger.apply({ type: "set-reasoning-metadata", key: asItemKey("i1"), visibleKind: "redacted" })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
 
     expect(ledger.snapshot().items.get(asItemKey("i1"))?.terminal).toEqual({ kind: "complete" })
   })
@@ -163,8 +170,16 @@ describe("semantic ledger — terminal gates", () => {
     const ledger = createSemanticLedger()
     ledger.apply({ type: "declare-item", key: asItemKey("i1"), segmentId: SEGMENT, source: SOURCE, ordinal: 0, kind: "drop" })
 
-    expectRejection(() => ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } }), LEDGER_ERROR_CODES.dropMustBeDiscarded)
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "discarded", reason: DEGRADATION_REASONS.capabilityNoTargetEquivalent } })
+    expectRejection(
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } }),
+      LEDGER_ERROR_CODES.dropMustBeDiscarded,
+    )
+    ledger.apply({
+      type: "finish-item",
+      disposition: SETTLED,
+      key: asItemKey("i1"),
+      terminal: { kind: "discarded", reason: DEGRADATION_REASONS.capabilityNoTargetEquivalent },
+    })
     expect(ledger.snapshot().items.get(asItemKey("i1"))?.terminal?.kind).toBe("discarded")
   })
 
@@ -179,7 +194,7 @@ describe("semantic ledger — terminal gates", () => {
 
     ledger.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), terminal: { kind: "partial", provenance: "eof" } })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "partial", provenance: "eof" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "partial", provenance: "eof" } })
 
     expectRejection(
       () => ledger.apply({ type: "finish-response", terminal: { kind: "completed", provenance: "wire-terminal" } }),
@@ -205,7 +220,7 @@ describe("semantic ledger — terminal gates", () => {
     expectRejection(() => ledger.apply({ type: "append-part-text", key: asPartKey("p1"), delta: "more" }), LEDGER_ERROR_CODES.partAlreadyTerminal)
 
     ledger.apply({ type: "finish-part", key: asPartKey("p2"), text: "second", terminal: { kind: "complete" } })
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
 
     expectRejection(
       () => ledger.apply({ type: "set-reasoning-metadata", key: asItemKey("i1"), visibleKind: "omitted" }),
@@ -246,9 +261,62 @@ describe("semantic ledger — snapshot and fork isolation", () => {
 
     forked.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
     forked.apply({ type: "finish-part", key: asPartKey("p2"), text: "second", terminal: { kind: "complete" } })
-    forked.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    forked.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
 
     expect(forked.snapshot().items.get(asItemKey("i1"))?.terminal).toEqual({ kind: "complete" })
     expect(ledger.snapshot().items.get(asItemKey("i1"))?.terminal).toBeUndefined()
+  })
+})
+
+describe("semantic ledger — the two continuation planes (RFC §4.1)", () => {
+  test("both planes are stored as the mapper supplied them", () => {
+    const ledger = createSemanticLedger()
+    twoSummaryReasoning(ledger)
+    ledger.apply({ type: "finish-part", key: asPartKey("p1"), text: "first", terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-part", key: asPartKey("p2"), text: "second", terminal: { kind: "complete" } })
+
+    // A degraded presentation alongside a preserved continuation — the combination the whole contract exists to keep expressible.
+    const disposition: ItemDisposition = {
+      presentation: { kind: "degraded", reason: DEGRADATION_REASONS.serverToolNotRepresentable, correlationId: "c-1" },
+      continuation: { kind: "carrier", record: { kind: "responses-output-item", item: { type: "web_search_call", id: "ws_1" } } },
+    }
+    ledger.apply({ type: "finish-item", disposition, key: asItemKey("i1"), terminal: { kind: "complete" } })
+
+    expect(ledger.snapshot().items.get(asItemKey("i1"))?.disposition).toEqual(disposition)
+  })
+
+  test("a discarded item cannot claim its state round-trips", () => {
+    const ledger = createSemanticLedger()
+    ledger.apply({ type: "declare-item", key: asItemKey("d1"), segmentId: SEGMENT, source: SOURCE, ordinal: 0, kind: "drop" })
+
+    expectRejection(
+      () =>
+        ledger.apply({
+          type: "finish-item",
+          key: asItemKey("d1"),
+          terminal: { kind: "discarded", reason: DEGRADATION_REASONS.capabilityNoTargetEquivalent },
+          disposition: {
+            presentation: { kind: "dropped", reason: DEGRADATION_REASONS.capabilityNoTargetEquivalent },
+            continuation: { kind: "carrier", record: { kind: "responses-item-reference", ref: { type: "web_search_call", id: "ws_1" } } },
+          },
+        }),
+      LEDGER_ERROR_CODES.dropCannotCarryContinuation,
+    )
+  })
+
+  test("an item holding opaque bytes cannot be settled as carrying no cross-turn state", () => {
+    const ledger = createSemanticLedger()
+    ledger.apply({ type: "declare-item", key: asItemKey("r1"), segmentId: SEGMENT, source: SOURCE, ordinal: 0, kind: "reasoning" })
+    ledger.apply({
+      type: "set-reasoning-metadata",
+      key: asItemKey("r1"),
+      visibleKind: "omitted",
+      opaque: { kind: "responses-encrypted", carrierVersion: 2, bytes: "abc" },
+    })
+
+    expectRejection(
+      () => ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("r1"), terminal: { kind: "complete" } }),
+      LEDGER_ERROR_CODES.opaqueStateNeedsContinuation,
+    )
   })
 })
