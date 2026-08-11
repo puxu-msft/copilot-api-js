@@ -105,6 +105,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
@@ -327,9 +328,12 @@ function parseGemini(
   onContext: (ctx: RequestContext) => void,
   translationConfigSnapshot?: TranslationConfigSnapshot,
 ): { env: RequestEnvelope; ctx: RequestContext } {
-  // `raw.body` is the client-NATIVE Gemini body. Defensively clone it for the history snapshot
-  // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
-  const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
+  // `raw.body` is the client-NATIVE Gemini body. A route-supplied `originalBodyForHistory` is already a private snapshot (see `snapshotHistoryBody`), so retain it as-is; without one, `raw.body` carries no ownership guarantee and must be cloned (parity with the legacy `structuredClone(body)` — guards history against later mutation).
+  // Staying in step with the other codecs matters here because `resolveCodecModel` below ALSO reads `originalBodyForHistory`: cloning `raw.body` unconditionally would let `model` come from the client body while `payload` came from the wire body.
+  const geminiSnapshot =
+    raw.originalBodyForHistory === undefined ?
+      structuredClone(raw.body as GenerateContentRequest)
+    : (historySnapshotBody(raw.originalBodyForHistory) as GenerateContentRequest)
 
   // Model resolution via the shared codec primitive. Gemini's model comes from
   // the URL path (`modelId`), not the native `contents[]` body — pass it as the
