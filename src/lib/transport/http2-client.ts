@@ -152,6 +152,12 @@ let poolEpoch = 0
 let currentGeneration = 0
 /** Monotonic within the process — never reused, so a session id in History always names one physical connection. */
 let nextSessionSequence = 0
+/**
+ * How long a forcibly-cancelled stream gets to actually close before its pool slot is reclaimed anyway.
+ *
+ * Deliberately short and fixed: the long wait already happened (the teardown barrier's grace expired to get here), so this is only the tail for the peer to answer an RST it has already been sent.
+ */
+const FORCED_TEARDOWN_TAIL_MS = 250
 let reconcileState: "idle" | "running" | "failed" = "idle"
 let lastCompletedGeneration = 0
 let lastReconcileError: string | null = null
@@ -1334,7 +1340,21 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     const releaseStreamSlot = createStreamSlotRelease(entry)
     // A physical stream now exists on a pooled session, so a caller may arm teardown waits that only
     // this path can satisfy. Announced before any close listener so an immediate close cannot beat it.
-    init.onStreamOpened?.()
+    init.onStreamOpened?.({
+      forceClose: () => {
+        try {
+          // CANCEL is the honest code here: we are abandoning our own stream, not reporting a fault.
+          req.close(http2.constants.NGHTTP2_CANCEL)
+        } catch {
+          // Already destroyed/closed — the slot release below is what actually matters.
+        }
+        // A short tail for the peer to answer the RST. If it does, `close` releases the slot and this
+        // timer's release is a no-op; if it does not, we reclaim the slot anyway rather than leaking
+        // pool capacity to a stream that will never close. Exactly-once makes both orders safe.
+        const tail = setTimeout(releaseStreamSlot, FORCED_TEARDOWN_TAIL_MS)
+        tail.unref()
+      },
+    })
     req.once("close", () => {
       termination.observePhysicalClose()
       releaseStreamSlot()

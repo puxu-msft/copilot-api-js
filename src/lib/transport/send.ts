@@ -26,6 +26,7 @@ import type {
   ParsedSseFrame,
   ParsedSseIdField,
 } from "~/lib/transport/parsed-sse-frame"
+import type { H2StreamControl } from "~/lib/transport/upstream-fetch"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
@@ -241,8 +242,8 @@ export interface SendUpstreamHttpParams {
   dispatch?: DispatchHandle
   /** Physical h2 stream close, forwarded so the adapter's teardown barrier can wait on the wire rather than on our bookkeeping. */
   onStreamClosed?: () => void
-  /** Physical h2 stream opened; lets the adapter arm a teardown barrier only when a stream that can satisfy it exists. */
-  onStreamOpened?: () => void
+  /** Physical h2 stream opened; lets the adapter arm a teardown barrier only when a stream that can satisfy it exists, and hands it the means to force that stream shut. */
+  onStreamOpened?: (control: H2StreamControl) => void
 }
 
 /**

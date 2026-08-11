@@ -46,9 +46,22 @@ import type { TransportTerminationSnapshot } from "./http2-observation-types"
 import { http2Fetch } from "./http2-client"
 import { createResponseHeaderDeadline } from "./response-header-deadline"
 
+/**
+ * What a caller may do to an h2 stream it does not own.
+ *
+ * Deliberately one verb. The pooled session is shared with sibling streams, so a dispatch is allowed to give up on ITS stream and nothing more — it may not close, evict or otherwise touch the connection underneath.
+ */
+export interface H2StreamControl {
+  /**
+   * Give up on this stream: RST_CANCEL it, then reclaim its pool slot even if the peer never answers.
+   *
+   * Reclaiming without a confirmed close is the point. A stream that refuses to close would otherwise hold its slot forever, and a pool that slowly loses slots to unclosable streams stops admitting work long before anything looks broken. The slot release is idempotent, so the late `close` (if it ever arrives) is a no-op rather than a second decrement.
+   */
+  forceClose: () => void
+}
+
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
-export interface UpstreamFetchInit {
-  method?: string
+export interface UpstreamFetchInit {  method?: string
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignal | undefined
@@ -63,8 +76,8 @@ export interface UpstreamFetchInit {
   onTrailers?: (trailers: Record<string, string>) => void
   /** HTTP/2-only physical stream close notification, after all local req callbacks are detached/fired. */
   onStreamClosed?: () => void
-  /** HTTP/2-only: an actual stream now exists on a pooled session. Lets a caller arm teardown waits only for transports that own one. */
-  onStreamOpened?: () => void
+  /** HTTP/2-only: an actual stream now exists on a pooled session. Lets a caller arm teardown waits only for transports that own one, and hands it the means to force that stream shut. */
+  onStreamOpened?: (control: H2StreamControl) => void
   /** Best-effort first consumer-terminal observation for the HTTP/2 path; never called by plain HTTP. */
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
   /**

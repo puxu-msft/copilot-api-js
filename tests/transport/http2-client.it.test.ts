@@ -599,6 +599,42 @@ describe("http2-client", () => {
     expect(session!.lifecycleAtSnapshot).toBe("active")
   })
 
+  /**
+   * A4-4: the stream slot's exactly-once latch existed from the previous batch but had no second releaser, so it could not be tested. `forceClose` is that second releaser, and this is the pair of orders it has to survive.
+   *
+   * Why it matters: the pool counts slots, and the counter has no floor. A double release makes the pool believe it holds a slot it does not, and nothing surfaces until the concurrency cap starts admitting streams it should have queued — long after the cause.
+   */
+  test("forcing a stuck stream reclaims its slot exactly once, even when the peer closes afterwards", async () => {
+    let releaseServerStream!: () => void
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      // The peer answers the RST only when we let it, so both orders are exercised deterministically.
+      releaseServerStream = () => stream.end()
+    }
+    let control: import("~/lib/transport/upstream-fetch").H2StreamControl | undefined
+
+    const res = await http2Fetch(`${url}/forced-teardown`, { onStreamOpened: (c) => (control = c) })
+    expect(control).toBeDefined()
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+
+    // Force: RST_CANCEL closes our side straight away, so `close` releases the slot almost immediately;
+    // the fixed teardown tail then fires a SECOND release for the case where the peer never answered.
+    control!.forceClose()
+    await waitUntil(() => getH2SessionStatusSnapshot()[0]?.activeStreamCount === 0)
+    releaseServerStream()
+
+    // The wait must outlast that tail. An earlier draft asserted after 80ms and passed even with the
+    // latch removed — the second release simply had not landed yet, which made the test decorative.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    // A second decrement would drive this negative: the counter has no floor, and that is precisely
+    // the silent pool corruption the latch prevents.
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
+
+    await res.body?.cancel().catch(() => {})
+  })
+
   test("reports an immutable first-terminal snapshot before late physical close", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200 })
