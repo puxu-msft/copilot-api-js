@@ -603,7 +603,19 @@ type CarrierV2Envelope = Readonly<{
 | `responses-item-reference` | 可回指的最小引用（`opaque` 存序列化后的引用体） | 上游接受最小形态时优先使用，wire 体积小 |
 | `responses-output-item` | 权威完整 source item 的 canonical 序列化 | 最小形态不被接受、或需要完整保真时使用 |
 
-**这两类是同一能力的两种粒度，不是两个独立特性。** 究竟采用哪一种、以及最小形态到底是 `{type,id}`、`item_reference` 还是裸 id，**由 §17 的上游接受性探针裁决，不在本 RFC 预先冻结**——现有证据只证明完整 item 可被 Responses 端点接受，尚未证明任何更小形态足够。在探针给出结论前，实现取 `responses-output-item` 作为保守默认。
+**这两类是同一能力的两种粒度，不是两个独立特性。**
+
+`[hard]` **探针已跑（2026-08-11），裁决为「不收窄」：`responses-output-item`（完整 item）仍是默认。** 证据与复现见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)。三条实测读数：
+
+| 形态 | 实测 |
+|---|---|
+| 完整 item 原样回传 | `200` |
+| 最小 `{type,id}` | `200` |
+| `{type:"item_reference",id}` | **`404` `not_found`** —— 对 `web_search_call` **不可用** |
+
+**为什么「都 200」不能用来收窄**：同一轮实测发现，**随手编造的短 id（`ws_short_id_1`）也返回 `200`**——上游并不校验该 id 是否指向一次真实的历史搜索。机制是它对该 id 做**解密**：解密成功即当作服务端不透明引用；解密失败则退回普通 item-id 规则、撞 64 字符上限而 `400`（真实 id 翻一个字符即 `400`，证明确在解密）。既然伪造与真实同样被接受，**「被接受」就不构成续接有效的证据**，这正是 §17 P4 写下的作废条件。
+
+因此保留完整 item：`{type,id}` 未被证明更差，但也**未被证明保住了同样多的东西**——完整 item 是唯一保全了我们观测不到的那部分的形态。`responses-item-reference` **保留在联合里**（其它 server tool 将来可能支持），但**对 `web_search_call` 已实测不可用**，实现不得对它使用该 kind。
 
 **`ContinuationRecord` 的定义（§4.1 引用的就是它）。** 仅把 `kind` 加进联合、而把载荷留成无约束 `string`，**不足以让 §7 红线机器可判**：那样 `opaque` 里可以是任意序列化内容，包括一个伪装成 Responses item 的 Anthropic `web_search_tool_result`。故载荷必须带判别字段与受限类型集：
 
@@ -1101,6 +1113,12 @@ shadow只写request-local比较器；任何客户端、日志、History、指标
 ## 17．真实上游接受性探针（v2 新增，C5／C7 前置门）
 
 > 来源：A 线 P0-1／P0-2。授权：[2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
+>
+> **状态（2026-08-11）：P1／P3／P4 已跑，P2／P5 未覆盖。** 结论、证据与「它没有证明什么」见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)，默认 record 的裁决已回填 §6.1。
+>
+> `[hard]` **P4 只成立一半，据此裁定「不收窄形态」。** 长 id 被篡改会以可区分方式失败（`400`），但**短的伪造 id 被静默接受（`200`）**——上游不校验该 id 是否指向真实历史搜索。按下方 P4 条款，此时「接受」不构成续接有效的证据，故保留完整 item 作默认。
+>
+> **仍欠**：P2（complete／incomplete 两种 source item 终态——本轮只产出 completed）、P5（carrier byte-exact echo、stream 与 non-stream——本轮全走 non-stream）。这两项在 C5／C7 动工前需补齐或显式豁免。
 
 **为什么需要它。** §2 规定 SDK 只作客户端 oracle，C0 规定「Live GHC 只采 fixture、校准机制解释，不作 merge correctness gate」。这对 reasoning carrier 是够的——它的往返已有既有证据。但 §6.1 新增的两类 server-tool record **回答不了「哪一种形态被真实 Responses 上游接受」**，而这个问题**只有真实上游能回答**：本地 encode↔decode 自洽证明不了接受性，两端同源会一起错。
 

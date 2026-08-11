@@ -1,0 +1,52 @@
+{
+  "model": "gpt-5.6-sol",
+  "capturedAt": "2026-08-11T09:26:59.492Z",
+  "turn1": {
+    "answer": "The current stable version of Bun is **v1.3.14**. ([github.com](https://github.com/oven-sh/bun/releases?utm_source=openai))",
+    "searchCallKeys": [
+      "action",
+      "id",
+      "status",
+      "type"
+    ]
+  },
+  "results": [
+    {
+      "variant": "A-whole-item",
+      "note": "the authoritative item, verbatim",
+      "status": 200,
+      "saidNoContext": true,
+      "answer": "NO_CONTEXT"
+    },
+    {
+      "variant": "B-type-and-id",
+      "note": "minimal: {type,id}",
+      "status": 200,
+      "saidNoContext": true,
+      "answer": "NO_CONTEXT"
+    },
+    {
+      "variant": "C-item-reference",
+      "note": "item_reference envelope",
+      "status": 404,
+      "saidNoContext": false,
+      "answer": "",
+      "errorBody": "{\"error\":{\"message\":\"{\\\"error\\\":{\\\"message\\\":\\\"\\\",\\\"code\\\":\\\"not_found\\\"}}\\n\",\"type\":\"api_error\",\"param\":null,\"code\":null}}"
+    },
+    {
+      "variant": "D-tampered-id",
+      "note": "NEGATIVE CONTROL: whole item, id corrupted",
+      "status": 400,
+      "saidNoContext": false,
+      "answer": "",
+      "errorBody": "{\"error\":{\"message\":\"{\\\"error\\\":{\\\"message\\\":\\\"Invalid 'input[1].id': string too long. Expected a string with maximum length 64, but got a string with length 424 instead.\\\",\\\"code\\\":\\\"invalid_request_body\\\"}}\\n\",\"type\":\"api_error\",\"param\":null,\"code\":null}}"
+    },
+    {
+      "variant": "E-omitted",
+      "note": "BASELINE: no search item at all",
+      "status": 200,
+      "saidNoContext": true,
+      "answer": "NO_CONTEXT"
+    }
+  ]
+}

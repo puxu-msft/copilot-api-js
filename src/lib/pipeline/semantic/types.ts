@@ -101,10 +101,7 @@ export type ResponsesServerToolItemType = "web_search_call"
 /**
  * What we hand back to a compatible upstream so a continued turn can pick up where it left off.
  *
- * The reference and the whole item are two granularities of one capability, not two features: which
- * one is the default is decided by the real-upstream acceptance probe (RFC §17), not here. Until it
- * reports, `responses-output-item` is the conservative choice — it is the only shape with existing
- * evidence of being accepted.
+ * The reference and the whole item are two granularities of one capability, not two features. Measured against the real upstream on 2026-08-11 (`exp/responses-server-tool-continuation/`): the whole item and a bare `{type,id}` are both accepted, `item_reference` is **not** (404 for `web_search_call`) — but a *fabricated* short id is accepted too, so acceptance does not discriminate a real reference from a made-up one and cannot be used to narrow the shape. Hence `responses-output-item` stays the default: it is the only form that preserves the part we cannot inspect.
  */
 export type ContinuationRecord =
   | Readonly<{ kind: "claude-signature"; opaque: string }>
