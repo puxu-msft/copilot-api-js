@@ -33,14 +33,14 @@
 ```
 // src/lib/system-prompt/inbound.ts (新)
 export async function applyInboundSystemPrompt(env: RequestEnvelope): Promise<RequestEnvelope> {
-  switch (env.clientFormat) {
+  switch (env.request.clientFormat) {
     case "anthropic": {
-      const body = env.body as MessagesPayload
+      const body = env.attempt.body as MessagesPayload
       if (!body.system) return env
-      return env.with({ body: { ...body, system: await processAnthropicSystem(body.system, body.model, "anthropic") } })
+      return writeAttempt(env, { body: { ...body, system: await processAnthropicSystem(body.system, body.model, "anthropic") } })
     }
-    case "openai-cc": { /* processOpenAIMessages over env.body.messages */ }
-    case "openai-responses": { /* processResponsesInstructions over env.body.instructions */ }
+    case "openai-cc": { /* processOpenAIMessages over env.attempt.body.messages */ }
+    case "openai-responses": { /* processResponsesInstructions over env.attempt.body.instructions */ }
     default: return env   // gemini 不走 env 层分发,见 3.2
   }
 }
