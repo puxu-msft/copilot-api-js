@@ -455,14 +455,23 @@ type ItemDisposition = Readonly<{
 
 `[hard]` **「新增一个不带 `disposition` 的臂会编译失败」是错的。** 实测（tsc 5.9.3 `--strict`）：仅在联合里增加一个缺该字段的臂，**零报错**；只有当某个消费者**无条件**访问 `item.disposition` 时才报 `TS2339`。也就是说「靠必填字段自动拦住新增臂」是**假绿**——它依赖恰好存在这样一个消费者。
 
-有判别力的形式是**非分布式条件类型断言**，实测可用：
+有判别力的形式是**带 `false` 假分支的约束型断言**，实测可用：
 
 ```ts
-type AllArmsCarryDisposition = [SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false
-const _assertAllArmsCarryDisposition: true = true satisfies AllArmsCarryDisposition
+type Assert<T extends true> = T
+export type _AllArmsCarryDisposition = Assert<[SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false>
 ```
 
-任一臂缺 `disposition` 时，该联合整体不可赋值，`AllArmsCarryDisposition` 塌为 `false`，赋值处报 `TS2322`。**必须写成非分布式（方括号包裹）**：写成分布式 `SemanticItem extends {...} ? true : false` 会分配到各臂再取并集，`true | never` 仍是 `true`，**拦不住**。
+任一臂缺 `disposition` 时报 `TS2344`。
+
+`[hard]` **承重的是假分支写 `false`，不是方括号。** 四变体实测（tsc 5.9.3 `--strict`）：
+
+| 假分支 | 非分布式（方括号） | 分布式（裸写） |
+|---|---|---|
+| `? true : false` | **拦住** | **拦住** |
+| `? true : never` | **漏** | **漏** |
+
+`never` 满足任何约束，`Assert<never>` 静默通过——所以**假分支绝不能写 `never`**。方括号保留是因为「整个联合是否满足」才是本意，且它产出单个 boolean 而非被拓宽的联合；但它不是拦住的原因。（本表订正了本节初稿——初稿称方括号承重、分布式拦不住，实测证否。）
 
 这条断言属**类型层代码**，与 `SemanticItem` 同文件同生共死，不是测试脚手架。
 

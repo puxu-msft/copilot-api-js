@@ -519,7 +519,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
    >
    ```
 
-   `[hard]` **三处都不能省**：①方括号包裹使其**非分布式**（分布式会分配到各臂再取并集，`true | never` 仍是 `true`，拦不住）；②**必填字段本身拦不住新增臂**——实测仅在联合里新增一个缺该字段的臂，tsc `--strict` **零报错**，只有消费者无条件访问时才报 `TS2339`；③用 `Assert<T extends true>` 型别名而非 `const`，否则 `noUnusedLocals` 会拒掉它。缺字段时报 `TS2344`。
+   `[hard]` **三处都不能省**：①**假分支必须写 `false`，绝不能写 `never`**——四变体实测，`false` 分支下分布式与非分布式**都拦得住**，`never` 分支下**两者都漏**（`never` 满足任何约束，`Assert<never>` 静默通过）。方括号保留是因为「整个联合」才是本意、且产出单个 boolean，但**它不是拦住的原因**；②**必填字段本身拦不住新增臂**——实测仅在联合里新增一个缺该字段的臂，tsc `--strict` **零报错**，只有消费者无条件访问时才报 `TS2339`；③用 `Assert<T extends true>` 型别名而非 `const`，否则 `noUnusedLocals` 会拒掉它。缺字段时报 `TS2344`。
 4. reducer 保存 disposition，并校验上述与 target 无关的通用不变量。
 5. reasoning 既有 `visible`／`opaque` **保持不变**，同样带 disposition；`opaque` 存在时 `continuation.kind` 不得为 `none`。
 6. **源为 Responses 的 server-tool item，其 `continuation` 不得为 `none`**——只能是 `carrier` 或带具名 reason 的 `rejected`。`none` 的含义是「经判定不存在跨轮状态」，不是省事的默认值。**该判定由 mapper 侧做**，本片只留校验位。
@@ -529,7 +529,7 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Verify**：`bun run typecheck` + `bun test tests/pipeline/semantic/`。
 
 **判别力（按「快做快合」，不是穷举变异清单）**：只确认两处，因为它们正是本片存在的理由——
-- 把第 3 步的断言改成分布式写法（去掉方括号）→ 必须**不再**拦住缺字段的臂（证明方括号承重，非装饰）；
+- 把第 3 步断言的假分支从 `false` 改成 `never` → 必须**不再**拦住缺字段的臂（证明假分支是承重的那一处）；
 - 让 reducer 在 `presentation.kind === "degraded"` 时顺手把 `continuation` 填成 `rejected` → 必须有用例变红（§4.1 那条 `[hard]`）。
 
 其余分支按项目现行节奏，只测主路径与实际报错过的路径。

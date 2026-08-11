@@ -237,14 +237,11 @@ export type SemanticItem =
     }>
 
 /**
- * Every arm of {@link SemanticItem} carries a `disposition` — checked here rather than left to a
- * consumer to notice.
+ * Every arm of {@link SemanticItem} carries a `disposition` — checked here rather than left to a consumer to notice.
  *
- * `[T] extends [U]` is deliberately non-distributive: written bare, the conditional distributes over
- * the union and the arms collapse back to `true | never === true`, which catches nothing. Nor is the
- * required field enough on its own — measured under tsc 5.9.3 `--strict`, merely adding a union arm
- * that omits the field produces *no* diagnostic; it only surfaces where a consumer reads the field,
- * and `SemanticItem` currently has no consumers at all. This alias is the enforcement.
+ * The load-bearing part is the `false` branch, not the brackets. Measured (tsc 5.9.3 `--strict`, four variants): with `: false` this catches a missing arm whether or not the conditional distributes; with `: never` it catches nothing either way, because `never` satisfies every constraint and `Assert<never>` passes silently. The brackets are kept because a whole-union check is what is meant, and it yields one boolean instead of a widened union — but they are not what makes this bite.
+ *
+ * Nor is the required field enough on its own: merely adding a union arm that omits it produces *no* diagnostic; that only surfaces where a consumer reads the field, and `SemanticItem` has no consumers yet. This alias is the enforcement.
  */
 type Assert<T extends true> = T
 export type _AllSemanticItemArmsCarryDisposition = Assert<[SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false>
