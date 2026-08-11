@@ -46,6 +46,7 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { sanitizeResponsesWireToolNames } from "~/lib/openai/tool-name-sanitize"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
@@ -60,7 +61,7 @@ import {
 
 /** Does `translateOut` SKIP translation for this cell (env.body is already the leg's canonical shape)? */
 function isDirect(env: RequestEnvelope): boolean {
-  return env.clientFormat === "openai-responses"
+  return env.request.clientFormat === "openai-responses"
 }
 
 /**
@@ -73,7 +74,7 @@ function isDirect(env: RequestEnvelope): boolean {
  * is the body's ACTUAL shape, not why it got there.
  */
 function bodyIsResponsesShaped(env: RequestEnvelope): boolean {
-  return env.clientFormat === "openai-responses" || env.clientFormat === "anthropic"
+  return env.request.clientFormat === "openai-responses" || env.request.clientFormat === "anthropic"
 }
 
 const ORDER_RESPONSES_TOOL_NAME_SANITIZE = 200
@@ -91,12 +92,12 @@ const responsesToolNameSanitize: RequestRewrite = {
   order: ORDER_RESPONSES_TOOL_NAME_SANITIZE,
   appliesTo: (env) => bodyIsResponsesShaped(env) && state.sanitizeToolNames,
   apply: (env) => {
-    const baseline = env.body as ResponsesPayload
-    const { payload: body, mapper } = sanitizeResponsesWireToolNames(baseline, env.requestState?.sourceToolNameMapper ?? null, {
-      sourceMapperApplied: env.clientFormat === "openai-responses",
+    const baseline = env.attempt.body as ResponsesPayload
+    const { payload: body, mapper } = sanitizeResponsesWireToolNames(baseline, env.request.sourceToolNameMapper ?? null, {
+      sourceMapperApplied: env.request.clientFormat === "openai-responses",
     })
     env.ctx.setToolNameMapper(mapper)
-    return { env: env.with({ body }), changed: body !== baseline }
+    return { env: writeAttempt(env, { body }), changed: body !== baseline }
   },
 }
 
@@ -112,19 +113,19 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
     // cc/gemini handlers' strategies factory); anthropic FORWARD `@responses` + openai-responses DIRECT
     // record none (the messages handler + direct path recorded no such feature). Once per request (S2).
     translateOut(env) {
-      if (env.clientFormat === "openai-cc" || env.clientFormat === "gemini") env.ctx.recordFeature("via-responses")
-      if (isDirect(env) || env.clientFormat === "openai-cc") return env
+      if (env.request.clientFormat === "openai-cc" || env.request.clientFormat === "gemini") env.ctx.recordFeature("via-responses")
+      if (isDirect(env) || env.request.clientFormat === "openai-cc") return env
       // Reaches here for `gemini` (via-responses → CC-shaped, translated further to Responses in
       // prepareWire) AND `anthropic` (RFC 2026-07-14 §3 direct bridge → Responses-shaped already) — the
       // translated body's ACTUAL shape differs per clientFormat, so it is NOT named `ccBody` (nit fix
       // post-subtask-C review: that name was misleading for the anthropic branch, which produces
       // Responses-shaped output, not CC).
-      const translatedBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, {
-        model: env.model as Model | undefined,
+      const translatedBody = translateRequestVia(env.request.clientFormat, ENDPOINT.RESPONSES, env.attempt.body, {
+        model: env.request.model as Model | undefined,
         reqId: env.ctx.id,
         onAnthropicToResponsesDegradation: (degradation) => env.ctx.recordTranslationDegradation(degradation),
       })
-      return env.with({ body: translatedBody })
+      return writeAttempt(env, { body: translatedBody })
     },
 
     // S3: apply Responses-wire constraints after translation. The rewrite is

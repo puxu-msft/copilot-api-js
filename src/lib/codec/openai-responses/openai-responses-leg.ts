@@ -92,7 +92,7 @@ export interface FallbackExchange {
  * The shared MUTABLE fallback-exchange scratch (RFC §11.2c) both the openai-responses InboundCodec (render
  * side — reads `exchange` ids) and the CHAT fallback leg (`translateOut` calls `ensure`, `prepareWire` reads
  * `exchange.rebuiltMessages`) reference — the SAME per-request instance the codec's parse threads onto
- * `env.requestState.responsesFallbackScratch`. `ensure` builds the exchange LAZILY + idempotently (the codec
+ * `env.candidate.responsesFallbackScratch`. `ensure` builds the exchange LAZILY + idempotently (the codec
  * owns the build closure — resolvedModelName / genShortId / rebuildConversationMessages).
  */
 export interface ResponsesFallbackScratch {
@@ -109,8 +109,8 @@ export interface ResponsesFallbackScratch {
  * Extracted VERBATIM from the openai-responses codec's `prepareOpenAiResponsesWire` RESPONSES branch (C4).
  */
 export function prepareResponsesDirectWire(env: RequestEnvelope): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
+  const model = env.request.model as Model | undefined
+  const prepared = prepareResponsesRequest(env.attempt.body as ResponsesPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.RESPONSES,
     headers: new Headers(prepared.headers),
@@ -133,13 +133,13 @@ export function prepareResponsesDirectWire(env: RequestEnvelope): PreparedReques
  * previously a byte-identical duplicate branch bolted onto this via-responses path — cleanup post-subtask-A).
  */
 export function prepareViaResponsesWire(env: RequestEnvelope): PreparedRequest {
-  const model = env.model as Model | undefined
-  const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
+  const model = env.request.model as Model | undefined
+  const ccPayload = fillMaxCompletionTokens(env.attempt.body as ChatCompletionsPayload, model)
   const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
   if (droppedParams.length > 0) recordDroppedCcParamsWarning(env.ctx, ccPayload.model, droppedParams)
   const normalizedResponses = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
-  const { payload: finalResponses, mapper } = sanitizeResponsesWireToolNames(normalizedResponses, env.requestState?.sourceToolNameMapper ?? null, {
-    sourceMapperApplied: env.clientFormat === "openai-cc",
+  const { payload: finalResponses, mapper } = sanitizeResponsesWireToolNames(normalizedResponses, env.request.sourceToolNameMapper ?? null, {
+    sourceMapperApplied: env.request.clientFormat === "openai-cc",
   })
   env.ctx.setToolNameMapper(mapper)
   const prepared = prepareResponsesRequest(finalResponses, { resolvedModel: model })
@@ -159,8 +159,8 @@ export function prepareViaResponsesWire(env: RequestEnvelope): PreparedRequest {
  * `rebuiltMessages` is the per-request fallback exchange's rebuilt prior conversation (empty for none).
  */
 export function prepareResponsesFallbackWire(env: RequestEnvelope, rebuiltMessages: ReadonlyArray<Message> | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-  const ccPayload = translateResponsesToChatCompletions(env.body as ResponsesPayload)
+  const model = env.request.model as Model | undefined
+  const ccPayload = translateResponsesToChatCompletions(env.attempt.body as ResponsesPayload)
   const rebuilt = rebuiltMessages ?? []
   if (rebuilt.length > 0) {
     const prelude = ccPayload.messages.filter((m) => m.role === "system" || m.role === "developer")
@@ -201,12 +201,12 @@ function recordDroppedCcParamsWarning(ctx: RequestContext, model: string, droppe
  * Extracted VERBATIM from the openai-responses codec's `sampleOpenAiResponsesRequest` direct branch (C4).
  */
 export function sampleResponsesDirectWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  const effBody = env.body as { model?: unknown; messages?: unknown }
+  const effBody = env.attempt.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
+    resolvedModel: env.request.model as Model | undefined,
     messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
+    payload: env.attempt.body,
     format: RESPONSES_ENDPOINT_TYPE,
   }
 
@@ -233,12 +233,12 @@ export function sampleResponsesDirectWireTrack(wire: PreparedRequest, env: Reque
  * carried a byte-identical anthropic-only branch duplicating that sampler).
  */
 export function sampleViaResponsesWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  const effBody = env.body as { model?: unknown; messages?: unknown }
+  const effBody = env.attempt.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
+    resolvedModel: env.request.model as Model | undefined,
     messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
+    payload: env.attempt.body,
     format: CC_ENDPOINT_TYPE,
   }
 
@@ -260,12 +260,12 @@ export function sampleViaResponsesWireTrack(wire: PreparedRequest, env: RequestE
  * openai-responses codec's `sampleOpenAiResponsesRequest` fallback branch (C4).
  */
 export function sampleResponsesFallbackWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  const effBody = env.body as { model?: unknown; messages?: unknown }
+  const effBody = env.attempt.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
+    resolvedModel: env.request.model as Model | undefined,
     messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
+    payload: env.attempt.body,
     format: RESPONSES_ENDPOINT_TYPE,
   }
 

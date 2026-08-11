@@ -16,6 +16,7 @@ import {
   asItemKey,
   asPartKey,
   asSegmentId,
+  type ItemDisposition,
   type ItemKey,
   type LedgerUpdate,
   type PartKey,
@@ -32,6 +33,9 @@ const SOURCE: SourceRef = {
 
 const CALL = { callId: "call_1", name: "get_weather" } as const
 const RESULT = { callId: "call_1", isError: false } as const
+
+/** Neutral disposition for fixtures whose subject is the terminal machinery, not RFC §4.1. None of these items accumulate opaque state, so `none` is the honest reading rather than a placeholder. */
+const SETTLED: ItemDisposition = { presentation: { kind: "native" }, continuation: { kind: "none" } }
 
 describe("semantic ledger — the transition feed", () => {
   test("numbers accepted updates from one, without gaps, and carries the record each produced", () => {
@@ -74,7 +78,7 @@ describe("semantic ledger — the transition feed", () => {
     ledger.apply({ type: "declare-item", key: asItemKey("i1"), segmentId: SEGMENT, source: SOURCE, ordinal: 0, kind: "reasoning" })
     ledger.apply({ type: "set-reasoning-metadata", key: asItemKey("i1"), visibleKind: "omitted" })
     const seen = ledger.transitionsSince(0).length
-    ledger.apply({ type: "finish-item", key: asItemKey("i1"), terminal: { kind: "complete" } })
+    ledger.apply({ type: "finish-item", disposition: SETTLED, key: asItemKey("i1"), terminal: { kind: "complete" } })
     ledger.apply({ type: "finish-response", terminal: { kind: "completed", provenance: "wire-terminal" } })
 
     const fresh = ledger.transitionsSince(seen)
@@ -145,7 +149,7 @@ describe("semantic ledger — property: reasoning items never share a slot", () 
         }
         updates.push(
           { type: "set-reasoning-metadata", key: itemKey, visibleKind: "summary" },
-          { type: "finish-item", key: itemKey, terminal: { kind: "complete" } },
+          { type: "finish-item", disposition: SETTLED, key: itemKey, terminal: { kind: "complete" } },
         )
         return updates
       })

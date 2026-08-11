@@ -44,7 +44,7 @@ async function runWithTerminatedDelivery() {
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
   const rawSink: ClientSink = { async write() {}, close() {} }
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
@@ -63,7 +63,7 @@ async function runWithTornDelivery() {
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({
@@ -110,7 +110,7 @@ test("an in-flight pump returns delivery-finished only after another path settle
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
 
   const entered = deferred()

@@ -53,7 +53,7 @@ const ALL_LEGS: ReadonlyArray<UpstreamEndpoint> = [ENDPOINT.MESSAGES, ENDPOINT.C
 
 /** A minimal env stub carrying just the two routing axes (the placeholder paths throw before reading more). */
 function envStub(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): RequestEnvelope {
-  return { clientFormat, targetEndpoint } as unknown as RequestEnvelope
+  return { request: { clientFormat } as RequestEnvelope["request"], attempt: { targetEndpoint } as RequestEnvelope["attempt"] } as unknown as RequestEnvelope
 }
 
 describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
@@ -133,18 +133,20 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
 
   test("L1 (Phase-7 guard): the migrated anthropic|/v1/messages cell's buildStrategies is NON-EMPTY + does not throw", () => {
     // The exact Phase-7 bug class ("missing builder → silent 500"): a migrated cell MUST produce a
-    // non-empty strategy stack. Build a real env carrying the leg supply on requestState (what parse sets).
+    // non-empty strategy stack. Build a real env carrying the leg supply on the request + candidate scopes (what parse sets).
     const env = {
-      clientFormat: "anthropic" as const,
-      targetEndpoint: ENDPOINT.MESSAGES,
-      model: mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES] }),
-      body: { model: "claude-opus-4.8", max_tokens: 100, messages: [] },
-      prepareHints: {},
-      requestState: {
-        betaProbe: createBetaProbe(undefined),
+      request: {
+        clientFormat: "anthropic" as const,
+        model: mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES] }),
         truncateBaseline: { model: "claude-opus-4.8", max_tokens: 100, messages: [] },
-        resanitize: ((p: unknown) => p) as unknown,
-      },
+      } as RequestEnvelope["request"],
+      attempt: {
+        targetEndpoint: ENDPOINT.MESSAGES,
+        body: { model: "claude-opus-4.8", max_tokens: 100, messages: [] },
+        prepareHints: {},
+      } as RequestEnvelope["attempt"],
+      candidate: { betaProbe: createBetaProbe(undefined), resanitize: ((p: unknown) => p) as unknown } as RequestEnvelope["candidate"],
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const strategies = resolveCellAssembly("anthropic", ENDPOINT.MESSAGES).buildStrategies(env)
     expect(strategies.length).toBeGreaterThan(0)
@@ -154,17 +156,19 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
   test("L1 (Phase-7 guard): the 3 migrated /chat/completions cells' buildStrategies are NON-EMPTY + do not throw", () => {
     // C3's direct Phase-7 guard: openai-cc DIRECT + anthropic/gemini FORWARD @cc must each produce a
     // non-empty CC strategy stack. env.body is CC-shaped for all three (direct native; forward hub-translated
-    // — here we hand a CC body directly, which is what the leg's buildLegStrategies reads). requestState
+    // — here we hand a CC body directly, which is what the leg's buildLegStrategies reads). The request scope
     // carries the truncateBaseline the cc/gemini legs read.
     const ccBody = { model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }
     for (const cf of ["openai-cc", "anthropic", "gemini"] as const) {
       const env = {
-        clientFormat: cf,
-        targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
-        model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS] }),
-        body: ccBody,
-        prepareHints: {},
-        requestState: { truncateBaseline: ccBody },
+        request: {
+          clientFormat: cf,
+          model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.CHAT_COMPLETIONS] }),
+          truncateBaseline: ccBody,
+        } as RequestEnvelope["request"],
+        attempt: { body: ccBody, targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
+        createView: () => ({}) as RequestEnvelope["view"],
       } as unknown as RequestEnvelope
       const strategies = resolveCellAssembly(cf, ENDPOINT.CHAT_COMPLETIONS).buildStrategies(env)
       expect(strategies.length).toBeGreaterThan(0)
@@ -178,12 +182,13 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     // non-empty (Phase-7 guard) + carries no "auto-truncate" strategy (that engine is gone).
     const respBody = { model: "gpt-5.5", input: [] }
     const responsesEnv = {
-      clientFormat: "openai-responses" as const,
-      targetEndpoint: ENDPOINT.RESPONSES,
-      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
-      body: respBody,
-      prepareHints: {},
-      requestState: {},
+      request: {
+        clientFormat: "openai-responses" as const,
+        model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+      } as RequestEnvelope["request"],
+      attempt: { body: respBody, targetEndpoint: ENDPOINT.RESPONSES, prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const directStrategies = resolveCellAssembly("openai-responses", ENDPOINT.RESPONSES).buildStrategies(responsesEnv)
     expect(directStrategies.length).toBeGreaterThan(0)
@@ -195,12 +200,13 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     // stack with the shared budget — no auto-truncate strategy either (that engine is gone project-wide).
     const ccBody = { model: "gpt-5.5", max_tokens: 100, messages: [] }
     const reverseEnv = {
-      clientFormat: "openai-responses" as const,
-      targetEndpoint: ENDPOINT.MESSAGES,
-      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.MESSAGES] }),
-      body: ccBody,
-      prepareHints: {},
-      requestState: { betaProbe: createBetaProbe(undefined), reverseMapperHolder: { get: () => undefined, set: () => {} } },
+      request: {
+        clientFormat: "openai-responses" as const,
+        model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.MESSAGES] }),
+      } as RequestEnvelope["request"],
+      attempt: { body: ccBody, targetEndpoint: ENDPOINT.MESSAGES, prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: { betaProbe: createBetaProbe(undefined), reverseMapperHolder: { get: () => undefined, set: () => {} } } as RequestEnvelope["candidate"],
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const reverseStrategies = resolveCellAssembly("openai-responses", ENDPOINT.MESSAGES).buildStrategies(reverseEnv)
     expect(reverseStrategies.length).toBeGreaterThan(0)
@@ -210,12 +216,14 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     // The via-responses cc cell (SAME /responses leg, different clientFormat) uses the shared budget — proving
     // maxRetries is genuinely 2D (neither axis alone determines it).
     const viaEnv = {
-      clientFormat: "openai-cc" as const,
-      targetEndpoint: ENDPOINT.RESPONSES,
-      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
-      body: ccBody,
-      prepareHints: {},
-      requestState: { truncateBaseline: ccBody },
+      request: {
+        clientFormat: "openai-cc" as const,
+        model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+        truncateBaseline: ccBody,
+      } as RequestEnvelope["request"],
+      attempt: { body: ccBody, targetEndpoint: ENDPOINT.RESPONSES, prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const viaStrategies = resolveCellAssembly("openai-cc", ENDPOINT.RESPONSES).buildStrategies(viaEnv)
     expect(viaStrategies.length).toBeGreaterThan(0)
@@ -244,17 +252,16 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     }
     const makeEnv = (currentBody: unknown): RequestEnvelope => {
       const env = {
-        clientFormat: "anthropic" as const,
-        targetEndpoint: ENDPOINT.RESPONSES,
-        model: mockModel("gpt-5.6-luna", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
-        stream: false,
-        body: currentBody,
+        request: {
+          clientFormat: "anthropic" as const,
+          model: mockModel("gpt-5.6-luna", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+          stream: false,
+        } as RequestEnvelope["request"],
+        attempt: { body: currentBody, targetEndpoint: ENDPOINT.RESPONSES, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
         view: {},
-        prepareHints: {},
-        ctx,
-        with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>) {
-          return makeEnv(patch.body ?? currentBody)
-        },
+        ctx: ctx,
+        createView: () => ({}) as RequestEnvelope["view"],
       }
       return env as unknown as RequestEnvelope
     }
@@ -262,7 +269,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     const cell = resolveCellAssembly("anthropic", ENDPOINT.RESPONSES)
     let env = cell.translateOut(makeEnv(body))
     for (const rewrite of cell.requestRewrites(env)) env = rewrite.apply(env).env
-    const translated = env.body as { tools?: Array<{ name?: string }>; tool_choice?: { name?: string } }
+    const translated = env.attempt.body as { tools?: Array<{ name?: string }>; tool_choice?: { name?: string } }
 
     expect(translated.tools?.[0]?.name).toBe("search_web")
     expect(translated.tool_choice?.name).toBe("search_web")

@@ -383,6 +383,61 @@ describe("physical dispatch lifecycle", () => {
       { quiesced: true, connectionReusable: true },
     ])
   })
+
+  /**
+   * A4-4: `dispose()` used to resolve as soon as the body iterator was closed — a claim about OUR bookkeeping, not about the wire. The pooled connection could still be carrying a half-dead stream while the dispatch reported itself quiesced and reusable.
+   * Both directions matter: the barrier must actually HOLD disposal, and it must not hold it forever.
+   */
+  test("disposal waits for the transport's physical close before reporting quiescence", async () => {
+    const lifecycle = createDispatchLifecycle()
+    let closeStream!: () => void
+    lifecycle.registerTeardownBarrier({
+      closed: new Promise<void>((resolve) => {
+        closeStream = resolve
+      }),
+      graceMs: 5_000,
+    })
+    lifecycle.complete()
+
+    let settled = false
+    const disposal = lifecycle.dispose("test").then((result) => {
+      settled = true
+      return result
+    })
+    // Give the disposal every chance to resolve early; if the barrier were ignored it would.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+
+    closeStream()
+    await expect(disposal).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+
+  test("a stream that never closes stops being reusable instead of wedging teardown", async () => {
+    const lifecycle = createDispatchLifecycle()
+    let timedOut = 0
+    lifecycle.registerTeardownBarrier({
+      // Never resolves: the peer has stopped closing the stream.
+      closed: new Promise<void>(() => {}),
+      graceMs: 20,
+      onTimeout: () => {
+        timedOut += 1
+      },
+    })
+    lifecycle.complete()
+
+    // Not reusable is the load-bearing half: after the grace we no longer know the connection's
+    // state, and handing it back to the pool would put the next request on a stream we cannot account for.
+    await expect(lifecycle.dispose("test")).resolves.toEqual({ quiesced: true, connectionReusable: false })
+    expect(timedOut).toBe(1)
+  })
+
+  test("without a registered barrier disposal behaves exactly as before", async () => {
+    const lifecycle = createDispatchLifecycle()
+    lifecycle.complete()
+
+    // Transports that own no physical stream (and every pre-A4-4 caller) must be unaffected.
+    await expect(lifecycle.dispose("test")).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
 })
 
 describe("per-attempt upstream deadline (timeouts.upstream_request_deadline)", () => {

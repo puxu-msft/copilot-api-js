@@ -105,13 +105,17 @@
 
 **v3 对本节的唯一影响**：命名迁移——上文的 `exchange`/`upstream.inbound` 即 shipped 的 `onExchange`/`rewriteUpstreamFrame`；§12 迁移面含 driver wire 点 + `origin.ts` 注释里的旧名。**不变量本身不变**。
 
-### 3.5 承重不变量：`client.inbound` 改写不得污染客户端原样轨（v3 新增，driver 强制防御性 snapshot）
+### 3.5 承重不变量：`client.inbound` 改写不得污染客户端原样轨（v3 新增；~~driver 强制防御性 snapshot~~ **该机制 2026-08-11 已移除，见本节开头的取代注记——不变量仍成立，但唯一保证者是 codec 自己的 `structuredClone`**）
 
 `client.inbound` 是 v3 新增的**请求侧**挂载点，对称于 §3.4。它在 S2 `translate` 前改写请求 body，若处理不当会污染 history 的**客户端原样轨** `clientRequest`——让「客户端实际发了什么」这一 ground truth 变成「hook 改写后的样子」，与 §3.4 同类、同样违反 richest-data-flow。
 
 **已核实（2026-07-14 双评审对照代码）**：
 - `clientRequest.body = orig.payload`（[context/request.ts:854](../../src/lib/context/request.ts#L854) 终态 + [observability/sinks/history.ts:207](../../src/lib/observability/sinks/history.ts#L207) eager insert）；`orig` 在 **context 创建时（S1 parse 处）即冻结**、eager insert 早于 exchange——客户端原样轨的 body 在 `client.inbound` 触发**之前**已捕获快照。
 - **`orig.payload` 已与 `env.body` 独立引用**：四种 codec 的 `parse` 均以 `structuredClone` 建立 `orig.payload`（[codec/anthropic/codec.ts](../../src/lib/codec/anthropic/codec.ts)、[openai-cc/codec.ts](../../src/lib/codec/openai-cc/codec.ts)、[openai-responses/codec.ts](../../src/lib/codec/openai-responses/codec.ts)、[gemini/codec.ts](../../src/lib/codec/gemini/codec.ts) 各自 parse），故**即便 `client.inbound` 原地 mutate `env.body`，`clientRequest.body` 当前也不受污染**——不变量在现有代码下已结构性成立。
+
+> **⚠️ 取代注记（2026-08-11，用户裁决）**：下面这组 v3 决策里，**第 2、3、4 条已作废** —— driver 的防御性 body snapshot 与「不可变返回契约」都已随 RequestEnvelope 改为可变作用域一并移除。用户裁决原文：不需要过于强大的安全保护，hook 写错就该错误继续、系统异常；核心系统应该相信 hook 知道自己在做什么。现行契约见 `src/lib/pipeline/hooks/types.ts` 的 `client.inbound` docstring：hook 拿到的是 **live env**，就地改 `env.attempt.body` 返回 `undefined` 与用 `writeAttempt` 返回 env **两种写法都成立、都到得了 wire**；配套测试在 `tests/pipeline/hooks/client-inbound.unit.test.ts`（断言方向与第 4 条相反）。
+>
+> **第 1 条仍然成立，而且正是移除之所以安全的理由**：客户端原样轨的独立性来自四个 codec `parse` 各自的 `structuredClone`，不依赖 driver 的 snapshot（2026-08-11 逐 codec 复验：anthropic/openai-cc/openai-responses/gemini 四处 `structuredClone` 均在）。它遗留的唯一缺口是第 1 条(a) 提到的那个假想风险——**未来新增 codec 忘记 structuredClone**；那道防线现在只剩 codec 自己，没有 driver 兜底。
 
 **决策（v3，硬化 = defense-in-depth，不改变已成立的现状）**：
 1. **clientRequest 客户端原样轨在现有代码下已结构性安全**（上述 structuredClone），不依赖 hook 行为。故 driver 的防御性 snapshot **不是**为了修一个当前存在的污染 bug——它是 **defense-in-depth**：（a）防未来新增 codec 忘记 structuredClone、让 `env.body` 与 `orig.payload` 共享引用而使 hook 原地改穿透；（b）配合「不返回=fallback 到原 env」把「原地 mutate + 返回 undefined」的改写安全丢弃，落实不可变返回语义。
@@ -148,7 +152,7 @@ export const hooks = {
 }
 ```
 
-**首个生产示例 `client.inbound`（剥 TodoWrite，替代作废的 config+regex 引擎）**：hook 按 `env.clientFormat` 拿到入站请求 body，命中 TodoWrite 样板则**返回删除了该块的新 env**（不可变，§3.5 契约 + driver 防御性 snapshot 兜底），并恢复该形状不变量。**关键（评审 HIGH-1，已核实）：client.inbound 处的 `env.body` 真相域只有三种形状，不是四种**——因为 **gemini 在 route 层（[gemini/handler-v4.ts:151](../../src/routes/gemini/handler-v4.ts#L151) `convertGeminiRequestToOpenAI` → `body: ccPayload`）先翻成 CC 再进 driver**，故 client.inbound（driver S1 parse 后）拿到的 gemini `env.body` 已是 **CC messages[]**、原生 `contents[].parts[]`/`systemInstruction` 只存在于不可改的 `orig.payload`（history 快照）。三种真相域 + 各自匹配对象/不变量恢复：
+**首个生产示例 `client.inbound`（剥 TodoWrite，替代作废的 config+regex 引擎）**：hook 按 `env.clientFormat` 拿到入站请求 body，命中 TodoWrite 样板则**返回删除了该块的新 env**（~~不可变，§3.5 契约 + driver 防御性 snapshot 兜底~~ —— **2026-08-11 起 `writeAttempt` 返回同一个 env、无 snapshot 兜底；就地改后返回 `undefined` 同样到得了 wire**），并恢复该形状不变量。**关键（评审 HIGH-1，已核实）：client.inbound 处的 `env.body` 真相域只有三种形状，不是四种**——因为 **gemini 在 route 层（[gemini/handler-v4.ts:151](../../src/routes/gemini/handler-v4.ts#L151) `convertGeminiRequestToOpenAI` → `body: ccPayload`）先翻成 CC 再进 driver**，故 client.inbound（driver S1 parse 后）拿到的 gemini `env.body` 已是 **CC messages[]**、原生 `contents[].parts[]`/`systemInstruction` 只存在于不可改的 `orig.payload`（history 快照）。三种真相域 + 各自匹配对象/不变量恢复：
 - **anthropic**（`env.clientFormat==="anthropic"`）：`messages[]` 里 `role:"system"` 块 → 删块 + 复用 [system-messages.ts](../../src/lib/anthropic/sanitize/system-messages.ts) 的 starts-with-user / tool_use↔tool_result 配对 / 相邻同角色合并不变量。
 - **CC messages[]**（`env.clientFormat` ∈ {`"openai-cc"`, **`"gemini"`**}——**两者共用同一 accessor**）：`messages[]` 里 `role:"system"` 块 → 删块 + 空-messages 保护、首消息合法性。gemini 客户端的系统噪声经 route 层 Gemini→CC 翻译后落在 CC `role:"system"` 消息里，故在此形状上剥离即覆盖 gemini 客户端。
 - **openai-responses**（`env.clientFormat==="openai-responses"`）：**形状异构**——无 top-level `messages`，是 `input` items 数组 + 独立 `instructions` 字段（[codec/openai-responses/codec.ts](../../src/lib/codec/openai-responses/codec.ts)）。剥离目标是某个 `input` item 或 `instructions` 文本 → accessor 与前两者**根本不同**。
@@ -266,7 +270,7 @@ ad-hoc hook 文件用 `import()` 在**同进程**加载（Bun 直接跑 .ts）�
   - 加载器：形状校验、**data-URL 重载**（改文件→重载拿到新版本，回归 B1）、warn-continue 不抛、失败保留旧 hook + 记 `lastReloadError`。
   - helper 工具箱：各 mock 产出合法帧序列——用独立 accumulator oracle 校验（§4.2），非自证。`mockUpstreamError` 的判别性 body 预设 → 真跑 driver 确认对应 reactive 策略 `canHandle` 命中（评审 H3，独立 oracle 非自证）。
   - driver 各挂载点触发：未导出=直通的**字节等价**；`exchange` 的 **L1×L2 调用多重性**（评审 M1，挂计数 hook 观测真实调用次数）；`client.inbound` / `upstream.outbound` 一次性（retry 多轮只调一次，评审 H1）。
-  - **`client.inbound` provenance（v3 承重，§3.5）**：挂一个原地 splice `env.body.messages` 的 hook，断言 `clientRequest.body` 仍是原始客户端字节（正样本 oracle 证伪——失败即证需 driver 防御性 body snapshot）；挂一个不可变返回删块的 hook，断言 `clientRequest.body` = 客户端原样、朝上游 wire = 删块后（两轨发散可观测）。四格式各测一遍（client-native 形状按 `env.clientFormat` 分派）。
+  - **`client.inbound` provenance（v3 承重，§3.5）**：⚠️ **2026-08-11 起这条验收项虽仍会通过，却已失去判别力**——driver snapshot 已移除，`clientRequest.body` 的独立性完全来自 codec 的 `structuredClone`，正是本节第 4 条当初警告的「盲 oracle」。要验现行契约请改用 `tests/pipeline/hooks/client-inbound.unit.test.ts`。原文：挂一个原地 splice `env.body.messages` 的 hook，断言 `clientRequest.body` 仍是原始客户端字节（正样本 oracle 证伪——失败即证需 driver 防御性 body snapshot）；挂一个不可变返回删块的 hook，断言 `clientRequest.body` = 客户端原样、朝上游 wire = 删块后（两轨发散可观测）。四格式各测一遍（client-native 形状按 `env.clientFormat` 分派）。
 - **可观测性（评审 BLOCK-1/H2/MEDIUM-3，承重）**：
   - **`hook-mock`/`hook-replay`** 落**上游轨**（`attempts[].upstreamResponse.sseEvents`）：`exchange` 不调 `next` 的整个 mock 流带 `synthetic:"hook-mock"`、`replayFromHistory` 回放帧带 `synthetic:"hook-replay"`；真实上游帧**不带**标记（§3.4 决策 3、§5 步骤 4）。
   - **`hook-rewrite`** 落**forwarded 轨**（`clientResponse.sseEvents`，非上游轨——`upstream.inbound` 在 driver 上游-original 采样**之后**介入，改写只影响转发投递侧，§3.2/§3.4 决策 2）：`upstream.inbound` 改写/注入的单帧打此标记，**但仅 Anthropic `/v1/messages` 直连 + CC `/chat/completions` 直连腿可靠保留**（两者 `renderResponse` 逐字返回帧、`onRenderedFrame` 对象展开保留 Symbol 键）——**Responses 直连腿因 `restoreAndAccumulate`/`restoreAccumulateCount` 重建全新帧字面量而丢标**、**全部 translate 腿**（CC→Anthropic/Responses/Gemini 的有状态 N:1/1:N 累加器）因"改写单帧 vs 累加多帧"语义冲突而**标记归属 ill-defined**。这是一个已知、接受的可观测性覆盖缺口（非本特性阻断项），详见覆盖矩阵与理由 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)「`hook-rewrite` forwarded 标记覆盖缺口」节。
@@ -301,7 +305,7 @@ ad-hoc hook 文件用 `import()` 在**同进程**加载（Bun 直接跑 .ts）�
 | 命名体系 | `on*` 一旦要区分 `onInboundRequest`/`onRequest` 就证明旧名不表意 → **整体重构** `hooks.{client,upstream}.{inbound,outbound}` + `hooks.exchange` | `client\|upstream` 轴直接编码 body 形状（作者最需一眼看懂的），优于「inbound/outbound request」（需先固定参照系）。not-adopted：对称 `on<Phase>`（on* 不再区分 observe/mutate 且与内部采样 sink 概念相邻）、`hooks` 嵌套对象但导出从扁平变嵌套 |
 | observe 版本 | **不设**独立 observe-only 导出 | 用户反问成立：改写 hook `return undefined` = observe。旧 M3 防的是 hook 导出与 driver 内部采样 sink 撞名，非导出层需 observe 成员 |
 | `client.outbound` | 二维分组**暴露**该对称槽，首版**已接线 S6 renderFrames**（覆盖渲染帧，v3 Phase 6） | 补它让请求/响应对称完整（richest-data-flow 对称思维）；full sink-egress 统一化（覆盖 sink 合成/心跳帧）是 byte-critical 重构，记 deferred-backlog（§8） |
-| 请求侧 provenance | 新增 §3.5 承重不变量（对称于 §3.4） | `client.inbound` 改写不得污染 `clientRequest` 客户端原样轨；已核实 `orig.payload` 冻结先于 hook，靠不可变返回契约 + 实现期核实共享引用（防御性 snapshot）保证 |
+| 请求侧 provenance | 新增 §3.5 承重不变量（对称于 §3.4） | `client.inbound` 改写不得污染 `clientRequest` 客户端原样轨；已核实 `orig.payload` 冻结先于 hook，~~靠不可变返回契约 + 实现期核实共享引用（防御性 snapshot）保证~~ —— **2026-08-11 起两者都已移除，该不变量现由四个 codec `parse` 各自的 `structuredClone` 单独保证** |
 
 ### 11.2 v2 评审裁决记录（2026-07-12）
 

@@ -197,7 +197,7 @@ async function handleChatCompletionV4Admitted(c: Context, historyReservation: Hi
     // (C5 — every CC-client cell is migrated: openai-cc direct/via-responses + the reverse `@messages` cell).
     // The handler no longer supplies them; the reverse leg's sanitize rewrite + Anthropic strategy stack are
     // assembled by `OUTBOUND_LEGS[/v1/messages]` from the shared beta probe + mapper holder the codec threads
-    // onto `env.requestState` (constructed above).
+    // onto `env.candidate` (constructed above).
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
@@ -249,12 +249,12 @@ async function handleChatCompletionV4Admitted(c: Context, historyReservation: Hi
   // both stream + non-stream paths.
   env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
-  if (!env.stream) {
+  if (!env.request.stream) {
     try {
       const ccResp = driver.runResponseNonStreaming(upstream, env) as ChatCompletionResponse
       // REVERSE `@messages` leg (Phase 5): the client-facing body is the CC render, but the OUTBOUND leg
       // recorded must be the HONEST Anthropic upstream (richest-data-flow) — a dedicated render path.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderReverseNonStreamingV4(c, env, ccResp, upstream.nonStream as AnthropicMessageResponse)
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) return renderReverseNonStreamingV4(c, env, ccResp, upstream.nonStream as AnthropicMessageResponse)
       return renderNonStreamingV4(c, env, ccResp)
     } finally {
       detachClientAbort()
@@ -273,7 +273,7 @@ async function handleChatCompletionV4Admitted(c: Context, historyReservation: Hi
       // for the honest outbound while forwarding the rendered CC frames (no heartbeat; a CC client is not
       // Claude Code, so no anchor/300s deadline). The forward/direct CC legs keep the byte-critical pump
       // (which owns the terminal-only buffered-retry selrouting + CC keepalive — hence `clientAbortSignal`).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) await pumpReverseAnthropicLegV4({ stream, driver, codec, upstream, env })
+      if (env.attempt.targetEndpoint === ENDPOINT.MESSAGES) await pumpReverseAnthropicLegV4({ stream, driver, codec, upstream, env })
       else await pumpStreamingV4({ stream, driver, upstream, env, clientAbortSignal: clientAbort.signal })
     } finally {
       detachClientAbort()
@@ -300,7 +300,7 @@ type ChatCandidateResponseSnapshot =
 export const createChatCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const mapper = input.env.ctx.toolNameMapper
   const startedAtMs = Date.now()
-  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+  if (input.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
       adapter: createChatCompletionsDeliveryProtocolAdapter(),
@@ -338,7 +338,7 @@ export const createChatCandidateResponseSession: CandidateResponseSessionFactory
     })
   }
 
-  const requestModel = (input.env.body as ChatCompletionsPayload).model
+  const requestModel = (input.env.attempt.body as ChatCompletionsPayload).model
   return createCandidateResponseSession({
     ...input,
     createState: () => ({
@@ -510,7 +510,7 @@ interface PumpStreamingV4Options {
  */
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as ChatCompletionsPayload).model
+  const model = (env.attempt.body as ChatCompletionsPayload).model
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
@@ -768,7 +768,7 @@ interface PumpReverseAnthropicLegOptions {
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as MessagesPayload).model
+  const model = (env.attempt.body as MessagesPayload).model
 
   const streamStartMs = Date.now()
   const forwardedSseEvents: Array<SseEventRecord> = []

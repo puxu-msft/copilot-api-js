@@ -4,6 +4,7 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { assertNever } from "~/lib/observability"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 import {
   //
@@ -23,28 +24,28 @@ import {
  * + 自文档。新增第 5 个 ClientFormat 时 `assertNever` 编译期报错。
  */
 export async function applyInboundSystemPrompt(env: RequestEnvelope): Promise<RequestEnvelope> {
-  switch (env.clientFormat) {
+  switch (env.request.clientFormat) {
     case "anthropic": {
-      const body = env.body as MessagesPayload
+      const body = env.attempt.body as MessagesPayload
       if (!body.system) return env
       const system = await processAnthropicSystem(body.system, body.model, "anthropic")
-      return env.with({ body: { ...body, system } })
+      return writeAttempt(env, { body: { ...body, system } })
     }
     case "openai-cc": {
-      const body = env.body as ChatCompletionsPayload
+      const body = env.attempt.body as ChatCompletionsPayload
       const messages = await processOpenAIMessages(body.messages, body.model, "openai-cc")
-      return env.with({ body: { ...body, messages } })
+      return writeAttempt(env, { body: { ...body, messages } })
     }
     case "openai-responses": {
-      const body = env.body as ResponsesPayload
+      const body = env.attempt.body as ResponsesPayload
       const instructions = await processResponsesInstructions(body.instructions, body.model, "openai-responses")
-      return env.with({ body: { ...body, instructions } })
+      return writeAttempt(env, { body: { ...body, instructions } })
     }
     case "gemini": {
       return env
     }
     default: {
-      return assertNever(env.clientFormat)
+      return assertNever(env.request.clientFormat)
     }
   }
 }

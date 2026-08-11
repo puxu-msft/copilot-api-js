@@ -1,0 +1,33 @@
+{
+  "model": "gpt-5.6-sol",
+  "altModel": "gpt-5.5",
+  "capturedAt": "2026-08-11T09:28:26.038Z",
+  "idLength": 424,
+  "results": [
+    {
+      "case": "same-model-untampered",
+      "note": "control: identical id, same model",
+      "model": "gpt-5.6-sol",
+      "status": 200
+    },
+    {
+      "case": "same-model-one-char-tamper",
+      "note": "id length unchanged, one character flipped",
+      "model": "gpt-5.6-sol",
+      "status": 400,
+      "error": "{\"error\":{\"message\":\"{\\\"error\\\":{\\\"message\\\":\\\"Invalid 'input[1].id': string too long. Expected a string with maximum length 64, but got a string with length 424 instead.\\\",\\\"code\\\":\\\"invalid_request_body\\\"}}\\n\",\"type\":\"api_error\",\"param\":null,\"code\":null}}"
+    },
+    {
+      "case": "same-model-short-id",
+      "note": "a plainly short id, to see the 64-char rule on its own",
+      "model": "gpt-5.6-sol",
+      "status": 200
+    },
+    {
+      "case": "cross-model-untampered",
+      "note": "P3: same id replayed at a different resolved model",
+      "model": "gpt-5.5",
+      "status": 200
+    }
+  ]
+}

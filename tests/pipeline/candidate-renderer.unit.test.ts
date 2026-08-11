@@ -14,19 +14,14 @@ import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 
-function env(targetEndpoint: RequestEnvelope["targetEndpoint"], body: unknown = { model: "test-model" }): RequestEnvelope {
+function env(targetEndpoint: RequestEnvelope["attempt"]["targetEndpoint"], body: unknown = { model: "test-model" }): RequestEnvelope {
   return {
-    clientFormat: "openai-cc",
-    targetEndpoint,
-    model: { id: "test-model" },
-    stream: true,
-    body,
+    request: { clientFormat: "openai-cc", model: { id: "test-model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: body, targetEndpoint: targetEndpoint, prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {},
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -134,10 +129,8 @@ describe("candidate-isolated response renderers", () => {
         return this.exchange
       },
     }
-    const requestEnv = {
-      ...env("/chat/completions", { model: "gpt-candidate" }),
-      requestState: { responsesFallbackScratch: scratch },
-    } as RequestEnvelope
+    const requestEnv = env("/chat/completions", { model: "gpt-candidate" })
+    requestEnv.candidate.responsesFallbackScratch = scratch
     const renderer = codec.createCandidateRenderer!(requestEnv)
 
     const output = frames(
@@ -167,23 +160,22 @@ describe("candidate-isolated response renderers", () => {
         throw new Error("source scratch must not be used by candidate")
       },
     }
-    const requestEnv = {
-      ...env("/chat/completions", { model: "gpt-candidate" }),
-      requestState: { betaProbe: sourceBeta, clientAnthropicBeta: "client-beta", responsesFallbackScratch: sourceScratch },
-    } as RequestEnvelope
+    const requestEnv = env("/chat/completions", { model: "gpt-candidate" })
+    requestEnv.request.clientAnthropicBeta = "client-beta"
+    Object.assign(requestEnv.candidate, { betaProbe: sourceBeta, responsesFallbackScratch: sourceScratch })
     const factory = codec.createCandidateStateFactory!(requestEnv)
 
     const first = factory.fork({ candidateId: "candidate-a", role: "primary" })
     const second = factory.fork({ candidateId: "candidate-b", role: "hedge" })
-    const firstBeta = first.requestState?.betaProbe
-    const secondBeta = second.requestState?.betaProbe
+    const firstBeta = first.candidate.betaProbe
+    const secondBeta = second.candidate.betaProbe
 
     expect(firstBeta).not.toBe(sourceBeta)
     expect(secondBeta).not.toBe(sourceBeta)
     expect(firstBeta).not.toBe(secondBeta)
-    expect(first.requestState?.responsesFallbackScratch).not.toBe(sourceScratch)
-    expect(second.requestState?.responsesFallbackScratch).not.toBe(sourceScratch)
-    expect(first.requestState?.responsesFallbackScratch).not.toBe(second.requestState?.responsesFallbackScratch)
+    expect(first.candidate.responsesFallbackScratch).not.toBe(sourceScratch)
+    expect(second.candidate.responsesFallbackScratch).not.toBe(sourceScratch)
+    expect(first.candidate.responsesFallbackScratch).not.toBe(second.candidate.responsesFallbackScratch)
 
     firstBeta?.recordOutbound({ "anthropic-beta": "client-beta,first-only" })
     secondBeta?.recordOutbound({ "anthropic-beta": "second-only" })

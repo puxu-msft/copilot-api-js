@@ -18,14 +18,15 @@
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import type { HeadersCapture } from "~/lib/context/request"
 import type { DispatchHandle } from "~/lib/context/model-operation-record"
+import type { HeadersCapture } from "~/lib/context/request"
 import type { TransportTerminationSnapshot } from "~/lib/transport/http2-observation-types"
 import type {
   //
   ParsedSseFrame,
   ParsedSseIdField,
 } from "~/lib/transport/parsed-sse-frame"
+import type { H2StreamControl } from "~/lib/transport/upstream-fetch"
 
 import { copilotBaseUrl } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
@@ -239,6 +240,10 @@ export interface SendUpstreamHttpParams {
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
   /** Canonical dispatch owner, forwarded to the h2 path so it can lease the session's GOAWAY ledger. */
   dispatch?: DispatchHandle
+  /** Physical h2 stream close, forwarded so the adapter's teardown barrier can wait on the wire rather than on our bookkeeping. */
+  onStreamClosed?: () => void
+  /** Physical h2 stream opened; lets the adapter arm a teardown barrier only when a stream that can satisfy it exists, and hands it the means to force that stream shut. */
+  onStreamOpened?: (control: H2StreamControl) => void
 }
 
 /**
@@ -269,6 +274,8 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     ...(params.onTrailers && { onTrailers: params.onTrailers }),
     ...(params.onTermination && { onTermination: params.onTermination }),
     ...(params.dispatch && { dispatch: params.dispatch }),
+    ...(params.onStreamClosed && { onStreamClosed: params.onStreamClosed }),
+    ...(params.onStreamOpened && { onStreamOpened: params.onStreamOpened }),
   })
 
   // Capture HTTP headers for history (before error check — capture even on failure)

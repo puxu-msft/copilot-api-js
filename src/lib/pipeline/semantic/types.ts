@@ -87,6 +87,56 @@ export const DEGRADATION_REASONS = {
 export type DegradationReason = (typeof DEGRADATION_REASONS)[keyof typeof DEGRADATION_REASONS]
 
 /* ---------------------------------------------------------------------------------------------- *
+ * Presentation × continuation dispositions (RFC §4.1)
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Responses-side server-tool item types allowed into a continuation carrier. Deliberately a closed
+ * set rather than a bare `string`: without it, a `responses-output-item` payload could carry an
+ * arbitrary blob — including an Anthropic `web_search_tool_result` in disguise, which RFC §7's red
+ * line forbids us to ever synthesise. Add entries as capabilities open; never widen to `string`.
+ */
+export type ResponsesServerToolItemType = "web_search_call"
+
+/**
+ * What we hand back to a compatible upstream so a continued turn can pick up where it left off.
+ *
+ * The reference and the whole item are two granularities of one capability, not two features. Measured against the real upstream on 2026-08-11 (`exp/responses-server-tool-continuation/`): the whole item and a bare `{type,id}` are both accepted, `item_reference` is **not** (404 for `web_search_call`) — but a *fabricated* short id is accepted too, so acceptance does not discriminate a real reference from a made-up one and cannot be used to narrow the shape. Hence `responses-output-item` stays the default: it is the only form that preserves the part we cannot inspect.
+ */
+export type ContinuationRecord =
+  | Readonly<{ kind: "claude-signature"; opaque: string }>
+  | Readonly<{ kind: "responses-encrypted"; opaque: string }>
+  | Readonly<{ kind: "responses-item-reference"; ref: Readonly<{ type: ResponsesServerToolItemType; id: string }> }>
+  | Readonly<{ kind: "responses-output-item"; item: Readonly<{ type: ResponsesServerToolItemType }> & Readonly<Record<string, unknown>> }>
+
+/** What the target protocol's reader will see. */
+export type PresentationDisposition =
+  | Readonly<{ kind: "native" }>
+  | Readonly<{ kind: "degraded"; reason: DegradationReason; correlationId?: string }>
+  | Readonly<{ kind: "dropped"; reason: DegradationReason }>
+
+/**
+ * What survives the round trip. Independent of {@link PresentationDisposition} on purpose: the whole
+ * defect class this contract exists to stop is an implementer reading "presentation degraded" as
+ * permission to discard the opaque state too, which leaves a continued turn unable to resume.
+ */
+export type ContinuationDisposition =
+  /** Judged to carry no cross-turn state. A finding, not a default for "I did not think about it". */
+  | Readonly<{ kind: "none" }>
+  /** The target protocol carries it natively; no carrier needed. */
+  | Readonly<{ kind: "native" }>
+  /** Round-tripped through a carrier (RFC §6.1). */
+  | Readonly<{ kind: "carrier"; record: ContinuationRecord }>
+  /** State exists but cannot be carried. Never silent — RFC §10 observation plus History. */
+  | Readonly<{ kind: "rejected"; reason: DegradationReason }>
+
+/** Both planes, answered together. Required on every settled item so neither can be skipped. */
+export type ItemDisposition = Readonly<{
+  presentation: PresentationDisposition
+  continuation: ContinuationDisposition
+}>
+
+/* ---------------------------------------------------------------------------------------------- *
  * Reasoning exchange envelope (RFC §3.3)
  * ---------------------------------------------------------------------------------------------- */
 
@@ -146,11 +196,52 @@ export type ResultMetadata = Readonly<{
  * types so no emitter can read a half-accumulated item as if it were final.
  */
 export type SemanticItem =
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "reasoning"; reasoning: ReasoningExchangeItem; terminal: ItemTerminal }>
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "text" | "degraded-text"; text: string; correlationId?: string; terminal: ItemTerminal }>
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "function-call" | "server-tool-call"; call: CallMetadata; arguments: string; terminal: ItemTerminal }>
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "function-result" | "server-tool-result"; result: ResultMetadata; output: string; terminal: ItemTerminal }>
-  | Readonly<{ key: ItemKey; ordinal: number; kind: "drop"; reason: DegradationReason; terminal: Extract<ItemTerminal, { kind: "discarded" }> }>
+  | Readonly<{ key: ItemKey; ordinal: number; kind: "reasoning"; reasoning: ReasoningExchangeItem; terminal: ItemTerminal; disposition: ItemDisposition }>
+  | Readonly<{
+      key: ItemKey
+      ordinal: number
+      kind: "text" | "degraded-text"
+      text: string
+      correlationId?: string
+      terminal: ItemTerminal
+      disposition: ItemDisposition
+    }>
+  | Readonly<{
+      key: ItemKey
+      ordinal: number
+      kind: "function-call" | "server-tool-call"
+      call: CallMetadata
+      arguments: string
+      terminal: ItemTerminal
+      disposition: ItemDisposition
+    }>
+  | Readonly<{
+      key: ItemKey
+      ordinal: number
+      kind: "function-result" | "server-tool-result"
+      result: ResultMetadata
+      output: string
+      terminal: ItemTerminal
+      disposition: ItemDisposition
+    }>
+  | Readonly<{
+      key: ItemKey
+      ordinal: number
+      kind: "drop"
+      reason: DegradationReason
+      terminal: Extract<ItemTerminal, { kind: "discarded" }>
+      disposition: ItemDisposition
+    }>
+
+/**
+ * Every arm of {@link SemanticItem} carries a `disposition` — checked here rather than left to a consumer to notice.
+ *
+ * The load-bearing part is the `false` branch, not the brackets. Measured (tsc 5.9.3 `--strict`, four variants): with `: false` this catches a missing arm whether or not the conditional distributes; with `: never` it catches nothing either way, because `never` satisfies every constraint and `Assert<never>` passes silently. The brackets are kept because a whole-union check is what is meant, and it yields one boolean instead of a widened union — but they are not what makes this bite.
+ *
+ * Nor is the required field enough on its own: merely adding a union arm that omits it produces *no* diagnostic; that only surfaces where a consumer reads the field, and `SemanticItem` has no consumers yet. This alias is the enforcement.
+ */
+type Assert<T extends true> = T
+export type _AllSemanticItemArmsCarryDisposition = Assert<[SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false>
 
 export type PartKind = "reasoning-summary" | "reasoning-content" | "text"
 
@@ -187,6 +278,12 @@ export type PerOutputItemState = Readonly<{
   reasoningVisibleKind?: "summary" | "omitted" | "redacted"
   correlationId?: string
   terminal?: ItemTerminal
+  /**
+   * Optional while accumulating, required at `finish-item` — the accumulation shape and the settled
+   * shape differ on purpose. A mapper often cannot decide the continuation plane until the opaque
+   * state has actually arrived, so forcing it at declare time would only produce a guessed value.
+   */
+  disposition?: ItemDisposition
 }>
 
 /**
@@ -232,5 +329,5 @@ export type LedgerUpdate =
       visibleKind: "summary" | "omitted" | "redacted"
       opaque?: ReasoningExchangeItem["opaque"]
     }>
-  | Readonly<{ type: "finish-item"; key: ItemKey; terminal: ItemTerminal }>
+  | Readonly<{ type: "finish-item"; key: ItemKey; terminal: ItemTerminal; disposition: ItemDisposition }>
   | Readonly<{ type: "finish-response"; terminal: ResponseTerminal }>

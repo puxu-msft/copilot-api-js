@@ -40,6 +40,11 @@ import {
   getDownstreamDeliverySession,
   recordDeliveryResponseOutcomeForTests,
 } from "~/lib/pipeline/delivery/session"
+import {
+  //
+  forkEnvelope,
+  writeAttempt,
+} from "~/lib/pipeline/envelope"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-policy"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
@@ -147,7 +152,7 @@ export interface DriverDeps {
    * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
    * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
    * CellAssembly ({@link resolveExchangeStrategies}); this slot is only read for a mock/legacy codec that
-   * does not populate `env.requestState` (driver orchestration unit tests).
+   * does not set `env.request.legSupplyReady` (driver orchestration unit tests).
    */
   strategies?: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
@@ -383,12 +388,9 @@ function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteD
  * from the CURRENT env at each dispatch point (a retry strategy may re-target).
  */
 function migratedCell(env: RequestEnvelope): CellAssembly | null {
-  // The assembly's methods REQUIRE the leg supply on `env.requestState` (the real InboundCodec's parse
-  // populates it — C2a.1). An env without it is not set up for the cell (a driver orchestration unit test
-  // with a mock codec, or a format whose parse hasn't populated it), so it stays on the legacy `deps.*`
-  // path — the codec's own direct branch is still byte-equivalent, so this is a safe fallback.
-  if (!env.requestState) return null
-  return isCellMigrated(env.clientFormat, env.targetEndpoint) ? resolveCellAssembly(env.clientFormat, env.targetEndpoint) : null
+  // The assembly's methods REQUIRE the outbound-leg supply (the real InboundCodec's parse populates it and sets `legSupplyReady` — C2a.1). An env without it is not set up for the cell (a driver orchestration unit test with a mock codec, or a format whose parse hasn't populated it), so it stays on the legacy `deps.*` path — the codec's own direct branch is still byte-equivalent, so this is a safe fallback.
+  if (!env.request.legSupplyReady) return null
+  return isCellMigrated(env.request.clientFormat, env.attempt.targetEndpoint) ? resolveCellAssembly(env.request.clientFormat, env.attempt.targetEndpoint) : null
 }
 
 /**
@@ -436,14 +438,10 @@ async function runRequest(
   // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
-  // Hook point: client.inbound — one-shot client-NATIVE request rewrite, at S1a→S1b (before
-  // translate/sanitize), the only point where every format's body is client-native (RFC §3/§3.5).
-  // Defensive body snapshot: the hook receives a clone-backed env so an in-place mutation can't穿透
-  // downstream (or into the frozen clientRequest history track); on `undefined` the driver keeps the
-  // ORIGINAL parsed env (immutable-return semantics). `snapshotBody` is the codec-agnostic tolerant
-  // structuredClone (falls back to the original for an unclonable body).
+  // Hook point: client.inbound — one-shot client-NATIVE request rewrite, at S1a→S1b (before translate/sanitize), the only point where every format's body is client-native (RFC §3/§3.5).
+  // CONTRACT CHANGE 2026-08-11: the envelope scopes are mutable and the core trusts hooks, so an in-place write here DOES reach downstream; a returned env replaces the one passed in, and `undefined` simply means "I already wrote what I wanted". The pre-mutability driver handed the hook a `snapshotBody`-backed clone precisely so an in-place write could NOT propagate (review HIGH-2 / §3.5 decision 4) — that defence is deliberately gone, superseding that decision.
   const inboundHook = getUpstreamHook()?.client?.inbound
-  const clientNative = inboundHook ? (inboundHook(parsed.with({ body: snapshotBody(parsed.body) })) ?? parsed) : parsed
+  const clientNative = inboundHook ? (inboundHook(parsed) ?? parsed) : parsed
 
   // S1b — Translate-in (async, RFC 2026-07-14 §3): per-format async inbound processing —
   // gemini `Gemini→CC` + each format's async system-prompt injection (awaits applyConfigToState).
@@ -459,19 +457,19 @@ async function runRequest(
     // No dangling history entry — reject before committing the request (aligns
     // with current messages:165 rejecting before context creation). Carry the
     // raw reason; the route/codec shapes the per-format error envelope.
-    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: ingested.clientFormat } }
+    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: ingested.request.clientFormat } }
   }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   // T1.6 route observability (RFC §10 / W6): record the leg pin + actual outbound leg +
   // translate-vs-direct label on the ctx (projected into history `model{}`). Optional-chained so a
   // mock/legacy ctx without the method is unaffected; direct requests record `translated:false`.
   ingested.ctx.setRouteInfo?.({
-    ...(ingested.routeOverride && { routeOverride: ingested.routeOverride }),
+    ...(ingested.request.routeOverride && { routeOverride: ingested.request.routeOverride }),
     outboundEndpoint: targetEndpoint,
     translated: decision.kind === "translate",
-    clientFormat: parsed.clientFormat,
+    clientFormat: parsed.request.clientFormat,
   })
-  const routedEnv = ingested.with({ targetEndpoint })
+  const routedEnv = writeAttempt(ingested, { targetEndpoint })
   const routed = outboundTranslateOut(deps, routedEnv)
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
@@ -585,13 +583,18 @@ async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: 
 
   // S1a — parse (sync).
   const parsed = deps.codec.parse(raw)
-  stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
+  stages.parse = {
+    clientFormat: parsed.request.clientFormat,
+    targetEndpoint: parsed.attempt.targetEndpoint,
+    model: parsed.request.model,
+    body: snapshotBody(parsed.attempt.body),
+  }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
   // S1b — translate-inbound (async, RFC 2026-07-14 §3): per-format async inbound processing.
   // No-op unless the codec implements `translateInbound` (then this stage's body == parse's).
   const ingested = (await deps.codec.translateInbound?.(parsed)) ?? parsed
-  stages["translate-inbound"] = { body: snapshotBody(ingested.body) }
+  stages["translate-inbound"] = { body: snapshotBody(ingested.attempt.body) }
   if (stopAfter === "translate-inbound") return { stoppedAt: "translate-inbound", stages }
 
   // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router).
@@ -599,10 +602,10 @@ async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: 
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
-  // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
-  const routedEnv = ingested.with({ targetEndpoint })
+  // runRequest); a mock/legacy codec without the leg supply falls back to deps.codec / deps.requestRewrites.
+  const routedEnv = writeAttempt(ingested, { targetEndpoint })
   const routed = outboundTranslateOut(deps, routedEnv)
-  stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
+  stages.translate = { targetEndpoint: routed.attempt.targetEndpoint, body: snapshotBody(routed.attempt.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }
 
   // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
@@ -615,7 +618,7 @@ async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: 
     applied.push({ name: rewrite.name, changed: result.changed })
     current = result.env
   }
-  stages["rewrite-in"] = { body: snapshotBody(current.body), applied }
+  stages["rewrite-in"] = { body: snapshotBody(current.attempt.body), applied }
   if (stopAfter === "rewrite-in") return { stoppedAt: "rewrite-in", stages }
 
   // S4-pre — prepare-wire: the codec's last-mile wire derivation for the FIRST attempt
@@ -695,12 +698,15 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       env,
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
-        return env.with({
-          // The coordinator-provided env may carry accepted reactive/buffered-recovery copy-on-write
-          // changes. Fork only opaque requestState here; never rewind body/prepareHints to generation start.
-          body: env.body,
-          prepareHints: structuredClone(env.prepareHints),
-          requestState: fork.requestState,
+        // The coordinator-provided env may already carry accepted reactive/buffered-recovery changes, so the sibling starts from the CURRENT attempt rather than `fork`'s generation-start snapshot — never rewind body/prepareHints to generation start. Only the opaque candidate scope comes from the fork.
+        // `body` is CLONED, not shared. The pre-mutability version handed every candidate the same body object and that was safe because nothing wrote a body in place — every rewrite replaced it wholesale through `with()`. With mutable scopes a nested in-place write on one candidate would reach its sibling's wire, which is exactly the cross-candidate contamination `CandidateScope` exists to prevent.
+        return forkEnvelope(env, {
+          candidate: fork.candidate,
+          attempt: {
+            body: structuredClone(env.attempt.body),
+            targetEndpoint: env.attempt.targetEndpoint,
+            prepareHints: structuredClone(env.attempt.prepareHints),
+          },
         })
       },
       recording,
@@ -733,7 +739,7 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
   let learningRetries = 0
   let candidateStrategies: ReadonlyArray<RetryStrategy> | undefined
   return async ({ env, error }) => {
-    // Resolve only after CandidateStateFactory forked env.requestState. Strategy closures (notably
+    // Resolve only after CandidateStateFactory forked this candidate's `env.candidate`. Strategy closures (notably
     // beta-probe and reverse resanitize) must bind this candidate's supplies, never generation-shared ones.
     const strategy = (candidateStrategies ??= resolveExchangeStrategies(deps, env)).find((candidate) => candidate.canHandle(error))
     if (!strategy) {
@@ -1057,7 +1063,7 @@ async function maybeRunHedgedResponseSink(
   const policy = deps.hedgePolicy
   const runtime = generation
   const binding = runtime?.bindings.get(upstream)
-  if (!policy?.enabled || !runtime || !binding || !env.stream) return undefined
+  if (!policy?.enabled || !runtime || !binding || !env.request.stream) return undefined
   // Explicit buffered-recovery mode retains its sequential multi-candidate topology until P7-T3
   // folds recovery and hedge budgets into one coordinator. Silently replacing N recoveries with
   // one hedge would weaken an operator-enabled durability contract.
@@ -1249,7 +1255,7 @@ function streamErrorOutcome(
   diagnostics?: import("./types").ResponseFailureDiagnostics
   truncated?: boolean
 } {
-  if (source === "upstream-transport" && classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
+  if (source === "upstream-transport" && classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.request.clientFormat)
   const diagnostics =
     isResponseCodecRenderError(error) && error.supersededError !== undefined && error.supersededSource !== undefined && error.flushError !== undefined ?
       {
@@ -1447,7 +1453,7 @@ export async function runResponseBufferedSink(
   // Scoped to the anchor-DORMANT path (D2 default `stream_keepalive_mode: ping`, PoC-validated); the
   // empty_text-anchor + continuation combo is an untested corner (backlog).
   const continuation = opts.continuation
-  const continuationOriginalBody = env.body // the ORIGINAL client body (spec §4.1 — cache-friendly; every continuation leg builds from [original] + [full ledger])
+  const continuationOriginalBody = env.attempt.body // the ORIGINAL client body (spec §4.1 — cache-friendly; every continuation leg builds from [original] + [full ledger])
   let continuationCount = 0
   let wireDeliveredBlocks = 0
   let continuationOffset = 0
@@ -1937,7 +1943,7 @@ export async function runResponseBufferedSink(
         } catch (error) {
           return streamErrorOutcome(error, env, responseFailureSource(error))
         }
-        const contEnv = currentEnv.with({ body: continuationBody })
+        const contEnv = writeAttempt(currentEnv, { body: continuationBody })
         try {
           const parent = generation?.bindings.get(current)
           if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "continuation" })

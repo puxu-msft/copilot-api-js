@@ -62,7 +62,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
   return (input) => {
     const mapper = input.env.ctx.toolNameMapper
     const startedAtMs = Date.now()
-    if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+    if (input.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
       return createCandidateResponseSession({
         ...input,
         adapter: createResponsesDeliveryProtocolAdapter({ transport }),
@@ -103,8 +103,8 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
       })
     }
 
-    const model = (input.env.body as ResponsesPayload).model
-    const fallbackResponseId = (input.env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined)?.exchange?.responseId
+    const model = (input.env.attempt.body as ResponsesPayload).model
+    const fallbackResponseId = (input.env.candidate.responsesFallbackScratch as ResponsesFallbackScratch | undefined)?.exchange?.responseId
     return createCandidateResponseSession({
       ...input,
       adapter: createResponsesDeliveryProtocolAdapter({ transport }),

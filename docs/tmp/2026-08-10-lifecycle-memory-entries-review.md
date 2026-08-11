@@ -67,3 +67,19 @@
 修复建议：把①改成可执行的“从首条 missing specifier 回溯对应 consumer package，并核对其 `package.json` 的直接 dependency 与该提交 `bun.lock` 条目；必要时在 frozen install 中复验”；四项全绿前不得归为环境问题。建议由 `gpt-souls:instruction-smith` 修订。
 
 **复评 verdict：第 1 项整改通过；第 2、3 项各残留 1 条 major，修复这 2 条后可定稿。Blocker：0。**
+
+## `5dd8ddb0` 复评（2026-08-11）
+
+- **第 1 项：通过。** 实测 `bun install --help` 的第 16 行给出 `--frozen-lockfile  Disallow changes to lockfile`，与文中所引帮助原文一致。该规则不是仅凭 flag 名推出同步效果：实际执行 `bun install --frozen-lockfile` 是把 root 当前安装按现有 lockfile 收敛且拒绝以改 lockfile 解决 `package.json` 不一致；因此成功完成后可作为“根安装已按该 lockfile 重新对齐”的动作。文中也正确保留边界：本轮未在共享主树执行；不能／失败即不借根安装、各自安装，避免污染共享树。
+
+[major] `/home/xp/src/copilot-api-js/docs/memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md:52`（`5dd8ddb0`）— 复核 Bun 官方安装语义后，撤回本报告上一段“第 1 项通过”：`bun install --frozen-lockfile` 只冻结 resolution／拒绝改 lockfile，不能单独证明现有根 `node_modules` 已完全按 lockfile 重建或未受同版本内容漂移影响。
+证据：本机 Bun 1.3.14 的 help 仅写 `Disallow changes to lockfile`；官方文档说明 existing `node_modules` 若预期位置的 package `name` 与 `version` 匹配，Bun 不下载 tarball，并把“reinstall all dependencies”单列给 `--force`。因此将 frozen 成功升级为“根安装未陈旧”的结论超出其 oracle 能力。
+失败场景：根树有与 lockfile 同 `name`／`version` 但文件内容、安装布局或 lifecycle 结果已漂移的旧包；frozen install 可复用它，A/B 仍借到不是干净 lockfile 实现的环境。
+修复建议：不在共享主树执行。为 A、B 各建全新独立 worktree（宜在仓库外，避免向上借根依赖），其中分别运行 `bun install --frozen-lockfile`；或在各自可销毁测试树中加 `--force` 强制重装。只有以该干净树的真实 resolver／测试结果才可裁环境对齐。
+
+[major] `/home/xp/src/copilot-api-js/docs/memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md:56-58`（`5dd8ddb0`）— 条件①比自评显著改善，但仍不是 workspace 中可机械执行的完整判据：它未定义如何从 failing import 枚举 consumer workspace，且漏掉合法的 `optionalDependencies`。
+证据：实测给 predicate 输入 `{"optionalDependencies":{"demo":"1.0.0"}}` 得 `null`／exit 1；Bun 官方 `install` 文档将 `optionalDependencies` 列为默认会安装的依赖。`false`／`null` 也确实 exit 1，但它们不是合法版本值，非本问题的假红来源。
+失败场景：workspace 的 source 直接使用只在该 workspace `optionalDependencies` 声明的包，或检查者漏枚举真正 import 它的 workspace manifest；`jq` 报红会把完整声明误说成漏声明。反过来，任意挑一个“相关” manifest 绿也证明不了真正 consumer 已声明。
+修复建议：从首条 missing specifier 的 importer 起，沿 workspace package boundary 枚举实际 consumer（根入口与每个直接 import workspace），对每一份 manifest 查询 `dependencies // devDependencies // optionalDependencies // peerDependencies`；明确 optional 是否在该运行模式应被安装。`jq -e` 对 false/null 的行为无需另改。
+
+**本轮 verdict：两处整改均未完全消除 major；blocker 0。**

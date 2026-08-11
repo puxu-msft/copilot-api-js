@@ -12,15 +12,15 @@
 
 ### [blocker] `/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/packages/cli/src/start.ts:389`、`/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/src/lib/history/worker/runtime.ts:528-559` — 生产启动仍无 deadline，已知可重试错误会让进程永久处于“不监听也不退出”
 
-**证据**：CLI 在 `start.ts:389` 直接 `await initHistory(historyEnabled)`，到 `start.ts:539` 才启动监听；全仓搜索 `start.*deadline|deadline.*History|History.*deadline` 在生产代码中无实现。runtime 的 crash 路径在 `runtime.ts:528-559` 对 retryable startup failure 只安排下一次 timer，并把原 start waiter带入下一代；没有终结条件。权威 backlog `docs/todo/deferred-backlog.md:1253-1260` 明确把该项定为 Batch 2b “必做”，进度文件 `docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:39,70` 也仍标为未完成。规格 §8.1 又要求 Worker ready 前不得监听。
+**证据**：CLI 在 `start.ts:389` 直接 `await initHistory(historyEnabled)`，到 `start.ts:539` 才启动监听；全仓搜索 `start.*deadline|deadline.*History|History.*deadline` 在生产代码中无实现。runtime 的 crash 路径在 `runtime.ts:528-559` 对 retryable startup failure 只安排下一次 timer，并把原 start waiter带入下一代；没有终结条件。权威 backlog `docs/todo/deferred-backlog.md:1253-1260` 明确把该项定为 Batch 2b “必做”，进度文件 `docs/history-persistence-worker/archive-2026-08-11/2026-08-09-history-worker-progress-impl-2b.md:39,70` 也仍标为未完成。规格 §8.1 又要求 Worker ready 前不得监听。
 
 **失败场景**：semantic DB 被另一个进程长期持有写锁，或持续返回 `SQLITE_IOERR`。Worker 把它归为 retryable，`initHistory(true)` 永不 settle；CLI 永远到不了 `startServer`，同时没有非零退出供 supervisor 重启或报警。
 
 **建议修法**：在拥有进程启动的调用层实现明确、可配置或有权威默认值的 startup deadline；deadline 到达后关闭／释放本次 runtime，并让进程启动以具名 History 错误失败、非零退出。不要把固定重试次数塞回 `restart-policy.ts`，那会把“第 N+1 次本可恢复”的条件误判为永久 fatal。补进程级验收：注入永不清除的 retryable startup error，断言 deadline 后未监听且非零退出，而不是仅测 promise race。
 
-### [blocker] `/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/docs/plan/2026-08-07-history-persistence-worker.md` Task 2b Step 2b.4、`/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/tests/history/worker/` — cutover 的核心线程隔离验收完全缺失
+### [blocker] `/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/docs/history-persistence-worker/plan.md` Task 2b Step 2b.4、`/home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a/tests/history/worker/` — cutover 的核心线程隔离验收完全缺失
 
-**证据**：计划要求真 Worker 注入 500 ms 同步阻塞，同时观测主线程 metronome 与 `/health/liveness`，并要求同一 harness 切到 in-process backend 时确定性观察到约 500 ms 冻结。命令检查结果为 `MISSING tests/history/worker/event-loop-isolation.it.test.ts`；`git log baef58b3..HEAD -- tests/history/worker/event-loop-isolation.it.test.ts` 无提交。进度文件 `docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:36,69` 也仍标记未做。
+**证据**：计划要求真 Worker 注入 500 ms 同步阻塞，同时观测主线程 metronome 与 `/health/liveness`，并要求同一 harness 切到 in-process backend 时确定性观察到约 500 ms 冻结。命令检查结果为 `MISSING tests/history/worker/event-loop-isolation.it.test.ts`；`git log baef58b3..HEAD -- tests/history/worker/event-loop-isolation.it.test.ts` 无提交。进度文件 `docs/history-persistence-worker/archive-2026-08-11/2026-08-09-history-worker-progress-impl-2b.md:36,69` 也仍标记未做。
 
 **失败场景**：实现虽然把“连接对象”放进 Worker，但某个压缩／prepare／SQLite 调用经错误接线仍在主线程执行；功能测试和现有 semantic-cutover 测试都可以全绿，真实请求与 liveness 仍被同步工作冻结。当前没有任何验收能区分这个错误状态与正确 cutover，因而 Task 2b 的中心证明尚未成立。
 

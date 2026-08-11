@@ -5,8 +5,6 @@ import {
   expect,
   test,
 } from "bun:test"
-import { readFileSync } from "node:fs"
-import path from "node:path"
 
 import type { ModelTranslation } from "~/lib/state-vocabulary"
 
@@ -22,8 +20,6 @@ import {
   captureTranslationConfigSnapshot,
   type TranslationConfigSnapshot,
 } from "../../../src/lib/pipeline/semantic/config-snapshot"
-
-const REPO_ROOT = path.resolve(import.meta.dir, "../../..")
 
 const RULES_A: ModelTranslation = { "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }] }
 const RULES_B: ModelTranslation = { "anthropic-messages": [{ match: "gpt-5.6@openai-responses" }] }
@@ -81,30 +77,8 @@ describe("translation config snapshot — a hot reload only reaches later reques
 })
 
 /**
- * `translationConfigSnapshot` is deliberately absent from `with()`'s patch type, so the only way a
- * retry or fallback leg keeps it is each codec's `with()` re-passing it by hand. A codec that forgets
- * would silently unpin that leg's config, and no behavioural test can see it until a hot reload lands
- * mid-request — which is exactly the case nobody reproduces on demand.
+ * 「每个 codec 都把这个 snapshot 带到 leg 上」这条不变量的守卫**不在本文件**——它需要真跑四个 codec 的 parse，属跨模块集成，见 `./config-snapshot-carry.it.test.ts`。
  *
- * The four paths are listed rather than globbed: a fifth codec must fail here and be added
- * deliberately, not be quietly excluded by a glob that never matched it.
+ * 本文件此前有一条读 codec 源码文本的守卫（先查 `with()` 里手抄了没有，后改查有没有自建 `function makeEnvelope(`）。独立评审构造出反例证明它只守住某一种拼写：本地 builder 换个名字就能绕过且类型正确。守卫追不上合法写法时应当把不变量搬到行为层，而不是继续给正则加分支。
  */
-describe("translation config snapshot — every codec carries it across with()", () => {
-  const CODECS = ["anthropic", "openai-cc", "openai-responses", "gemini"]
 
-  for (const codec of CODECS) {
-    test(`${codec} re-passes the snapshot when rebuilding the envelope`, () => {
-      const source = readFileSync(path.join(REPO_ROOT, "src/lib/codec", codec, "codec.ts"), "utf8")
-      const withBody = source.slice(source.indexOf("    with(patch) {"), source.indexOf("        ...patch,"))
-
-      expect(withBody).toContain("translationConfigSnapshot: env.translationConfigSnapshot,")
-    })
-  }
-
-  test("the codec list matches what is on disk", () => {
-    const source = readFileSync(path.join(REPO_ROOT, "src/lib/pipeline/envelope.ts"), "utf8")
-
-    // If the field ever enters the patch set, the hand re-passing above stops being the only path and this guard is measuring the wrong thing.
-    expect(source).toContain(`with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>)`)
-  })
-})

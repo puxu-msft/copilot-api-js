@@ -49,7 +49,7 @@ test("the production live driver begins primary leg through the explicitly passe
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => streamOf(frames)),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
 
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())

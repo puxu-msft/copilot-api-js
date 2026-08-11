@@ -70,7 +70,7 @@ function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
   // C2b/C3: the reverse `(openai-cc, /v1/messages)` cell AND the direct CC leg are both dispatched through
-  // the CellAssembly now, which reads the beta probe + mapper holder off `env.requestState` (parse threads
+  // the CellAssembly now, which reads the beta probe + mapper holder off `env.candidate` (parse threads
   // them from these args). The driver's cell-keyed fork supersedes any `requestRewrites`/`strategies` deps
   // for every real cell, so the driver takes none — this test drives the REAL assembly end-to-end.
   const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder })

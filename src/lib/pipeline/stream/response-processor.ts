@@ -233,8 +233,8 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
             else env.ctx.setAttemptTimingEpoch?.(kind, now, mode)
           }
           if (semanticFrame.event === "message_start") recordTiming("upstreamMessageStartAt", "once")
-          if (isFirstUpstreamContent(semanticFrame, env.targetEndpoint)) recordTiming("upstreamFirstTokenAt", "once")
-          if (isUpstreamContentFrame(semanticFrame, env.targetEndpoint)) recordTiming("upstreamLastTokenAt", "latest")
+          if (isFirstUpstreamContent(semanticFrame, env.attempt.targetEndpoint)) recordTiming("upstreamFirstTokenAt", "once")
+          if (isUpstreamContentFrame(semanticFrame, env.attempt.targetEndpoint)) recordTiming("upstreamLastTokenAt", "latest")
           opts?.onUpstreamFrame?.(semanticFrame)
         }
 
@@ -386,7 +386,7 @@ function* renderFrames(
     const clientFrame = output === semanticFrame ? projectParsedSseFrame(frame) : output
     const transform = {
       stage: "render",
-      transformId: `render:${env.clientFormat}`,
+      transformId: `render:${env.request.clientFormat}`,
       forceDerived: clientFrame !== frame || readSyntheticKind(clientFrame) !== undefined,
     }
     if (dispatch && typeof env.ctx.captureGenerationDispatchFrameTransform === "function")

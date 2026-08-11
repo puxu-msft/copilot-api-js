@@ -23,6 +23,7 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { setModels } from "~/lib/models/cache"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -48,11 +49,11 @@ describe("openai-cc codec — parse", () => {
     const codec = createOpenAiCcCodec()
     const env: RequestEnvelope = codec.parse(rawReq({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }))
 
-    expect(env.clientFormat).toBe("openai-cc")
-    expect(env.model?.id).toBe("gpt-4o")
-    expect(env.stream).toBe(true)
-    expect(env.targetEndpoint).toBe("/chat/completions") // initial; driver overwrites via decideRoute
-    const body = env.body as ChatCompletionsPayload
+    expect(env.request.clientFormat).toBe("openai-cc")
+    expect(env.request.model?.id).toBe("gpt-4o")
+    expect(env.request.stream).toBe(true)
+    expect(env.attempt.targetEndpoint).toBe("/chat/completions") // initial; driver overwrites via decideRoute
+    const body = env.attempt.body as ChatCompletionsPayload
     expect(body.messages[0]?.content).toBe("hi")
   })
 
@@ -66,8 +67,8 @@ describe("openai-cc codec — parse", () => {
   test("Azure deployment override (path wins) selects the override model", () => {
     const codec = createOpenAiCcCodec()
     const env = codec.parse(rawReq({ model: "ignored-body-model", messages: [{ role: "user", content: "hi" }] }, { modelOverride: "gpt-deployment-real" }))
-    expect(env.model?.id).toBe("gpt-deployment-real")
-    const body = env.body as ChatCompletionsPayload
+    expect(env.request.model?.id).toBe("gpt-deployment-real")
+    const body = env.attempt.body as ChatCompletionsPayload
     expect(body.model).toBe("gpt-deployment-real")
   })
 
@@ -107,7 +108,7 @@ describe("openai-cc codec — parse", () => {
         ],
       }),
     )
-    const body = env.body as ChatCompletionsPayload
+    const body = env.attempt.body as ChatCompletionsPayload
     // an orphaned tool result (no preceding assistant tool_call) is filtered out
     expect(body.messages.find((m) => m.role === "tool")).toBeUndefined()
     expect(body.messages.map((m) => m.role)).toEqual(["user"])
@@ -124,15 +125,17 @@ describe("openai-cc codec — parse", () => {
     expect(() => codec.parse(rawReq({ model: "gpt-unknown-xyz", messages: [{ role: "user", content: "hi" }] }))).toThrow(/model not found: gpt-unknown-xyz/u)
   })
 
-  test("envelope.with() patches the given key and preserves the rest (incl. stream)", () => {
+  test("writeAttempt rewrites only the attempt scope, in place, and leaves the request scope alone", () => {
     const codec = createOpenAiCcCodec()
     const env = codec.parse(rawReq({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }))
-    const patched = env.with({ targetEndpoint: "/responses" })
-    expect(patched.targetEndpoint).toBe("/responses")
-    expect(patched.stream).toBe(true) // preserved across the with() rebuild
-    expect(patched.model?.id).toBe("gpt-4o")
-    expect(patched.clientFormat).toBe("openai-cc")
-    expect(env.targetEndpoint).toBe("/chat/completions") // original unchanged (immutable)
+    const patched = writeAttempt(env, { targetEndpoint: "/responses" })
+    expect(patched.attempt.targetEndpoint).toBe("/responses")
+    expect(patched.request.stream).toBe(true)
+    expect(patched.request.model?.id).toBe("gpt-4o")
+    expect(patched.request.clientFormat).toBe("openai-cc")
+    // CONTRACT CHANGE 2026-08-11: this used to assert the ORIGINAL env still read "/chat/completions", i.e. that `with()` returned a copy. The scopes are mutable now, so `writeAttempt` hands back the SAME envelope and the write is visible through the original handle — that identity is what lets a hook hold an envelope and keep seeing current values.
+    expect(patched).toBe(env)
+    expect(env.attempt.targetEndpoint).toBe("/responses")
   })
 
   test("envelope.view projects the CC payload (neutral read-only)", () => {

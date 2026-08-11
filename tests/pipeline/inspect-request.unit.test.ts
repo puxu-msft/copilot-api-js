@@ -21,20 +21,16 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 function makeEnv(body: unknown): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: undefined,
-    model: {},
-    stream: false,
-    body,
+    request: { clientFormat: "anthropic", model: {}, stream: false } as RequestEnvelope["request"],
+    attempt: { body: body, targetEndpoint: undefined, prepareHints: {} } as unknown as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
     ctx: {} as never,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -82,7 +78,10 @@ describe("driver.inspectRequest", () => {
     name: "append-flag",
     order: 100,
     appliesTo: () => true,
-    apply: (env: RequestEnvelope) => ({ env: env.with({ body: { ...(env.body as Record<string, unknown>), rewritten: true } }), changed: true }),
+    apply: (env: RequestEnvelope) => ({
+      env: writeAttempt(env, { body: { ...(env.attempt.body as Record<string, unknown>), rewritten: true } }),
+      changed: true,
+    }),
   } as unknown as RequestRewrite
 
   test("runs S1-S3, snapshots each stage + records per-rewrite {name, changed}", async () => {
@@ -137,7 +136,7 @@ describe("driver.inspectRequest", () => {
     ;(codec as { prepareWire: FormatCodec["prepareWire"] }).prepareWire = (env) => ({
       url: "https://up/v1/messages",
       headers: new Headers({ "x-beta": "b" }),
-      body: { wire: true, from: env.body as Record<string, unknown> },
+      body: { wire: true, from: env.attempt.body as Record<string, unknown> },
       stream: false,
     })
     const r = await driverWith(codec, [appendRewrite]).inspectRequest(RAW, "prepare-wire")

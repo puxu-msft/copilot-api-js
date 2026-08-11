@@ -151,6 +151,9 @@ describe("HTTP/2 first-terminal recorder", () => {
           events: [],
           protocolViolation: { availability: "none" },
         },
+        // This harness builds a bare recorder with no session source, so the connection is honestly
+        // reported as unsampled rather than invented. The wired-up case is covered in http2-client.it.
+        session: null,
       },
     ])
   })

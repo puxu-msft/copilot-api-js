@@ -27,7 +27,7 @@ import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 
 /** Minimal RequestEnvelope stub — `appliesTo` only reads `targetEndpoint`; `transform` reads nothing off env. */
 function env(targetEndpoint: string): RequestEnvelope {
-  return { targetEndpoint } as RequestEnvelope
+  return { attempt: { targetEndpoint } } as unknown as RequestEnvelope
 }
 
 describe("errorFrameCanonicalRewrite", () => {

@@ -15,11 +15,15 @@ import {
 } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
-import type { RawHttpRequest } from "~/lib/pipeline/types"
 
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  snapshotHistoryBody,
+  type RawHttpRequest,
+} from "~/lib/pipeline/types"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -31,7 +35,7 @@ const selected = (id: string): Model => mockModel(id, { vendor: "Anthropic", sup
 function raw(args: { bodyModel?: string; originalModel?: string; resolvedName?: string; modelOverride?: string }): RawHttpRequest {
   return {
     body: { model: args.bodyModel, messages: [] },
-    ...(args.originalModel !== undefined && { originalBodyForHistory: { model: args.originalModel, messages: [] } }),
+    ...(args.originalModel !== undefined && { originalBodyForHistory: snapshotHistoryBody({ model: args.originalModel, messages: [] }) }),
     ...(args.resolvedName !== undefined && { preResolved: { name: args.resolvedName, model: selected(args.resolvedName) } }),
     ...(args.modelOverride !== undefined && { modelOverride: args.modelOverride }),
     headers: new Headers(),

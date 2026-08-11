@@ -18,13 +18,18 @@ import { createResponseProcessor } from "~/lib/pipeline/stream/response-processo
 
 function envelope(captures?: { upstream: Array<unknown>; actions: Array<unknown>; transforms: Array<unknown> }): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: { id: "model" },
-    stream: true,
-    body: {},
+    request: {
+      clientFormat: "anthropic",
+      model: { id: "model" },
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: "/v1/messages",
+      body: {},
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {
       setSseEvents() {},
       captureUpstreamGenerationFrame(frame: unknown) {
@@ -38,9 +43,7 @@ function envelope(captures?: { upstream: Array<unknown>; actions: Array<unknown>
       },
       setAttemptTimingEpoch() {},
     },
-    with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>) {
-      return { ...this, ...patch }
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

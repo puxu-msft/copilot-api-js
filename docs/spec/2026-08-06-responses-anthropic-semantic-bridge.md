@@ -1,10 +1,24 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：首版已合入 master（`a0a53a6f`）。**本文件当前含尚未合并的更正**——计划两轮评审共触发 4 处规格更正（WebSearch oracle、error renderer exact 契约、renderer↔profile 类型级绑定、S2-local collector 的理由更正），待第三轮复评后随计划一并合并。
+> `[hard]` **状态：已被取代（2026-08-11）。本文不再是语义桥的权威。**
 >
-> 判定本文是否已合并，别读上面这句，跑：`git merge-base --is-ancestor HEAD master && echo merged || echo unmerged`（在本文所在分支执行）。
+> 语义桥的唯一权威是 [`docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted **v2**）。取代关系与逐项取舍理由见 [2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
 >
-> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09；计划评审整改后重基的最新 master）
+> **本文的承重内容已并入 RFC v2，不是被丢弃：**
+>
+> | 本文的贡献 | 并入位置 |
+> |---|---|
+> | N1 展示／续接双平面必须在类型上同时出现 | RFC §4.1（以 `SemanticItem` 必填 `disposition` 落地） |
+> | §8 continuation carrier 的 server-tool record | RFC §6.1（`responses-item-reference` / `responses-output-item`） |
+> | §9.3 Web Search 续接义务 | RFC §7 增补 |
+> | P0-1／P0-2 真实上游接受性探针 | RFC §17（C5／C7 前置门） |
+> | F5／F7／F8／F9 事实基线 | 见 ADR 第 6 项 |
+>
+> **未被采纳的部分**（各有理由，见 ADR「未采纳」节）：`BridgeDecision` 返回值形状、窄 IR `BridgeEmission`、`migratedKinds` 逐 family 迁移。
+>
+> 本文**保留为设计记录**，不删除（用户 2026-08-11 裁决两份并列保留）。**要实施语义桥，去 RFC v2**；本文的架构章节与 RFC 互斥，照本文实施会与正在执行的代码冲突。
+>
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09）——**已陈旧**，仅供理解本文写作时的上下文，不得据以实施。
 >
 > **适用范围**：OpenAI Responses 与 Anthropic Messages 之间的请求、非流式响应与流式响应双向翻译
 

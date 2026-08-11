@@ -234,6 +234,23 @@ export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMappi
 }
 
 /**
+ * The same decision, for the command-algebra owner, which holds the two indices in its own
+ * authorization record rather than a {@link WireBlockMapping} carrying a `remap` closure.
+ *
+ * It lives HERE rather than in `delivery/` so the remap primitive stays private to this module.
+ * Calling `remapAnthropicBlockIndex` from the delivery layer would open a second production remap
+ * site — the exact thing `tests/architecture/anchor-remap-single-authority.unit.test.ts` exists to
+ * prevent, and it caught that mistake when this function did not yet exist.
+ *
+ * Identity returns the ORIGINAL object, not a re-serialized equal one, so `===` stays meaningful.
+ * The offset is the difference of the two indices and NOT a count of anchors: continuation and
+ * recovery legs restart upstream indices even when no synthetic anchor ever opened.
+ */
+export function remapFrameToWireIndex(frame: ClientFrame, wireIndex: number, upstreamIndex: number): ClientFrame {
+  return wireIndex === upstreamIndex ? frame : remapAnthropicBlockIndex(frame, wireIndex - upstreamIndex)
+}
+
+/**
  * The UNIQUE synthetic keepalive injector (spec 2026-07-08-buffered-keepalive-empty-text-anchor §10.1.5
  * C1). The Anthropic handler builds ONE per streaming request and attaches it to the sink's
  * `heartbeat.injectAnchor` at sink construction — so it fires on an idle heartbeat tick with NO open

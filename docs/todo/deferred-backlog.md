@@ -2,6 +2,23 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 语义桥 `PairTranslationPolicy.serverTools` 的类型从未定义（2026-08-11，C2.2 执行时发现）
+
+- **根因 / 现状**：RFC §6 的 `PairTranslationPolicy` 列了 `serverTools: ServerToolCapabilities`，但 **`ServerToolCapabilities` 全仓只出现这一次**——就是该类型块里的这个引用本身，没有任何定义（复算：`rg -rn 'ServerToolCapabilities' --glob '*.ts' --glob '*.md' .`）。属**定义滞后**，不是 aspirational 引用：这个字段确有消费者预期（§7 的 server-tool 四格）。
+- **当前行为**：C2.2 落地的 `src/lib/pipeline/semantic/policy-resolver.ts` **显式不实现该字段**，并在类型注释里写明原因。resolver 返回的 policy 因此比 RFC §6 少一个字段。
+- **为何暂缓**：该字段的语义归 **§7／C5**（server-tool 四格）。在 C2.2 里发明它的形状等于**在错误的切片里冻结一份公共契约**——C5 真正要用它时几乎必然得改，而那时它已经进了 History 投影与 policy 快照。按 `broken-reference-supply-vs-delete`，此处选择「不补也不删引用」，而是把缺口显式化并交给拥有其语义的那一片。
+- **理想架构 / 若做需改什么**：C5.1／C5.2 定义 `ServerToolCapabilities`（至少要能表达 §7 四格各自的 native／function／text 降级能力），然后回到 `policy-resolver.ts` 补字段、补 §6.2 的默认值语义（未命中 rule 时 server-tool 能力取什么），并同步 RFC §6 让类型块与实现一致。
+- **触发条件**：C5 动工时**必须**先处置本条——它是那一片的输入。**发现方**：C2.2 实现期（2026-08-11），照 RFC §6 逐字落 `PairTranslationPolicy` 时发现该类型不可解析。
+
+## `createDownstreamDeliverySession` 是一个闭包里 20 个自由可变变量（2026-08-11，**正确性挂在「Commit 6 真的删掉它」上**）
+
+- **现状**：`src/lib/pipeline/delivery/session.ts` 的 `createDownstreamDeliverySession` 728 行、闭包内 **20 个 `let`**（口径：`rg -c '^  let ' src/lib/pipeline/delivery/session.ts`），横跨四个不相干关注点——生命周期（`state`／`finishReason`／`wireTorn`／`finalized`）、wire 观测账本（`messageEnvelope`／`openBlocks`／`pendingOpenBlocks`／`lastWriteAtMonotonic`／`lastContentDeltaAtMonotonic`／`semanticBlockCount`／`terminalWritten`／`writeCount`／`hasEmittedRealClientContent`）、心跳（`timer`／`heartbeatSuspended`／`heartbeatStopped`／`scaffoldAttempted`／`contentScaffoldAttempted`）、generation 身份（`winnerCandidateId`／`winnerSource`）。
+- **为什么这不只是难看**：generation emission command algebra 的中心不变量是**授权状态不得从观测状态推导**。在这个闭包里，授权数据（lease／mapping／index frontier）若并排成为第 21～23 个 `let`，没有任何东西阻止某个 command 读错那一边——design §4.3 点名的缺陷（`pulseOpenBlock` 从 post-wire ledger 选目标而非从授权注册表选）正是这个形状。
+- **本轮的处置与它的前提**：Commit 2 把新 owner 的授权注册表、serializer、terminal 状态机、心跳控制器建成**独立模块**（`delivery/{authorization,owner-serializer,owner-lifecycle,heartbeat-controller}.ts`），按关注点分对象，**不动这个旧闭包**——它按 RFC 计划在 **Commit 6 整体删除**，重构一份即将删掉的代码是白做。
+- **为何登记而不是现在修**：**这个判断完全挂在「Commit 6 真的会执行」上。** 若那一步被推迟或砍掉，这 20 个 `let` 就变成永久债，而 Commit 2 的做法不覆盖它。
+- **若做需改什么**：按上面四个关注点把闭包拆成四个对象（生命周期状态机 / 只读 wire ledger / 心跳控制器 / generation 身份），心跳与 ledger 已有对应的新模块可直接复用。**动手前先确认 Commit 6 的删除是否仍在计划内**——在计划内就别做，等删。进度见 [docs/rfc/2026-08-03-generation-emission-command-algebra/README.md](../rfc/2026-08-03-generation-emission-command-algebra/README.md)。
+
+
 ## history-search 子系统在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
 
 - **现状**：`test:backend` 里稳定 **14 fail**，全部落在两个文件——`tests/history/search/daemon.it.test.ts`（单跑 10 pass / **12 fail**）与 `tests/history/search/search-rest-cutover.it.test.ts`（单跑 **2 fail**）。两者都进 `it` 档、不进 `test:fast`，所以只在跑全后端时暴露。失败面是同一层：`listSearch` 的过滤与 `total` 语义（空过滤值被当成真过滤、`invalidQuery` 判定、命中总数不符），以及 daemon 的 freshness attestation；`search-rest-cutover` 的两条走的是真实 HTTP → UDS → sidecar → Tantivy 端到端链路。
@@ -10,6 +27,10 @@
 - **与争用假红的分界**：同一轮 `test:backend` 还报过 `web-search-not-found-rejection.http` / `generation-runtime-baseline.http` / `i9-h2-buffered-probe.http` / `shutdown-messages-lossless.http` / `history/client-response-status.it`，**那些是 shard 崩溃带出的假红**——四个 http 文件一起单跑 8 pass / 0 fail，且第二轮 `test:backend` 里自行消失（本机 load average 约 31，长期有无关重负载）。**只有上面两个 history-search 文件在两轮里都红、且单跑也红。**
 - **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
 - **若做需改什么**：先判定方向——是 native 侧（Rust `listSearch` 的过滤与 total 语义）回归，还是 TS 侧断言过时。**别默认后者**：这些断言写的是「空过滤值不得放宽真过滤」这类不变量，改断言去迁就实现会永久废掉它（→ user-rule `red-tests-may-be-guarding-something`）。取证起点是 `git log -- native/history-search/ src/lib/history/search-native*`，看红是否与某次 native 改动同期。
+
+## ✅ 已解决：四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11 发现，2026-08-11 修复）
+
+- **解决**：`69bea997` 把 `RequestEnvelope` 拆成 request/candidate/attempt 三个生命期作用域并改为可变，四份 `makeEnvelope` 合并成 `src/lib/pipeline/envelope.ts` 里的一份（参数化 lazy-view 工厂）。作用域按对象身份携带，新增字段无需改任何 codec，「漏抄一个字段静默消失」这一形态从结构上消失。本条原「理想架构」提到的那条文本守卫已删除，替换为 `tests/pipeline/semantic/config-snapshot.unit.test.ts` 里守新不变量的版本——四个 codec 都 import 共享 `makeEnvelope` 且不自建 builder。**保留下方原始条目正文作为根因存档。**
 
 ## 四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11）
 
@@ -1299,6 +1320,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **2026-08-09 补充（Batch 2b 实测）**：本 registry 的实例是**一次性**的（`start()` 后 `shutdown()` 即终态），因此「已停止但仍留在 registry」是唯一不可恢复的状态——下一次消费者拿到它、start 它、被告知 `has been shut down`。Batch 2b 因此把**三个**生命周期出口（`shutdownHistory`、`initHistory(false)`、`initHistory` 的重装分支）统一改成 **release（停止 + 清引用）而非只 stop**，见 `src/lib/history/state.ts`。**这条一次性语义应当写进 skill `owned-singleton-lifecycle` 的正文**：现有 skill 讲的是「谁拥有、怎么 compare-and-clear」，没讲「被顶掉的实例可能永远不能复活，因此 stop 与 clear 必须同时发生、且要在每一个出口都发生」。实证代价：分三轮才修对，中间两轮分别是 282 与 49 条全档失败，每轮都只修了眼前那条路径。改 skill 属指令类文本，需走评审，故登记于此。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
 
+## ✅ 已解决：`CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09 发现，2026-08-11 修复）
+
+- **解决**：按本条倾向的方案①**删除**——`69bea997` 移除了 `CandidateStateFork.responseState` 与 `supplies.createResponseState`。触发条件②命中（因 envelope 三作用域重塑要动 `candidate-state.ts` 与 `with()` 契约，顺手了结）。方案②（接通）不再适用：`with()` 已不存在，且响应侧状态的正确归属经复核就是 `CandidateResponseSession`（由 coordinator 经 `candidate.processor` 持有），它必须保持唯一可变身份，而 envelope 是逐 candidate 分叉的——两种语义不兼容，不该进 envelope。**保留下方原始条目正文作为根因存档。**
+
 ## `CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09，语义桥计划第三轮评审的邻域发现）
 
 - **根因 / 现状**：`src/lib/pipeline/generation/candidate-state.ts:29` 声明了 `readonly responseState?: unknown`，`:85` 也按 `supplies.createResponseState &&` 条件填充它，但**没有任何生产读点**：`driver.ts` 的 `forkEnv` 只把 `requestState` 挂回 env、**丢弃 `responseState`**（`rg 'responseState' src/lib/pipeline/driver.ts` 零命中）。也就是说这个 per-candidate 槽被造出来之后从未被送到任何消费者手里。
@@ -1391,7 +1416,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：① 去掉 `backend` 的默认参数，让调用方**必须**显式说明（默认参数正是这次说谎的机制——它让「没人传」看起来像「传了 legacy」）；② cutover 之后 `"legacy"` 在生产已不可达，考虑整体删除该联合成员，让类型系统直接拒绝这个状态；③ 同时处理上面那条一致性断言的归属。
 - **为何暂缓**：`②` 会牵动既有测试的断言，`③` 是行为决策（抛 vs 报告），都超出「收尾顺手修」的范围，而错误值本身不影响持久化正确性。
 - **触发条件**：下一次动 `/api/status` 的 History 段、或 Batch 6 的 query-RPC cutover（那时 backend 语义还会再变一次），两者取先到者。
-- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/tmp/2026-08-09-batch2b-review-gpt.md`）。
+- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/history-persistence-worker/archive-2026-08-11/2026-08-09-batch2b-review-gpt.md`）。
 
 ## semantic-write 架构守卫问的是拼写、不是能力（2026-08-09，Batch 2b 独立评审 minor）
 

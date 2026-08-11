@@ -137,3 +137,50 @@
 - 派活消息称「`99ef6713` 早于你本轮走查的 HEAD `e120a49c`」。**不成立**：`git log -1 --format='%ci'` → `99ef6713` 是 `2026-08-11 05:16:09`，`e120a49c` 是 `2026-08-11 05:12:43`，且 `git merge-base --is-ancestor 99ef6713 e120a49c` **返回非 0**（不是祖先）。
 - 也就是说，我上一轮走查时树上 KICKOFF:10 **确实**还指着已删除的项目 skill `session-closeout` 的 §6b，那条旁证在当时成立；修复是在我走查之后约 3 分钟落的。
 - 当前状态（已核）：`99ef6713` 已在 HEAD 里；KICKOFF:10 现在指 user-level skill `writing-handover-docs` 并附「旧名已删除」注；该 skill 的进度文件协议确实在 `~/.claude/skills/writing-handover-docs/SKILL.md:158`「## 派 implementer 时的进度文件 —— HANDOVER 的上游」；项目 skill 的删除提交是 `e7a9cadb`（`2026-08-08 22:05:13`），与 KICKOFF 里写的「2026-08-08 并入并删除」相符。**这条现在无缺陷。**
+
+---
+
+# R3 复评（整改提交 `8b821a44`）
+
+## F-N2（blocker）：**已消除**，且三问逐条核过
+
+- ① **命令实跑**（`awk` 抠出、未手打）：参数 `tr ' ' '\n' | rg -c '^tests/'` → **14**；`rg -c 'entry-evidence'` → **0**（确已移出）；逐个存在性检查无 MISSING；原样 `eval` 执行 → **`234 pass / 0 fail` / `Ran 234 tests across 14 files.` / exit 0**，无 `WriteFailed`。
+- ② **移出没有丢东西——你的判断成立，而且理由比你给的更硬**。你举的是「KICKOFF 单列了一条要自己跑」，那是**靠纪律**的保留；机械保留还有第二条：该守卫是 `.unit.test.ts`，而 `scripts/parallel-test.ts:56` 的 `BACKEND_SUFFIXES = ["unit","it","http"]` 决定了它**照常进 `test:backend`**——CLAUDE.md 规定交付前必跑那一档。所以「本特性 gate 里不跑」不等于「不跑」，覆盖面零损失。建议把这条机械保留也写进 KICKOFF，纪律那条才不是唯一防线。
+- ③ **红因描述属实**。守卫的发现口径是 `tests/infra/entry-evidence-schema.unit.test.ts:19` 的 `["unit","it","http"]`（不含 pty/e2e）。我按同口径独立枚举磁盘发现集与基线 JSON 求差：磁盘多出的**正好 4 个**——`tests/helpers/protocol-oracles/anthropic-sdk-oracle.unit.test.ts` 与 `tests/openai/semantic-bridge/` 下的 `client-wire-golden.http.test.ts`、`known-defects.unit.test.ts`、`mutation-registry-coverage.it.test.ts`；反向（基线有、磁盘无）为空。与你写的「少 4 个、三个在 semantic-bridge」逐字相符。
+- 判定：**blocker 已闭合**。
+
+### [nit] 归属判据里的两处措辞可以再硬一点（不影响可用性）
+
+- 「由 peer 提交 `588b0c09` … **引入**」——`588b0c09 test: cover both Anthropic event invariants` 是该文件的**最近一次改动**（正是你写的判据 `git log --oneline -1 -- <file>` 会返回的那个），**引入**它的是 `6af28887 test: extract shared SDK protocol oracles`（同为 2026-08-09）。id 与判据自洽，只是「引入」用词不准。
+- 「提交不是你的，就不是你的问题」——本仓**所有**提交的 author 都是同一个人（这 4 个也都是 `Pu Xu`），按作者分辨不出来。接手方第一次复验时恰好零提交，所以实际可用；但一旦他自己已经提交过几轮，这句就失效了。建议改成机械判据：**该 commit 在不在你自己的 `master..HEAD` 里**。
+
+## F-N1：**已消除**，说法属实
+
+- `>/dev/null` 已在命令末尾（`rg -c '>/dev/null'` → 1），且加了「承重、别删」的说明。
+- 「汇总在 stderr、覆盖率表在 stdout」这个说法我独立验过：`bun test <files> >/dev/null 2>tmp` 时 tmp 里拿得到 ` 238 pass / 1 fail / Ran 239 tests…`，而覆盖率表随 stdout 被丢弃。本轮按新命令实跑，判据行**读得到**（`234 pass / 0 fail`），连跑未再出现 `WriteFailed`。
+- 把它称作「过滤器造出来的假红」也准确——退出码来自覆盖率写盘失败而非测试。
+
+## F-N3：**已消除，且做得比我建议的更远**
+
+- 锚点补回为「已跑门禁（`3df0e08d`，随后在 `e120a49c` 复测）」，并加了「**这三项都是那两个 commit 上的读数，不是「此刻仍然如此」**——接手请自己重跑」。后半句是我没提的，它把「带锚点」升级成「带锚点 + 明示失效风险 + 指定动作」。
+
+## F-N4：**已消除**
+
+- `rg -n '^#+ .*Task [5-8]' docs/plan/2026-08-08-long-resident-operation-lifecycle.md` → 四条全中（`384/454/510/557` 上的 `### Task 5/6/7/8:`）。状态表四格与入口指引第 2 条都已改成这条 grep，且写明了「行号漂完从外观上看不出来」的理由。
+
+## C4 改写：**如实**
+
+- `404 {"error":"Entry not found"}` 与对照 `entries?limit=1` → `200`，与我的只读实测**逐字一致**；「失效的是这条记录，不是这条路径」这个区分是对的（我正是用那个 200 对照排除了「服务不可用/路由不存在」）。
+- `incident-manifest.zst` 实测存在、**541965 字节**（≈542 KB，十进制口径与文中一致），位于 `/home/xp/.claude/jobs/36fcb851/tmp/`，仓库内确实无副本；引用的 `docs/tmp/2026-08-10-long-resident-closeout-temp-manifest.md` 存在（9195 字节）。「唯一副本 + 用户裁决前不要清理」如实且必要。
+
+## [major] F-N5 —— 新发现：`236/239` 两个读数在 HANDOVER 里没跟上「gate 变 14 文件」
+
+- KICKOFF:44 已经补了限定：「（`3df0e08d`=236、`e120a49c`=239，**均含当时还在门内的 entry-evidence**）」。**HANDOVER 没有同步**：`HANDOVER:16` 仍写「通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**」，`HANDOVER:17` 仍写「合并之后的实测是 `e120a49c` 上的 `239 pass / 0 fail`」——两句都紧跟在 `HANDOVER:15`「focused gate 是 14 个文件」之后，读者会把它们当成**同一道 14 文件门**的读数。
+- 这正是本轮要治的那一类（改了一处、没改指向它的另一处），只是这次跨的是 KICKOFF→HANDOVER 这条缝。
+- 接手方会做出的错误动作：跑新命令得 `234 pass`，回头看 HANDOVER 说这道门是 236→239「随提交增长」，于是发现数字不增反降 5，判成有人删了测试或自己漏跑了文件，去追一个不存在的回归——而真相只是那两个读数含已被移出的第 15 个文件。
+- 修法：把 KICKOFF:44 已有的那句限定原样搬进 HANDOVER:16/17（或直接标注「15 文件时代的读数，与当前 14 文件门不可直接比较」）。
+
+## [minor] F-N6 —— 立案证据节里旧 bullet 与新 bullet 并列，语气自相矛盾
+
+- 新 bullet 已把「记录没了」写成实测确证，但同节保留的旧 bullet 仍是条件语气：「**若** History 已按保留策略淘汰该记录，该导出即不可再生」，且「是否长期留存属用户决定，不由本次收尾代劳」与新 bullet 的「在此之前不要清理那个目录」是同一件事说了两遍。
+- 接手方错误动作：轻——读到旧 bullet 会以为「淘汰」还只是一种可能，可能再去打一次那个 URL 确认。建议把两个 bullet 合并成一条，条件语气改成既成事实。

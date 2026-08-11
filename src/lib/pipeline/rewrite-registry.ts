@@ -24,9 +24,12 @@ import type { RequestEnvelope } from "./envelope"
 /**
  * One named request rewrite. The driver applies these in `order` after
  * assembly. `appliesTo` is the format + config(state) + context gate; `apply`
- * is a pure immutable transform returning the new envelope plus a `changed`
- * flag (drives the `request.rewrite_applied` diagnostic — `changed:false` is not
- * recorded).
+ * returns the envelope plus a `changed` flag (drives the
+ * `request.rewrite_applied` diagnostic — `changed:false` is not recorded).
+ *
+ * `apply` is NOT a pure transform over an immutable envelope: since 2026-08-11 the scopes are
+ * mutable and `writeAttempt` returns the SAME env object with a new `attempt.body`. Rewrites
+ * therefore compare BODIES (`sanitized !== baseline`) to fill `changed`, never envelope identity.
  */
 export interface RequestRewrite {
   /** Unique name; enters history sanitization diagnostics. */
@@ -35,13 +38,13 @@ export interface RequestRewrite {
   readonly order: number
   /** Format + config(state) + context gate. */
   appliesTo(env: RequestEnvelope): boolean
-  /** Pure transform over the envelope. */
+  /** Apply the rewrite. May mutate `env` in place (see the interface docstring). */
   apply(env: RequestEnvelope): RewriteResult
 }
 
 /** The outcome of a {@link RequestRewrite.apply}. */
 export interface RewriteResult {
-  /** Immutably-updated envelope. */
+  /** The envelope carrying the rewrite. Usually the SAME object as the input — see the {@link RequestRewrite} docstring. */
   env: RequestEnvelope
   /** Whether anything actually changed (`false` → diagnostic not recorded). */
   changed: boolean

@@ -48,17 +48,12 @@ export function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
 
 export function makeEnv(ctx: RequestContext, body: unknown = { v: 0 }): RequestEnvelope {
   const env = {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: {},
-    stream: true,
-    body,
+    request: { clientFormat: "openai-cc", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: body, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }

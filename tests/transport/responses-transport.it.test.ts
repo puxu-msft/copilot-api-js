@@ -60,7 +60,9 @@ function makeEnv(transports: Array<string>, clientAbortSignal?: AbortSignal, lif
     supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
   } as Model
   return {
-    model,
+    request: { model } as RequestEnvelope["request"],
+    attempt: {} as RequestEnvelope["attempt"],
+    candidate: {},
     ctx: {
       lifecycleSignal: lifecycleSignal ?? new AbortController().signal,
       setAttemptTransport: (transport: string) => transports.push(transport),

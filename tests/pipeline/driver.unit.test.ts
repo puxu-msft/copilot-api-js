@@ -64,6 +64,7 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { StreamClientAbortError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 
@@ -106,17 +107,12 @@ function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
 
 function makeEnv(ctx: RequestContext, body: unknown = { v: 0 }): RequestEnvelope {
   const env = {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: {},
-    stream: true,
-    body,
+    request: { clientFormat: "openai-cc", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: body, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -197,7 +193,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("429 is observed by admission and replayed as an explicit rate-limit dispatch", async () => {
     const { ctx, calls } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     let sends = 0
     const transport = makeTransport(async () => {
@@ -234,7 +231,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("429 falls through to semantic retry when admission has no retry instruction", async () => {
     const { ctx } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     let sends = 0
     const transport = makeTransport(async () => {
@@ -277,7 +275,8 @@ describe("driver.runRequest — orchestration", () => {
 
   test("WS before-first-event fallback starts a separately admitted HTTP dispatch", async () => {
     const { ctx, calls } = makeCtx()
-    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const env = makeEnv(ctx)
+    env.request.model = { id: "model" } as RequestEnvelope["request"]["model"]
     const { codec } = makeCodec({ env })
     const dispatchOptions: Array<unknown> = []
     let sends = 0
@@ -344,7 +343,7 @@ describe("driver.runRequest — orchestration", () => {
       env,
       decideRoute: () => ({ kind: "translate", to: "/responses" }),
       translateOut: (e) => {
-        seenEndpoint = e.targetEndpoint
+        seenEndpoint = e.attempt.targetEndpoint
         return e
       },
     })
@@ -363,12 +362,12 @@ describe("driver.runRequest — orchestration", () => {
       order,
       appliesTo: () => true,
       apply: (e) => {
-        const body = e.body as { steps: Array<string> }
-        return { env: e.with({ body: { steps: [...body.steps, name] } }), changed: true }
+        const body = e.attempt.body as { steps: Array<string> }
+        return { env: writeAttempt(e, { body: { steps: [...body.steps, name] } }), changed: true }
       },
     })
     let bodySent: unknown
-    const transport = makeTransport(async (_wire, e) => ((bodySent = e.body), okStream()))
+    const transport = makeTransport(async (_wire, e) => ((bodySent = e.attempt.body), okStream()))
     const driver = createPipelineDriver({
       ...BASE,
       codec,
@@ -401,7 +400,7 @@ describe("driver.runExchange — error-driven retry", () => {
         codec,
         decideRoute: (e) => codec.decideRoute(e),
         transport,
-        strategies: buildOpenAiCcStrategies({ originalPayload: env.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
+        strategies: buildOpenAiCcStrategies({ originalPayload: env.attempt.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
       })
 
       const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
@@ -729,22 +728,17 @@ describe("driver.runExchange — error-driven retry", () => {
     // deps.strategies for a MIGRATED cell — the legacy per-route factory carries recordFeature side effects
     // (via-responses / via-chat-completions-fallback) that the leg's translateOut now owns, so an eager call
     // would double-fire them on the live observability bus. A migrated env (openai-cc|/chat/completions, a
-    // real MIGRATED_CELLS entry, with the leg supply on requestState) drives the REAL chatCompletionsLeg.
+    // real MIGRATED_CELLS entry, with `request.legSupplyReady` set — the flag the REAL codecs' parse sets and
+    // the driver's `migratedCell()` discriminates on) drives the REAL chatCompletionsLeg.
     const { ctx } = makeCtx()
     const ccBody = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }
     const migratedEnv = {
-      clientFormat: "openai-cc",
-      targetEndpoint: "/chat/completions",
-      model: { id: "gpt-4o" },
-      stream: true,
-      body: ccBody,
+      request: { clientFormat: "openai-cc", model: { id: "gpt-4o" }, stream: true, truncateBaseline: ccBody, legSupplyReady: true } as RequestEnvelope["request"],
+      attempt: { body: ccBody, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       view: {},
-      prepareHints: {},
-      requestState: { truncateBaseline: ccBody },
-      ctx,
-      with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-        return { ...this, ...patch } as unknown as RequestEnvelope
-      },
+      ctx: ctx,
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
     const { codec } = makeCodec({ env: migratedEnv })
     let strategyFactoryCalls = 0
@@ -752,7 +746,12 @@ describe("driver.runExchange — error-driven retry", () => {
       strategyFactoryCalls++
       return []
     }
-    const transport = makeTransport(async () => okStream())
+    // `resolveExchangeStrategies` is reached ONLY from the exchange's error handler (`candidateStrategies ??=`),
+    // so a happy-path transport leaves the legacy factory unevaluated no matter which branch ran — the assertion
+    // below would then be green for a NON-migrated env too. Throwing forces the resolution to actually happen.
+    const transport = makeTransport(async () => {
+      throw new Error("boom")
+    })
     const driver = createPipelineDriver({
       ...BASE,
       codec,
@@ -761,8 +760,9 @@ describe("driver.runExchange — error-driven retry", () => {
       strategies: strategiesFactory,
     })
 
-    const result = await driver.runRequest({ body: {}, headers: new Headers() })
-    expect(result.ok).toBe(true)
+    // No strategy in the cell's stack claims a bare Error, so the driver rethrows — that is the point: the stack
+    // that got consulted was the CELL's.
+    await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     // The migrated cell composed its stack via the CellAssembly → the legacy factory was NEVER evaluated.
     expect(strategyFactoryCalls).toBe(0)
   })
@@ -1451,13 +1451,13 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
     const strategy: RetryStrategy = {
       name: "mutate-body",
       canHandle: () => true,
-      handle: async (_e, e) => ({ kind: "retry", env: e.with({ body: { v: 42 } }) }),
+      handle: async (_e, e) => ({ kind: "retry", env: writeAttempt(e, { body: { v: 42 } }) }),
     }
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
-    if (result.ok) expect((result.env.body as { v: number }).v).toBe(42) // pre-retry env would be 0
+    if (result.ok) expect((result.env.attempt.body as { v: number }).v).toBe(42) // pre-retry env would be 0
   })
 
   test("onMeta fires post-gate with the accepted retry's meta; onResolved receives the same meta (C0-②)", async () => {

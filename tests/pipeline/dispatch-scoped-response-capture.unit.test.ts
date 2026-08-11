@@ -26,17 +26,12 @@ function stream(label: string): AsyncIterable<UpstreamFrame> {
 
 function env(ctx: ReturnType<typeof createRequestContext>): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: { id: "claude-test" },
-    stream: true,
-    body: {},
+    request: { clientFormat: "anthropic", model: { id: "claude-test" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: {}, targetEndpoint: "/v1/messages", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

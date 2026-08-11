@@ -72,6 +72,7 @@ import { withCapturingManagerAsync } from "~/lib/context/manager"
 import { createRequestContext } from "~/lib/context/request"
 import { getEntry } from "~/lib/history"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 
 /** RFC-facing format names (the `format` param + the `entryId`→format mapping). */
@@ -213,19 +214,13 @@ const dryRunTransport: Transport = {
 
 /** Build the synthetic response-side env (no codec.parse → no global manager touch). */
 function buildEnv(ctx: RequestContext, cfg: ResponseFormatConfig, tools: unknown, stream: boolean): RequestEnvelope {
-  return {
-    clientFormat: cfg.clientFormat,
-    targetEndpoint: cfg.targetEndpoint,
-    model: {},
-    stream,
-    body: { tools },
-    view: {},
-    prepareHints: {},
+  return makeEnvelope({
+    // No `legSupplyReady`: the dry-run never dispatches upstream, so it stays on the legacy `deps.*` path rather than a migrated cell.
+    request: { clientFormat: cfg.clientFormat, model: {} as RequestEnvelope["request"]["model"], stream },
+    attempt: { body: { tools }, targetEndpoint: cfg.targetEndpoint, prepareHints: {} },
     ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
-  } as unknown as RequestEnvelope
+    createView: () => ({}) as RequestEnvelope["view"],
+  })
 }
 
 /**

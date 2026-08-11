@@ -1,11 +1,26 @@
 # RFC：Anthropic ↔ Responses protocol-neutral semantic bridge
 
-> 状态：Accepted，五轮对抗评审收口（零blocker／major）
-> 日期：2026-08-08
+> 状态：**Accepted v2**（v1 于 2026-08-08 经五轮对抗评审收口，零 blocker／major；v2 于 2026-08-11 并入 A 线贡献）
+> 日期：2026-08-08，v2 修订 2026-08-11
 > 决策输入：用户已逐节批准本 RFC 的目标架构、公共策略与渐进迁移设计
 > 事实输入：[2026-08-06 thinking translation audit](../tmp/2026-08-06-thinking-translation-audit.md)
 > 决策依据：[2026-08-08 protocol-neutral reasoning exchange ADR](../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)
 > 收窄的既有决策：[2026-07-14 lossless-per-pair bridge ADR](../decisions/2026-07-14-lossless-per-pair-bridge.md)
+> **v2 授权来源**：[2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)
+
+> `[hard]` **v2 修订说明（接手先读）。** 本仓库曾对同一特性存在两条互不引用、且都经用户批准的工作线；2026-08-11 用户裁决合并，本 RFC 成为**唯一权威**，A 线 [`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`](../spec/2026-08-06-responses-anthropic-semantic-bridge.md) 降为已被取代的设计记录。
+>
+> v2 相对 v1 的改动**全部是增量，且没有重编号任何既有小节**（B 计划按节号引用本文，重编号会静默失效）。五处改动：
+>
+> | 改动 | 位置 | 来源 |
+> |---|---|---|
+> | item 级 **presentation × continuation 双平面契约**（必填，穷尽每个 `ItemKind`） | 新增 §4.1 | A 线 N1 |
+> | `CarrierV2Envelope.kind` 增补两类 **server-tool record** | §6.1 增补 | A 线 §8 |
+> | server-tool 四格补**续接义务**（原表只规定展示面） | §7 增补 | A 线 §9.3 |
+> | **消歧**：server-tool carrier 从未被 §15 拒绝，属 omission | §15 增补 | 本次合并分析 |
+> | **真实上游接受性探针**作为 C5／C7 前置门 | 新增 §17 | A 线 P0-1／P0-2 |
+>
+> §11 的 commit DAG、C0–C11 的片划分、§15 的既有未采纳项**均未改动**。v1 的「不在实现阶段重新裁决已冻结公共契约」仍然有效——本次修改由上述 ADR 授权，不是实现期自行裁决。
 
 ## 1．问题与目标
 
@@ -390,6 +405,78 @@ Ledger invariants：
 - `fork()`可结构共享immutable history，但后续状态隔离。ledger只存活于candidate／dispatch／segment；不得跨retry或hedge candidate共享可变实例。
 - History记录provenance／disposition／terminal／opaque hash或presence，不复制opaque bytes。
 
+### 4.1 Item 级 presentation × continuation 双平面契约（v2 新增）
+
+> 来源：A 线 N1。授权：[2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
+
+**问题。** v1 只在 reasoning 域表达「可展示内容」与「可回送 opaque」的分离（`ReasoningExchangeItem.visible` 与 `opaque`），其余 item 的续接责任分散在 mapper／ledger／policy 的组合里，**没有任何一处强迫实现者回答「这个 item 的续接怎么办」**。
+
+后果可在代码里直接观察：`PerOutputItemState.opaque` 的类型是 `ReasoningExchangeItem["opaque"]`，opaque **在结构上被绑死在 reasoning 上**；`SemanticItem` 的 `server-tool-call`／`server-tool-result` 两臂没有任何位置能放续接状态；`DEGRADATION_REASONS.serverToolNotRepresentable` 只表达丢失，没有「已保留待续接」的对偶。因此 server-tool 续接的缺失**是结构必然，不是偶然疏忽**——补一个 carrier record 只修这一个实例，装上双平面才修那一类。
+
+**契约。** 两个平面各自独立裁决，且都必须被回答：
+
+```ts
+type PresentationDisposition =
+  | Readonly<{ kind: "native" }>
+  | Readonly<{ kind: "degraded"; reason: DegradationReason; correlationId?: string }>
+  | Readonly<{ kind: "dropped"; reason: DegradationReason }>
+
+type ContinuationDisposition =
+  /** 该 item 本就不携带任何跨轮状态。必须是事实，不是"我没想好"的默认值。 */
+  | Readonly<{ kind: "none" }>
+  /** 目标协议原生承载，无需 carrier。 */
+  | Readonly<{ kind: "native" }>
+  /** 经 carrier v2 回送；record 的可表达集合见 §6.1。 */
+  | Readonly<{ kind: "carrier"; record: ContinuationRecord }>
+  /** 确有状态但无法承载。必须产生 observation 与 History 记录，不得静默。 */
+  | Readonly<{ kind: "rejected"; reason: DegradationReason }>
+
+type ItemDisposition = Readonly<{
+  presentation: PresentationDisposition
+  continuation: ContinuationDisposition
+}>
+```
+
+`SemanticItem` 的**每一个臂**都必须带 `disposition: ItemDisposition`，字段**必填**。当前是**五个**顶层臂（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。
+
+**但强制力不来自「必填」本身**——见下文「机器守卫」：必填字段拦不住**新增**的缺字段臂，真正兜住全部臂的是那条非分布式条件类型断言。两者要一起写，缺一不可。
+
+不采纳 A 线原本的 `BridgeDecision` 返回值形状——ledger 已是状态权威，再引入一个并行 decision 返回值会制造第二个状态源。
+
+**不变量：**
+
+- `[hard]` **presentation 降级不授权 continuation 丢失。** `presentation.kind` 为 `degraded` 或 `dropped` 时，`continuation` 仍须独立裁决；实现不得因为展示已降级就把 continuation 填成 `rejected`。**这条正是 A 线 N1 的核心，也是 v1 缺失的那道闸。**
+- `continuation.kind === "rejected"` 必须携带具名 `DegradationReason`，并按 §10 产生 typed observation、请求级诊断与 History 记录。静默丢弃续接状态是 fail-closed 违规。
+- `kind: "drop"` 的 item，其 `continuation` 只能是 `none` 或 `rejected`——已丢弃的 item 不得声称原生承载或经 carrier 回送。
+- `continuation.kind === "carrier"` 时，`record` 的 provenance 必须满足 §3.3 不变量 2 的整体 identity 匹配；不匹配时降为 `rejected` 并剥除 opaque，不得改投另一种 record。
+- reasoning 的既有 `visible`／`opaque` 字段**保持不变**，是本契约在 reasoning 域的既有实例；v2 不重构它，只要求它同样填写 `disposition`，使两者一致可查。
+
+**机器守卫（形式已实测，勿照直觉写）。** `SemanticItem` 当前有**五个**顶层臂（`reasoning`／`text|degraded-text`／`function-call|server-tool-call`／`function-result|server-tool-result`／`drop`）。
+
+`[hard]` **「新增一个不带 `disposition` 的臂会编译失败」是错的。** 实测（tsc 5.9.3 `--strict`）：仅在联合里增加一个缺该字段的臂，**零报错**；只有当某个消费者**无条件**访问 `item.disposition` 时才报 `TS2339`。也就是说「靠必填字段自动拦住新增臂」是**假绿**——它依赖恰好存在这样一个消费者。
+
+有判别力的形式是**带 `false` 假分支的约束型断言**，实测可用：
+
+```ts
+type Assert<T extends true> = T
+export type _AllArmsCarryDisposition = Assert<[SemanticItem] extends [{ disposition: ItemDisposition }] ? true : false>
+```
+
+任一臂缺 `disposition` 时报 `TS2344`。
+
+`[hard]` **承重的是假分支写 `false`，不是方括号。** 四变体实测（tsc 5.9.3 `--strict`）：
+
+| 假分支 | 非分布式（方括号） | 分布式（裸写） |
+|---|---|---|
+| `? true : false` | **拦住** | **拦住** |
+| `? true : never` | **漏** | **漏** |
+
+`never` 满足任何约束，`Assert<never>` 静默通过——所以**假分支绝不能写 `never`**。方括号保留是因为「整个联合是否满足」才是本意，且它产出单个 boolean 而非被拓宽的联合；但它不是拦住的原因。（本表订正了本节初稿——初稿称方括号承重、分布式拦不住，实测证否。）
+
+这条断言属**类型层代码**，与 `SemanticItem` 同文件同生共死，不是测试脚手架。
+
+**`none` 不得被当作省事的默认值。** 四个 `ContinuationDisposition` kind 各有正样本，**并不能**阻止实现者给 server-tool 填 `none` 敷衍——`none` 对真正无跨轮状态的 item 是**合法且必须为绿**的，粗暴禁用它会制造 false-red。因此判别力必须来自**来源侧**而非枚举侧：`none` 的含义是「**经判定该 item 不存在跨轮状态**」，对源为 Responses 的 server-tool item，其取值只能是 `carrier` 或带具名 reason 的 `rejected`。该约束由 §7 的 server-tool 续接义务承接。
+
 ## 5．Ordered-turn request model
 
 Request bridge 使用独立 ordered-turn model，不复用 response ledger：
@@ -497,7 +584,7 @@ Envelope schema：
 ```ts
 type CarrierV2Envelope = Readonly<{
   v: 2
-  kind: "claude-signature" | "responses-encrypted"
+  kind: "claude-signature" | "responses-encrypted" | "responses-item-reference" | "responses-output-item"
   source: ModelIdentity & {
     responseId?: string
     itemId?: string
@@ -508,6 +595,60 @@ type CarrierV2Envelope = Readonly<{
     | { kind: "continuation"; phase: "pre" | "post"; continuationId: string; partial: boolean }
 }>
 ```
+
+**v2 增补的两类 server-tool record（来源：A 线 §8；授权见本文顶部 ADR）。** v1 的 `kind` 只有前两项，均为 reasoning 载体；`web_search_call` 等 server-tool 的 opaque id 与权威完整 item **无处安放**，导致 Responses → Anthropic → Responses 往返时续接状态静默丢失。§4.1 的 `ContinuationDisposition` 引用的 `ContinuationRecord` 即由本联合承载：
+
+| kind | 载荷 | 用途 |
+|---|---|---|
+| `responses-item-reference` | 可回指的最小引用（`opaque` 存序列化后的引用体） | 上游接受最小形态时优先使用，wire 体积小 |
+| `responses-output-item` | 权威完整 source item 的 canonical 序列化 | 最小形态不被接受、或需要完整保真时使用 |
+
+**这两类是同一能力的两种粒度，不是两个独立特性。**
+
+`[hard]` **探针已跑（2026-08-11），裁决为「不收窄」：`responses-output-item`（完整 item）仍是默认。** 证据与复现见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)。三条实测读数：
+
+| 形态 | 实测 |
+|---|---|
+| 完整 item 原样回传 | `200` |
+| 最小 `{type,id}` | `200` |
+| `{type:"item_reference",id}` | **`404` `not_found`** —— 对 `web_search_call` **不可用** |
+
+**为什么「都 200」不能用来收窄**：同一轮实测发现，**随手编造的短 id（`ws_short_id_1`）也返回 `200`**——上游并不校验该 id 是否指向一次真实的历史搜索。机制是它对该 id 做**解密**：解密成功即当作服务端不透明引用；解密失败则退回普通 item-id 规则、撞 64 字符上限而 `400`（真实 id 翻一个字符即 `400`，证明确在解密）。既然伪造与真实同样被接受，**「被接受」就不构成续接有效的证据**，这正是 §17 P4 写下的作废条件。
+
+因此保留完整 item：`{type,id}` 未被证明更差，但也**未被证明保住了同样多的东西**——完整 item 是唯一保全了我们观测不到的那部分的形态。`responses-item-reference` **保留在联合里**（其它 server tool 将来可能支持），但**对 `web_search_call` 已实测不可用**，实现不得对它使用该 kind。
+
+**`ContinuationRecord` 的定义（§4.1 引用的就是它）。** 仅把 `kind` 加进联合、而把载荷留成无约束 `string`，**不足以让 §7 红线机器可判**：那样 `opaque` 里可以是任意序列化内容，包括一个伪装成 Responses item 的 Anthropic `web_search_tool_result`。故载荷必须带判别字段与受限类型集：
+
+```ts
+type ContinuationRecord =
+  | Readonly<{ kind: "claude-signature"; opaque: string }>
+  | Readonly<{ kind: "responses-encrypted"; opaque: string }>
+  | Readonly<{
+      kind: "responses-item-reference"
+      /** 只允许回指，不含内容。 */
+      ref: Readonly<{ type: ResponsesServerToolItemType; id: string }>
+    }>
+  | Readonly<{
+      kind: "responses-output-item"
+      /** 权威完整 source item；type 必须在受限集合内。 */
+      item: Readonly<{ type: ResponsesServerToolItemType }> & Readonly<Record<string, unknown>>
+    }>
+
+/** 受限集合：只有 Responses 侧的 server-tool item 类型可进 carrier。随能力开通逐条增补，不用裸 string。 */
+type ResponsesServerToolItemType = "web_search_call"
+```
+
+`[hard]` **emitter 约束：`ContinuationRecord` 永不投影为 Anthropic 原生 server-tool 结果 block。** 它只有两个合法去向——回送 Responses 上游，或作为不可见续接状态随 carrier 往返。任何把它渲染成 Anthropic `web_search_tool_result` 的路径都违反 §7 红线。**这条约束使「正交」成为可执行判据，而不只是意图声明**：前者管回家的路，后者管不许造假，二者靠受限 type 集合与本条 emitter 约束共同保证。
+
+decoder 相应的负样本（C7 承接）：伪装成 Responses item 的 Anthropic block、不在受限集合内的 item type、`source.protocol` 与 `kind` 不一致——三者都必须 fail-closed。
+
+约束（与前两类一致，不另立规则）：
+
+- decoder 的 wire prefix／`kind`／`source.protocol` 联合校验必须同步扩展：两类 server-tool record **只允许 Responses 来源**；任一不一致 fail-closed，不按 `opaque` 内容猜 kind。
+- 同 §3.3 不变量 2：只有 protocol、provider、resolved model 三者**全部**匹配 target 才 preserve；任一维不同即剥除并按 §4.1 记为 `continuation: rejected`，不得降级改投另一种 record。
+- `opaque` 仍只存在于 carrier 与 request-local ledger；observation／History 只存 version、source、boundary、hash／presence，不复制正文。
+- **红线不变**：本增补**不**授权合成 Anthropic `web_search_tool_result`（§7）。它保存的是 **Responses 侧**的续接状态以便回送 Responses 上游，与「不得伪造 Anthropic 签名内容」正交——一个管回家的路，一个管不许造假。
+
 
 - 先用独立递归 validator 证明输入只含普通 JSON 值，再调用项目已锁定的 `safe-stable-stringify@2.5.0` 生成 canonical JSON。不得依赖库自行拒绝：实测该库会把 Infinity/NaN 变为 `null`、省略 `undefined`、把 bigint 数值化、把 cycle 写成 `"[Circular]"`。validator 遇 bigint、function、symbol、undefined、cycle 与非有限数字必须 fail-closed，并在测试中逐项正控。
 - 编码为无 padding base64url。解码前校验字符集与长度；解码后按 schema 验证，再 canonical stringify + base64url re-encode，必须与原 payload 字节相等。
@@ -553,6 +694,21 @@ Capability table 穷举：
 | live non-stream response | 与 stream 同一 semantic disposition |
 
 红线：永不合成 Anthropic `web_search_tool_result`；该 block 需要代理无法伪造的上游签名内容。合法处保结构；无法表示的 result 用带关联 ID 的可读 text 降级。
+
+**v2 增补：上表只规定展示面，续接面另有义务（来源：A 线 §9.3；授权见本文顶部 ADR）。**
+
+上表四格描述的全部是 `presentation` 平面。按 §4.1，每格**还必须独立裁决 `continuation` 平面**——`[hard]` **展示降级不授权丢弃续接状态**。具体到 server-tool：
+
+| 格 | presentation（上表，不变） | continuation（v2 新增义务） |
+|---|---|---|
+| history assistant use | native/function，否则带 correlation ID 的 text | 源为 Responses 时，保存可回送的 source item 或其引用（§6.1 的两类 record）；不可保存时记 `rejected` + 具名 reason |
+| history user result | 保留 result/error 与 correlation ID，否则 text | 同上 |
+| live streaming response | 与 non-stream 同一 semantic disposition | 与 non-stream 同一 continuation disposition |
+| live non-stream response | 与 stream 同一 semantic disposition | 与 stream 同一 continuation disposition |
+
+**降级为 text 时尤其要注意**：把 `web_search_call` 渲染成带 correlation ID 的可读 text 是**展示面的合法降级**，但它**不得同时删除** Responses 侧的 opaque id 或权威 source item——否则下一轮回到 Responses 上游时，该 server-tool 的续接状态已不可恢复。v1 缺的正是这条：`serverToolNotRepresentable` 只表达展示不可表示，被实现者顺势读成「所以续接也可以丢」。
+
+红线与本义务**正交，不冲突**：不合成 Anthropic 的签名结果，管的是「不许造假」；保存 Responses 侧续接状态，管的是「回得了家」。两者可同时成立，且必须同时成立。
 
 ## 8．Structured output policy
 
@@ -944,6 +1100,51 @@ shadow只写request-local比较器；任何客户端、日志、History、指标
 
 本轮不采用。缺跨provider接受性证据；未来须先PoC和独立ADR。
 
+### （消歧，v2 增补）server-tool 私有 carrier —— **不在本节，未被拒绝**
+
+上面两条拒绝的是 structured-output 与 context-management 的私有 carrier。**server-tool（`web_search_call` 等）的续接 carrier 从未被本节拒绝过**——v1 只是**没有覆盖它**，属 omission 而非裁决。v2 按 §6.1 予以采纳，并保留与 context-management 同一道门槛：先交真实上游接受性证据（§17），再落地。
+
+读者不得据本节把 server-tool carrier 当成已被否决的方案。
+
 ## 16．实施前门
 
 本 RFC 定稿并合入 master 后，实施仍需独立 plan/kickoff 文档。用户已在 2026-08-08 本轮明确授权主会话作为协调者拆分小片并逐步实现，因此 plan 定稿后无需再次询问是否开始 C0；只有新的公共契约分叉、范围变化或不可逆动作才停下裁决。实施计划必须把 C0–C11 拆成可直接派给独立 implementer 的小片，并为每片定义进度文件、commit invariant、测试、mutation和review闭环。
+
+## 17．真实上游接受性探针（v2 新增，C5／C7 前置门）
+
+> 来源：A 线 P0-1／P0-2。授权：[2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
+>
+> **状态（2026-08-11）：P1／P3／P4／P5(wire 侧) 已跑，P2 已显式豁免，P5 的 carrier 侧待 C7.1。** 结论、证据与「它没有证明什么」见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)，默认 record 的裁决已回填 §6.1。
+>
+> `[hard]` **P4 只成立一半，据此裁定「不收窄形态」。** 长 id 被篡改会以可区分方式失败（`400`），但**短的伪造 id 被静默接受（`200`）**——上游不校验该 id 是否指向真实历史搜索。按下方 P4 条款，此时「接受」不构成续接有效的证据，故保留完整 item 作默认。
+>
+> **P5（wire 侧）**：`web_search_call.id` 在 `output_item.added` 与 `.done` 之间**稳定**，故 carrier 不需要「取哪个事件的 id」这道裁决。⚠️ **这不推翻本仓既有的「GHC 逐事件重新加密 `item.id`」——那条测于 `function_call`，是不同 item 类型，两者不矛盾**；不得据此放宽 function_call 侧纪律。
+>
+> **P2 显式豁免**：完整 item 的回传与 `status` 无关，故 complete／incomplete 之别改变不了当前裁决（两次尝试也未复现出 incomplete 变体）。**但将来若要收窄形态，必须先补 P2。**
+>
+> **P5 的 carrier 侧仍欠**：我方 carrier v2 的 byte-exact 编解码往返尚无实现可测，随 C7.1 一并验。
+
+**为什么需要它。** §2 规定 SDK 只作客户端 oracle，C0 规定「Live GHC 只采 fixture、校准机制解释，不作 merge correctness gate」。这对 reasoning carrier 是够的——它的往返已有既有证据。但 §6.1 新增的两类 server-tool record **回答不了「哪一种形态被真实 Responses 上游接受」**，而这个问题**只有真实上游能回答**：本地 encode↔decode 自洽证明不了接受性，两端同源会一起错。
+
+这也与本 RFC 既有立场一致：§15 暂缓 context-management 私有 carrier 的理由正是「缺跨 provider 接受性证据；未来须先 PoC 和独立 ADR」。**该门槛在此保留、不予豁免**——server-tool carrier 同样先交证据再落地。
+
+**现有证据的边界（不得夸大）：** 既有真实探针已证明**完整 `web_search_call` 能被 Responses 端点接受**；**尚未**证明 `{type,id}`、`item_reference` 或裸 opaque id 中任何一种最小形态足够。故探针的任务是**收窄形态**，不是从零证明可行性。
+
+### 17.1 必须回答的命题
+
+| # | 命题 | 判据 |
+|---|---|---|
+| P1 | 最小可回喂形态是哪一种 | 对完整 item／`{type,id}`／`item_reference`／裸 id 四种形态各发一次真实请求，记录接受或拒绝及上游错误体 |
+| P2 | 形态结论是否跨状态稳定 | 至少覆盖 complete 与 incomplete 两种 source item 终态 |
+| P3 | 形态结论是否跨模型稳定 | 至少覆盖同模型、别名、异模型三种 target identity |
+| P4 | 篡改可区分 | 正控：完整 item 回喂成功；负控：篡改 id 后上游必须以**可区分方式**失败，不得静默接受 |
+| P5 | carrier 通道是否 byte-exact | 经真实 SDK／客户端 echo 一轮后，opaque 必须 byte-exact 恢复；覆盖 stream 与 non-stream |
+
+### 17.2 门的位置与效力
+
+- **前置于 C5（server-tool 四格）与 C7（carrier v2 provenance）**：这两片是 server-tool continuation 的落地点，探针结论决定 §6.1 采用哪一种 record 作为默认。
+- **不阻塞 C1–C4**：双平面契约（§4.1）是类型层义务，不依赖探针结论；`continuation` 先按保守默认 `responses-output-item` 填写，探针结论到位后再收窄。
+- `[hard]` **P4 的负控不可省。** 只验证「完整 item 成功」是单向证据——若上游对篡改 id 也静默接受，说明它根本没在校验，那么「接受」不构成续接有效的证据。**正负两控齐了才算这道门通过。**
+- 探针属真实上游调用，按项目纪律执行：**不碰 4141 主服务器**，起独立端口与独立 History，按精确 PID 清理。
+- 结论落 `exp/<topic>/README.md`，**必须含「它没有证明什么」一节**；随后回填 §6.1 的默认选择，并在同一 commit 更新本节状态。
+

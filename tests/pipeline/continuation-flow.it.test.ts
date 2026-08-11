@@ -77,7 +77,7 @@ function makeCodec(): FormatCodec {
       throw new Error("parse not used")
     },
     translateOut: (env) => env,
-    prepareWire: (env) => ({ url: "u", headers: new Headers(), body: env.body, stream: true }) as PreparedRequest,
+    prepareWire: (env) => ({ url: "u", headers: new Headers(), body: env.attempt.body, stream: true }) as PreparedRequest,
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (u) => u,
     formatError: () => ({ event: "error", data: "{}" }) as ClientFrame,
@@ -88,17 +88,16 @@ function makeCodec(): FormatCodec {
 function makeEnv(): RequestEnvelope {
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: {},
-    stream: true,
-    body: { model: "claude-opus-4", max_tokens: 100, messages: [{ role: "user", content: "hi" }] },
+    request: { clientFormat: "anthropic", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: {
+      body: { model: "claude-opus-4", max_tokens: 100, messages: [{ role: "user", content: "hi" }] },
+      targetEndpoint: "/v1/messages",
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

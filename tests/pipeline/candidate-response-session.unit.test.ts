@@ -26,13 +26,18 @@ import { ResponseCodecRenderError } from "~/lib/pipeline/stream/response-process
 
 function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {
   const value = {
-    clientFormat: format,
-    targetEndpoint: "/chat/completions" as const,
-    model: { id: "test-model" } as never,
-    stream: true,
-    body: {},
+    request: {
+      clientFormat: format,
+      model: { id: "test-model" } as never,
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: "/chat/completions" as const,
+      body: {},
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {} as never,
-    prepareHints: {},
     ctx: {
       captureGenerationFrameTransform() {},
       captureGenerationDispatchFrameTransform() {},
@@ -43,11 +48,9 @@ function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {
       setSseEvents() {},
       setAttemptTimingEpoch() {},
     } as never,
-    with(patch: Partial<RequestEnvelope>) {
-      return Object.assign(Object.create(Object.getPrototypeOf(value)), value, patch) as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
-  return value as RequestEnvelope
+  return value as unknown as RequestEnvelope
 }
 
 function renderer(id: string): CandidateResponseRenderer & { readonly seen: Array<string> } {

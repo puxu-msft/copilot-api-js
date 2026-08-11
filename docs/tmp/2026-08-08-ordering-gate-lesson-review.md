@@ -19,7 +19,7 @@
 ## A1–A7 逐项核验
 
 - **A1：满足。** 具体形态在正文 `:8,18`，可执行判据在 `:20`，本轮实例在 `:10,15-16`；不是只写“意识到了”。但判据须按上述 major 收窄，否则其可执行性伴随 false-red。
-- **A2：属实。** `git show 922b741b:docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md` 有 56 个数据行，56 行的“清理前置”列逐字相同；`docs/tmp/2026-08-08-history-worker-batch-1b-closeout-review-final.md:23-29,47` 明确将断口判为 major，初轮 verdict 为 0 blocker／2 major。
+- **A2：属实。** `git show 922b741b:docs/tmp/2026-08-08-history-worker-batch-1b-temp-manifest.md` 有 56 个数据行，56 行的“清理前置”列逐字相同；`docs/history-persistence-worker/archive-2026-08-11/2026-08-08-history-worker-batch-1b-closeout-review-final.md:23-29,47` 明确将断口判为 major，初轮 verdict 为 0 blocker／2 major。
 - **A3：属实。** 两个 slug 对应文件均存在，frontmatter `name` 精确一致；前者讲“闸门缺可达触发点／触发宿主消失”，后者讲“通过性结论不自证”，链接语义匹配。
 - **A4：不构成重复。** 既有条目限定于 `downgrade-self-adjudicated-gates` 的未来会话触发与裁决流程；新条目讨论任意顺序门、不可控生命周期事件及“消门”设计。两者同属执行接缝家族，但适用域、失败机制和修法不同，保留独立条目并互链合理。
 - **A5：符合体例。** `MEMORY.md:34` 同时含触发症状“写 X 必须晚于 Y”、防漏动作“查触发方／改成提前无害”和本轮辨识样本；长度与相邻 `:33,35` 同档。该行也需随 major 一并收窄，不能继续复述过强二分法。

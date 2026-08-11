@@ -25,11 +25,12 @@
  *
  * ## Cross-axis state carriers (RFC §11.2 / §11.9 HIGH-B)
  * A CellAssembly is STATELESS per cell (one instance per `cf × te`) — every method reads what it needs
- * from `env`. Request-lifecycle-STABLE supply (truncateBaseline / resanitize / the shared mutable betaProbe
- * / anthropic-beta seed) lives on `env.requestState` (a `readonly` field the `with()` copy preserves by
- * reference — NOT the replace-semantics `prepareHints`, R2). Per-attempt retry intent stays in
+ * from `env`. Request-lifecycle-STABLE supply splits by scope: the pure values (truncateBaseline /
+ * anthropic-beta seed) live on `env.request`, the opaque mutable holders (resanitize / the shared betaProbe)
+ * on `env.candidate` — the scope objects are shared by reference across attempts (NOT the replace-semantics
+ * `prepareHints`, R2). Per-attempt retry intent stays in
  * `prepareHints`. Side-channel recordings (effectiveMessages / initialSanitizationInfo / strippedCacheControl)
- * are written to `ctx`. The betaProbe is read LAZILY from `env.requestState.betaProbe` at each call (R3 —
+ * are written to `ctx`. The betaProbe is read LAZILY from `env.candidate.betaProbe` at each call (R3 —
  * reference sharing + lazy read, never a construct-time snapshot).
  *
  * ## Migration state (C1-C5)
@@ -111,7 +112,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
   // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire).
   anthropic: (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicMessagesRetrySemantics()
       }
@@ -123,14 +124,14 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
   // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
   // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
   "openai-cc": (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -142,7 +143,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
@@ -150,7 +151,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
   // Anthropic stack). RETRY_SEMANTICS reads env.targetEndpoint to pick → a 2D function, NOT a cf scalar.
   "openai-responses": (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -162,13 +163,13 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return responsesDirectRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
   // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
-    switch (env.targetEndpoint) {
+    switch (env.attempt.targetEndpoint) {
       case ENDPOINT.MESSAGES: {
         return anthropicReverseRetrySemantics()
       }
@@ -180,7 +181,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
         return viaResponsesRetrySemantics()
       }
       default: {
-        return assertExhaustiveEndpoint(env.targetEndpoint)
+        return assertExhaustiveEndpoint(env.attempt.targetEndpoint)
       }
     }
   },
@@ -198,7 +199,7 @@ function assertExhaustiveEndpoint(te: never): never {
 /**
  * The WIRE half of a cell, keyed by `targetEndpoint` — the outbound-leg concerns that were scattered across
  * the codec's per-leg `prepareWire`/`renderResponse` forks + the cross-format delegate. Every method reads
- * `env` (incl. `env.requestState` for the stable supply, `env.clientFormat` where translateOut selects the
+ * `env` (incl. `env.request` + `env.candidate` for the stable supply, `env.request.clientFormat` where translateOut selects the
  * source translator). Produces the wire strategy builder {@link CellAssembly.buildStrategies} composes with
  * the {@link RetrySemanticsSpec}.
  */
@@ -208,7 +209,7 @@ export interface OutboundLeg {
   translateOut(env: RequestEnvelope): RequestEnvelope
   /** This leg's S3 upstream-wire request-rewrite chain (e.g. reverse Anthropic sanitize on a `@messages` leg). */
   requestRewrites(env: RequestEnvelope): ReadonlyArray<RequestRewrite>
-  /** S4 last-mile: derive the wire bytes for one attempt; writes `env.requestState.betaProbe.recordOutbound` + ctx side-channel. */
+  /** S4 last-mile: derive the wire bytes for one attempt; writes `env.candidate.betaProbe.recordOutbound` + ctx side-channel. */
   prepareWire(env: RequestEnvelope): PreparedRequest
   /** This leg's S5 response-rewrite chain. */
   responseRewrites(env: RequestEnvelope): ReadonlyArray<ResponseRewrite>
@@ -218,7 +219,7 @@ export interface OutboundLeg {
   sampleWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample
   /**
    * The wire-side retry strategies for THIS leg, given the composed {@link RetrySemanticsSpec} (auto-truncate /
-   * maxRetries) + `env` (reads `env.requestState` for the stable supply — truncateBaseline / resanitize /
+   * maxRetries) + `env` (reads `env.request` + `env.candidate` for the stable supply — truncateBaseline / resanitize /
    * betaProbe). The Phase-7 direct guard: this MUST be non-empty for every live cell (L1 test).
    */
   buildLegStrategies(spec: RetrySemanticsSpec, env: RequestEnvelope): ReadonlyArray<RetryStrategy>

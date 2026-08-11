@@ -78,9 +78,9 @@ export function makeRealAnthropicDriver(transport: Transport): PipelineDriverWit
       const resanitize = codec.getResanitize()
       if (!resanitize) throw new Error("resanitize chain unavailable — codec.parse did not run")
       return buildAnthropicStrategies({
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
+        originalPayload: codec.getTruncateBaseline() ?? (env.attempt.body as MessagesPayload),
         resanitize,
-        model: env.model as never,
+        model: env.request.model as never,
         maxRetries: state.maxReactiveRetries,
         betaProbe,
       })

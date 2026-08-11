@@ -107,6 +107,14 @@ const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
  */
 interface H2SessionEntry {
   session: http2.ClientHttp2Session
+  /**
+   * Process-monotonic identity for THIS h2 connection, stable for its whole life.
+   *
+   * The point is correlation across dispatches: "did three requests on one connection die at the same instant?" separates a connection-level event from a per-stream cancel, and that question is unanswerable without a shared key. `rstCode` cannot answer it — a local abort, a peer CANCEL and a dead connection all surface as 8 (measured, exp/h2-termination-observability/).
+   *
+   * ⚠️ NOT `HistoryEntry.sessionId` / `EntrySummary.sessionId`, which is the CLIENT conversation dimension. Two different identity domains; collapsing them destroys both.
+   */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
@@ -142,6 +150,38 @@ const pending = new Map<string, Promise<H2SessionEntry>>()
 let poolEpoch = 0
 /** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
 let currentGeneration = 0
+/**
+ * Destroy the pooled session carrying a stream that would not close, and report what it cost.
+ *
+ * A connection holding an unkillable stream cannot be handed to the next request, so it leaves the pool for good. Its siblings die with it — that is the real price of the eviction, so it is counted and returned rather than quietly absorbed.
+ *
+ * Exported for tests only via {@link evictSessionForTests}: the branch that calls it is effectively unreachable from a loopback test, because the client's own `req.close()` resolves the stream locally so the public path always takes the "closed in time" branch. Testing the destructive bookkeeping directly is honest; asserting it through a path that never gets there would not be.
+ */
+function evictUnclosableSession(entry: H2SessionEntry): { sessionId: string; affectedStreams: number } {
+  // Counted AFTER this stream's own slot was released, so it is strictly the siblings that suffer.
+  const affectedStreams = Math.max(0, entry.activeStreamCount)
+  // Belt and braces, and the braces are load-bearing: `destroy()` below normally removes the entry for
+  // us via the session's own close → dispose path, but on an ALREADY-destroyed session it is a no-op
+  // that emits nothing, and then this explicit removal is the only thing keeping a dead connection out
+  // of the routable pool. (Measured: skipping only this line still passes; skipping both does not.)
+  removeSessionEntry(entry)
+  retiringSessions.delete(entry)
+  try {
+    entry.session.destroy()
+  } catch {
+    // Already gone; the pool bookkeeping above is what actually mattered.
+  }
+  return { sessionId: entry.sessionId, affectedStreams }
+}
+
+/** Monotonic within the process — never reused, so a session id in History always names one physical connection. */
+let nextSessionSequence = 0
+/**
+ * How long a forcibly-cancelled stream gets to actually close before its pool slot is reclaimed anyway.
+ *
+ * Deliberately short and fixed: the long wait already happened (the teardown barrier's grace expired to get here), so this is only the tail for the peer to answer an RST it has already been sent.
+ */
+const FORCED_TEARDOWN_TAIL_MS = 250
 let reconcileState: "idle" | "running" | "failed" = "idle"
 let lastCompletedGeneration = 0
 let lastReconcileError: string | null = null
@@ -549,12 +589,37 @@ function clearIdleTimer(entry: H2SessionEntry): void {
   }
 }
 
-/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
-function releaseReservation(entry: H2SessionEntry): void {
+/**
+ * Give back one slot on `entry` and re-run the consequences of a session becoming less busy.
+ *
+ * The four steps travel together and must not be split: the count drop is what makes the session eligible for reclaim, reaching zero is what arms the idle reaper, and a freed slot is what a capacity-blocked waiter is sleeping on. Dropping any one of them strands either the session or the waiter.
+ */
+function releaseSessionSlot(entry: H2SessionEntry): void {
   entry.activeStreamCount -= 1
   maybeReclaimRetiringSession(entry)
   if (entry.activeStreamCount === 0) armIdleTimer(entry)
   wakeOriginSlotWaiter(entry.origin) // a slot on this origin just freed → let a capped waiter retry
+}
+
+/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
+function releaseReservation(entry: H2SessionEntry): void {
+  releaseSessionSlot(entry)
+}
+
+/**
+ * The slot owned by ONE live stream, releasable at most once.
+ *
+ * Today the normal `close` path is the only releaser and is guaranteed to fire once, so exactly-once is currently unobservable — but it is guarded by construction rather than by argument because A4-4's force-dispose path releases the same slot when a stream refuses to close. Two independent releasers on one counter is exactly how capacity accounting drifts: a double release makes the pool believe it has a slot it does not, and the drift is silent until the cap starts admitting streams it should have queued.
+ *
+ * The counter has no floor of its own, so the idempotence has to live here.
+ */
+function createStreamSlotRelease(entry: H2SessionEntry): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    releaseSessionSlot(entry)
+  }
 }
 
 /**
@@ -622,6 +687,7 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
     const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs, undefined, pingObserverFor(pingStats))
     const entry: H2SessionEntry = {
       session,
+      sessionId: `h2-${(nextSessionSequence += 1)}`,
       origin,
       generation: currentGeneration, // === generationAtStart, confirmed above
       lifecycle: "active",
@@ -922,6 +988,8 @@ export function reconcileH2SessionsForConfigChange(): void {
 
 /** Per-origin h2 session status row for /api/status (P5). */
 export interface H2SessionStatusRow {
+  /** Process-monotonic h2 CONNECTION id — the same key that appears in History's termination snapshots, so a live session can be tied to a past incident. NOT the client conversation `sessionId`. */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
@@ -934,6 +1002,7 @@ export interface H2SessionStatusRow {
 
 function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
   return {
+    sessionId: entry.sessionId,
     origin: entry.origin,
     generation: entry.generation,
     lifecycle: entry.lifecycle,
@@ -967,6 +1036,19 @@ let sessionFactory: (origin: string) => http2.ClientHttp2Session | Promise<http2
 export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.ClientHttp2Session | Promise<http2.ClientHttp2Session>) | undefined): void {
   closeHttp2Sessions()
   sessionFactory = fn ?? createSession
+}
+
+/**
+ * Test-only: run the forced-eviction bookkeeping against a live pooled session, named by the id the
+ * status snapshot reports. Throws if no such session is pooled, so a test cannot silently assert
+ * against nothing.
+ */
+export function evictSessionForTests(sessionId: string): { sessionId: string; affectedStreams: number } {
+  for (const arr of sessions.values()) {
+    for (const entry of arr) if (entry.sessionId === sessionId) return evictUnclosableSession(entry)
+  }
+  for (const entry of retiringSessions) if (entry.sessionId === sessionId) return evictUnclosableSession(entry)
+  throw new Error(`no pooled h2 session with id ${sessionId}`)
 }
 
 /**
@@ -1268,6 +1350,16 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       // a shared session event to, so the snapshot keeps its default not-observed GOAWAY.
       commitPort: createLocalTerminationCommitPort(init.dispatch === undefined ? undefined : entry.goawayLedger.acquireDispatchLease(init.dispatch)),
       onTermination: init.onTermination,
+      // Sampled when THIS stream ends, so the sibling count and ping counters describe the connection
+      // at the moment of the termination being explained — not at the moment the request started.
+      sessionSnapshot: () => ({
+        sessionId: entry.sessionId,
+        origin: entry.origin,
+        generation: entry.generation,
+        lifecycleAtSnapshot: entry.lifecycle,
+        activeStreamCountAtSnapshot: entry.activeStreamCount,
+        ping: { ...entry.pingStats },
+      }),
     })
 
     // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
@@ -1279,16 +1371,38 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     })
     // activeStreamCount bookkeeping: the stream now owns the reservation acquired
     // above. Node guarantees `close` fires exactly once per h2 stream regardless of
-    // outcome (normal end / RST / abort before or after headers) — this single
-    // platform-guaranteed event releases the reservation exactly once, without
-    // hand-decrementing on every distinct termination path below (global
-    // constraint #3). PATH 1 (the sole path once the stream exists).
+    // outcome (normal end / RST / abort before or after headers) — but the release is
+    // routed through an exactly-once primitive rather than resting on that guarantee,
+    // so the force-dispose path can share it without double-counting the same slot.
+    const releaseStreamSlot = createStreamSlotRelease(entry)
+    let streamClosed = false
+    // A physical stream now exists on a pooled session, so a caller may arm teardown waits that only
+    // this path can satisfy. Announced before any close listener so an immediate close cannot beat it.
+    init.onStreamOpened?.({
+      forceClose: async () => {
+        try {
+          // CANCEL is the honest code here: we are abandoning our own stream, not reporting a fault.
+          req.close(http2.constants.NGHTTP2_CANCEL)
+        } catch {
+          // Already destroyed/closed — the slot release below is what actually matters.
+        }
+        // A short tail for the peer to answer the RST. The long wait already happened upstream of here.
+        await new Promise<void>((resolve) => {
+          const tail = setTimeout(resolve, FORCED_TEARDOWN_TAIL_MS)
+          tail.unref()
+        })
+        if (streamClosed) return { streamClosed: true, sessionEvicted: null }
+
+        // The stream ignored an RST it was explicitly sent. It will never close, so its slot has to be
+        // reclaimed regardless — exactly-once makes a later `close` a no-op rather than a second decrement.
+        releaseStreamSlot()
+        return { streamClosed: false, sessionEvicted: evictUnclosableSession(entry) }
+      },
+    })
     req.once("close", () => {
+      streamClosed = true
       termination.observePhysicalClose()
-      entry.activeStreamCount -= 1
-      maybeReclaimRetiringSession(entry)
-      if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
-      wakeOriginSlotWaiter(entry.origin) // a stream slot freed → session reusable → let a capped waiter retry
+      releaseStreamSlot()
       init.onStreamClosed?.()
       resolveRequestClosed()
     })

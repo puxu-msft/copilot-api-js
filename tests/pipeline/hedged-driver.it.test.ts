@@ -83,9 +83,11 @@ function driverHarness(input: {
 }) {
   let opens = 0
   let primaryCancelled = false
+  const openedEnvs: Array<RequestEnvelope> = []
   const transport: PhysicalTransport = {
     async open(_wire, _env, options): Promise<PhysicalTransportResponse> {
       const label = opens++ === 0 ? "primary" : "secondary"
+      openedEnvs.push(_env)
       const controller = new AbortController()
       options?.signal?.addEventListener("abort", () => controller.abort(options.signal?.reason), { once: true })
       const owner = lifecycle(controller, () => {
@@ -123,7 +125,7 @@ function driverHarness(input: {
     monotonicNow: () => 0,
     hedgePolicy: input.policy,
   })
-  return { driver, opens: () => opens, primaryCancelled: () => primaryCancelled }
+  return { driver, opens: () => opens, primaryCancelled: () => primaryCancelled, openedEnvs: () => openedEnvs }
 }
 
 function lifecycle(controller: AbortController, onCancel: () => void): UpstreamDispatchLifecycle {
@@ -149,22 +151,17 @@ function codec(): FormatCodec {
     parse() {
       const ctx = createRequestContext({ endpoint: "anthropic-messages" })
       const value = {
-        clientFormat: "anthropic" as const,
-        targetEndpoint: "/v1/messages" as const,
-        model: { id: "claude-test" },
-        stream: true,
-        body: { model: "claude-test", stream: true },
+        request: { clientFormat: "anthropic" as const, model: { id: "claude-test" }, stream: true } as RequestEnvelope["request"],
+        attempt: { body: { model: "claude-test", stream: true }, targetEndpoint: "/v1/messages" as const, prepareHints: {} } as RequestEnvelope["attempt"],
+        candidate: {} as RequestEnvelope["candidate"],
         view: {} as never,
-        prepareHints: {},
-        ctx,
-        with(patch: Partial<RequestEnvelope>) {
-          return { ...this, ...patch } as RequestEnvelope
-        },
+        ctx: ctx,
+        createView: () => ({}) as RequestEnvelope["view"],
       }
       return value as unknown as RequestEnvelope
     },
     translateOut: (env) => env,
-    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.body, stream: true }),
+    prepareWire: (env): PreparedRequest => ({ url: "/v1/messages", headers: new Headers(), body: env.attempt.body, stream: true }),
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (body) => body,
     formatError: () => ({ event: "error", data: "{}" }),
@@ -203,6 +200,36 @@ describe("production driver hedged response", () => {
     const winnerDispatch = request.env.ctx.modelOperationSnapshot.dispatches.find((dispatch) => String(dispatch.handle) === activeSource.dispatchId)
     expect(String(winnerDispatch?.candidate)).toBe(activeSource.candidateId)
     expect(delivery.snapshot.winnerCandidateId).toBe(activeSource.candidateId)
+  })
+
+  /**
+   * The candidate fork must give each candidate its OWN body, and it has to be asserted HERE — on the env the transport actually receives — rather than on `createCandidateStateFactory`'s output. `candidate-state.ts` has always cloned per candidate, but the driver's `forkEnv` bridge discarded that clone and handed every candidate the same `env.attempt.body` reference; a unit test on the factory stays green through exactly that defect. Harmless while envelopes were copy-on-write (nothing wrote a body in place), a live cross-candidate corruption once the scopes became mutable.
+   */
+  test("each hedge candidate reaches the transport with its own body object", async () => {
+    const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
+    const { driver } = harness
+    const request = await driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink: rawSink } = makeArraySink()
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
+
+    await driver.runResponseSink(request.upstream, request.env, delivery.clientSink, {
+      onRenderedFrame: (frame) => frame,
+      wireAllocationPort: delivery.allocationPort,
+    })
+
+    const [primaryEnv, hedgeEnv] = harness.openedEnvs()
+    expect(harness.openedEnvs()).toHaveLength(2)
+    if (!primaryEnv || !hedgeEnv) throw new Error("expected two dispatched candidate envelopes")
+
+    expect(primaryEnv.attempt.body).not.toBe(hedgeEnv.attempt.body)
+    expect(primaryEnv.attempt.body).toEqual(hedgeEnv.attempt.body)
+    // Behavioural half: identity alone would still pass if some later stage re-shared the object.
+    ;(primaryEnv.attempt.body as Record<string, unknown>).contaminated = true
+    expect(hedgeEnv.attempt.body).not.toHaveProperty("contaminated")
+    // The request scope is the opposite invariant — shared by reference on purpose, so a late request-level write reaches every candidate.
+    expect(primaryEnv.request).toBe(hedgeEnv.request)
   })
 
   test("a pre-boundary candidate transform failure is codec-render", async () => {

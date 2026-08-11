@@ -149,7 +149,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`
     // cell). The reverse leg's sanitize rewrite + Anthropic stack are assembled by OUTBOUND_LEGS from the
-    // shared beta probe + mapper holder the codec threads onto env.requestState.
+    // shared beta probe + mapper holder the codec threads onto env.candidate.
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
@@ -238,7 +238,7 @@ type GeminiCandidateResponseSnapshot =
 
 const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const startedAtMs = Date.now()
-  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+  if (input.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
       adapter: createGeminiDeliveryProtocolAdapter(),
@@ -302,7 +302,7 @@ export async function handleGenerateContentV4(c: Context, modelId: string): Prom
     const ccResp = driver.runResponseNonStreaming(result.upstream, result.env) as ChatCompletionResponse
     // REVERSE `@messages` leg (Phase 5): the client body is CC→Gemini, but the OUTBOUND leg recorded is
     // the honest Anthropic upstream (richest-data-flow).
-    if (result.env.targetEndpoint === ENDPOINT.MESSAGES) {
+    if (result.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
       return renderReverseGeminiNonStreamingV4(c, result.env, ccResp, result.upstream.nonStream as AnthropicMessageResponse, modelId)
     }
     return renderGeminiNonStreamingV4(c, result.env, ccResp, modelId)
@@ -331,7 +331,7 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     try {
       // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic — accumulate the raw Anthropic frames
       // for the honest outbound while forwarding the rendered Gemini frames (no heartbeat).
-      if (result.env.targetEndpoint === ENDPOINT.MESSAGES)
+      if (result.env.attempt.targetEndpoint === ENDPOINT.MESSAGES)
         await pumpReverseGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env, modelId })
       else await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
@@ -442,7 +442,7 @@ function geminiUsageFromMeta(meta: ReturnType<GeminiCodec["getStreamMeta"]>): Us
  */
 async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as ChatCompletionsPayload).model
+  const model = (env.attempt.body as ChatCompletionsPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
@@ -647,7 +647,7 @@ interface PumpReverseGeminiStreamingV4Options {
  */
 async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const model = (env.body as MessagesPayload).model
+  const model = (env.attempt.body as MessagesPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）

@@ -40,7 +40,7 @@ import type {
 import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
-import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
+import type { OwnerCommandFailureDisposition } from "~/lib/pipeline/delivery/owner-failure"
 import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -52,6 +52,7 @@ import type {
   DriverRequestResult,
   OwnerOperation,
   ResponseFailureSource,
+  HistoryBodySnapshot,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -158,6 +159,7 @@ import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import {
   //
   createCandidateResponseSession,
@@ -178,6 +180,7 @@ import {
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { readTranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -270,8 +273,8 @@ type AnthropicCandidateResponseSnapshot =
 
 const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
   const startedAtMs = Date.now()
-  const model = (input.env.body as { model?: string }).model ?? "unknown"
-  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+  const model = (input.env.attempt.body as { model?: string }).model ?? "unknown"
+  if (input.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
       adapter: createAnthropicDeliveryProtocolAdapter(),
@@ -350,8 +353,8 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
   return createCandidateResponseSession({
     ...input,
     createState: () => ({
-      ccAcc: input.env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined,
-      respAcc: input.env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? undefined : createResponsesStreamAccumulator(),
+      ccAcc: input.env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined,
+      respAcc: input.env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? undefined : createResponsesStreamAccumulator(),
       diag: createUpstreamFrameDiagnostics(startedAtMs),
     }),
     onUpstreamFrame(state, frame) {
@@ -479,7 +482,7 @@ async function settleCommittedRecoveryFailure(input: {
   })
 }
 
-function ownerTerminalDecisionError(decision: OwnerTerminalDecision): Error {
+function ownerTerminalDecisionError(decision: OwnerCommandFailureDisposition): Error {
   switch (decision.kind) {
     case "client-aborted": {
       return new Error(`[delivery] recovery anchor close reached client-gone (partialDelivery=${decision.partialDelivery})`)
@@ -503,7 +506,7 @@ async function settleWireTornRecoveryFailure(input: {
   readonly model: string
   readonly ctx: RequestEnvelope["ctx"] | undefined
   readonly recordForwarded: () => void
-  readonly closeAnchor: () => Promise<OwnerTerminalDecision | undefined>
+  readonly closeAnchor: () => Promise<OwnerCommandFailureDisposition | undefined>
   readonly writeTerminal?: () => Promise<void>
 }): Promise<void> {
   const { publicationError, model, ctx, recordForwarded, closeAnchor, writeTerminal } = input
@@ -659,7 +662,7 @@ async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, hi
   // Snapshot the client's raw inbound body BEFORE the system-prompt injection —
   // this is the history `originalBodyForHistory` (the codec records it as the
   // inboundRequest; the wire body below is the server-modified form).
-  const clientRaw = structuredClone(payload)
+  const clientRaw = snapshotHistoryBody(payload)
 
   // System-prompt injection (async, non-idempotent) has moved OFF the route into the anthropic
   // codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` (Phase 4) sees the
@@ -701,7 +704,7 @@ async function handleMessagesV4Admitted(c: Context, payload: MessagesPayload, hi
 
 interface RunMessagesDriverArgs {
   wireBody: MessagesPayload
-  clientRaw: MessagesPayload
+  clientRaw: HistoryBodySnapshot
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
@@ -734,7 +737,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     candidateResponseSessionFactory: createAnthropicCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`
-    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.requestState.preprocessInfo)
+    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.request.preprocessInfo)
     // + the Anthropic strategy stack (from the codec-threaded truncateBaseline / resanitize / betaProbe).
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
@@ -814,7 +817,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
     env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
-    if (!env.stream) {
+    if (!env.request.stream) {
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
         // Snapshot before S6 translation: some translators mutate their input while
@@ -891,8 +894,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     })
   }
 
+  // System-prompt/preprocess only rewrite `messages`; their contract preserves the client stream flag.
   // Non-streaming: await the upstream-settled runRequest, then render the real HTTP status.
-  if (!clientRaw.stream) {
+  if (!wireBody.stream) {
     return runUpstreamSettledPath()
   }
 
@@ -969,7 +973,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       reqId: codec.getContext()?.id ?? "unknown",
       ctx: commitCtx,
       // 首包埋点：/v1/messages 客户端格式恒 "anthropic"（延迟提交路径无 env 变量在 scope）。
-      ...(commitCtx && clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx: commitCtx })),
+      ...(commitCtx && clientFirstRealSinkOpts({ request: { clientFormat: "anthropic" }, ctx: commitCtx })),
     })
     const sinkChain = createPreContentRecoverySinkChain(rawSink, anchorHooks, anchorState)
     const sink = sinkChain.sink
@@ -1069,7 +1073,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           try {
             const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
             if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
-            if (recovered.env.targetEndpoint === ENDPOINT.MESSAGES) {
+            if (recovered.env.attempt.targetEndpoint === ENDPOINT.MESSAGES) {
               recoveryEnv = recovered.env
               publication = await evaluateAndPublishDirectAnthropicRecovery(
                 driver,
@@ -1212,14 +1216,14 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const ctx = codec.getContext()
   if (!ctx) return
 
-  // Data sources re-homed from the codec closure to env.requestState + ctx (RFC §11.2 / C2a): the
+  // Data sources re-homed from the codec closure to the envelope's request/candidate scopes + ctx (RFC §11.2 / C2a): the
   // direct `/v1/messages` cell is now dispatched through the CellAssembly (stateless), so the codec's
-  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on env.requestState and
+  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on those scopes and
   // the per-attempt side-channels on ctx.currentAttempt. The message-mapping / stripped-cache-control are
   // DIRECT-leg concerns only (a forward @cc/@responses leg's ctx attempt is CC-shaped), so gate them on
   // the direct target exactly as the codec's `!isForwardTranslateLeg` branch did.
-  const isDirect = env.targetEndpoint === ENDPOINT.MESSAGES
-  const baseline = env.requestState?.truncateBaseline as MessagesPayload | undefined
+  const isDirect = env.attempt.targetEndpoint === ENDPOINT.MESSAGES
+  const baseline = env.request.truncateBaseline as MessagesPayload | undefined
   const effectiveMessages = isDirect ? ctx.currentAttempt?.effectiveRequest?.messages : undefined
 
   const initialSanitizationInfo = ctx.initialSanitizationInfo
@@ -1504,7 +1508,7 @@ async function closeAnchorViaOwner(
   anchorHooks: AnchorHooks | undefined,
   ctx: RequestEnvelope["ctx"] | undefined,
   mode: "before-real" | "terminal",
-): Promise<OwnerTerminalDecision | undefined> {
+): Promise<OwnerCommandFailureDisposition | undefined> {
   if (!anchorHooks || !allocationPort.wireState) return undefined
   const port = allocationPort
   const operation: OwnerOperation = mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real"
@@ -1631,7 +1635,7 @@ function makeAnchoredSseSink(
  *   when the operator set `streamKeepalivePingSec`.
  */
 function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean; heartbeatSec: number } {
-  const anthropicPayload = env.body as MessagesPayload
+  const anthropicPayload = env.attempt.body as MessagesPayload
   const buffered =
     state.protectStreamingGeneration === "on"
     || (state.protectStreamingGeneration === "tool_use_only" && Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0)
@@ -1718,7 +1722,7 @@ class RecoveryAttemptFailure extends Error {
  * translator meta instead of an Anthropic accumulator.
  */
 async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispatchOptions): Promise<void> {
-  const targetEndpoint = opts.env.targetEndpoint
+  const targetEndpoint = opts.env.attempt.targetEndpoint
   if (targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES) {
     return pumpTranslateLegStreamingV4(opts)
   }
@@ -1759,12 +1763,12 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
-  const anthropicPayload = env.body as MessagesPayload
+  const anthropicPayload = env.attempt.body as MessagesPayload
   const model = anthropicPayload.model
   const tryReadyLiveRecovery = async (failure: PreContentRecoveryFailure, originalError: unknown): Promise<boolean> => {
     // Task #3's evaluator owns only the direct Anthropic accumulator contract. Forward translate
     // legs keep their existing terminal path until they gain an equally exhaustive evaluator.
-    if (env.targetEndpoint !== ENDPOINT.MESSAGES) return false
+    if (env.attempt.targetEndpoint !== ENDPOINT.MESSAGES) return false
     // Both body transport throws and clean EOF before message_stop are deterministic upstream deaths.
     // Abort provenance remains fail-closed because upstream may still be legitimate long thinking.
     if (failure.kind === "abort") return false
@@ -1908,9 +1912,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // context_editing config; request-preparation skips it when the model lacks support.
           ...(state.protectStreamingEscalateContext && {
             escalate: (e: RequestEnvelope, attempt: number): RequestEnvelope =>
-              e.with({
+              writeAttempt(e, {
                 prepareHints: {
-                  ...e.prepareHints,
+                  ...e.attempt.prepareHints,
                   contextEscalation: {
                     trigger: Math.max(ESCALATE_MIN_TRIGGER, Math.floor(state.contextEditingTrigger / 2 ** attempt)),
                     keepTools: Math.max(1, state.contextEditingKeepTools - attempt),
@@ -2266,7 +2270,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   const { sink, liveSink, forwardedSseEvents, driver, upstream, env, anchorHooks } = opts
   // The translate-leg env.body is the CC-canonical wire body (translateOut delegated to the hub), so it
   // carries the resolved model name; fall back to a literal when absent (defensive, never for a real leg).
-  const model = (env.body as { model?: string }).model ?? "unknown"
+  const model = (env.attempt.body as { model?: string }).model ?? "unknown"
 
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 

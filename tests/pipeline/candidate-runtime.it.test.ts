@@ -24,6 +24,7 @@ import type {
 import type { UpstreamAdmissionController } from "~/lib/transport/admission-controller"
 
 import { HTTPError } from "~/lib/error"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 import { createCandidateRuntime } from "~/lib/pipeline/generation/candidate"
 import {
   //
@@ -93,17 +94,12 @@ function recordingPort(options?: { throwSettlementOnce?: unknown; throwCandidate
 
 function envelope(label: string): RequestEnvelope {
   const env = {
-    clientFormat: "openai-responses",
-    targetEndpoint: "/responses",
-    model: { id: "model" },
-    stream: true,
-    body: { label },
+    request: { clientFormat: "openai-responses", model: { id: "model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { label }, targetEndpoint: "/responses", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {},
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -168,7 +164,7 @@ function runtime(input: {
   maxDispatches?: number
 }) {
   const scheduler = createDispatchScheduler({
-    prepareWire: (env) => ({ url: "https://upstream.test", headers: new Headers(), body: env.body, stream: env.stream }),
+    prepareWire: (env) => ({ url: "https://upstream.test", headers: new Headers(), body: env.attempt.body, stream: env.request.stream }),
     open: input.open,
     admission: input.admission ?? immediateAdmission(),
     recording: input.recording,
@@ -487,7 +483,7 @@ describe("P6-T1 candidate dispatch runtime", () => {
         if (opens++ === 0) return { kind: "failed-open", error: new HTTPError("bad field", 400, "bad field"), lifecycle: settledLifecycle(log, "bad") }
         return streamResponse(ownedLifecycle(log, "semantic"), "semantic-success")
       },
-      decideRetry: async ({ env }) => ({ kind: "retry", reason: "strip-bad-field", env: env.with({ body: { label: "after-retry" } }) }),
+      decideRetry: async ({ env }) => ({ kind: "retry", reason: "strip-bad-field", env: writeAttempt(env, { body: { label: "after-retry" } }) }),
     })
 
     await candidate.run()
@@ -675,7 +671,7 @@ describe("P6-T1 candidate dispatch runtime", () => {
       decideRetry: async ({ env, dispatchNumber }) => ({
         kind: "retry",
         reason: `step-${dispatchNumber}`,
-        env: env.with({ body: { label: `chain-${dispatchNumber}` } }),
+        env: writeAttempt(env, { body: { label: `chain-${dispatchNumber}` } }),
         onResolved: () => {
           resolved.push(`step-${dispatchNumber}`)
         },

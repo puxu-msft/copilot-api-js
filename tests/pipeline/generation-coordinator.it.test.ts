@@ -85,17 +85,12 @@ function createRecording(options?: { throwCandidateSettlementOnce?: unknown }) {
 
 function envelope(label: string): RequestEnvelope {
   return {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: { id: "model" },
-    stream: true,
-    body: { label },
+    request: { clientFormat: "openai-cc", model: { id: "model" }, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { label }, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: { messages: [], tools: [], system: undefined, summary: { messageCount: 0, hasTools: false, hasThinking: false, hasImages: false } },
-    prepareHints: {},
     ctx: {},
-    with(patch: Partial<RequestEnvelope>) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -130,7 +125,7 @@ function candidateFactory(input: {
 }): (candidate: { role: CandidateRole; parentCandidate?: CandidateHandle; env: RequestEnvelope }) => CandidateRuntime<{ identity: symbol }> {
   return ({ role, parentCandidate, env }) => {
     const scheduler = createDispatchScheduler({
-      prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+      prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.attempt.body, stream: true }),
       open: async (wire: PreparedRequest) => {
         const label = (wire.body as { label: string }).label
         input.opens.push(label)
@@ -216,7 +211,7 @@ describe("P6-T2 generation coordinator", () => {
       env: envelope("primary"),
       createCandidate: ({ role, parentCandidate, env }) => {
         const scheduler = createDispatchScheduler({
-          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.attempt.body, stream: true }),
           open: async (wire) => {
             const label = (wire.body as { label: string }).label
             opens.push(label)
@@ -280,7 +275,7 @@ describe("P6-T2 generation coordinator", () => {
       env: envelope("primary"),
       createCandidate: ({ role, parentCandidate, env }) => {
         const scheduler = createDispatchScheduler({
-          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.attempt.body, stream: true }),
           open: async (wire) => {
             const label = (wire.body as { label: string }).label
             opens.push(label)
@@ -358,7 +353,7 @@ describe("P6-T2 generation coordinator", () => {
                 candidate: handle,
                 dispatch: `${handle}-dispatch` as DispatchHandle,
                 env,
-                wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+                wire: { url: "https://upstream.test", headers: new Headers(), body: env.attempt.body, stream: true },
                 dispatchedAtMonotonic: 0,
                 upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
                 processor: { identity: Symbol(role) },
@@ -415,7 +410,7 @@ describe("P6-T2 generation coordinator", () => {
                 candidate: handle,
                 dispatch: `${handle}-dispatch` as DispatchHandle,
                 env,
-                wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+                wire: { url: "https://upstream.test", headers: new Headers(), body: env.attempt.body, stream: true },
                 dispatchedAtMonotonic: 0,
                 upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
                 processor: { identity: Symbol(role) },
@@ -468,7 +463,7 @@ describe("P6-T2 generation coordinator", () => {
               candidate: handle,
               dispatch: `${handle}-dispatch` as DispatchHandle,
               env,
-              wire: { url: "https://upstream.test", headers: new Headers(), body: env.body, stream: true },
+              wire: { url: "https://upstream.test", headers: new Headers(), body: env.attempt.body, stream: true },
               dispatchedAtMonotonic: 0,
               upstream: { headers: new Headers(), lifecycle: lifecycle(), frames: { async *[Symbol.asyncIterator]() {} } },
               processor: { identity: Symbol(role) },

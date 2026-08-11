@@ -3,9 +3,10 @@
  *
  * A `client.inbound` hook sees the client-NATIVE body of ONE of four inbound formats (Phase 3's
  * four-format downshift guarantees each is native at S1a→S1b). Each format lays its conversation
- * turns out differently, so these helpers dispatch on `env.clientFormat` to a per-format accessor
- * and rebuild the body IMMUTABLY (returning a NEW env via `env.with` — never mutating in place; the
- * driver also defends with a body snapshot, §3.5):
+ * turns out differently, so these helpers dispatch on `env.request.clientFormat` to a per-format
+ * accessor and rebuild the BODY rather than editing it in place (`writeAttempt` hands back the SAME
+ * env object carrying the new body — the envelope itself has been mutable since 2026-08-11, and the
+ * driver no longer takes a defensive body snapshot).
  *
  *   | clientFormat        | turn list        | system carrier        |
  *   |---------------------|------------------|-----------------------|
@@ -20,6 +21,8 @@
  */
 
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 /** A conversation turn as seen by a `client.inbound` hook (format-native; role + opaque content). */
 export interface ClientTurn {
@@ -66,15 +69,15 @@ function turnListKey(format: string): { key: string; project: (turn: Record<stri
 }
 
 /**
- * Immutably map over the client-native conversation turns. `fn` returns the (possibly replaced) turn
- * object, or `null` to DROP it. Returns a NEW env (or the same env unchanged if nothing changed / the
+ * Map over the client-native conversation turns. `fn` returns the (possibly replaced) turn
+ * object, or `null` to DROP it. Returns the SAME env with a new body (or untouched if nothing changed / the
  * format has no walkable turn list). Format-native — the hook author reads `turn.raw` for the
  * verbatim object and `turn.text`/`turn.role` for matching.
  */
 export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) => Record<string, unknown> | null): RequestEnvelope {
-  const spec = turnListKey(env.clientFormat)
+  const spec = turnListKey(env.request.clientFormat)
   if (!spec) return env
-  const body = env.body as Body
+  const body = env.attempt.body as Body
   const list = body[spec.key]
   if (!Array.isArray(list)) return env
 
@@ -92,11 +95,11 @@ export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) =
     out.push(kept)
   }
   if (!changed) return env
-  return env.with({ body: { ...body, [spec.key]: out } })
+  return writeAttempt(env, { body: { ...body, [spec.key]: out } })
 }
 
 /**
- * Drop every conversation turn a `predicate` matches (a NEW env, immutable). The common
+ * Drop every conversation turn a `predicate` matches (SAME env, new body — `writeAttempt`). The common
  * `client.inbound` use case: strip a client-injected boilerplate turn (e.g. a Claude-Code-injected
  * `role:"system"` TodoWrite reminder). Turns the predicate does not match pass through verbatim.
  */
@@ -108,19 +111,19 @@ export function stripMessageBlock(env: RequestEnvelope, predicate: (turn: Client
  * Strip text matching `pattern` from the format's SYSTEM carrier (Anthropic top-level `system`,
  * Responses `instructions`, Gemini `systemInstruction`) — for boilerplate injected as a system
  * prompt rather than a conversation turn. `openai-cc` has no system carrier (its system is a
- * `role:"system"` turn — use {@link stripMessageBlock} for that). Returns a NEW env (immutable);
+ * `role:"system"` turn — use {@link stripMessageBlock} for that). Returns the SAME env with a new body;
  * a carrier that becomes empty is removed.
  */
 export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestEnvelope {
-  const body = env.body as Body
+  const body = env.attempt.body as Body
   const strip = (s: string): string => s.replace(pattern, "").trim()
 
-  switch (env.clientFormat) {
+  switch (env.request.clientFormat) {
     case "anthropic": {
       const sys = body.system
       if (typeof sys === "string") {
         const next = strip(sys)
-        return next === sys ? env : env.with({ body: next ? { ...body, system: next } : omit(body, "system") })
+        return next === sys ? env : writeAttempt(env, { body: next ? { ...body, system: next } : omit(body, "system") })
       }
       if (Array.isArray(sys)) {
         let changed = false as boolean
@@ -134,7 +137,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
             return b
           })
           .filter((b) => b !== null)
-        return changed ? env.with({ body: { ...body, system: kept } }) : env
+        return changed ? writeAttempt(env, { body: { ...body, system: kept } }) : env
       }
       return env
     }
@@ -142,7 +145,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
       const instr = body.instructions
       if (typeof instr !== "string") return env
       const next = strip(instr)
-      return next === instr ? env : env.with({ body: next ? { ...body, instructions: next } : omit(body, "instructions") })
+      return next === instr ? env : writeAttempt(env, { body: next ? { ...body, instructions: next } : omit(body, "instructions") })
     }
     case "gemini": {
       const si = body.systemInstruction as { parts?: Array<{ text?: string }> } | undefined
@@ -156,7 +159,7 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
         })
         .filter((p) => p !== null)
       if (!changed) return env
-      return env.with({ body: parts.length > 0 ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
+      return writeAttempt(env, { body: parts.length > 0 ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
     }
     default: {
       return env

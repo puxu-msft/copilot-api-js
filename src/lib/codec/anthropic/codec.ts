@@ -19,7 +19,7 @@
  * on the CellAssembly leg → ctx side-channels, not this closure (RFC 2026-07-13 §11).
  *
  * **betaProbe is a cross-component handle** (RFC §2.4): the handler builds it once
- * and injects the SAME instance into both `parse` (which threads it onto `env.requestState`
+ * and injects the SAME instance into both `parse` (which threads it onto `env.candidate`
  * for the anthropic-cell's `prepareWire` to record the outbound betas) and the strategies
  * (the unsupported-beta strategy reads
  * the candidates). The factory takes it as a parameter.
@@ -52,10 +52,8 @@ import type {
   NeutralSystem,
   NeutralTool,
   RequestEnvelope,
-  ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type { TranslationConfigSnapshot } from "~/lib/pipeline/semantic/config-snapshot"
 import type {
@@ -67,7 +65,6 @@ import type {
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   MessageParam,
@@ -106,12 +103,9 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import {
-  //
-  type RouteOverride,
-} from "~/lib/models/resolver"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import { makeEnvelope } from "~/lib/pipeline/envelope"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
@@ -119,6 +113,7 @@ import {
   type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
@@ -191,8 +186,8 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   const createRenderer = (): CandidateResponseRenderer => {
     let streamTranslator: ForwardStreamTranslator | undefined
     const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
-      const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
-      return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
+      const modelId = modelIdFor(env.request.model as Model | undefined, (env.attempt.body as { model?: string }).model) ?? ""
+      return (streamTranslator ??= createForwardStreamTranslator(env.attempt.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
     }
     const restoreTranslatedFrame = (frame: ClientFrame, env: RequestEnvelope): ClientFrame => {
       if (typeof frame.data !== "string") return frame
@@ -203,11 +198,11 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       Array.isArray(frames) ? frames.map((frame) => restoreTranslatedFrame(frame, env)) : restoreTranslatedFrame(frames, env)
     return {
       renderResponse(frame, env) {
-        if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
+        if (!isForwardTranslateLeg(env.attempt.targetEndpoint)) return frame
         return restoreTranslatedFrames(ensureStreamTranslator(env).renderFrame(frame), env)
       },
       flushResponse(env) {
-        if (!isForwardTranslateLeg(env.targetEndpoint)) return []
+        if (!isForwardTranslateLeg(env.attempt.targetEndpoint)) return []
         return ensureStreamTranslator(env)
           .flush()
           .map((frame) => restoreTranslatedFrame(frame, env))
@@ -246,22 +241,20 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       const parsed = parseAnthropic(raw, (ctx) => (requestContext = ctx), args.translationConfigSnapshot)
       truncateBaseline = parsed.baseline
       resanitize = parsed.resanitize
-      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
-      // `/v1/messages` CellAssembly reads it from `env.requestState` instead of this codec closure
-      // (C2a). Additive today: no reader until the driver's cell-keyed hybrid fork routes the direct
-      // cell through the assembly (C2a.2). `initialSanitizationInfo` is a side-channel written later by
-      // the sanitize rewrite → it lives on `ctx`, not here.
-      return parsed.env.with({
-        requestState: {
-          betaProbe: args.betaProbe,
-          truncateBaseline: parsed.baseline,
-          resanitize: parsed.resanitize as (payload: unknown) => unknown,
-          clientRequestHeaders: parsed.clientRequestHeaders,
-          preprocessInfo: args.preprocessInfo,
-          sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
-          ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
-        },
+      // Attach the outbound-leg supply (RFC §11.2 / R2) so the direct `/v1/messages` CellAssembly reads it off the envelope's scopes instead of this codec closure (C2a). The split follows the scope contract: plain values every candidate shares go to `request`; the mutable `betaProbe` and the `resanitize` closure go to `candidate`, because a hedge sharing either would corrupt its sibling. `initialSanitizationInfo` is a side-channel written later by the sanitize rewrite → it lives on `ctx`, not here.
+      Object.assign(parsed.env.request, {
+        legSupplyReady: true,
+        truncateBaseline: parsed.baseline,
+        clientRequestHeaders: parsed.clientRequestHeaders,
+        preprocessInfo: args.preprocessInfo,
+        sourceToolNameMapper: parsed.env.ctx.toolNameMapper,
+        ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
       })
+      Object.assign(parsed.env.candidate, {
+        betaProbe: args.betaProbe,
+        resanitize: parsed.resanitize as (payload: unknown) => unknown,
+      })
+      return parsed.env
     },
 
     getContext() {
@@ -322,8 +315,8 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // — the leg is now end-to-end wired for non-streaming. A content_filter degradation (N3) is recorded
     // as a ctx marker so the wire end_turn stays observably distinguishable (richest-data-flow).
     renderResponseNonStreaming(upstream, env) {
-      if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
-      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream, reasoningRoundTripOpts(env))
+      if (!isForwardTranslateLeg(env.attempt.targetEndpoint)) return upstream
+      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.attempt.targetEndpoint, upstream, reasoningRoundTripOpts(env))
       if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
       // S5 response rewrites run before S6 translation, so a Responses→Anthropic
       // tool_use does not exist yet when the direct-path name-restorer runs.
@@ -356,8 +349,8 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // The `env` param was restored in Phase 4 (RFC §4.1); Phase 0/1 dropped it when the method had zero
     // production consumers.
     createResponseAccumulator(env): ResponseAccumulator {
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return createOpenAIStreamAccumulator()
-      if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return createResponsesStreamAccumulator()
+      if (env.attempt.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return createOpenAIStreamAccumulator()
+      if (env.attempt.targetEndpoint === ENDPOINT.RESPONSES || env.attempt.targetEndpoint === ENDPOINT.WS_RESPONSES) return createResponsesStreamAccumulator()
       return createAnthropicStreamAccumulator()
     },
   }
@@ -381,7 +374,7 @@ function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): ta
  * conditional call-site duplication needed).
  */
 function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
-  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
+  const modelId = modelIdFor(env.request.model as Model | undefined, (env.attempt.body as { model?: string }).model)
   return { stripThinkingSignature: stripThinkingSignatureFor("anthropic-messages", modelId, "openai-responses") }
 }
 
@@ -416,8 +409,10 @@ function parseAnthropic(
   translationConfigSnapshot?: TranslationConfigSnapshot,
 ): ParseAnthropicResult {
   const incoming = raw.body as MessagesPayload
-  const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
-  const originalSnapshot = structuredClone(clientBody)
+  const originalSnapshot =
+    raw.originalBodyForHistory === undefined ?
+      structuredClone(raw.body as MessagesPayload)
+    : (historySnapshotBody(raw.originalBodyForHistory) as MessagesPayload)
 
   // Model resolution (requested/resolved/selected/clientModel) via the shared
   // codec primitive — it owns the rule that the client-original name comes from
@@ -476,13 +471,16 @@ function parseAnthropic(
   const resanitize: AnthropicSanitizeFn = (p) => runAnthropicPayloadRewrites(p, { toolNameMapper }).sanitizeResult
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.MESSAGES,
-    ...(routeOverride && { routeOverride }),
-    model: selectedModel,
-    stream: anthropicPayload.stream ?? false,
-    body: anthropicPayload,
+    request: {
+      clientFormat: CLIENT_FORMAT,
+      model: selectedModel,
+      stream: anthropicPayload.stream ?? false,
+      ...(routeOverride && { routeOverride }),
+      ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    },
+    attempt: { body: anthropicPayload, targetEndpoint: ENDPOINT.MESSAGES, prepareHints: {} },
     ctx,
-    ...(translationConfigSnapshot !== undefined && { translationConfigSnapshot }),
+    createView: createAnthropicLazyView,
   })
 
   return {
@@ -525,55 +523,8 @@ function formatAnthropicError(err: ClassifiedStreamError): ClientFrame {
 }
 
 // ============================================================================
-// Envelope construction + lazy view
+// Lazy view
 // ============================================================================
-
-interface EnvelopeInit {
-  targetEndpoint: UpstreamEndpoint
-  routeOverride?: RouteOverride
-  model: ResolvedModel
-  stream: boolean
-  body: unknown
-  ctx: RequestContext
-  prepareHints?: PrepareHints
-  requestState?: RequestState
-  translationConfigSnapshot?: TranslationConfigSnapshot
-}
-
-/** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
-function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
-  const env: RequestEnvelope = {
-    clientFormat: CLIENT_FORMAT,
-    targetEndpoint: init.targetEndpoint,
-    ...(init.routeOverride && { routeOverride: init.routeOverride }),
-    model: init.model,
-    stream: init.stream,
-    body: init.body,
-    prepareHints: init.prepareHints ?? {},
-    ...(init.requestState !== undefined && { requestState: init.requestState }),
-    ...(init.translationConfigSnapshot !== undefined && { translationConfigSnapshot: init.translationConfigSnapshot }),
-    ctx: init.ctx,
-    get view(): LazyMessageView {
-      return createAnthropicLazyView(env.body)
-    },
-    with(patch) {
-      return makeEnvelope({
-        targetEndpoint: env.targetEndpoint,
-        routeOverride: env.routeOverride,
-        model: env.model,
-        stream: env.stream,
-        body: env.body,
-        ctx: env.ctx,
-        prepareHints: env.prepareHints,
-        requestState: env.requestState,
-        // Carried by reference, and deliberately not reachable through `patch` — see RequestEnvelope.translationConfigSnapshot.
-        translationConfigSnapshot: env.translationConfigSnapshot,
-        ...patch,
-      })
-    },
-  }
-  return env
-}
 
 /** Block-type discriminant for the lazy projection (Anthropic content blocks). */
 interface ContentBlockLike {

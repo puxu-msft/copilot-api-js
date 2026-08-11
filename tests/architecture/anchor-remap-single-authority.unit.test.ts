@@ -40,6 +40,13 @@ interface RemapCallSite {
  */
 const REMAP_CALL_ALLOWLIST: ReadonlyArray<RemapCallSite> = [
   { file: "src/lib/anthropic/keepalive-anchor.ts", call: "internal:remapAnthropicBlockIndex" },
+  // `remapFrameToWireIndex`, the entry point the command-algebra owner uses (it holds two indices in
+  // its authorization record rather than a WireBlockMapping carrying a `remap` closure). It is a
+  // SECOND internal call in the authority module, not a new authority: the alternative was calling
+  // the primitive from `delivery/anthropic-indexed-builders.ts`, which this guard caught and which
+  // would have been a genuine second remap site. The invariant is unchanged — everything that
+  // remaps still does so inside this one file.
+  { file: "src/lib/anthropic/keepalive-anchor.ts", call: "internal:remapAnthropicBlockIndex" },
   { file: "src/lib/anthropic/keepalive-anchor.ts", call: "authority:mapping.remap" },
   { file: "src/lib/pipeline/delivery/session.ts", call: "owner:mapping.remap" },
   { file: "src/lib/pipeline/driver.ts", call: "legacy:anchor.remap" },
