@@ -386,6 +386,20 @@ export interface RunResponseOpts {
   /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
   wireAllocationPort?: WireBlockAllocationPort
   /**
+   * Reads the handler's accumulator: did THIS attempt see the format's terminal (`message_stop`
+   * for Anthropic, `finish_reason` for Chat, the response terminal for Responses)? Supplied by the
+   * candidate response session for BOTH sinks, because each reads it for a different decision:
+   *
+   *   - buffered (`runResponseBufferedSink`) commits ONLY on `drained && sawMessageStop()` — a clean
+   *     drain alone is NOT enough, because Bun delivers a clean upstream RST as a normal `end`
+   *     (rstCode=0, undetectable; transport/http2-client.ts:169-175). A clean drain WITHOUT the
+   *     terminal is a truncation → retryable.
+   *   - live (`runResponseSink`) reads it in the catch to tell a mid-generation cut apart from an
+   *     upstream transport teardown that happened AFTER the terminal already reached the client; the
+   *     latter is not a failure and must not mint a second terminal.
+   */
+  sawMessageStop?: () => boolean
+  /**
    * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
    * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver
    * samples `upstreamSse` (the `[DONE]` sentinel is skipped). Lets a handler keep
@@ -650,14 +664,6 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * driver self-creates an internal `AnchorState`, keeping every existing call site byte-identical.
    */
   anchorState?: AnchorState
-  /**
-   * Reads the handler's accumulator: did THIS attempt see `message_stop`? The buffered
-   * sink commits ONLY on `drained && sawMessageStop()` — a clean drain alone is NOT
-   * enough, because Bun delivers a clean upstream RST as a normal `end` (rstCode=0,
-   * undetectable; transport/http2-client.ts:169-175). A clean drain WITHOUT message_stop
-   * is a truncation → retryable.
-   */
-  sawMessageStop?: () => boolean
   /**
    * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
    * (H2 — e.g. `overloaded_error`)? Such a frame is a clean drain WITHOUT `message_stop`, so

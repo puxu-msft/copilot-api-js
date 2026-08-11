@@ -1379,7 +1379,27 @@ async function runResponseSink(
     if (error instanceof LiveOwnerFailureError) return ownerFailureOutcome(error.failure, "close-anchor-before-real", env)
     if (isResponseCodecRenderError(error)) return streamErrorOutcome(error, env, "codec-render")
     // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
-    return streamErrorOutcome(error, env, responseFailureSource(error))
+    const source = responseFailureSource(error)
+    // The upstream can tear the transport down AFTER it already delivered a COMPLETE response.
+    // Observed against GHC: `message_delta` + `message_stop`, then RST_STREAM(CANCEL) 21-44s later
+    // (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11). On this LIVE path every
+    // rendered frame is written to the sink before the pull that throws, so `sawMessageStop()` here
+    // means the client already holds a complete, terminated response. Minting `stream-error` made the
+    // format handler append a SECOND terminal (an `error` frame after `message_stop`, breaking the
+    // one-terminal contract) and settle a successful turn as failed. A post-terminal teardown carries
+    // nothing the client can act on, so it drains as `complete` and the handler's own terminal logic
+    // (refusal / unrepairable tool input / max_tokens continuation) runs unchanged.
+    //
+    // Deliberately live-only and upstream-transport-only:
+    //   - `runResponseBufferedSink` withholds frames until commit, so there `sawMessageStop()` does
+    //     NOT imply the client received anything — a throw must stay retryable.
+    //   - `downstream-sink` / `codec-render` / `delivery-owner` mean the client's copy may be broken
+    //     or incomplete, so they keep minting `stream-error` above.
+    if (source === "upstream-transport" && effectiveOpts.sawMessageStop?.() === true) {
+      consola.warn(`[driver] upstream transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`)
+      return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
+    }
+    return streamErrorOutcome(error, env, source)
   } finally {
     if (!evaluating) sink.close?.()
   }
