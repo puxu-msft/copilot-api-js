@@ -33,9 +33,15 @@
 - 分片崩溃会**吞掉该分片的 skip 计数**（skip 从 43 掉到 9 那次就是），别把 skip 数的异动当成 gate 配置被改了。
 - 清理类型断言前先跑 `bun run typecheck`——本轮有一处 `as` 是承重的。
 
-## 测试门禁现状（核验于 2026-08-09 合并态 / `3df0e08d`，接手第一件事是复验而非采信）
+## 测试门禁现状（`3df0e08d` 与 `e120a49c` 两次实测，**接手第一件事是复验而非采信**）
 
-- 十文件 focused gate（**Task 1 的 `tests/context/operation-lifecycle.unit.test.ts` 已在其中**）：`bun test tests/context/operation-lifecycle.unit.test.ts tests/context/operation-scope.unit.test.ts tests/context/request-context.unit.test.ts tests/context/generation-recorder-lifecycle.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/coordinator-hedge.unit.test.ts`。加上 Task 4 焦点集、`tests/history/worker/admission-shutdown.unit.test.ts` 与 `tests/infra/entry-evidence-schema.unit.test.ts` 共 15 个文件时，合并态实测 `236 pass / 0 fail`。
+- **15 文件 focused gate —— 整行复制即可跑，判据是 `0 fail`**（前十个是十文件 gate，含 Task 1 的 `operation-lifecycle.unit.test.ts`；接着三个是 Task 4 焦点集；最后两个是合并期补入的）：
+
+  ```
+  bun test tests/context/operation-lifecycle.unit.test.ts tests/context/operation-scope.unit.test.ts tests/context/request-context.unit.test.ts tests/context/generation-recorder-lifecycle.unit.test.ts tests/context/generation-finalization.unit.test.ts tests/transport/dispatch-lifecycle.unit.test.ts tests/pipeline/candidate-runtime.it.test.ts tests/pipeline/generation-recorder-driver.unit.test.ts tests/pipeline/generation-coordinator.it.test.ts tests/pipeline/coordinator-hedge.unit.test.ts tests/context/manager-dual-registry.unit.test.ts tests/context/context-manager.it.test.ts tests/shutdown/drain-waits-operation.unit.test.ts tests/history/worker/admission-shutdown.unit.test.ts tests/infra/entry-evidence-schema.unit.test.ts
+  ```
+
+  **只看 `0 fail`，不要去对某个通过数**：`3df0e08d` 上是 236、`e120a49c` 上是 239，都是 `0 fail`——通过数随提交增长，拿它当判据会把增长误判成回归。
 - `bun run typecheck` → exit 0；`bun run lint:all` → exit 0（全树）；`bun run test:backend` → 见上条「负载敏感」，判据只看 `0 fail` 且红的要逐条隔离复核。
 - **改测试文件集合时记得同步 `tests/infra/entry-test-discovery-baseline.json`**：它冻结了发现集，新增/删除测试文件不同步就会红；它要求**字节规范**（`JSON.stringify(parsed, null, 2) + "\n"`，键序 schema_version / runner_git_blob / minimum_executed / files / allowed_skipped），手工编辑极易写出非规范字节。
 - **禁区**：绝不杀死用户在 **4141 端口**的主服务器实例；要起测试服务器用别的端口，按 PID 精确清理自己起的那个。
