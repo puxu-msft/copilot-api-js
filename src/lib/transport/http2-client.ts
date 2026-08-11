@@ -1332,6 +1332,9 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // routed through an exactly-once primitive rather than resting on that guarantee,
     // so the force-dispose path can share it without double-counting the same slot.
     const releaseStreamSlot = createStreamSlotRelease(entry)
+    // A physical stream now exists on a pooled session, so a caller may arm teardown waits that only
+    // this path can satisfy. Announced before any close listener so an immediate close cannot beat it.
+    init.onStreamOpened?.()
     req.once("close", () => {
       termination.observePhysicalClose()
       releaseStreamSlot()
