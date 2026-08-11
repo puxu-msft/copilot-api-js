@@ -706,6 +706,7 @@
     "tests/transport/admission-controller.unit.test.ts",
     "tests/transport/crash-safety.unit.test.ts",
     "tests/transport/dispatch-cleanup-baseline.it.test.ts",
+    "tests/transport/dispatch-diagnostic-sink.unit.test.ts",
     "tests/transport/dispatch-lifecycle.unit.test.ts",
     "tests/transport/error-label.unit.test.ts",
     "tests/transport/h2-keepalive-ping.unit.test.ts",
