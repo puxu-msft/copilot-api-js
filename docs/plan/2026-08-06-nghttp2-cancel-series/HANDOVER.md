@@ -277,7 +277,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
 | A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
 | A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **已完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`、session 身份 + settle 时采样 `f566f734`。见下方「A4-3 实施记录」 |
-| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
+| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | **部分完成**（2026-08-11）：exactly-once slot `3173d29d`、teardown barrier `61731d34`。**未做**：`open → forcing → sealed` sink 状态机、强制 RST_CANCEL / forced-session-dispose、`barrier_timeout`／`close_missing` 诊断。见下方「A4-4 实施记录」 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
 
 **怎么重取这张表的状态**（三条都要跑，缺一会误判）：
@@ -387,6 +387,27 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 `docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
 
 **未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
+
+### A4-4 实施记录（2026-08-11，部分完成）
+
+**分支** `worktree-a4-4-stream-slot`。
+
+| commit | 内容 |
+|---|---|
+| `3173d29d` | exactly-once stream slot：合并两处重复的释放序列，全文件只剩一个 `activeStreamCount -= 1` |
+| `61731d34` | teardown barrier：`dispose()` 等物理关流、按 cleanup grace 有界、超时报 `connectionReusable: false` |
+
+**exactly-once slot**：释放槽位的四步（减计数 / retiring 回收 / 归零后 arm idle reaper / 唤醒被容量挡住的等待者）此前**逐字写了两遍**。现在只有一个 `releaseSessionSlot`，且 stream 那条经 exactly-once 闩。**该闩当前不可观测**（Node 保证 `close` 只触发一次，`req.once` 再保一道），建它是因为 A4-4 的 force-dispose 会释放同一个槽位——**两个独立释放者操作同一个计数器正是容量记账漂移的成因**：多减一次，池就以为自己有一个并不存在的槽位，直到 cap 开始放行本该排队的流才暴露。计数器自身没有下界，所以幂等必须落在释放者。**故本批未为它写测试**，等 force-dispose 落地、路径真实可达时再补。
+
+**teardown barrier**：`dispose()` 此前一关掉 body 迭代器就返回并宣称连接可复用——那是关于**我们自己的记账**的断言，不是关于**线路**的。现在传输层注册 barrier，`dispose()` 等物理关流，由 `generationCleanupGraceSec`（默认 10s）限时；超时则报 **不可复用**（连接状态已未知，猜「没事」等于把下一个请求放到一条不明状态的流上）。
+
+⚠️ **一个差点上线的设计错误，记下来**：barrier 最初写成**无条件注册**，看着完全正确。实则 **undici（plain-HTTP）路径根本不拥有 h2 stream、永远不会报 close**，于是它的每一次 dispose 都会干等满 10s 再把一条健康连接判为不可用。改为**在 stream 真正 open 时才 arm**——只有真正持有流的传输才配拥有一个它能满足的 barrier。
+
+⚠️ **本批放宽了一条既有守卫，经用户显式裁决、非自判**：`generation-engine-boundaries` 的 `dispatch disposal cannot own pooled HTTP/2 sessions` 原先断言 `toContain("connectionReusable: true")`，即「disposal **恒**报可复用」；而冻结计划原文要求超时返回 `connectionReusable=false`，两者**真冲突**。用户裁决「按计划走、相应重塑守卫」。**保住的那部分才是要害**：报「不可复用」是给调用方的**报告**、不是对池的**动作**——守卫仍然禁止该文件碰 session 与 timer，且正常路径仍须报可复用（否则一个悲观地把所有连接都判死的 barrier 会被抓住）。理由与放宽经过已写进该测试。
+
+**验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7859 pass / 0 fail**。barrier 两个方向都有测试（必须挡住 disposal、也必须在宽限到期后放行），外加「未注册 barrier 时行为与改动前完全一致」。
+
+**A4-4 剩余**：`open → forcing → sealed` 的 dispatch diagnostic sink 状态机、超时后强制 RST_CANCEL 与 forced-session-dispose（含受影响 sibling refs）、`barrier_timeout`／`close_missing` 诊断落进 History。`TeardownBarrier.onTimeout` 已作为这批的挂载点留好、目前只被测试消费。
 
 ### B.5.3 Phase B 预注册缺口与启动门
 
