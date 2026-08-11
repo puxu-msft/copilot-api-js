@@ -35,7 +35,6 @@
  */
 
 import consola from "consola"
-import { historySnapshotBody } from "~/lib/pipeline/types"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
@@ -133,6 +132,7 @@ import {
   //
   createReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
+import { historySnapshotBody } from "~/lib/pipeline/types"
 import { state } from "~/lib/state"
 import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
@@ -416,7 +416,10 @@ function parseOpenAiResponses(
   translationConfigSnapshot?: TranslationConfigSnapshot,
 ): { env: RequestEnvelope; resolvedModelName: string } {
   const incoming = raw.body as ResponsesPayload
-  const originalSnapshot = raw.originalBodyForHistory === undefined ? structuredClone(raw.body as ResponsesPayload) : (historySnapshotBody(raw.originalBodyForHistory) as ResponsesPayload)
+  const originalSnapshot =
+    raw.originalBodyForHistory === undefined ?
+      structuredClone(raw.body as ResponsesPayload)
+    : (historySnapshotBody(raw.originalBodyForHistory) as ResponsesPayload)
 
   // Working payload (the route already injected system-prompt instructions into
   // `incoming`). Strip the image_generation builtin tool (config-gated) AFTER the

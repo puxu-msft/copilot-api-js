@@ -17,7 +17,6 @@ import type {
 } from "hono/ws"
 
 import consola from "consola"
-import { snapshotHistoryBody } from "~/lib/pipeline/types"
 
 import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
@@ -47,6 +46,7 @@ import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
+import { snapshotHistoryBody } from "~/lib/pipeline/types"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"

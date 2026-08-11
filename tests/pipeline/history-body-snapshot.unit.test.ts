@@ -1,6 +1,16 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { historySnapshotBody, snapshotHistoryBody, type HistoryBodySnapshot } from "~/lib/pipeline/types"
+import {
+  //
+  historySnapshotBody,
+  snapshotHistoryBody,
+  type HistoryBodySnapshot,
+} from "~/lib/pipeline/types"
 
 describe("HistoryBodySnapshot", () => {
   test("owns a cloned history body and rejects a caller-forged alias", () => {

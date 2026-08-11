@@ -15,11 +15,15 @@ import {
 } from "bun:test"
 
 import type { Model } from "~/lib/models/client"
-import { snapshotHistoryBody, type RawHttpRequest } from "~/lib/pipeline/types"
 
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  snapshotHistoryBody,
+  type RawHttpRequest,
+} from "~/lib/pipeline/types"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
