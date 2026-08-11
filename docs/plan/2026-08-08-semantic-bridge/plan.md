@@ -574,6 +574,18 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 ### C2.2 —— candidate lineage 与 policy resolver
 
+> **状态（2026-08-11）：前半已落地并合入；后半（coordinator 接线）被一个具名前置卡住。**
+>
+> **已完成**：`src/lib/pipeline/semantic/policy-resolver.ts`（从冻结快照解析、§6.2 安全默认、`PolicyResolution` 联合表达「命中失效 rule ≠ 未命中」）、`lineage.ts`（`CandidateTranslationLineage` + `DeliveryAuthorityState` 形状、一律生于 `uncommitted`、`causeStartsNewSegment`）、`tests/pipeline/semantic/lineage.unit.test.ts`。匹配谓词已下沉为 `findTranslationRule`，与既有 `resolveTranslationFeatures` 共用一份，避免两套规则漂移。
+>
+> `[hard]` **接线前置：`ModelIdentity` 目前没有任何生产者。** 复算：`rg -rn 'ModelIdentity' src/ --glob '*.ts'` —— 只有 `types.ts` 的声明与 policy-resolver 的消费，管线里**没有一处构造它**。缺的关键字段是 **`provider`**：`clientFormat`／`targetEndpoint` 能给出 `protocol`，`ResolvedModel` 能给出 `model`，但 `provider` 在 envelope 上没有对应来源。
+>
+> **不能猜**：`provider` 参与 §3.3 不变量 2 的 carrier provenance 比较（protocol＋provider＋model **三者全等**才 preserve）。取错会让 opaque 保留过松或过严，而这是正确性关键路径，且错值会随 policy 一起进 History 投影。
+>
+> **接线的正确形状（供接手者）**：四种 candidate 都经**同一个** `start()` 创建（`coordinator.ts` 的 `role`：primary／recovery／continuation／hedge），`raceReadyCandidates` **不调用** `start()`——已实证它确实不是 segment 新建点。所以 lineage 应记在 `start()` 这一处共用基座，而不是散在三个调用点。role→cause 映射：primary→`primary`、hedge→`hedge`、continuation→`continuation`、recovery→`fallback`（kickoff 表已定性）；**`retry` 不在此接缝产生**——透明重试发生在 candidate 内部，不新建 coordinated candidate。
+>
+> **动手第一步**：定 `ModelIdentity` 的构造契约（`provider` 从哪来），再接线。
+
 **Goal**：落 `CandidateTranslationLineage` 与 `PairTranslationPolicy` 解析（RFC §6）。
 
 **Files**

@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 语义桥 `PairTranslationPolicy.serverTools` 的类型从未定义（2026-08-11，C2.2 执行时发现）
+
+- **根因 / 现状**：RFC §6 的 `PairTranslationPolicy` 列了 `serverTools: ServerToolCapabilities`，但 **`ServerToolCapabilities` 全仓只出现这一次**——就是该类型块里的这个引用本身，没有任何定义（复算：`rg -rn 'ServerToolCapabilities' --glob '*.ts' --glob '*.md' .`）。属**定义滞后**，不是 aspirational 引用：这个字段确有消费者预期（§7 的 server-tool 四格）。
+- **当前行为**：C2.2 落地的 `src/lib/pipeline/semantic/policy-resolver.ts` **显式不实现该字段**，并在类型注释里写明原因。resolver 返回的 policy 因此比 RFC §6 少一个字段。
+- **为何暂缓**：该字段的语义归 **§7／C5**（server-tool 四格）。在 C2.2 里发明它的形状等于**在错误的切片里冻结一份公共契约**——C5 真正要用它时几乎必然得改，而那时它已经进了 History 投影与 policy 快照。按 `broken-reference-supply-vs-delete`，此处选择「不补也不删引用」，而是把缺口显式化并交给拥有其语义的那一片。
+- **理想架构 / 若做需改什么**：C5.1／C5.2 定义 `ServerToolCapabilities`（至少要能表达 §7 四格各自的 native／function／text 降级能力），然后回到 `policy-resolver.ts` 补字段、补 §6.2 的默认值语义（未命中 rule 时 server-tool 能力取什么），并同步 RFC §6 让类型块与实现一致。
+- **触发条件**：C5 动工时**必须**先处置本条——它是那一片的输入。**发现方**：C2.2 实现期（2026-08-11），照 RFC §6 逐字落 `PairTranslationPolicy` 时发现该类型不可解析。
+
 ## `createDownstreamDeliverySession` 是一个闭包里 20 个自由可变变量（2026-08-11，**正确性挂在「Commit 6 真的删掉它」上**）
 
 - **现状**：`src/lib/pipeline/delivery/session.ts` 的 `createDownstreamDeliverySession` 728 行、闭包内 **20 个 `let`**（口径：`rg -c '^  let ' src/lib/pipeline/delivery/session.ts`），横跨四个不相干关注点——生命周期（`state`／`finishReason`／`wireTorn`／`finalized`）、wire 观测账本（`messageEnvelope`／`openBlocks`／`pendingOpenBlocks`／`lastWriteAtMonotonic`／`lastContentDeltaAtMonotonic`／`semanticBlockCount`／`terminalWritten`／`writeCount`／`hasEmittedRealClientContent`）、心跳（`timer`／`heartbeatSuspended`／`heartbeatStopped`／`scaffoldAttempted`／`contentScaffoldAttempted`）、generation 身份（`winnerCandidateId`／`winnerSource`）。
