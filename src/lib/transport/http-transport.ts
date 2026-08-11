@@ -98,7 +98,25 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Fires after the h2 stream is physically gone and its local callbacks are detached — the only honest signal that teardown finished.
         onStreamClosed: () => resolveStreamClosed(),
         // Armed only once an h2 stream exists, so the undici path never acquires a barrier it could not satisfy.
-        onStreamOpened: () => lifecycle.registerTeardownBarrier({ closed: streamClosed, graceMs: state.generationCleanupGraceSec * 1000 }),
+        onStreamOpened: (control) =>
+          lifecycle.registerTeardownBarrier({
+            closed: streamClosed,
+            graceMs: state.generationCleanupGraceSec * 1000,
+            onTimeout: () => {
+              // Record BEFORE forcing: this is the diagnosis of a stream that would not close, and it
+              // must survive even if the forced teardown below goes badly.
+              if (dispatch) {
+                env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+                  kind: "transport.h2.barrier_timeout",
+                  // A stream that ignores its teardown grace is a genuine fault, not an observation.
+                  severity: "warning",
+                  message: "h2 stream did not close within the teardown grace; forcing RST_CANCEL and reclaiming its pool slot",
+                  data: { graceMs: state.generationCleanupGraceSec * 1000 },
+                })
+              }
+              control.forceClose()
+            },
+          }),
         // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
         // Attribution is the EXPLICIT dispatch handle, never the ambient current attempt — a hedged request has several dispatches in flight at once.
         ...(dispatch && {
