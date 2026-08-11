@@ -1,0 +1,96 @@
+{
+  "skill_name": "delivering-in-validated-batches",
+  "evals": [
+    {
+      "id": 5,
+      "name": "nominal-parent-transfer-laundering",
+      "prompt": "父项目 Alpha 准备关闭，仍有一个长期正确的后续项 F。协调者新建了父项目 Beta，只在 Alpha 状态页写‘F transferred to Beta’，Beta 没有具名 owner、没有活动状态、没有接收记录，也没有复制 F 的验收、依赖、触发点或关闭责任。协调者说只要另一个父项存在就满足转移门。你必须直接给出 Alpha、Beta、F 的合法状态和关闭判断，并列出一次真实转移必须满足的机械条件。",
+      "expected_output": "拒绝名义转移；F 留在 Alpha 未完成集合，Alpha 不能关闭；真实转移要求目标父项存在且 active、具名 owner、原子接收目标/验收/依赖/触发/状态/关闭责任、双向链接，并检查无循环转移。",
+      "assertions": [
+        "拒绝仅靠状态页文字认定 transferred",
+        "Alpha 保持未完成或部分完成",
+        "Beta 必须存在且处于活动状态并有具名 owner",
+        "转移必须携带目标、验收、依赖、触发点、状态和关闭责任",
+        "检查父项转移链无循环且不能继续空转"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "all-tbd-followup-shell",
+      "prompt": "当前批已经独立验收，发布窗口只剩 20 分钟。刚发现一个明确不阻断当前批、长期正确的后续项，但发现记录只有一句标题；依赖、事件型触发、验收、证伪、正控、决策权全部未知。作者准备把这些字段全写 TBD 后声称‘完整后续项已落盘’，今天交付当前批并结束项目治理。你不能追问。请决定当前批是否交付、该后续项记录能否算完整、每个 TBD 需要附什么，父项目状态是什么。",
+      "expected_output": "当前批可交付；全 TBD 记录不能称完整；每个 TBD 至少绑定来源证据、负责补齐者和可观察解决触发/期限；父项保持部分完成，关闭门不通过。",
+      "assertions": [
+        "不因非阻断后续项阻塞当前批交付",
+        "拒绝把全 TBD 记录称为完整或可执行",
+        "每个 TBD 绑定来源证据或发现上下文",
+        "每个 TBD 绑定负责补齐者和可观察解决触发",
+        "父项目保持部分完成且不能结束治理"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "batch-stage-parent-three-level-status",
+      "prompt": "项目 P 的阶段 S 包含批次 A、B、C。A 已独立验收并交付；B 正在实施；C 依赖 B 完成后才能开始。没有任何事项被取消或转移。负责人想把‘A done’写成‘S done’，同时把 P 写成 Partially Complete。请直接给出 A、B、C、S、P 五个对象的状态和各自完成门，并说明何时 S 才能 done。",
+      "expected_output": "A done，B in progress，C blocked，S in progress/partial，P partial；阶段完成必须枚举其全部批次并逐一达到 done 或经授权终态，不能用单批完成代替。",
+      "assertions": [
+        "A／B／C 的状态与各自完成门证据一致：若 B 为 in progress 必须有明确未闭合条件，不能同时声称 B 的全部批次契约已闭合",
+        "阶段 S 不是 done",
+        "父项目 P 是部分完成而非完成",
+        "阶段门机械枚举 A/B/C",
+        "明确区分批次门、阶段门和父项目门"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "cyclic-followup-triggers",
+      "prompt": "两个后续项 F1、F2 都不阻断已交付当前批。F1 的依赖和事件触发都是‘F2 done’，F2 的依赖和事件触发都是‘F1 done’，两者都被标 blocked；所有模板字段表面完整。协调者认为事件型触发已经填写，所以可以继续等待。请裁决这两个记录是否合格、父项状态、必须运行的依赖检查，以及如何修复而不凭空提前实现任一项。",
+      "expected_output": "识别依赖/触发环与不可达事件，记录不合格；父项保持部分完成；构建依赖图并检测环/无根节点；通过外部可达事件、拆依赖或用户/未卷入方裁决打破环，不要求盲目提前实现。",
+      "assertions": [
+        "识别 F1/F2 构成依赖与触发环",
+        "拒绝把字段形式完整当作合格",
+        "要求构建依赖图并检查环或事件可达性",
+        "父项目保持部分完成",
+        "通过外部可达事件、拆依赖或独立裁决解环而非盲目实现"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "nonterminal-status-reachability-escape",
+      "prompt": "两个长期正确的后续项 F1、F2 都不阻断已交付当前批。F1 必须等 F2 done 才能开始，F2 必须等 F1 done 才能开始。协调者为了绕开 blocked 项的可达性检查，把 F1 标成 pending、F2 标成 ready，并说‘规则只要求每个 blocked 项有可达根；现在没有 blocked，所以记录合规’。请直接裁决 F1、F2、父项目状态，说明可达性检查适用于哪些非终态状态，以及 pending／ready／blocked 各自合法的机械条件。",
+      "expected_output": "拒绝状态绕过；对所有非终态事项检查依赖与触发可达性；pending 仅用于分类/信息未闭合且必须有补齐触发，ready 要求依赖均满足，blocked 要求有可达解阻路径；F1/F2 进入需裁决，父项部分完成。",
+      "assertions": [
+        "拒绝以 pending 或 ready 绕过可达性检查",
+        "可达性检查覆盖全部非终态事项而非只覆盖 blocked",
+        "ready 只允许依赖全部满足的事项",
+        "pending 必须绑定信息补齐或分类裁决的可达触发",
+        "F1/F2 进入需裁决且父项目保持部分完成"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "delivery-transition-and-parent-conjunction",
+      "prompt": "父项目 P 只有阶段 S，S 只有批次 A、B，且没有任何 follow-up。B 已 done。A 的边界、不变量、依赖、实施和独立验收均有闭合证据，但制品尚未发布，也没有交付证据。协调者说：‘A 的全部技术门已闭合，所以先标 done；P 没有 follow-up，也可以标 Completed，稍后再发布。’请给出发布前 A/S/P 的状态与条件 ID 集合、允许执行的下一动作，以及发布证据落盘后的状态转移。不得用同一条件同时解释为已闭合和未闭合。",
+      "expected_output": "发布前 A 为 ready to deliver，DELIVERY ID 唯一留在 open；允许执行交付但不标 done。交付证据落盘后关闭 DELIVERY ID，A 转 done。S/P 只有在组成批次/阶段与各自集成验收门全部闭合后才完成；没有 follow-up 不是充分条件。",
+      "assertions": [
+        "发布前 A 为 ready to deliver 而非 done，且 DELIVERY 是唯一未闭合条件",
+        "交付动作在 ready to deliver 执行，交付证据落盘后关闭 DELIVERY ID 并转 done",
+        "A／S／P 记录都明确包含 closed_conditions 与 open_conditions，状态由集合派生",
+        "即使没有 follow-up，S 未完成或父项目级验收未闭合时 P 也不能 Completed",
+        "同一条件 ID 不会同时出现在 closed 与 open，也不会在状态理由中被同时声称闭合和未闭合"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "state-priority-and-terminal-conflict",
+      "prompt": "一个后续项 F 的 applicable_conditions 为 [F-DEP, F-IMPL, F-ACC, F-DEL, F-SUP, F-RET]。F-IMPL 正在执行，但 F-DEP 是尚未发生的外部供应商发布；同时两组证据分别主张 F 已被替代（superseded）和原需求已失效（retired），尚无独立裁决。协调者把 F 标为 in progress，并把 F-SUP、F-RET 都放进 closed，保留 F-DEP、F-ACC、F-DEL open。请按唯一状态规则给出合法状态、三组条件集合、禁止动作和恢复路径。",
+      "expected_output": "终态候选冲突先进入 needs adjudication；superseded/retired 不得同时成立。若终态冲突裁决后仍继续实施，未满足外部依赖使 blocked 优先于 in progress。applicable 必须由 closed/open 精确分区，所有对象使用同一 schema。",
+      "assertions": [
+        "superseded 与 retired 候选同时成立时标为 needs adjudication，不任选五一个终态",
+        "存在待裁决终态冲突时 needs adjudication 优先于 blocked 或 in progress",
+        "冲突裁决为继续实施后，真实未满足外部依赖使 blocked 优先于 in progress",
+        "applicable_conditions 由 closed_conditions 与 open_conditions 不重不漏地精确分区",
+        "禁止在终态残留未处置 open ID，并给出裁决后恢复到唯一合法状态的路径"
+      ]
+    }
+  ]
+}

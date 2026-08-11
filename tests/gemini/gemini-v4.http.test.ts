@@ -47,7 +47,7 @@ import {
 } from "../helpers/sse"
 
 let lastCcWire: ChatCompletionsPayload | undefined
-let lastResponsesWire: { model?: string; input?: unknown } | undefined
+let lastResponsesWire: { model?: string; input?: unknown; tools?: Array<{ name?: string }> } | undefined
 
 function ccNonStream(model: string): Response {
   return new Response(
@@ -99,6 +99,7 @@ function ccToolFinishOmittedStream(model: string): Array<string> {
 
 let errorMidStream = false
 let toolFinishOmitted = false
+let responsesToolCall = false
 
 /** A stream that errors mid-way after delivering one frame. */
 function erroringCcStream(model: string): Response {
@@ -135,11 +136,13 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     return Promise.resolve(ccNonStream(payload.model))
   }
   if (url.endsWith("/responses")) {
-    lastResponsesWire = payload as { model?: string; input?: unknown }
+    lastResponsesWire = payload as { model?: string; input?: unknown; tools?: Array<{ name?: string }> }
     if (payload.stream) return Promise.resolve(createSseResponse(responsesStreamFrames()))
+    const output =
+      responsesToolCall ? [{ type: "function_call", id: "fc_1", call_id: "call_1", name: "search_web", arguments: '{"q":"PONG"}', status: "completed" }] : []
     return Promise.resolve(
       new Response(
-        JSON.stringify({ id: "resp_1", model: payload.model, status: "completed", output: [], usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } }),
+        JSON.stringify({ id: "resp_1", model: payload.model, status: "completed", output, usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } }),
         {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -178,6 +181,7 @@ describe("Gemini v4 driver path", () => {
     lastResponsesWire = undefined
     errorMidStream = false
     toolFinishOmitted = false
+    responsesToolCall = false
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok" })
   })
@@ -281,6 +285,23 @@ describe("Gemini v4 driver path", () => {
       responseId: "resp_1",
     })
     expect(v4Wire?.input).toBeDefined() // CC→Responses translation happened
+  })
+
+  test("via-responses restores sanitized tool names before rendering Gemini functionCall", async () => {
+    setStateForTests({ sanitizeToolNames: true })
+    responsesToolCall = true
+    const body = {
+      contents: [{ role: "user", parts: [{ text: "call search.web" }] }],
+      tools: [{ functionDeclarations: [{ name: "search.web", description: "search", parameters: { type: "object" } }] }],
+      toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["search.web"] } },
+    }
+
+    const response = (await (await post("gpt-resp-only:generateContent", body)).json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ functionCall?: { name?: string } }> } }>
+    }
+
+    expect(lastResponsesWire?.tools?.[0]?.name).toBe("search_web")
+    expect(response.candidates?.[0]?.content?.parts?.[0]?.functionCall?.name).toBe("search.web")
   })
 
   test("mid-stream error: Gemini-shape data-only error frame", async () => {

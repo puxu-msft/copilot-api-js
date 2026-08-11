@@ -70,6 +70,8 @@ import {
 } from "~/lib/observability/telemetry-dimensions"
 import { setHistoryConfig } from "~/lib/state"
 
+import { historyTestDbPath } from "../helpers/test-bootstrap"
+
 function msg(role: string, content: string): MessageContent {
   return { role, content }
 }
@@ -224,7 +226,7 @@ describe("P4a: getStats / getHistory wiring reads new legs (in-flight, DB-backed
   beforeEach(async () => {
     await shutdownHistory()
     clearInFlight()
-    setHistoryConfig({ historyDbPath: ":memory:" })
+    setHistoryConfig({ historyDbPath: historyTestDbPath() })
     await initHistory(true)
     openInMemoryDatabase()
   })

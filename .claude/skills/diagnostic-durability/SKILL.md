@@ -45,7 +45,7 @@ bun run typecheck
 bunx eslint <所有改动文件>
 bun test tests/diagnostics tests/shutdown tests/observability
 bun test tests/diagnostics/backend-flush-contract.it.test.ts tests/diagnostics/durable-writer.unit.test.ts --rerun-each 25
-bun test tests/shutdown/shutdown-signals.it.test.ts --rerun-each 25
+bun test tests/shutdown/shutdown-signals.pty.test.ts --rerun-each 25
 git diff --check
 ```
 

@@ -8,9 +8,8 @@
  * direct cell through `AnthropicCellAssembly`) and the `OUTBOUND_LEGS[/v1/messages]` assembly call the
  * SAME functions — zero byte divergence. `anthropicPreSend` / `sampleAnthropicRequest` were ALREADY pure
  * (`env`-only); `prepareAnthropicWire` takes an explicit {@link PrepareWireDeps} the caller sources from
- * the codec closure today and from `env.requestState` + `env.ctx` under the assembly.
+ * the codec closure today and from `env.request` + `env.candidate` + `env.ctx` under the assembly.
  */
-
 
 import type { RequestContext } from "~/lib/context/request"
 import type {
@@ -63,17 +62,17 @@ export interface PrepareWireDeps {
  * back to `env.body`, so the same env → the same wire.
  */
 export function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest & { strippedCacheControlSubfields?: ReadonlyArray<string> } {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+  const model = env.request.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.attempt.body as MessagesPayload, {
     ...(model && { resolvedModel: model }),
     ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
     ...(deps.clientRequestHeaders !== undefined && { clientRequestHeaders: deps.clientRequestHeaders }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
+    ...(env.attempt.prepareHints.excludeBetas && { excludeBetas: env.attempt.prepareHints.excludeBetas }),
+    ...(env.attempt.prepareHints.rejectFields && { rejectFields: env.attempt.prepareHints.rejectFields }),
+    ...(env.attempt.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.attempt.prepareHints.excludeServerToolTypes }),
+    ...(env.attempt.prepareHints.excludeToolFields && { excludeToolFields: env.attempt.prepareHints.excludeToolFields }),
+    ...(env.attempt.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.attempt.prepareHints.excludeCacheControlSubfields }),
+    ...(env.attempt.prepareHints.contextEscalation && { contextEscalation: env.attempt.prepareHints.contextEscalation }),
   })
 
   // Record the betas actually sent (sanitized headers — same value the legacy
@@ -121,15 +120,15 @@ export function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps
  * shared definition both codecs and the `OUTBOUND_LEGS[/v1/messages]` reverse branch call (zero divergence).
  */
 export function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+  const model = env.request.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.attempt.body as MessagesPayload, {
     ...(model && { resolvedModel: model }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
+    ...(env.attempt.prepareHints.excludeBetas && { excludeBetas: env.attempt.prepareHints.excludeBetas }),
+    ...(env.attempt.prepareHints.rejectFields && { rejectFields: env.attempt.prepareHints.rejectFields }),
+    ...(env.attempt.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.attempt.prepareHints.excludeServerToolTypes }),
+    ...(env.attempt.prepareHints.excludeToolFields && { excludeToolFields: env.attempt.prepareHints.excludeToolFields }),
+    ...(env.attempt.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.attempt.prepareHints.excludeCacheControlSubfields }),
+    ...(env.attempt.prepareHints.contextEscalation && { contextEscalation: env.attempt.prepareHints.contextEscalation }),
   })
   // Record the outbound betas so the reverse unsupported-beta strategy can probe them (mirrors the
   // anthropic codec's prepareWire recordOutbound — the SAME probe instance the handler injects here).
@@ -163,14 +162,14 @@ export interface SampleAnthropicResult {
  * `recordRetryPipelineState` reads from `newPayload`.
  */
 export function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
-  const effBody = env.body as MessagesPayload
+  const effBody = env.attempt.body as MessagesPayload
   const effectiveMessages: Array<unknown> = Array.isArray(effBody.messages) ? effBody.messages : []
 
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
+    resolvedModel: env.request.model as Model | undefined,
     messages: effectiveMessages,
-    payload: env.body,
+    payload: env.attempt.body,
     format: ENDPOINT_TYPE,
   }
 

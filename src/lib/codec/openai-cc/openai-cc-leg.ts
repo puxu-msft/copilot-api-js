@@ -44,8 +44,8 @@ const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
  * VERBATIM from the openai-cc codec's `prepareOpenAiCcWire` CHAT_COMPLETIONS branch (C3).
  */
 export function prepareChatCompletionsWire(env: RequestEnvelope): PreparedRequest {
-  const model = env.model as Model | undefined
-  const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
+  const model = env.request.model as Model | undefined
+  const ccPayload = fillMaxCompletionTokens(env.attempt.body as ChatCompletionsPayload, model)
   const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.CHAT_COMPLETIONS,
@@ -65,12 +65,12 @@ export function prepareChatCompletionsWire(env: RequestEnvelope): PreparedReques
  * still holds — this samples the same `env.body` for effective and the same prepared `wire`.
  */
 export function sampleChatCompletionsWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  const effBody = env.body as { model?: unknown; messages?: unknown }
+  const effBody = env.attempt.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
+    resolvedModel: env.request.model as Model | undefined,
     messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
+    payload: env.attempt.body,
     format: ENDPOINT_TYPE,
   }
 

@@ -33,7 +33,7 @@ git -C <它自己的 worktree> log --oneline -1  # 与基线同 = 零提交
 git diff --stat                              # 声称的每一项都要能在 diff 里指出来
 ```
 
-**更好的做法是前置**：派活时就要求它在回报里**贴出 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出**——本轮改用这个要求后拿到的两次产出都是真的。另：`session-closeout` §6b 的进度文件（随每个实现 commit 提交）会让「零提交」**自动暴露**，不必等读它的报告。
+**更好的做法是前置**：派活时就要求它在回报里**贴出 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出**——本轮改用这个要求后拿到的两次产出都是真的。另：user-level skill `writing-handover-docs` 的进度文件协议（随每个实现 commit 提交）会让「零提交」**自动暴露**，不必等读它的报告。
 
 **别走向另一个极端**：这不是「agent 不可信」的叙事。被质询时它诚实承认了；本轮其余五个 agent 的产出全部经核实属实，且其中多条修法强于我自己的方案。判据是**对照产物**，不是对 agent 下人格判断。
 

@@ -1,34 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash",
-      "Read",
       "Edit(/.claude/skills/**)",
-      "Skill",
-      "WebFetch",
-      "WebSearch",
-      "Bash(python3 -)"
+      "Skill"
     ],
-    "ask": [
-      "Bash(git push:*)",
-      "Bash(git reset --hard:*)",
-      "Bash(git clean:*)",
-      "Bash(git restore:*)",
-      "Bash(git checkout:*)",
-      "Bash(git stash drop:*)",
-      "Bash(git stash clear:*)",
-      "Bash(git branch -D:*)",
-      "Bash(git rebase:*)",
-    ],
+    "ask": [],
     "additionalDirectories": [
-      "//home/xp/.claude/my/**",
-      "//home/xp/.claude/projects/-home-xp-src-copilot-api-js/**",
       "//home/xp/.local/share/copilot-api/**",
-      "//home/xp/src/copilot-api-js/**",
-      "/home/xp/.claude/my/**",
-      "/home/xp/.claude/projects/-home-xp-src-copilot-api-js/**",
-      "/home/xp/.local/share/copilot-api/**",
-      "/home/xp/src/copilot-api-js/**",
       "/.worktree/**",
       "/docs/memory/**"
     ]

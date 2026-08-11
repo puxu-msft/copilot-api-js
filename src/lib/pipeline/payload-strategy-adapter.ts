@@ -13,7 +13,7 @@
  *   - `handle(error, env)` synthesizes a `RetryContext` from per-request closure
  *     state (the stable `originalPayload` baseline, `model`, `maxRetries`) + a
  *     shared `attempt` counter, runs the payload strategy `handle(error, env.body, ctx)`,
- *     then folds the payload action back: `retry.payload`/`prepareHints` → `env.with(...)`,
+ *     then folds the payload action back: `retry.payload`/`prepareHints` → `writeAttempt(env, ...)`,
  *     `abort` → `{ kind: "abort" }`.
  *   - `action.meta` (e.g. unsupported-beta's
  *     `probedBetas`) is attached to the returned env-action's `meta` (NOT fired
@@ -27,7 +27,11 @@
 
 import type { ApiError } from "~/lib/error"
 import type { Model } from "~/lib/models/client"
-import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type {
+  //
+  AttemptScope,
+  RequestEnvelope,
+} from "~/lib/pipeline/envelope"
 import type {
   //
   RetryAction as EnvRetryAction,
@@ -38,6 +42,8 @@ import type {
   RetryContext,
   RetryStrategy as PayloadRetryStrategy,
 } from "~/lib/request/retry-types"
+
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 /** Mutable shared attempt counter for one request's payload strategies. */
 export interface AttemptRef {
@@ -75,13 +81,13 @@ export function adaptPayloadStrategy<TPayload>(payload: PayloadRetryStrategy<TPa
         model: deps.model,
         maxRetries: deps.maxRetries,
       }
-      const action = await payload.handle(error, env.body as TPayload, context)
+      const action = await payload.handle(error, env.attempt.body as TPayload, context)
       deps.attemptRef.value++
 
       if (action.action === "abort") return { kind: "abort", error: action.error }
 
-      const patch: Parameters<RequestEnvelope["with"]>[0] = { body: action.payload }
-      if (action.prepareHints) patch.prepareHints = action.prepareHints
+      const next: Partial<AttemptScope> = { body: action.payload }
+      if (action.prepareHints) next.prepareHints = action.prepareHints
 
       // Attach payload `action.meta` to the env-action rather than firing onMeta
       // immediately (C0-② / RFC §11.2): the driver captures it AFTER the budget
@@ -89,7 +95,7 @@ export function adaptPayloadStrategy<TPayload>(payload: PayloadRetryStrategy<TPa
       // phantom pipeline-info / onResolved learning.
       return {
         kind: "retry",
-        env: env.with(patch),
+        env: writeAttempt(env, next),
         ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
         ...(action.learning && { learning: action.learning }),
         ...(action.meta && { meta: action.meta }),
@@ -98,7 +104,7 @@ export function adaptPayloadStrategy<TPayload>(payload: PayloadRetryStrategy<TPa
 
     ...(payload.onResolved && {
       onResolved: (env: RequestEnvelope, meta?: Record<string, unknown>): void | Promise<void> =>
-        payload.onResolved?.({ payload: env.body as TPayload, prepareHints: env.prepareHints, meta, attempt: deps.attemptRef.value }),
+        payload.onResolved?.({ payload: env.attempt.body as TPayload, prepareHints: env.attempt.prepareHints, meta, attempt: deps.attemptRef.value }),
     }),
   }
 }

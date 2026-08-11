@@ -170,10 +170,16 @@ export interface HistorySearchWireStatus {
   }
 }
 
+/**
+ * A caller-fault code, distinguishing "this request cannot be served as asked" from "the sidecar
+ * failed". Absent means the latter, which the HTTP layer reports as 503; these two map to 400.
+ */
+export type HistorySearchWireErrorCode = "invalid-cursor" | "invalid-query"
+
 /** An error response — the sidecar's search() threw; carries a human-readable message. */
 export interface HistorySearchWireError {
   error: string
-  code?: "invalid-cursor"
+  code?: HistorySearchWireErrorCode
 }
 
 export type HistorySearchWireReply = HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus | HistorySearchWireError

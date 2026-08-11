@@ -1,8 +1,16 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { buildOpenAIResponseData, buildResponsesResponseData } from "~/lib/request/recording"
-import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
+import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import {
+  //
+  buildOpenAIResponseData,
+  buildResponsesResponseData,
+} from "~/lib/request/recording"
 
 test("buildOpenAIResponseData forwards cache_write to cache_creation + details (streaming main path)", () => {
   const acc = createOpenAIStreamAccumulator()

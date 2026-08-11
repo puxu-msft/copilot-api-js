@@ -48,18 +48,17 @@ import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 function envFor(model: Model | undefined, clientFormat: ClientFormat, routeOverride?: RouteOverride): RequestEnvelope {
   const id = model?.id ?? "unknown-unregistered-model"
   return {
-    clientFormat,
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
-    ...(routeOverride && { routeOverride }),
-    model: model as unknown as RequestEnvelope["model"],
-    stream: false,
-    body: { model: id, messages: [] },
+    request: {
+      clientFormat,
+      model: model as unknown as RequestEnvelope["request"]["model"],
+      stream: false,
+      ...(routeOverride && { routeOverride }),
+    } as RequestEnvelope["request"],
+    attempt: { body: { model: id, messages: [] }, targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {},
     view: {} as RequestEnvelope["view"],
-    prepareHints: {},
     ctx: {} as RequestContext,
-    with(patch) {
-      return { ...this, ...patch } as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   } as RequestEnvelope
 }
 

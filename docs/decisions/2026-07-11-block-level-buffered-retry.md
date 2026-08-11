@@ -63,7 +63,22 @@
 - **代价 / 约束**：`partial-degrade` 是块级端点的固有终局（已作诚实 outcome 记账，非缺陷）；缓冲期强制 heartbeat，注入的 keepalive 帧必打 `synthetic:"keepalive"` 标记入 forwarded 轨、绝不入上游原始轨（richest-data-flow ADR）；默认开受实证门约束、非自动。
 - **可观测性**：CC-live 路径因 `streamKeepalivePingSec` 默认 20 也会心跳（追平 Anthropic/Responses live 行为，一致性改进）——已同步 DESIGN.md tier-1 行 ③ + backlog:322，可 operator override。
 
+## 2026-08-06 后续裁决：delivery 公理取代可退 live 的旧门控
+
+用户在 2026-08-02 确认：真实内容绝不逐 token／delta 交付，所有生产路径至少执行 block-level buffering and delivery；无可靠中间块边界的协议采用更强的 response-level terminal-only buffering。2026-08-06 的 [mandatory block delivery 与 HTTP/2 终止观测规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md) 进一步冻结了完整形状。
+
+该后续裁决明确取代本文以下旧权衡，但保留上文作为历史决策记录：
+
+- 决策 4 的“默认开受实证门控、门未过可保持 `false`”不再适用于 delivery。Delivery 永久开启且不可配置；实证门只影响 keepalive carrier 或恢复策略是否可用，不能恢复 live forwarding。
+- `protect_streaming_generation:false`／`buffered_retry.enabled:false` 只能兼容迁移为 `max_retries:0`，不得关闭 buffering。
+- `buffer_cap_bytes` 不得触发 `retreat` 到 live write-through；该旋钮从活配置与 schema 移除，旧配置只兼容读取并告警。
+- `partial-degrade` 不得包含当前未闭合 unit。已提交的完整 unit 可以保留；终止时必须丢弃当前半块，再交付协议合法 error／terminal。
+- 原 `commitBoundaries` boolean 与独立 hedge boundary classifier 不再足以表达完整 unit、response terminal、protocol error 与半块丢弃。目标架构改为唯一 `DeliveryGrammar` + `BlockDeliveryOwner`。
+- 原决策 5 对 Gemini 的范围排除不再成立；所有 production pumps 都必须迁入 mandatory owner。Web search 若仍走独立管线，也必须满足同一 delivery 公理，不能因入口不同获得逐帧豁免。
+
+Retry 与 delivery 从此正交：`max_retries:0` 只关闭透明重试，仍保持完整块交付。Continuation 保留，但每条腿同样只提交完整 unit。
+
 ## 备注
 
 - 承重实现教训（供未来重实现避坑）已沉入记忆 / skill：绿测可掩盖 plan 级 spec 违反（谓词误用需 per-task 独立评审逮）、plaintext mock 让 Bun-undici 上游假性 abort（keepalive oracle 须 node:http2）、`applyConfigToState` 每请求覆写测试 state（须 `setBufferedRetryOverride`）。
-- 默认翻转与 P1 接线的落地状态以 DESIGN.md「活的架构现状」block 级缓冲重试行为准（随实证门通过更新）。
+- 当前代码落地状态仍以 DESIGN.md「活的架构现状」为准；后续裁决在实现前属于已确认目标契约，不得据此把未实施行为写成当前事实。

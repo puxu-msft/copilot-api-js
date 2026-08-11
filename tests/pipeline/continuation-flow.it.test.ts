@@ -77,7 +77,7 @@ function makeCodec(): FormatCodec {
       throw new Error("parse not used")
     },
     translateOut: (env) => env,
-    prepareWire: (env) => ({ url: "u", headers: new Headers(), body: env.body, stream: true }) as PreparedRequest,
+    prepareWire: (env) => ({ url: "u", headers: new Headers(), body: env.attempt.body, stream: true }) as PreparedRequest,
     renderResponse: (frame) => frame,
     renderResponseNonStreaming: (u) => u,
     formatError: () => ({ event: "error", data: "{}" }) as ClientFrame,
@@ -88,17 +88,16 @@ function makeCodec(): FormatCodec {
 function makeEnv(): RequestEnvelope {
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: "/v1/messages",
-    model: {},
-    stream: true,
-    body: { model: "claude-opus-4", max_tokens: 100, messages: [{ role: "user", content: "hi" }] },
+    request: { clientFormat: "anthropic", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: {
+      body: { model: "claude-opus-4", max_tokens: 100, messages: [{ role: "user", content: "hi" }] },
+      targetEndpoint: "/v1/messages",
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -240,6 +239,62 @@ describe("continuation-retry driver FLOW", () => {
       { role: "assistant", content: [{ type: "text", text: "First half. " }] },
       { role: "user", content: "network issue. please continue" },
     ])
+  })
+
+  test("continuation format callback failure is codec-render, not a sink failure or retry", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const initial = up([
+      f("message_start", { message: { id: "msg_1" } }),
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "First." } }),
+      f("content_block_stop", { index: 0 }),
+    ])
+    const continuation = up([
+      f("message_start", { message: { id: "msg_2" } }),
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("message_stop"),
+    ])
+    const callbackError = new Error("network-shaped continuation predicate failure")
+    const { driver, sendCount } = makeDriver([continuation])
+    const { sink } = arraySink()
+    const ledger = createCommittedBlocksLedger()
+    const opts = bufferedOpts(ledger, makeStopTracker(), {
+      ...continuationHooks,
+      isMessageStart() {
+        throw callbackError
+      },
+    })
+
+    const outcome = await driver.runResponseBufferedSink(initial, env, sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
+  })
+
+  test("continuation request builder failure is codec-render rather than a retryable transport error", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const initial = up([
+      f("message_start", { message: { id: "msg_builder" } }),
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "First." } }),
+      f("content_block_stop", { index: 0 }),
+    ])
+    const callbackError = new Error("network-shaped continuation builder failure")
+    const { driver, sendCount } = makeDriver([up([])])
+    const ledger = createCommittedBlocksLedger()
+    const opts = bufferedOpts(ledger, makeStopTracker(), {
+      ...continuationHooks,
+      buildRequest() {
+        throw callbackError
+      },
+    })
+
+    const outcome = await driver.runResponseBufferedSink(initial, env, arraySink().sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
   })
 
   test("C3: thinking block delivered but excluded from ledger → continuation offset uses WIRE count, not ledger length", async () => {
@@ -384,7 +439,7 @@ describe("continuation-retry driver FLOW", () => {
     // candidate cap is reached first — proving the dispatch failure degrades, not throws.
     const cutLeg = (): UpstreamStream =>
       up([
-        f("message_start", { message: { id: "dup" } }),
+        f("message_start", { message: { id: "dup", usage: { input_tokens: 1, output_tokens: 0 } } }),
         f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
         f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "x" } }),
         f("content_block_stop", { index: 0 }),

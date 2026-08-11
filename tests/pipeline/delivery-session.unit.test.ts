@@ -61,6 +61,7 @@ function arraySink(writes: Array<{ method: string; frame: unknown }>): OwnerRawS
 
 describe("P3-T1 downstream delivery session", () => {
   const clock = new FakeClock()
+
   afterEach(() => clock.restore())
 
   test("updates the block ledger only from frames actually written to the client", async () => {

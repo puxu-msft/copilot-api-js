@@ -76,19 +76,34 @@ function renameMessageToolUse(message: MessageParam, mapper: ToolNameMapper): Me
 }
 
 /**
+ * Rename a forced tool_choice name to its upstream form. Anthropic's
+ * `tool_choice: { type: "tool", name }` must track the renamed tool definition,
+ * otherwise the upstream rejects the request with "Tool '<name>' not found in
+ * provided tools". Other shapes (`auto`/`any`/`none`) have no name and pass through.
+ */
+function renameToolChoice(toolChoice: MessagesPayload["tool_choice"], mapper: ToolNameMapper): MessagesPayload["tool_choice"] {
+  if (!toolChoice || typeof toolChoice !== "object") return toolChoice
+  if (toolChoice.type !== "tool" || !mapper.hasOriginal(toolChoice.name)) return toolChoice
+  return { ...toolChoice, name: mapper.toUpstream(toolChoice.name) }
+}
+
+/**
  * Apply the tool-name mapper to an outbound Anthropic payload: rename tool
- * definitions and tool_use block names from client-original to upstream form.
- * Returns a new payload (never mutates input). No-op when `mapper` is null.
+ * definitions, tool_use block names in messages, and a forced tool_choice name
+ * from client-original to upstream form. Returns a new payload (never mutates
+ * input). No-op when `mapper` is null.
  */
 export function applyAnthropicToolNameSanitization(payload: MessagesPayload, mapper: ToolNameMapper | null): MessagesPayload {
   if (!mapper) return payload
 
   const tools = payload.tools?.map((t) => renameToolDefinition(t, mapper))
   const messages = payload.messages.map((m) => renameMessageToolUse(m, mapper))
+  const toolChoice = renameToolChoice(payload.tool_choice, mapper)
 
   return {
     ...payload,
     ...(tools ? { tools } : {}),
+    ...(toolChoice !== payload.tool_choice ? { tool_choice: toolChoice } : {}),
     messages,
   }
 }

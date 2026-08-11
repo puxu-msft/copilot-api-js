@@ -1,6 +1,50 @@
-# HANDOVER —— generation emission command algebra Commit -1 进行中
+# HANDOVER —— generation emission command algebra Commit -1 待正式合并
 
-**状态**：**三层计划已全部评审放行 · M1 已于 2026-08-04 合入 master（`8125f123`）· generation emission command algebra 的 Commit -1 已在隔离 worktree 开工**。Commit -1 分支 `command-algebra-commit-minus-1` 核验时 tip `e1153578`（2026-08-06；接手时重取）；T0.0a/b/c 的 runner／producer task review 与 T0.0e validator task review 各自已完成，`test:backend`／typecheck／validator focused tests 绿。**尚未完成的是跨 task 的 Commit -1 整合验证、整相位独立 review 与合 master**；合入后才产生 entry SHA **A**，随后进入 post-merge T0.0f／T0.0d，门全绿后才开始 Commit 0。第二层判据 9 轮 + 执行方 8 轮、第三层 prompts 两视角各 8 轮均已放行。
+**状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
+
+**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出；**T0.0d 与 T0.1 随后也已通过**（详见下面两节）。下一动作是按 ADR 收窄 cutover-plan，然后才进 T0.2／Commit 0。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+
+**A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 与 `14f354ff` 的批次都 15 轮全绿却相继停在 validator 的 C9 上——producer 与 validator 同批冻结却从未端到端跑过，run log 先是缺 `canonical_command=`、补上后又缺 `verdict=`。三处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
+
+<!-- entry-evidence-pointer:v1 -->
+entry_sha=15c43e40d3c4c172425ec2356721b73bebd8315b
+manifest_path=/home/xp/.claude/jobs/757dc257/tmp/entry-evidence-A-15c43e40/evidence-manifest.json
+manifest_sha256=b33428643971347d3f824fa046004b9c392ca47f88bb18fe3ff3fe2cb470179d
+archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
+<!-- /entry-evidence-pointer:v1 -->
+
+`manifest_path` 指向产出它的那次运行的树外 OUT，**它才是 entry 的定义**；`archive_path` 是同一批产物的持久副本（job 目录会随 job 删除而消失），归档副本不定义 entry。两处 `evidence-manifest.json` 的 sha256 相同，已独立 `sha256sum` 复算。
+
+**T0.0d 已通过（2026-08-10）**：validator C1～C11 全绿、rc=0、receipt 原子写出。
+
+| 项 | 值 |
+|---|---|
+| receipt | `/home/xp/.claude/entry-evidence/A-15c43e40-receipt.json` |
+| receipt sha256 | `793eef39cb08d9103d07fae52a147938dd4c5c2b5cca93834896a22946712fc1`（已独立 `sha256sum` 复算） |
+| `entry_sha` | `15c43e40d3c4c172425ec2356721b73bebd8315b` |
+| `pointer_sha` | `26d21ccf0e8526a16f1609dc341ab56e1324a3a7` |
+| `validator_git_blob` | `282b1aa8700934e7305393e1a41b33cb201f89cf` |
+| `discovery_runner_git_blob` | `09a273247f2b2ef821dbc3b354d2bb350fcc861a` |
+| `verdict` | `green` |
+| 执行树 | `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover-a5`（detached 在 A，干净） |
+
+**T0.1 已通过（2026-08-10）**：正确状态七项全绿（receipt hash 与 T0.0d 记录一致、`entry_sha` == 执行树 HEAD、树干净、`pointer_sha` 可由 master 到达、manifest hash 未漂移、validator blob 与 entry 一致、`verdict=green`），六项注入 + 两项额外对照**全部 fail-closed 且各自点名**：
+
+| 注入 | rc | 消息 |
+|---|---|---|
+| receipt 缺失 | 11 | `receipt missing` |
+| `entry_sha` ≠ 执行树 HEAD | 14 | `entry_sha is not the execution tree HEAD` |
+| `pointer_sha` 不可由 master 到达 | 16 | `pointer_sha is not reachable from master` |
+| manifest hash 漂移 | 17 | `manifest hash drifted` |
+| validator blob 不同 | 18 | `validator blob differs from entry` |
+| `verdict != green` | 19 | `verdict is not green` |
+| receipt hash 与 T0.0d 记录不符 | 13 | `receipt hash differs from the one T0.0d recorded` |
+| 执行树 dirty | 15 | `execution tree is dirty` |
+
+判据脚本与注入产物在 `/home/xp/.claude/jobs/757dc257/tmp/t01/`（一次性入场确认，非常驻门，故不入库）。注入全部对**副本**做，entry 树未被弄脏；dirty 那条用临时未追踪文件触发后已移除并复验正样本仍绿。**T0.1 未重跑 15 次，未生成新的 manifest/P/receipt。**
+
+**范围裁决（2026-08-10，用户）**：cutover 只做原子性/并发、类型层收窄与遥测，不做 classifier 运行时授权与拒绝、不做 D2 的 owner-minted provenance。权威在 ADR [2026-08-10-trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)；cutover-plan 的 Commit 2–4 正按该 ADR 收窄，**收窄完成前不要照旧 plan 进 Commit 0**。
+
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
@@ -15,17 +59,17 @@
 
 **已知遗留 minor（评审判为不阻塞，写在这里免得被当成新发现）**：① KICKOFF:52 仍复述「21 次」这个数字，但同句自带「那是自我报告的摘要、不是独立可核验的、别当门禁已过」；② 同目录曾并存陈旧的 `kickoff.md` 与现行 `KICKOFF.md`，`ls` 时都会看到——**已给前者加 superseded 横幅**，不再依赖「README 有正确入口」这种缓解。
 
-**当前执行 worktree**：`/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`，分支 `command-algebra-commit-minus-1`；截至 2026-08-06 tip `e1153578`，相对 base `6e9e9439` 为 18 文件／约 +3316/-42。**历史 M1 worktree** `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc` 只作取证，不是当前执行入口。Commit -1 整合 review 通过后先合 master 得 **A**，再显式从 `ENTRY_SHA=A` 创建新的 cutover worktree。
-**未提交 / 未追踪**：Commit -1 worktree 当前干净；主树另有并发会话的未提交改动，与本工作无关。Commit -1 的进度与验证报告均在该分支的 `docs/tmp/2026-08-{05,06}-command-algebra-commit-minus-1-*`，尚未随分支合入 master。
+**当前执行 worktree**：`/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`，分支 `command-algebra-commit-minus-1`；核验 tip `0a302e0199c9bb20272b7183419250eb706b7853`。**历史 M1 worktree** `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc` 只作取证，不是当前执行入口。正式合 master 得 **A** 后，再显式从 `ENTRY_SHA=A` 创建新的 cutover worktree。
+**未提交 / 未追踪**：在本轮状态回填提交前，Commit -1 worktree 只含本次文档收口改动；提交后须重新确认 clean。Commit -1 的进度、验证、whole-branch review 与 mapping 均在该分支，尚未随分支正式合入 master。
 **已跑门禁**：master 上 `unit+it+http` 三档连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
 > ⚠️ **证据等级：自我报告，非独立可核验。** 那份记录是逐次**摘要**（无时间戳、无单次耗时、无完整 stdout），形式上区分不了「真跑了 21 次」与「手写了 21 行」——判据证伪评审两轮维持此为 major，我接受。**别拿它当门禁已过的证据**；RFC §7.1 的入场条件本来就要求在**当时的 entry commit** 上重跑，那次用 `exp/inter-block-anchor-allocator/baseline-runs.sh` 保留每次的原始输出文件。
 > ⚠️ **那份记录里的「修复前」那批不是受控前后对照**：它跑在 feature `2c339784`（**6848** tests），而 21 次跑在 master `cc909c81`（**6845** tests），`git merge-base --is-ancestor cc909c81 2c339784` = **NO**，互不为祖先。**跨树观测只支持「聚合层面改善」，不得用来顶 T3 的修复 AC**——那需要同一棵树上的逆 mutation。（这条纠正本身就是同类复发：它是我在修「基准锚定分裂」那个 blocker 时新引入的。）
 
-> **接手第一步不是重新问是否开工，也不是重做 T0.0a/b/c/e。** 直接授权证据在源 session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`：AskUserQuestion 问“**三层计划已全部放行，现在是否开始 Commit -1 实施？**”，用户选择“**现在开始 Commit -1（推荐）**”（2026-08-05）。当前动作是核 `command-algebra-commit-minus-1` 的整合门与独立 review；通过后合 master 得 A。**不要从「代码已发生」倒推授权，也不要拿更间接的原计划授权／retry 消息替代这条直接选择。**
+> **接手第一步不是重新问是否开工／合并，也不是重做 T0.0a/b/c/e 或已关闭的 review。** 直接实施授权在源 session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`：用户选择“**现在开始 Commit -1（推荐）**”（2026-08-05）；“Commit -1 先合 master”的拓扑裁决见下表。当前动作是复验 master 未前进后正式合入，merge result 才是 A。**不要从「代码已发生」倒推授权，也不要拿更间接的 retry 消息替代直接裁决。**
 
 ## 本轮做完了什么
 
-上一份交接说「形状已定，但它还只是一份设计文档，下一步是 RFC + 分相位计划」。**这两半现在都已完成并评审放行，且 Commit -1 已实质开工**：RFC 冻结 WHY，`cutover-plan.md` 冻结 HOW，`prompts/README.md` 与各 phase prompt 构成可派发的第三层；T0.0a/b/c/e 已在隔离 worktree 实现。当前下一步不是再取开工裁决，而是完成 Commit -1 整合 review／门禁并合 master 得 A。
+上一份交接说「形状已定，但它还只是一份设计文档，下一步是 RFC + 分相位计划」。**设计、计划与 Commit -1 实现均已完成并经独立复评放行**：RFC 冻结 WHY，`cutover-plan.md` 冻结 HOW，`prompts/README.md` 与各 phase prompt 构成第三层；T0.0a/b/c/e、82-commit traceability mapping、五份 durable docs 修正和 master-sync integration review 全部闭合。当前下一步不是重做 review，而是正式合 master 得 A。
 
 | 产物 | 位置 | 状态 |
 |---|---|---|
@@ -84,11 +128,11 @@
 
 ## 待办（每条带验收判据与证伪方式）
 
-### T1 —— 执行授权与当前相位（**已裁，Commit -1 进行中**）
-- **直接授权**：2026-08-05，AskUserQuestion 问“**三层计划已全部放行，现在是否开始 Commit -1 实施？**”，用户选择“**现在开始 Commit -1（推荐）**”（session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`）。因此**不要再问是否开工**，也不要把执行事实本身或更早的方案 A／merge／retry 消息冒充这条直接授权。
-- **当前完成**：Commit -1 的 T0.0a/b/c/e 已在 `command-algebra-commit-minus-1` worktree 实现，focused tests／typecheck／`test:backend` 绿；runner／producer 与 validator **各自** task review 已完成。核验时 tip `e1153578`，worktree 干净；接手须重取 tip，别把快照当永久值。
-- **当前下一门**：整合 runner／producer／validator 的 Commit -1 全相位门，做未卷入的整体 review；通过后**先合 master 得 A**。未合之前不得生成真实 A/P/15-run evidence，不得开始 post-merge T0.0f／T0.0d，更不得开始 Commit 0。
-- **证伪**（任一成立即状态写错）：① `git merge-base --is-ancestor <Commit-1-tip> master` 已为 true 却仍写“尚未合”；② progress 仍有 runner／producer／validator gate 或整体 review 未闭合却写“Commit -1 完成”；③ 在 A 尚未产生前生成或消费所谓真实 entry evidence；④ 把旧的“是否开工”分叉重新摆给用户。
+### T1 —— Commit -1 正式合并与 entry A（**已授权，待执行**）
+- **直接授权**：2026-08-05，AskUserQuestion 问“**三层计划已全部放行，现在是否开始 Commit -1 实施？**”，用户选择“**现在开始 Commit -1（推荐）**”（session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`）。另有已裁拓扑“Commit -1 先合 master”。因此**不要再问是否实施或是否合并**。
+- **当前完成**：T0.0a/b/c/e、runner／producer／validator review、whole-branch review、A/B finding、master 同步与 merged-state review 均关闭。权威实现 tip `0a302e0199c9bb20272b7183419250eb706b7853`，同步 parent `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；门禁数字见文件头。
+- **当前下一门**：正式 merge 到当时真实 master。若 master 自 `03c3dd13` 前进，先同步、处置冲突并重跑受影响验证；merge result 定义 `ENTRY_SHA=A`。未合之前不得生成真实 A/P/15-run evidence。
+- **证伪**（任一成立即状态写错）：① branch tip 已成为 master 祖先却仍写“尚未合”；② master 已前进却未重新同步就直接把旧 tip 称为 A；③ A 尚未产生前生成或消费所谓真实 entry evidence；④ 把已关闭的整体 review 或旧“是否开工”分叉重新摆给用户。
 
 ### T2 —— Q1 未裁决（阻塞 Commit 5，**不**阻塞 Commit 0–4）
 - **问题**：per-command telemetry 是否需要 `command × outcome × format` 联合查询。选项 A（预组合有界 compound dimension，RFC 推荐）/ B（扩 registry 为 typed multidimensional key）/ C（只做单维 breakdown + History 明细）。
@@ -136,7 +180,12 @@ OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的�
 ### T3-b —— full-suite oracle 缺口（本轮新增，未实施）
 
 - **问题**：入场条件若要断言「全后端套件已执行」，需要一条**独立于 runner 自报计数**的执行证据通道。当前 `baseline-runs.sh` 的下限与被检查的计数同源，无法证明这一点（见 T3 的 ④ 与 `docs/tmp/2026-08-03-baseline-run-log.md` 第十四条）。
-- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（**独立于 runner**，用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- **可行路径（已勘查，未实施）**：`scripts/parallel-test.ts:64` 已经为刷新计时驱动 `--reporter=junit`；让正式运行也产出 junit，把其中的 testsuite 名与**磁盘侧 glob** 出的 `*.{unit,it,http}.test.ts` 文件集逐个比对。磁盘侧当前计数（用 Python `rglob` 于 `tests/` 取得，核验于 `5a71607f`）：**unit 422 / it 181 / http 67**。
+- ⚠️ **「独立」的精确口径（2026-08-09 收窄，原文写作「独立于 runner」）**：它独立于 runner 的**实现**（换了语言与 glob 库），**不独立于 discovery 的规则**——两侧共享同一个 `tests/` 根与同一套 `{unit,it,http}` 后缀集。所以：
+  - **能守住**：runner 侧静默少跑／少报文件（本条真正要防的那个退化）。这个价值是实的，别因为下面的限制就放弃它。
+  - **守不住**：规则本身漏掉某类测试文件——那种文件两侧都看不见。因此它是**文件级的 coverage 绊线**，不是「仓库应有测试集合」的枚举者。
+  - **完全够不着**：用例级完整性（某文件加载期抛错时一行 JUnit 都不写，文件名却仍可能出现在 `<testsuite file>` 里）。
+  三层划分与判独立性的方法（交 provenance 图：每侧的生产者／观测点／上游）见 `docs/coding-conventions.md`「并行执行」节。
 - **验收**：注入「让某个 shard 静默少跑若干文件」的变异后，比对必须**报出缺失的文件名**；正确状态下两个集合相等。
 - **证伪**：**只比总数不比文件名集合**——总数相等而集合不同，正是这类退化最可能的形态；这也是本条与 `MIN_TESTS` 的本质区别，别用一个数替代一个集合。
 - **优先级**：不阻塞 Commit 0–8 的实施，但**入场条件的强度以它为上限**。在它落地前，T3 的 ④ 只能按上面那句缩小版命题引用。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
@@ -145,7 +194,7 @@ OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的�
 
 ### T4 —— 分相位计划（plan + prompts 层）**已完成并评审放行**
 - **落地产物**：`docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`（第二层 HOW + 逐 task TDD + factory／锚点表）、`traceability.md`（双向追溯）、`prompts/README.md` + Commit -1／post-merge preflight／Commit 0～8 prompts（第三层派发件）。放行提交 `d2e6d81c`；Task population 由 checker 从 plan 定义表派生，当前数字不是 SSOT。
-- **执行状态**：授权已取得，Commit -1 已按 `prompts/README.md` 开工；当前按上方 T1 完成整合 review／门禁与 merge。下面保留的是这层文档的验收设计与历史反例，**不是仍待编写的任务，也不是要求重做已完成的 T0.0a/b/c/e**。
+- **执行状态**：授权已取得，Commit -1 实现、整合门与独立 review 均已完成；当前按上方 T1 正式 merge。下面保留的是这层文档的验收设计与历史反例，**不是仍待编写的任务，也不是要求重做已完成的 T0.0a/b/c/e**。
 - **已满足的验收形状**：双向可追溯矩阵覆盖 RFC 的 Commit -1／post-merge preflight／Commit 0～8 × R-1～R-14 × O-1～O-9 × §9.3 调查缝 × §9.4 停点。
   - **正向**（RFC → plan）：每一项**至少一个**归属 commit、一条可复跑命令、一个正样本、一个目标 mutation，且指出它在**生产入口**上的可达路径。
     ⚠️ **不得写成「恰好一个」**——RFC §10.2 里 R-1／R-2／R-5／R-12 本就是**两段式**（辅助门在早期 commit、production 硬门在 Commit 4），**R-11 更是「本 RFC 每 commit 共同门」**。要求单一归属会把这些判红，而最省事的「修法」正好是把 RFC 六轮评审建立起来的**分级压平**——那是拿判据去破坏它要保护的东西。**多归属必须显式标出每段的阶段与等级**（辅助门 / production 硬门 / 每 commit 共同门），压平即不合格。

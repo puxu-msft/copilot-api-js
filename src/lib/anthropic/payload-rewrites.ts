@@ -22,7 +22,7 @@
  * These modules operate on the format-native {@link MessagesPayload} — the
  * pre-env form of P1.1's `RequestRewrite`. P2's driver wraps each as an
  * env-based `RequestRewrite` via a trivial adapter
- * (`apply(env) => env.with({ body: module.apply(env.body, ctx).payload })`).
+ * (`apply(env) => writeAttempt(env, { body: module.apply(env.body, ctx).payload })`).
  * Decomposing at the payload layer avoids premature coupling to the envelope,
  * whose `model`/`view` invariants are P2 driver guarantees not yet true here.
  */

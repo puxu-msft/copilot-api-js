@@ -1,6 +1,6 @@
 # History V3 SQLite schema
 
-> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。Canonical floor 的 DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL`；summary projection 由无运行时依赖的 schema 叶子 [`src/lib/history/v3/summary-schema.ts`](../src/lib/history/v3/summary-schema.ts) 中的 `SUMMARY_PROJECTION_FIELDS`／`SUMMARY_PROJECTION_MIGRATION_SQL` 经 forward migration 001 创建，运行时查询／backfill 在 `summary-store.ts` 消费同一字段映射；raw sidecar 的 DDL 单一事实源是 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
+> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。Canonical floor 的 DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL`；forward migrations 在 [`src/lib/history/sqlite/migrations/index.ts`](../src/lib/history/sqlite/migrations/index.ts) 注册。Summary projection 的字段与 invalidation trigger 由无运行时依赖的 schema 叶子 [`src/lib/history/v3/summary-schema.ts`](../src/lib/history/v3/summary-schema.ts) 定义，运行时查询／backfill 在 `summary-store.ts` 消费同一字段映射，canonical strict repair 在 `store.ts` 发布 readiness；raw sidecar 的 DDL 单一事实源是 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
 
 ## 1．数据库命名与职责
 
@@ -29,13 +29,17 @@ erDiagram
     V3_OBJECTS ||--o{ V3_OPERATIONS : resolved_through_manifest
     V3_SEQUENCE_NODES }o--|| V3_OBJECTS : points_to_item
     V3_SEQUENCE_NODES }o--o| V3_SEQUENCE_NODES : extends_prefix
+    V3_OPERATIONS ||--o{ V3_OPERATION_EVIDENCE_REFS : owns
+    V3_JOURNAL ||--o{ V3_JOURNAL_EVIDENCE_REFS : owns
+    V3_TRANSPORT_EVIDENCE ||--o{ V3_OPERATION_EVIDENCE_REFS : referenced_by
+    V3_TRANSPORT_EVIDENCE ||--o{ V3_JOURNAL_EVIDENCE_REFS : referenced_by
     V3_JOURNAL ||--o| V3_OPERATIONS : recovers_into
     V3_OPERATIONS ||--o| V3_SUMMARY_BACKLOG : records_summary_failure
     RAW_STORE_IDENTITY ||--o{ RAW_OBJECTS : owns
     RAW_OBJECTS ||--o{ RAW_REFS : referenced_by
 ```
 
-`v3_operations.manifest_gz` 内有 operation-local handle → `v3_objects.hash` 的映射，所以 `v3_objects` 与 `v3_operations` 没有 SQL FK。这个边由 manifest 保持，读取时批量解析并校验；SQL 层只为 operation-owned 子表建立 FK。journal 与 operation 也没有 FK，且正常情况下不共存：journal 先于 operation 行出现，成功提交后即删除。raw 侧同样没有 SQL FK：`raw_store_identity` 是 artifact 身份标记，`raw_refs.object_hash` 是到 `raw_objects` 的逻辑引用。
+`v3_operations.manifest_gz` 内有 operation-local handle → `v3_objects.hash` 的映射，所以 `v3_objects` 与 `v3_operations` 没有 SQL FK。这个边由 manifest 保持，读取时批量解析并校验；每个按row读取的入口还必须把SQL选中的 `operation_id` 作为expected identity传入hydrate，manifest内嵌 `record.identity.operationId` 不一致即fail loud，不能借另一row的合法manifest／digest通过。SQL层只为operation-owned子表建立FK。journal与operation也没有FK，且正常情况下不共存：journal先于operation行出现，成功提交后即删除。raw侧同样没有SQL FK：`raw_store_identity` 是artifact身份标记，`raw_refs.object_hash` 是到 `raw_objects` 的逻辑引用。
 
 ## 3．`history-v3.db` schema
 
@@ -56,7 +60,7 @@ erDiagram
 | `key` | `TEXT` | `PRIMARY KEY` | V3 schema／store 元数据键 |
 | `value` | `TEXT` | `NOT NULL` | 元数据值 |
 
-当前生产代码写入并读取 `schema_version`。format-v2 当前 schema version 为 `5`；reconcile 只有在版本落后时才检查／增加列并更新该键。v4→v5 在同一事务中 `DROP TABLE IF EXISTS v3_search_membership/v3_search_objects/v3_search_backlog`，不修改 canonical operations、objects、tracks 或 journal。旧 `history.db` 不会被打开。
+当前生产代码写入并读取 `schema_version`。当前 schema version 为 `6`：新库由 `V3_SCHEMA_SQL` 直接建立 schema 6；既有 schema 5 由 forward migration `001-transport-evidence-schema` 原子增加 transport evidence entity、两类 normalized refs 与 `v3_journal.format_version` 后升级。`ensureV3Schema()` 不抢 migration 的版本迁移职责：遇到旧版本保持原状，migrations完成后才执行当前 floor 的幂等 reconcile。更早的 v4→v5 仍在同一事务中移除内置 search tables；旧 `history.db` 不会被打开。
 
 ### 3.3 `v3_objects`
 
@@ -69,7 +73,7 @@ Semantic payload/frame 内容寻址对象库。
 | `canonical_gz` | `BLOB` | `NOT NULL` | canonical JSON bytes 的 zstd 压缩结果 |
 | `canonical_bytes` | `INTEGER` | `NOT NULL` | 压缩前字节数 |
 
-Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转为 `{ "$bytes": "<base64>" }`。当前新写入 `FORMAT_VERSION=2`，hash 域为 `history-v3:2:object:${kind}\0` 加 canonical bytes。hash 命中时仍解压并做完整字节比较；不把哈希相等直接当成内容相等。format-v1 对象留在原 hash domain，不在线重写。
+Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转为 `{ "$bytes": "<base64>" }`。当前新写入 `FORMAT_VERSION=3`，hash 域为 `history-v3:3:object:${kind}\0` 加 canonical bytes。hash 命中时仍解压并做完整字节比较；不把哈希相等直接当成内容相等。format-v1／v2 对象留在各自 hash domain，不在线重写。
 
 ### 3.4 `v3_sequence_nodes`
 
@@ -98,9 +102,9 @@ Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转�
 | `terminal_sequence` | `INTEGER` | `NOT NULL` | terminal event sequence |
 | `ended_at` | `INTEGER` | nullable | terminal epoch ms；旧数据可为空 |
 | `timing_source` | `TEXT` | `NOT NULL` | `canonical`、`storage-commit-upper-bound`、`terminal-log-rounded` 或 `unavailable` |
-| `manifest_gz` | `BLOB` | `NOT NULL` | format-v2 value-free record、handle→hash、payload sequence roots/overlays、`tracksExternal`，zstd 压缩 |
-| `summary_json` | `TEXT` | nullable | 001 兼容期的旧 summary 载体；trigger／backfill 投影到 `v3_operation_summaries`，ready marker 前也作为慢读 fallback。002 收敛尚未实现，故当前列仍存在 |
-| `pinned` | `INTEGER` | `NOT NULL DEFAULT 0` | 001 兼容期的 debug pin 单写入口；UPDATE trigger 同事务投影到窄表。002 收敛尚未实现，故当前列仍存在 |
+| `manifest_gz` | `BLOB` | `NOT NULL` | format-v3 value-free record、handle→hash、payload sequence roots/overlays、`tracksExternal` 与 ordered transport evidence refs，zstd 压缩 |
+| `summary_json` | `TEXT` | nullable | canonical-owner strict repair 从当前 manifest／CAS／timing overlay重算的 summary 载体；marker缺席时作为 canonical fallback 的兼容输入，并同源投影到 `v3_operation_summaries` |
+| `pinned` | `INTEGER` | `NOT NULL DEFAULT 0` | debug pin 单写入口；UPDATE trigger 同事务投影到窄表，不写回 manifest |
 | `committed_at` | `INTEGER` | `NOT NULL` | authoritative commit epoch ms |
 
 索引：
@@ -110,9 +114,17 @@ Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转�
 
 同一 `operation_id + revision + digest` 重放是幂等 no-op；同 operation ID 出现不同 revision／digest 是冲突，写入失败并增加 `conflicts` 状态计数。
 
-### 3.6 `v3_operation_summaries`
+### 3.6 Transport evidence 与 normalized refs
 
-forward migration `001-operation-summary-projection` 创建的一行一 operation 窄型产品读投影。`operation_id` 以 `ON DELETE CASCADE` FK 指向 `v3_operations`；canonical detail／export 仍以 `v3_operations.manifest_gz` 与 CAS 为权威。
+`v3_transport_evidence` 以 SHA-256 digest 为主键保存捕获的 transport bytes：`encoding` 当前只接受 `binary`，`evidence_gz` 保存压缩 bytes，`byte_length` 保存解压后长度。写入采用内容寻址 CAS：既有 digest 必须逐项通过 encoding／length／bytes验证，不能仅凭键相同视为幂等。
+
+`v3_operation_evidence_refs` 保存已提交 operation 的 ordered refs，主键为 `(operation_id, dispatch_index, sequence)`，并分别以 FK指向 operation与 evidence；`v3_journal_evidence_refs` 保存 pending journal recovery set 的 ordered refs，主键额外包含 revision，并以复合 FK指向 journal。每条 ref保存 `digest`、`byte_length` 与 `encoding`，因此 manifest／journal envelope 与 normalized refs 可做 ordered六元组精确对账；same-digest不同 sequence不会被去重。
+
+Transaction A 在一个事务中写 evidence CAS、journal-v2 payload 与 journal refs。Transaction B 在另一个事务中写 canonical operation／tracks／timeline／operation refs，经完整 `hydrateManifest` strict validation后发布 summary并删除 journal。B失败时A recovery set完整保留；recovery先核 journal payload与normalized refs，再重跑B。GC把 committed operation refs与pending journal refs的并集作为 roots，先校验每份 envelope／normalized refs／entity，再删除真孤儿；任何 mismatch都在删除前 fail loud。
+
+### 3.7 `v3_operation_summaries`
+
+forward migration `001-operation-summary-projection` 创建的一行一 operation 窄型产品读投影。`operation_id` 以 `ON DELETE CASCADE` FK 指向 `v3_operations`；canonical detail／export 仍以 `v3_operations.manifest_gz`、CAS与normalized evidence refs为权威。
 
 | 列组 | 列 | 语义 |
 |---|---|---|
@@ -120,7 +132,7 @@ forward migration `001-operation-summary-projection` 创建的一行一 operatio
 | REST row codec | `summary_json` | `EntrySummary` JSON；list 页只解码选中的小页，不读取 canonical manifest |
 | 排序／分组 | `operation_kind`、`session_id`、`agent_id`、`started_at`、`ended_at` | 支持 operation kind、双向 `(started_at,operation_id)` keyset、session 聚合和 agent 过滤 |
 | 过滤／统计 | `endpoint`、`state`、`pid`、`request_model`、`response_model`、`response_success`、`duration_ms`、四个 token 列 | list／count／sessions／stats 共用的 typed SQL 维度；`state` 优先于兼容 `success` |
-| 展示／可变投影 | `preview_text`、`response_preview_text`、`pinned` | 列表预览与 debug pin；001 兼容期 pin 仍从父表单写并由 trigger 同事务投影 |
+| 展示／可变投影 | `preview_text`、`response_preview_text`、`pinned` | 列表预览与 debug pin；pin 从父表单写并由 trigger 同事务投影 |
 
 索引：
 
@@ -128,11 +140,15 @@ forward migration `001-operation-summary-projection` 创建的一行一 operatio
 - `idx_v3_operation_summaries_kind_created(operation_kind, started_at DESC, operation_id DESC)`：指定 bypass kind。
 - `idx_v3_operation_summaries_session(session_id, started_at DESC, operation_id DESC)`：session 明细 keyset 与聚合。
 
-001 兼容期有三条 trigger：父表 INSERT 原子创建 ready／pending 投影；`summary_json` 从 NULL 修复为非 NULL 时原子转 ready 并清错误；`pinned` 更新只同步 pin，不改变 projection 状态。后台 `startV3SummaryBackfill` 小批补历史行，hydrate 失败写 `v3_summary_backlog` 并把投影标 poisoned。`tryMarkSummaryProjectionReady` 在 `BEGIN IMMEDIATE` 内校验 ID 双向覆盖、每个共享字段等价和全部状态 ready，再写 `v3_meta.summary_projection_ready=1`；不满足时删 marker。marker 前 list／sessions／stats 保留宽表兼容读，marker 后切到本窄表；`/api/status` 的总数独立对 canonical `v3_operations` 做专用 `COUNT(*)`，不依赖 marker。`/api/status.memory` 另暴露 ready／pending／poisoned。
+forward migration `002-summary-integrity-invalidation` 在同一 migration transaction内先撤销旧 ready marker、把既有 summary rows统一重置为 `pending`并清旧错误，再安装完整 canonical invalidation trigger矩阵。Operation INSERT创建pending row并撤 marker；受保护 canonical字段变化或被引用 evidence变化会 poison依赖 summary并撤 marker；pin只同步 overlay；delete清 operation refs与summary；operation/evidence identity rename显式拒绝。合法 Transaction B在同一事务中完成 strict validation与summary发布，避免暴露pending中间态。
 
-当前尚未实现计划中的停服 002 收敛，因此 `v3_operations.summary_json`／`pinned`、compat triggers 与宽表 fallback 仍然存在；不得把 001 ready marker 理解为最终单源 schema 已完成。
+`initHistory()` 在 migrations与journal recovery之后异步启动 `startV3SummaryBackfill`。缺失summary row先按 keyset小批创建；旧 `summary_json IS NULL` 行从 canonical hydrate生成。最终 canonical-owner `validateAndMarkSummaryProjectionReady()` 在一个 `BEGIN IMMEDIATE` transaction内逐 operation复用完整 `hydrateManifest`：核manifest format／operation digest／CAS／normalized evidence refs／evidence bytes，合法项从当前 record＋`pinned`／`ended_at`／`timing_source`重投影并置ready，失败项置poisoned；只有全库零divergence、零pending、零poison时才写 `history_meta.summary_projection_ready=1`，否则删除marker。无副作用 `inspectSummaryProjectionReadiness()` 仅用于诊断派生层覆盖／字段／状态，不具备发布authority。
 
-### 3.7 `v3_tracks`
+产品get／list／cursor／sessions／stats用 `withValidatedSummarySnapshot()` 在同一个短同步SQLite read transaction内绑定marker与全部窄SQL；marker缺席时走canonical fallback。Full-text search在await sidecar之后开启新的短snapshot复核marker并按IDs hydrate，不跨await持transaction。`/api/status` 的总数独立对 canonical `v3_operations` 做专用 `COUNT(*)`；memory状态另暴露 ready／pending／poisoned。
+
+`v3_operations.summary_json`／`pinned`与canonical fallback仍保留，属于当前运行架构，不应误解为summary表拥有canonical authority。
+
+### 3.8 `v3_tracks`
 
 每条记录描述一条有序逻辑轨。payload/frame 值不在本表重复保存，`refs_json` 只存 operation-local handle。
 
@@ -159,9 +175,9 @@ forward migration `001-operation-summary-projection` 创建的一行一 operatio
 
 未改写的 upstream/client frame 可以共享同一个 arena node；rewrite/filter/translation/synthetic 输出使用 derived node，并在 manifest 的 transform/provenance 数据中记录来源。
 
-format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(track_name, attempt_index)` 从 `track_gz` 恢复完整轨，避免 request/response metadata 在 manifest 中重复。`track_gz IS NULL` 的 format-v1 行仍从 `refs_json` 读取。
+format-v2／v3 manifest 中同位置只保留空的结构占位，读取时按 `(track_name, attempt_index)` 从 `track_gz` 恢复完整轨，避免 request/response metadata 在 manifest 中重复。`track_gz IS NULL` 的 format-v1 行仍从 `refs_json` 读取。
 
-### 3.8 `v3_timeline_chunks`
+### 3.9 `v3_timeline_chunks`
 
 按 sequence 排序的生命周期事件块，每块最多 128 个事件。
 
@@ -175,7 +191,7 @@ format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(trac
 
 主键：`(operation_id, chunk_index)`。timeline 包含 payload/frame 注册、transform、attempt 开始、diagnostic、attempt settle、terminal 等事件。
 
-### 3.9 `v3_journal`
+### 3.10 `v3_journal`
 
 单写者的 crash-recovery journal。正常成功提交后对应行被删除，因此健康库通常为空。
 
@@ -189,12 +205,13 @@ format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(trac
 | `created_at` | `INTEGER` | `NOT NULL` | journal append epoch ms |
 | `committed_at` | `INTEGER` | nullable | schema 保留字段；当前成功路径直接删 journal 行 |
 | `error` | `TEXT` | nullable | recovery 失败原因 |
+| `format_version` | `INTEGER` | `NOT NULL DEFAULT 1` | journal envelope版本；新写入为2，既有v1保持可恢复 |
 
 主键：`(operation_id, revision)`。
 
-提交顺序：事务外 prepare/hash/compress → 先 append 自包含 journal → 单 SQLite 事务写 CAS objects、operation、tracks、timeline → 事务内删除 journal → commit。若 operation 事务失败，journal 独立留存；下次 `initHistory()` 调 `recoverV3Journal()` 查询 `committed_at IS NULL` 的行，重建全部 prepared artifacts，校验 revision/digest 后重放。Tantivy 不参与此事务，其失败绝不回滚 semantic History。
+提交顺序：事务外 prepare／hash／compress → Transaction A原子写 evidence CAS、self-contained journal-v2 payload与journal refs → Transaction B原子写 CAS objects、operation、tracks、timeline、operation refs，strict hydrate后发布summary并删除journal。若B失败，A recovery set独立留存；下次 `initHistory()` 调 `recoverV3Journal()` 查询 `committed_at IS NULL` 的行，先按 `format_version` 解 envelope并与normalized journal refs精确对账，再重建prepared artifacts、校验 revision／digest后重放B。Tantivy不参与此事务，其失败绝不回滚semantic History。
 
-### 3.10 `v3_summary_backlog`
+### 3.11 `v3_summary_backlog`
 
 | 列 | 类型 | 约束 | 语义 |
 |---|---|---|---|
@@ -252,14 +269,16 @@ raw capture 的失败、超大对象或数据库故障不会回滚 semantic V3�
 |---|---|---|---|
 | Semantic payload/frame/sequence item | `v3_objects.canonical_gz` | sorted-key canonical JSON bytes | zstd |
 | Sequence prefixes | `v3_sequence_nodes` | parent/item hash + depth | plain columns |
-| Operation structure/provenance | `v3_operations.manifest_gz` | value-free manifest + handle hashes + sequence roots/overlays | zstd |
+| Operation structure/provenance | `v3_operations.manifest_gz` | format-v3 value-free manifest + handle hashes + sequence roots/overlays + ordered evidence refs | zstd |
 | Ordered logical tracks | `v3_tracks.track_gz` | 完整 `OperationTrack` JSON；`refs_json` 为兼容 fallback | zstd |
-| Product list summary | `v3_operation_summaries.summary_json` | `EntrySummary` JSON；001 兼容期从父表同源投影 | plain |
+| Transport evidence | `v3_transport_evidence.evidence_gz` | exact binary bytes；digest／length／encoding逐项验证 | zstd |
+| Normalized evidence refs | `v3_operation_evidence_refs`／`v3_journal_evidence_refs` | ordered dispatch／sequence／digest／length／encoding | plain columns |
+| Product list summary | `v3_operation_summaries.summary_json` | canonical-owner strict repair同源生成的 `EntrySummary` JSON | plain |
 | Timeline | `v3_timeline_chunks.payload_gz` | sequence-ordered JSON chunk | zstd |
-| Crash journal | `v3_journal.payload_gz` | self-contained terminal record JSON | zstd |
+| Crash journal | `v3_journal.payload_gz` | self-contained terminal record + ordered evidence refs；新写入journal format 2 | zstd |
 | Raw object | `raw_objects.blob_gz` | exact bytes | zstd |
 
-Detail 读取先解压 manifest，批量读取直接 arena object hashes；每个 extracted sequence root 用 recursive CTE 展开 prefix chain，再批量补读缺失 item objects并应用 occurrence overlays；最后从 `track_gz` 恢复完整轨。对象读取不是逐 item N+1，但当前每个 sequence root 有一次 recursive CTE。001 兼容期 `pinned` 从 `v3_operations` 单写、同步投影到窄表，不写回 manifest。ready marker 后 list／sessions／stats 只读 `v3_operation_summaries`；session detail 先在窄表选一小页 operation ID，再批量 hydrate canonical detail。
+Detail读取先解压manifest、验证operation digest及format-v3 normalized evidence refs／entity，再批量读取arena object hashes；每个extracted sequence root用recursive CTE展开prefix chain，再批量补读缺失item objects并应用occurrence overlays；最后从 `track_gz` 恢复完整轨。对象读取不是逐item N+1，但当前每个sequence root有一次recursive CTE。`pinned` 从 `v3_operations` 单写、同步投影到窄表，不写回manifest。ready marker后list／sessions／stats在同一read snapshot内只读 `v3_operation_summaries`；session detail先在窄表选一小页operation IDs，transaction结束后再批量hydrate canonical detail。
 
 ## 6．SQLite connection 约定
 
@@ -343,5 +362,6 @@ ORDER BY operation_id, sequence;
 5. journal 必须保持自包含；不能依赖可能与 operation transaction 一起回滚的 CAS rows。
 6. raw config 的 `enabled`、`db_path`、`max_object_bytes` 只影响新 acquisition；旧 lease 始终按冻结 generation 完成并 drain。
 7. Legacy `history.db` / `archive.db` 的任何迁移、归档、删除或格式适配都不属于在线 History V3 schema 生命周期。
-8. format-v1 manifest/journal 必须保持可读；新格式使用独立 hash domain，schema reconcile 不自动重写已有 operation。
-9. reader 接受 format 1／2（及早期缺省 version），对无效或高于当前实现的 manifest version fail-loud，不猜测未来布局。
+8. format-v1／v2 manifest与journal-v1必须保持可读；新manifest格式使用独立hash domain，schema reconcile不自动重写已有operation。
+9. manifest reader接受format 1／2／3；journal reader接受format 1／2。对非整数、无效或高于当前实现的version fail loud，不猜测未来布局。
+10. Evidence GC必须先对manifest／journal envelope与normalized refs逐项对账，并验证所有root entities；任一失败都在删除前中止。Clear必须在同一transaction清canonical rows、两类refs、evidence entities与summary readiness marker，保留schema metadata。

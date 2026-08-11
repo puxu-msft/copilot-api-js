@@ -28,8 +28,6 @@ import {
   expect,
   test,
 } from "bun:test"
-import OpenAI from "openai"
-
 import { setModels } from "~/lib/models/cache"
 import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
@@ -44,11 +42,7 @@ import {
   reasoningContentBlock,
   reasoningSummaryBlock,
 } from "../responses/fixtures/buffered-merge-blocks"
-import {
-  //
-  type InProcessProxy,
-  serveInProcess,
-} from "./harness/serve-in-process"
+import { createResponsesSdkOracle, type ResponsesSdkOracle } from "../helpers/protocol-oracles"
 import {
   //
   createSseResponse,
@@ -232,22 +226,15 @@ function textOnlyItemLifecycle(): Array<string> {
   ]
 }
 
-interface FinalOutput {
-  output: Array<{ type: string; arguments?: string; name?: string; content?: Array<{ type: string; text?: string }> }>
-  output_text?: string
-}
-
 describe("GATING: Responses no-delta block — openai SDK reconstruction (upstream shielded)", () => {
   useIsolatedRuntime()
 
-  let proxy: InProcessProxy
-  let client: OpenAI
+  let oracle: ResponsesSdkOracle
 
   beforeAll(() => {
-    proxy = serveInProcess()
-    client = new OpenAI({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0 })
+    oracle = createResponsesSdkOracle(MODEL)
   })
-  afterAll(() => proxy.close())
+  afterAll(() => oracle.close())
 
   beforeEach(() => {
     setStateForTests({
@@ -263,12 +250,7 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
   })
   afterEach(() => setUpstreamFetchForTests(undefined))
 
-  async function finalOf(frames: Array<string>): Promise<FinalOutput> {
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-    const final = (await client.responses.stream({ model: MODEL, input: "hi" }).finalResponse()) as unknown as FinalOutput
-    return final
-  }
+  const finalOf = (frames: Array<string>) => oracle.finalResponseOf(frames)
 
   // ── function_call ─────────────────────────────────────────────────────────
 
@@ -373,7 +355,7 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
     // client would never see a no-delta wire and every "tolerance" claim above would be moot. Drive the
     // proxy with a raw fetch (not the SDK) and inspect the exact event lines it wrote to the client.
     setUpstreamFetchForTests(scriptedUpstream(() => createSseResponse(textOnlyItemLifecycle())).handler)
-    const res = await fetch(`${proxy.baseURL}/responses`, {
+    const res = await fetch(`${oracle.baseURL}/responses`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer x" },
       body: JSON.stringify({ model: MODEL, input: "hi", stream: true }),

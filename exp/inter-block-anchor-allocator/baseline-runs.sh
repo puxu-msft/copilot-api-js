@@ -54,8 +54,11 @@
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
 #   MIN_TESTS    REQUIRED, no default: a run whose summary line reports fewer
-#                than this many tests is not counted green. Set it to the test
-#                count you expect at this commit.
+#                than this many executed test cases is not counted green. Set it
+#                to the executed population you expect at this commit. When the
+#                summary reports both, the executed count is used rather than the
+#                runner's own scheduling-unit count -- those are different
+#                quantities and mixing them fails healthy runs.
 #                There is deliberately no default. A default of 1 is a paper
 #                floor -- a degenerate selector reporting "1 tests · 1 pass"
 #                walks straight past it, which is exactly how the fake-`bun`
@@ -79,8 +82,18 @@ RUNS="${RUNS:-15}"
 MIN_RUNS="${MIN_RUNS:-15}"
 if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit it http); fi
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
+# The validator cross-checks each run log's canonical_command against the manifest's, so the
+# log has to carry it as a machine-readable field, not only inside the human `=== command` line.
+# Space-joined rather than %q-quoted: the manifest holds the plain command, and `%q` also leaves
+# a trailing space that would make an otherwise identical pair compare unequal.
+CMD_CANONICAL="${CMD[*]}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+REQUIRE_TEST_ARTIFACTS="${REQUIRE_TEST_ARTIFACTS:-0}"
+case "$REQUIRE_TEST_ARTIFACTS" in
+  0|1) ;;
+  *) printf 'baseline-runs: REQUIRE_TEST_ARTIFACTS must be 0 or 1, got %s\n' "$REQUIRE_TEST_ARTIFACTS" >&2; exit 2 ;;
+esac
 if [ -z "${MIN_TESTS:-}" ]; then
   printf 'baseline-runs: MIN_TESTS is required -- name the test count you expect at this commit.\n' >&2
   printf 'There is no default on purpose: MIN_TESTS=1 passes a degenerate run reporting "1 tests".\n' >&2
@@ -136,16 +149,30 @@ esac
 printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
 printf 'measured_sha=%s\n' "$head_sha"
 printf 'claims_current_head=true\n'
+printf 'canonical_command=%s\n' "$CMD_CANONICAL"
 printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
   "$RUNS" "$CMD_DISPLAY" "${head_sha:0:8}" "$([ -n "$dirty" ] && echo DIRTY || echo clean)"
 
 failed=0
 for i in $(seq 1 "$RUNS"); do
   log="$(printf '%s/run-%02d.log' "$OUT_DIR" "$i")"
+  # The validator cross-checks each run log's verdict against the manifest's, so the verdict has
+  # to be something this script DETERMINED, not something the producer asserted. Snapshot the
+  # cumulative failure counter so the end of the iteration can tell whether this run added to it.
+  failed_before="$failed"
+  artifact_dir=""
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    artifact_dir="$(printf '%s/run-%02d-artifacts' "$OUT_DIR" "$i")"
+    if [ -e "$artifact_dir" ]; then
+      printf 'baseline-runs: artifact directory already exists: %s\n' "$artifact_dir" >&2
+      exit 2
+    fi
+  fi
   {
     printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
     printf 'measured_sha=%s\n' "$head_sha"
     printf 'claims_current_head=true\n'
+    printf 'canonical_command=%s\n' "$CMD_CANONICAL"
     printf '=== run          : %d of %d\n' "$i" "$RUNS"
     printf '=== started      : %s\n' "$(date -Is)"
     printf '=== repo         : %s\n' "$REPO"
@@ -153,6 +180,7 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== tree         : %s\n' "$([ -n "$(git -C "$REPO" status --porcelain)" ] && echo DIRTY || echo clean)"
     git -C "$REPO" status --porcelain | sed 's/^/=== dirt         : /'
     printf '=== command      : %s\n' "$CMD_DISPLAY"
+    if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then printf 'artifact_dir=%s\n' "$artifact_dir"; fi
     printf '=== resolves to  : %s\n' "$(command -v "${CMD[0]}" 2>/dev/null || echo '<not on PATH>')"
     printf '=== version      : %s\n' "$("${CMD[0]}" --version 2>&1 | head -1)"
     printf '=== PATH         : %s\n' "$PATH"
@@ -163,7 +191,11 @@ for i in $(seq 1 "$RUNS"); do
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   start=$(date +%s)
   # No pipe into tee: tee's status would mask the suite's. Append, then read back.
-  ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    ( cd "$REPO" && FORCE_COLOR=0 PARALLEL_TEST_ARTIFACT_DIR="$artifact_dir" "${CMD[@]}" ) >> "$log" 2>&1
+  else
+    ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  fi
   rc=$?
   end=$(date +%s)
   after_tree="$(git -C "$REPO" status --porcelain)"
@@ -194,19 +226,69 @@ for i in $(seq 1 "$RUNS"); do
     fi
   } >> "$log"
 
-  tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
+  # Pick the run's summary line, not merely the last line that mentions the
+  # runner. Since the artifact-transfer contract landed, the runner prints
+  # `[parallel-test] artifacts=<dir>` AFTER the summary, so `tail -1` selected a
+  # line carrying no counts at all and every run read as "no tests" -- a hard
+  # false red on a suite that had just reported thousands of passing tests.
+  #
+  # The pattern is the runner's complete summary grammar rather than "any
+  # parallel-test line that carries a number", so a count-shaped suffix on some
+  # other runner line cannot be read as the summary. No fallback: if the runner's
+  # grammar ever drifts, an empty selection reads as "no tests" and fails the run
+  # closed, which is what an entry gate owes you. Falling back to the last
+  # runner-mentioning line would silently reinstate exactly the bug above.
+  tail_line="$(grep -aE '^\[parallel-test\] [0-9]+ shards · [0-9]+ tests · [0-9]+ pass · [0-9]+ fail · [0-9]+ executed · [0-9]+ skipped( · [0-9]+ shard\(s\) crashed \(see isolated re-run above\))? · [0-9]+(\.[0-9]+)?s$' "$log" | tail -1)"
 
-  # A run that executed no tests is not a green run. Reported test count is the
+  # "No summary line at all" is its own failure, not a small population. It used
+  # to be reported through the MIN_TESTS floor below, and that conflation is what
+  # made the 2026-08-08 misdiagnosis possible: a healthy 7259-executed run was
+  # announced as "reported no tests". The floor also cannot carry this case --
+  # `${ntests:-0} -lt $MIN_TESTS` is false when MIN_TESTS is 0, so a missing
+  # summary would pass. MIN_TESTS=0 is documented above as smoke-test only, but
+  # the discovery-baseline schema accepts it, so do not make failing closed
+  # depend on the caller's floor.
+  if [ -z "$tail_line" ]; then
+    printf '=== no summary  : the log has no [parallel-test] summary line\n' >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d produced no recognizable [parallel-test] summary line; not counting it green.\n' "$i" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
+  fi
+
+  # A run that executed no tests is not a green run. Reported count is the
   # cheapest thing that distinguishes "the suite ran" from "something printed
-  # nothing and exited 0".
-  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"
+  # nothing and exited 0". Prefer the executed count: `N tests` counts the
+  # runner's own scheduling units, while `N executed` counts the test cases the
+  # shards actually ran -- the population MIN_TESTS is frozen from. Comparing an
+  # executed-derived floor against the units count is a different quantity and
+  # goes red on healthy runs (observed: 6719 units, 7255 executed).
+  #
+  # This floor is a weak, text-layer copy of a population check whose authority
+  # lives elsewhere: the versioned discovery baseline and the per-shard JUnit that
+  # capture-entry-evidence.ts reconciles. Keep it (it is the only check available
+  # when REQUIRE_TEST_ARTIFACTS=0), but change the authoritative side too.
+  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ executed' | head -1 | grep -aoE '[0-9]+')"
+  if [ -z "$ntests" ]; then ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"; fi
   printf '=== tests seen   : %s\n' "${ntests:-none}" >> "$log"
+
+  # The runner self-reports when its own counts are untrustworthy, and a floor
+  # comparison cannot see that: `N executed` clears MIN_TESTS just as happily
+  # when the runner has appended "these counts are a floor, not a total". Reading
+  # only the number would let a run the runner itself called incomplete stand as
+  # evidence -- the exact shape this batch exists to remove, one layer up.
+  if printf '%s' "$tail_line" | grep -qaE 'INCOMPLETE|OUT-OF-SCOPE'; then
+    printf '=== tally caveat : runner reported its own counts as unreliable\n' >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d printed a tally the runner itself flagged (INCOMPLETE/OUT-OF-SCOPE); not counting it green.\n' \
+      "$i" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
+  fi
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d reported %s tests (MIN_TESTS=%s); not counting it green.\n' \
       "$i" "${ntests:-no}" "$MIN_TESTS" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
 
   # Every run in a batch must report the same count. A batch that starts honest
@@ -219,7 +301,7 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d reported %s tests but run 01 reported %s; the batch is not measuring one thing.\n' \
       "$i" "${ntests:-none}" "$first_ntests" >&2
-    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+    if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
   fi
   printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \
     "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo "YES:$drift_why" || echo no)" "${tail_line:-<no summary line>}"
@@ -227,6 +309,7 @@ for i in $(seq 1 "$RUNS"); do
   if [ "$drift" = 1 ]; then
     printf 'baseline-runs: %s changed during run %02d; this run measured no single commit.\n' "$drift_why" "$i" >&2
     if [ "$STOP_ON_FAIL" = "1" ]; then
+      printf 'verdict=red\n' >> "$log"
       printf 'baseline-runs: stopping. Log: %s\n' "$log" >&2
       exit 1
     fi
@@ -235,9 +318,26 @@ for i in $(seq 1 "$RUNS"); do
   if [ "$rc" -ne 0 ]; then
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     if [ "$STOP_ON_FAIL" = "1" ]; then
+      printf 'verdict=red\n' >> "$log"
       printf 'baseline-runs: run %02d exited %d; stopping. Log: %s\n' "$i" "$rc" "$log" >&2
       exit 1
     fi
+  fi
+
+  if [ "$rc" -eq 0 ] && [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    shard_count=0
+    if [ -d "$artifact_dir" ]; then shard_count="$(find "$artifact_dir" -maxdepth 1 -type f -name 'shard-*.xml' | wc -l)"; fi
+    if [ ! -d "$artifact_dir" ] || [ "$shard_count" -lt 1 ] || [ ! -f "$artifact_dir/runtime-identity.json" ] || [ ! -f "$artifact_dir/skipped-multiset.json" ]; then
+      failed=$((failed + 1))
+      printf 'baseline-runs: run %02d missing required test artifacts in %s\n' "$i" "$artifact_dir" >&2
+      if [ "$STOP_ON_FAIL" = "1" ]; then printf 'verdict=red\n' >> "$log"; exit 1; fi
+    fi
+  fi
+
+  if [ "$failed" -eq "$failed_before" ] && [ "$rc" -eq 0 ] && [ "$drift" != 1 ]; then
+    printf 'verdict=green\n' >> "$log"
+  else
+    printf 'verdict=red\n' >> "$log"
   fi
 done
 

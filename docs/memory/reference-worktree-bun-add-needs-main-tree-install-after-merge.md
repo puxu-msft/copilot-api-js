@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
+description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules（隔离性探针假绿）而仓库外树零依赖（A/B 对照假红，先说清在测什么再选放置位置）、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
 metadata: 
   node_type: memory
   type: reference
@@ -37,6 +37,36 @@ metadata:
 - 判据：`ls <probe>/../node_modules` 沿路径向上逐级看，只要任一级存在就不是隔离的。
 - 同一次实测还证伪了另一条更常犯的推断：**用 grep/正则扫 import 语句来清点依赖是不可靠的**（多行 import 形式、Vue 模板语法都会骗过正则——我的扫描漏掉了 `diff`，却把 `:disabled=` 当成包名）。「这个项目需要哪些依赖」唯一可信的 oracle 是仓库外裸装裸跑。
 - 边界也要如实写：同一次实测里 `build`/`test` 在仓库外能跑，`typecheck` 不能（它经 `~backend/*` 拖入后端源码，后端自己的依赖装在仓库根）。别把不对称的结论压成一句「已独立」。
+
+### 第三方向的背面（2026-08-09 新增）：做 A/B 对照时，建在仓库外反而是错的
+
+**同一个旋钮，两个问题下的正确设置相反**，所以放置位置之前先说清「我在测什么」（同 [[feedback-pass-null-clean-not-self-validating]] 与 probe-depth 对齐那条的形状）：
+
+| 我要回答的问题 | worktree 该建在哪 | 建错了会怎样 |
+|---|---|---|
+| 这个子项目脱离宿主能不能自立 | **仓库外** | 建在仓库内 → 向上借到主树 node_modules → **假绿** |
+| 这批测试在 X 提交上是红是绿（A/B 对照） | **A 与 B 各自处在「按该提交的 lockfile 完整安装」的等价依赖环境里**——位置本身不是不变量 | 任一侧依赖环境不等价（仓库外＝零依赖，或借到与该提交 lockfile 不符的陈旧依赖）→ **假红或假绿** |
+
+2026-08-09 实例：为判断 `test:backend` 的 28 条红是不是自己合出来的，我在 `$CLAUDE_JOB_DIR/tmp/ab-master` 建了 detached worktree 跑对照，得到 `0 pass / 4 fail / Ran 4 tests across 4 files [122ms]`。**差点据此断言「master 自己就是红的」**——真因是 `error: Cannot find module 'undici/index.js'`，四个文件全部加载失败，每个文件算 1 条“失败”。挪进 `.worktrees/ab-master` 重跑即 `24 pass / 20 skip / 0 fail`。
+
+**别把这条记成「A/B 就该建在仓库内」**：仓库内当时之所以有效，只因为它向上借到的主树 `node_modules` **恰好**与被测提交的 lockfile 相符——那是偶然代理，不是不变量。承重条件是**两侧依赖环境等价、且各自与所测提交的 lockfile 对齐**。可执行做法：先 `git diff <A> <B> -- '**/package.json' bun.lock` 看依赖清单是否同一；不同就必须各自按自己的 lockfile 安装（`ls node_modules` 不是证据，见 [[reference-node-modules-presence-not-lockfile-truth]]），相同**也还不够**——还得证明根 `node_modules` 确实是按**这份** lockfile 生成且未陈旧（它可能停留在几十个提交以前）。**`bun install --frozen-lockfile` 只解决一半，别把它当成对齐证明**：它保证的是「**不改 lockfile**」（`bun install --help` 原文 `Disallow changes to lockfile`，2026-08-11 核），所以 `package.json` 与 lockfile 对不上时它会失败而不是悄悄更新——**但它证明不了既存 `node_modules` 已按这份 lockfile 重建**：同名同版本的包会被复用，漂移过的目录可以原样留着还让它 exit 0。
+- **要证明就得在一棵可销毁的独立树里做 frozen install**（必要时 `--force` 强制重装），拿那棵树当 A 或 B；**别在共享主树上做**——那会影响并发会话。
+- **借根安装因此只是省事的赌注，不是判据。** 赌不起（比如正在判定一条红是不是自己造成的）就别借。
+（*flag 的存在与语义已查帮助核实；本轮未实跑 install。*）
+
+**判据（这是分流信号，不是定性结论）**：A/B 树里的失败若**数量恰好等于文件数、耗时在百毫秒量级、错误是 `Cannot find module`**，**先暂停「是不是我改坏了」这个归因、转去查环境**——但**不得就此判为环境问题**：目标提交自己把 import 写错、删掉直接依赖声明、或 lockfile 漏项时，症状**一模一样**（三个信号同源于同一次 module-load 失败，按 [[feedback-pass-null-clean-not-self-validating]] 不构成独立 oracle）。判为「环境缺依赖」要四条全成立：
+
+①**那个包在目标提交里被显式声明**——机械判据、别自评：
+
+```
+git show <commit>:<该 package.json 的仓库内路径> \
+  | jq -e '.dependencies["<pkg>"] // .devDependencies["<pkg>"] // .peerDependencies["<pkg>"] // .optionalDependencies["<pkg>"]'
+```
+
+exit 0 才算数。**四个字段一个都不能漏**——`optionalDependencies` 是合法声明位，漏掉它会把正确的包判成「未声明」（实测漏写时该字段返回 `null` / exit 1）。**workspace 下「相关的 package.json」要机械枚举、不要凭印象**：`git show <commit>:package.json | jq -r '.workspaces[]?'` 拿到 glob，逐个展开后连同根 `package.json` 一起过一遍；**报错的那个测试文件属于哪个 workspace，那个包的 `package.json` 是必查项**。
+②按该 lockfile 干净安装成功；③真实 resolver 解析得到那个模块；④补齐依赖后重跑恢复。
+
+⚠️ **②③ 全绿证明不了 ①**：包管理器会把**传递依赖**提升（hoist）到可解析的位置，所以「漏写直接依赖声明」这种真缺陷照样能干净安装、照样解析成功——正因如此 ① 必须单独用上面那条 `jq` 查，不能靠「装得上就说明声明没问题」推出来。任一条不成立就**保留为产品缺陷**。跑对照永远先看首条错误，别读失败计数。
 
 ## 第四方向（2026-07-29 新增）：验证命令实际落在哪棵树，委派消息说了不算
 

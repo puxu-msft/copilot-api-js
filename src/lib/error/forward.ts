@@ -24,11 +24,6 @@ import {
   gapSurfaceForPath,
   recordAbortProvenanceGap,
 } from "~/lib/observability/abort-provenance-gaps"
-import {
-  //
-  isShutdownCausedAbort,
-  SHUTDOWN_ABORT_MESSAGE,
-} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
@@ -567,13 +562,6 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
       return finalizeErrorDelivery(c, helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
     }
-    if (isShutdownCausedAbort(error)) {
-      // Our own shutdown cancelled it. 529 (overloaded) is retryable, so the client backs
-      // off and lands on the restarted instance — same contract as the send layer's
-      // `rewriteShutdownAbort`, applied here for the callers that don't opt into it.
-      consola.warn(`[shutdown] Cancelled in-flight ${c.req.method} ${c.req.path} during shutdown`)
-      return finalizeErrorDelivery(c, helpers.defaultError(SHUTDOWN_ABORT_MESSAGE, true, 529), 529 as ContentfulStatusCode)
-    }
     if (error.name === "TimeoutError") {
       // The response-header watchdog itself fired (`AbortSignal.timeout` → TimeoutError,
       // preserved end-to-end by http2-client's abortError). This is the ONLY evidence that
@@ -603,7 +591,12 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)
   }
 
-  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)
+  // Nobody recognized this error, so the message alone rarely locates it: an invariant guard that
+  // throws from deep inside a settle path reads as a bare 500. Internal-tool posture — add the stack.
+  // FRAMES ONLY: `error.stack` starts with the raw, unsanitized message, and re-emitting it here
+  // would put back exactly what `errorMessage` was cleaned of (Bun's `verbose: true` hint).
+  const frames = error instanceof Error && error.stack !== undefined ? error.stack.slice(error.stack.indexOf("\n    at ") + 1) : ""
+  consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage, frames)
 
   return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 500), 500)
 }

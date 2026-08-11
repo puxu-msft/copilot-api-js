@@ -55,6 +55,8 @@ describe("protect-streaming-stats", () => {
       retreated: 1,
       partialDegrade: 1,
       continuationExhausted: 0,
+      precontentRecoverySuccess: 0,
+      precontentRecoveryExhausted: 0,
       totalRetries: 10, // 2 + 0 + 3 + 1 + 4
       retriesBeforeDegrade: 4, // only the partial-degrade leg
       preFirstBlockRetries: 10, // all retries are pre-first-block (no continuation legs here)
@@ -122,6 +124,15 @@ describe("protect-streaming-stats", () => {
     expect(s.continuationExhausted).toBe(1)
     // denominator = success(1) + exhausted(0) + partialDegrade(0) + continuationExhausted(1) = 2
     expect(protectStreamingHitRate(s)).toBe(0.5)
+  })
+
+  test("precontent recovery outcomes increment their dedicated counters", () => {
+    recordProtectStreamingOutcome("precontent-recovery-success", 1, { vendor: "anthropic" })
+    recordProtectStreamingOutcome("precontent-recovery-exhausted", 1, { vendor: "anthropic" })
+
+    const s = getProtectStreamingStats().anthropic
+    expect(s.precontentRecoverySuccess).toBe(1)
+    expect(s.precontentRecoveryExhausted).toBe(1)
   })
 
   test("retries split into pre-first-block vs continuation counts (telemetry-architecture: finest factors)", () => {

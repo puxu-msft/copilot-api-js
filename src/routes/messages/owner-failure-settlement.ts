@@ -1,8 +1,8 @@
-import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
+import type { OwnerCommandFailureDisposition } from "~/lib/pipeline/delivery/owner-failure"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 
 export function settleMessagesOwnerFailure(
-  decision: OwnerTerminalDecision | undefined,
+  decision: OwnerCommandFailureDisposition | undefined,
   env: RequestEnvelope,
   model: string,
   recordForwarded: () => void,

@@ -1,3 +1,5 @@
+import type { Model } from "@hsupu/ghc-proxy-foundation/ghc-model-types"
+
 import type {
   //
   AskNormalizationDiag,
@@ -18,9 +20,8 @@ import type {
   SseEventRecord,
   TruncationInfo,
   WarningMessage,
-} from "~/lib/history/store"
-import type { Model } from "~/lib/models/client"
-import type { FeatureKind } from "~/lib/observability"
+} from "~/lib/history/types"
+import type { FeatureKind } from "~/lib/observability/feature-kind"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -33,7 +34,9 @@ import type {
   DispatchVerdict,
   ModelOperationRecord,
   OperationSyntheticKind,
+  RecordAttemptDiagnosticInput,
 } from "./model-operation-record"
+import type { OperationLifecycleSnapshot } from "./operation-lifecycle"
 
 // ─── Request State Machine ───
 
@@ -319,6 +322,7 @@ export interface HistoryEntryData {
   active: boolean
   lastUpdatedAt: number
   queueWaitMs: number
+  historyAdmissionWaitMs?: number
   durationMs: number
   sessionId?: string
   agentId?: string
@@ -476,6 +480,10 @@ export interface RequestContext {
   readonly modelOperationSnapshot: ModelOperationRecord
   /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
+  /** Whether canonical observability has crossed its immutable terminal seal. */
+  readonly modelOperationSealed: boolean
+  /** Independent logical, operation-body, delivery, and canonical finalization facts. */
+  readonly operationLifecycle: OperationLifecycleSnapshot
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -497,6 +505,7 @@ export interface RequestContext {
   /** The initial (attempt-0) Anthropic sanitization-info envelope (re-homed from the codec closure — the retry pipeline-info rebuild reads it). */
   readonly initialSanitizationInfo: SanitizationInfo | undefined
   readonly queueWaitMs: number
+  readonly historyAdmissionWaitMs: number | undefined
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
   /**
@@ -514,8 +523,12 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   /** Record canonical ingress once both the V2 body and inbound headers are available. */
   recordModelOperationIngress(): void
-  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
+  /** Mark the outer delivery owner as entering finalization. */
+  beginModelOperationDeliveryFinalization(): void
+  /** Notify that client delivery completed successfully; this does not synchronously seal canonical observability. */
   finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Preserve a delivery failure and advance canonical finalization only after the shutdown barrier registers it. */
+  failModelOperationDelivery(error: unknown): void
   /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
@@ -526,6 +539,8 @@ export interface RequestContext {
   recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
   /** Persist a downstream owner failure that occurred after the first external wire write was attempted. */
   recordWirePartialDelivery(diag: NonNullable<PipelineInfo["wirePartialDelivery"]>): void
+  /** Record that a response-processing flush superseded a typed upstream or codec failure on the current generation dispatch. */
+  recordResponseFailureSupersession(input: { supersededError: unknown; supersededSource: "upstream-transport" | "codec-render"; flushError: unknown }): void
   /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
   recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
@@ -542,7 +557,7 @@ export interface RequestContext {
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
   /** Begin one explicit generation candidate in the canonical History V3 topology. */
-  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }): CandidateHandle
   /** Settle one explicit candidate without relying on array position. */
   settleGenerationCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   /** Begin one physical dispatch and return its canonical branded handle. */
@@ -561,6 +576,12 @@ export interface RequestContext {
   setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
   setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  /**
+   * Records one diagnostic against an explicitly named dispatch.
+   * Unlike {@link setGenerationDispatchTransport} and friends it does NOT move the ambient "current" attempt: transport-level producers run concurrently with whatever else the request is doing, so selecting a current attempt to write through would both misattribute this diagnostic and silently re-point every later ambient write.
+   * Throws on an unknown handle while the record is still writable, and drops silently once sealed — the same contract as {@link setGenerationDispatchTimingEpoch}.
+   */
+  recordGenerationDispatchDiagnostic(dispatch: DispatchHandle, diagnostic: RecordAttemptDiagnosticInput): void
   setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
   captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
   captureGenerationDispatchFrameTransform(
@@ -575,6 +596,8 @@ export interface RequestContext {
     outputFrames: ReadonlyArray<unknown>,
     transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
   ): void
+  /** Pins terminal attribution without selecting a recovery candidate as winner. */
+  pinGenerationTerminalDispatch(dispatch: DispatchHandle): void
   /** Select the generation winner for V2 compatibility projection and terminal settlement. */
   selectGenerationWinner(candidate: CandidateHandle, dispatch: DispatchHandle): void
   settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void

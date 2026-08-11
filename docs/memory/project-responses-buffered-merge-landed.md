@@ -8,7 +8,7 @@ metadata:
   modified: 2026-07-19T21:01:43.540Z
 ---
 
-Responses buffered-merge 特性（spec/plan `2026-07-14-responses-buffered-block-merge`）**全 36 task 已实施**在分支 `feat/responses-buffered-block-merge`（本会话 2026-07-19 从 Task 2.10 接手到收官），待合并 master。权威现状见 DESIGN.md「活的架构现状」新增行 + plan 头部状态注解。
+Responses buffered-merge 特性（spec/plan `2026-07-14-responses-buffered-block-merge`）**全 36 task 已实施**在分支 `feat/responses-buffered-block-merge`（本会话 2026-07-19 从 Task 2.10 接手到收官），**已合入 master**（2026-08-08 复核：`git merge-base --is-ancestor 8e0376d4 master` 退出 0；此前本行写「待合并 master」，是写于合并前的陈旧状态）。权威现状见 DESIGN.md「活的架构现状」新增行 + plan 头部状态注解。
 
 承重要点（stub，细节在 docs）：
 - **候选托管 reducer**（`buffered-merge-reducer.ts`）经候选工厂 `transformBufferedFlush` 缝接进 driver `flushBufferedFrames` 咽喉；两正交旋钮 `event_compaction`（默认 drop-delta）+ `completed_output`（默认 repair-if-incomplete）。

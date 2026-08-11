@@ -34,6 +34,7 @@ import {
 } from "~/lib/pipeline/driver"
 
 import { FakeClock } from "../helpers/fake-clock"
+import { decodeSseWrite } from "../helpers/sse-write-stream"
 
 function frame(type: string, extra: Record<string, unknown> = {}): UpstreamFrame {
   return { event: type, data: JSON.stringify({ type, ...extra }) }
@@ -63,17 +64,12 @@ function makeGatedUpstream(segments: Array<Array<UpstreamFrame>>): { stream: Ups
 function makeEnv(): RequestEnvelope {
   const ctx = createRequestContext({ endpoint: "openai-responses" })
   return {
-    clientFormat: "openai-responses",
-    targetEndpoint: "/responses",
-    model: {},
-    stream: true,
-    body: { model: "gpt-5", input: "hello", stream: true },
+    request: { clientFormat: "openai-responses", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: { model: "gpt-5", input: "hello", stream: true }, targetEndpoint: "/responses", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -124,8 +120,8 @@ function makeResponsesStopTracker() {
 function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<ClientFrame> } {
   const written: Array<ClientFrame> = []
   const stream = {
-    writeSSE: (value: ClientFrame) => {
-      written.push(value)
+    write: (input: Uint8Array | string) => {
+      written.push(decodeSseWrite(input))
       return Promise.resolve()
     },
   } as unknown as Parameters<typeof makeSseSink>[0]

@@ -93,14 +93,17 @@ hooks:
 YAML
 
 LIVE_TOKEN="$HOME/.local/share/copilot-api/github_token"
-if [[ ! -f "$APP_DIR/github_token" ]]; then
-  if [[ ! -f "$LIVE_TOKEN" ]]; then
-    printf 'missing GitHub token at %s\n' "$LIVE_TOKEN" >&2
-    exit 3
-  fi
-  cp "$LIVE_TOKEN" "$APP_DIR/github_token"
-  chmod 600 "$APP_DIR/github_token"
+if [[ ! -f "$LIVE_TOKEN" ]]; then
+  printf 'missing GitHub token at %s\n' "$LIVE_TOKEN" >&2
+  exit 3
 fi
+# Copy EVERY run, not just the first. The old `[[ ! -f ]]` guard pinned whatever token happened to be
+# live the first time this work dir was created, so a later rotation left the gate running against a
+# stale one — and a token from a different entitlement resolves a different account type, hence a
+# different `copilotBaseUrl`, hence a different model catalog. That surfaced as the fixture's model
+# simply not existing, several layers away from anything about tokens.
+cp "$LIVE_TOKEN" "$APP_DIR/github_token"
+chmod 600 "$APP_DIR/github_token"
 
 cleanup() {
   if [[ -f "$PID_FILE" ]]; then

@@ -125,7 +125,7 @@ describe("T3.3 — @cc leg end-to-end round-trip (mock CC upstream)", () => {
     const { rendered, env } = await roundTrip("claude-x@cc", mockCc, (w) => (sentWire = w))
 
     // The OUTBOUND wire is CC-shaped at /chat/completions (request translation reached the upstream).
-    expect(env.targetEndpoint).toBe(ENDPOINT.CHAT_COMPLETIONS)
+    expect(env.attempt.targetEndpoint).toBe(ENDPOINT.CHAT_COMPLETIONS)
     expect(sentWire?.url).toBe(ENDPOINT.CHAT_COMPLETIONS)
     expect(Array.isArray((sentWire?.body as { messages?: unknown }).messages)).toBe(true)
 
@@ -199,7 +199,7 @@ describe("T3.3 — @responses leg FOUR-HOP round-trip oracle (mock Responses ups
     const { rendered, env } = await roundTrip("claude-x@responses", mockResponses, (w) => (sentWire = w))
 
     // Hop 1-2 (request): the outbound wire targets the Responses leg and is Responses-shaped (input[], not messages[]).
-    expect(env.targetEndpoint).toBe(ENDPOINT.RESPONSES)
+    expect(env.attempt.targetEndpoint).toBe(ENDPOINT.RESPONSES)
     expect(Array.isArray((sentWire?.body as { input?: unknown }).input)).toBe(true)
 
     // Hop 3-4 (response): Responses → CC → Anthropic, text + tool_use folded into one Anthropic message.

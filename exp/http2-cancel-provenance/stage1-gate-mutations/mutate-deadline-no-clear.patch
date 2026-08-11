@@ -1,0 +1,11 @@
+diff --git a/src/lib/fetch-utils.ts b/src/lib/fetch-utils.ts
+--- a/src/lib/fetch-utils.ts
++++ b/src/lib/fetch-utils.ts
+@@ -34,6 +34,6 @@ export function createResponseHeaderDeadline(ms: number): { signal: AbortSignal; complete(): boolean } {
+   const finish = (reason?: Error): boolean => {
+     if (finished) return false
+     finished = true
+-    if (timer !== undefined) clearTimeout(timer)
++    // mutation: timer intentionally left armed
+     if (reason) controller.abort(reason)
+     return true

@@ -30,6 +30,7 @@ import { StreamReaperCancelError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
+import { compatDispatchOptionsForTests } from "../helpers/dispatch-options"
 import {
   //
   autoRestoreFetch,
@@ -59,7 +60,9 @@ function makeEnv(transports: Array<string>, clientAbortSignal?: AbortSignal, lif
     supported_endpoints: [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES],
   } as Model
   return {
-    model,
+    request: { model } as RequestEnvelope["request"],
+    attempt: {} as RequestEnvelope["attempt"],
+    candidate: {},
     ctx: {
       lifecycleSignal: lifecycleSignal ?? new AbortController().signal,
       setAttemptTransport: (transport: string) => transports.push(transport),
@@ -157,14 +160,14 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
     setFetchMock(() => createSseResponse(['event: response.created\ndata: {"type":"response.created"}\n\n']))
 
-    await expect(transport.send(makeWire(), env)).rejects.toBeInstanceOf(UpstreamTransportFallbackError)
+    await expect(transport.send(makeWire(), env, compatDispatchOptionsForTests())).rejects.toBeInstanceOf(UpstreamTransportFallbackError)
     expect(wsSends).toBe(1)
     expect(wsCloses).toBe(1)
     expect(transports).toEqual(["upstream-ws"])
 
-    const upstream = await transport.send(makeWire(), env, { forceHttp: true })
+    const upstream = await transport.send(makeWire(), env, compatDispatchOptionsForTests({ forceHttp: true }))
     const iterator = upstream.frames[Symbol.asyncIterator]()
-    expect((await iterator.next()).value?.event).toBe("response.created")
+    expect((await iterator.next()).value?.message.event).toBe("response.created")
     expect(wsSends).toBe(1)
     expect(transports).toEqual(["upstream-ws", "http"])
   })
@@ -173,7 +176,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     const transports: Array<string> = []
     const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
 
-    const result = await transport.open(makeWire(), makeEnv(transports))
+    const result = await transport.open(makeWire(), makeEnv(transports), compatDispatchOptionsForTests())
 
     expect(result.kind).toBe("fallback-before-first-event")
     await expect(result.lifecycle.quiesced).resolves.toBeUndefined()
@@ -192,7 +195,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
       return createSseResponse([])
     })
 
-    await expect(transport.send(makeWire(), env)).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
+    await expect(transport.send(makeWire(), env, compatDispatchOptionsForTests())).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
     expect(httpCalls).toBe(0)
     expect(transports).toEqual(["upstream-ws"])
   })
@@ -211,9 +214,9 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
     setFetchMock(() => createSseResponseThenBlock(['event: response.created\ndata: {"type":"response.created"}\n\n']))
 
-    const upstream = await transport.send(makeWire(), env, { forceHttp: true })
+    const upstream = await transport.send(makeWire(), env, compatDispatchOptionsForTests({ forceHttp: true }))
     const iterator = upstream.frames[Symbol.asyncIterator]()
-    expect((await iterator.next()).value?.event).toBe("response.created")
+    expect((await iterator.next()).value?.message.event).toBe("response.created")
 
     // Reaper force-fails mid-stream (upstream blocked past the last frame). Abort WITH the cause tag
     // the real `ctx.reapInFlight()` carries — a bare abort simulates the producer without its contract.
@@ -237,7 +240,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
       return createSseResponse([])
     })
 
-    const error = await transport.send(makeWire(), env).then(
+    const error = await transport.send(makeWire(), env, compatDispatchOptionsForTests()).then(
       () => undefined,
       (e: unknown) => e,
     )
@@ -260,7 +263,7 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
     setUpstreamWsConnectionFactoryForTests(() => silentRealConnection())
 
-    const error = await transport.open(makeWire(), makeEnv(transports)).then(
+    const error = await transport.open(makeWire(), makeEnv(transports), compatDispatchOptionsForTests()).then(
       (r) => (r.kind === "fallback-before-first-event" ? r.error : undefined),
       (e: unknown) => e,
     )
@@ -287,7 +290,9 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
       return createSseResponse([])
     })
 
-    await expect(transport.send(makeWire(), env, { signal: dispatchAbort.signal })).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
+    await expect(transport.send(makeWire(), env, compatDispatchOptionsForTests({ signal: dispatchAbort.signal }))).rejects.not.toBeInstanceOf(
+      UpstreamTransportFallbackError,
+    )
     expect(wsSends).toBe(0)
     expect(httpCalls).toBe(0)
     expect(transports).toEqual(["upstream-ws"])

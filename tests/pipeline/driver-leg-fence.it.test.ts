@@ -57,7 +57,7 @@ test("production buffered recovery opens a recovery leg through the driver", asy
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => (sends++ === 0 ? first : recovered)),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
 
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())

@@ -71,8 +71,16 @@ const EXEMPT: Record<string, string> = {
   // Handled inside resetTestRuntime (runtime trio), not the RESETTERS table.
   resetBusForTests: "handled by resetTestRuntime",
   resetRequestContextManagerForTests: "handled by resetTestRuntime",
+  resetModelOperationTerminalBusForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  resetHistoryAdmissionLifecycleForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  setHistoryAdmissionControllerForTests: "handled by resetTestRuntime before initHistory rewires the terminal subscriber",
+  // Process-wide test infrastructure, deliberately NOT per-test. It decides what a LATER `getHistoryPersistenceRuntime()` CONSTRUCTS, and the registry singleton is released on every test by the registered `releaseHistoryPersistenceRuntime`. Clearing the factory too would make the very next construction a REAL Worker thread, silently, in a run that asked for the in-process backend. Installed once by bootstrapTestRuntime, like the sandbox-paths preload; the instance-level injector it backstops (`setHistoryPersistenceRuntimeForTests`) IS reset per test.
+  setHistoryPersistenceRuntimeFactoryForTests: "process-wide runtime backend selection — must NOT run per-test, else the next construction spawns a real Worker",
+  // Same shape: installed once by bootstrapTestRuntime, backed by the fixtures' own write connection. Clearing it per test would silently stop `clearHistory()` wiping the persisted store, and every caller that relies on a clean slate would start inheriting the previous test's rows.
+  setHistoryStoreWipeForTests: "process-wide test-only store wipe — must NOT run per-test, else clearHistory() stops clearing",
   // Upstream fetch seam — handled by the network guard + restoreFetch.
   setUpstreamFetchForTests: "upstream seam — network guard + restoreFetch",
+  detachHistoryReadDatabaseForTests: "per-test opt-in, paired with openInMemoryDatabase — the handle it forgets is the write singleton the test itself closes",
   // Path/config injector setters: per-test opt-in, not a default reset. Their
   // effect is undone either by a paired reset already in the table or by the
   // floor (sandboxed PATHS default).
@@ -89,6 +97,8 @@ const EXEMPT: Record<string, string> = {
   _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  drainScheduledCalibrationPersistenceForTests: "action hook — consumes calibration's existing timer; resetAllLimitsForTesting owns reset",
+  drainScheduledNegotiationPersistenceForTests: "action hook — consumes negotiation's existing timer; clearAnthropicFeatureNegotiationForTests owns reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
   // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
   // no module-global state of its own to reset; the timer itself is
@@ -104,11 +114,13 @@ const EXEMPT: Record<string, string> = {
   // _resetConfigValidationWarnTrackingForTests (validation.ts), which calls this
   // internally — registering both would double-reset the same Set.
   _resetDeprecatedKeyWarnTrackingForTests: "covered by _resetConfigValidationWarnTrackingForTests, which calls it internally",
-  // V3 store transient-retry seams (DI-5): a read-only config getter (no state)
-  // and a fault injector setter whose module-global is cleared centrally by the
-  // ALREADY-registered resetV3WriterForTests.
-  getV3PersistRetryConfigForTests: "read-only assertion hook — no state to reset",
+  // V3 store transient-retry fault injector; its module-global is cleared centrally by the ALREADY-registered resetV3WriterForTests. (The paired config getter used to be listed here as `getV3PersistRetryConfigForTests`; the Batch 2b cutover gave it a real production consumer and dropped the suffix, so the enumeration no longer sees it and it needs no exemption.)
   setV3CommitFailureInjectorForTests: "commit-failure injector setter — cleared by resetV3WriterForTests (registered)",
+  // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
+  // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
+  recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
+  // Injection setter remains available to tests that install explicit fakes. The fixture does not reset it through this table: merely clearing the pointer would leak a live Worker, so the fixture calls the owning `releaseHistoryPersistenceRuntime()` explicitly — and BEFORE `resetTestRuntime()`, because releasing after the rebuild disarms the runtime the next test is about to use (see tests/history/worker/fixture-persistence-survives-teardown.it.test.ts).
+  setHistoryPersistenceRuntimeForTests: "runtime injector — owned reset called explicitly by the fixture before resetTestRuntime, not via RESETTERS",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
@@ -151,7 +163,7 @@ describe("RESETTERS table is complete (no module-global reset drifts unregistere
     // Names in the table that are not `*ForTest(s|ing)`-named (production resets,
     // not test-only injectors) — the enumeration regex never finds these, so skip
     // the existence check for them.
-    const NOT_FOR_TESTS_NAMED = new Set(["resetHistoryPersistErrorStats", "resetUpstreamHook"])
+    const NOT_FOR_TESTS_NAMED = new Set(["resetHistoryPersistErrorStats", "resetUpstreamHook", "releaseHistoryPersistenceRuntime"])
     for (const name of RESETTER_NAMES) {
       if (NOT_FOR_TESTS_NAMED.has(name)) continue
       expect(enumerated.has(name)).toBe(true)

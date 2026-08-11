@@ -94,7 +94,7 @@ TUI 内部依赖基本是单向的：`input/keys` 负责 bytes→key，`controll
 
 - [PTY harness](../../tests/tui/pty/harness.ts) 把 Bun.Terminal 输出串行喂给 `@xterm/headless`，保留 grid、scrollback 与 raw bytes；运行中 panel 由 marker settle 后抓快照，不误用 destroy 后末态。
 - [no-eaten-lines](../../tests/tui/pty/no-eaten-lines.pty.test.ts)、[footer-pinned](../../tests/tui/pty/footer-pinned.pty.test.ts)、[resize-reanchor](../../tests/tui/pty/resize-reanchor.pty.test.ts) 各自声明了生产 mutation 正样本；核心时序用 10 连跑。
-- [shutdown-signals.it.test.ts](../../tests/shutdown/shutdown-signals.it.test.ts) 通过 Python 真 PTY 写 `0x03`，验证第一次仍活、第二次 exit 130、raw TUI 恢复 ICANON+ECHO。这比普通 `Bun.spawn` 信号测试可靠。
+- [shutdown-signals.pty.test.ts](../../tests/shutdown/shutdown-signals.pty.test.ts) 通过 Python 真 PTY 写 `0x03`，验证第一次仍活、第二次 exit 130、raw TUI 恢复 ICANON+ECHO。这比普通 `Bun.spawn` 信号测试可靠。
 
 ## 5. 发现与优先级
 

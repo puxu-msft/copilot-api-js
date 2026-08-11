@@ -1,9 +1,9 @@
 ---
 name: debugging-ghc-api-upstream-transport
-description: 当调试 copilot-api-js 上游 fetch/连接问题时使用——Bun 原生 fetch 写死 300s 超时、TimeoutError、无 TCP keepalive、socket 被中间设备回收(transport-close)、undici dispatcher 被静默丢弃、node:http2 vs undici 选路、keepalive 须 ss 验证、pin undici 7；两层上游保活(TCP keepalive + h2 PING)对抗长 thinking 静默截断(GHC 不透传 SSE ping、上游流无 message_stop 被关闭)；**h2 session 池：容量选路 Map<origin,entry[]> + reservation + per-session 并发 cap(N=1 消 blast-radius) + per-origin 总 session 硬 cap(阻塞式+lease token) + idle-reap；h2 流错误结构化 tag 分类(pre-response-close/refused-stream/mid-body-close，tag 权威+子串 fallback)**。涉及 transport/upstream-fetch.ts、http2-client.ts、proxy.ts、error/transport-reason.ts、classify.ts、长 thinking 断连、并发流被会话级 teardown。
+description: 当调试 copilot-api-js 到 GHC／其他上游的 HTTP 传输异常时使用——大请求 `HTTP 408 user_request_timeout`／`Timed out reading request body`、上传卡住、`TimeoutError`、transport-close、长 thinking 静默截断、h2 stream reset／GOAWAY、proxy／TLS 握手、keepalive 或并发流被 session teardown。
 ---
 
-# Bun 上游传输：三陷阱与排查
+# GHC 上游 HTTP 传输诊断
 
 所有上游 HTTP 统一经 `src/lib/transport/upstream-fetch.ts` 的 `upstreamFetch`：真 undici 的 fetch（`import from "undici/index.js"`）+ `getUpstreamDispatcher()`，而非 Bun 原生 `fetch()`。https 热路径更进一步走内建 `node:http2`（`transport/http2-client.ts`），undici 仅留明文 http。架构决策见 docs/spec/upstream-http2-transport.md。
 
@@ -46,6 +46,25 @@ https 上游绕过 undici，故代理也不能靠 undici ProxyAgent——在 `tr
 - **idle-reap**（`h2IdleSessionTimeout` 默认 300s，仅 `lifecycle==="active"`、`unref` 计时器、触发前 re-check `count===0 && active`；retiring 走 `maybeReclaimRetiringSession` 不重叠）。
 - **shutdown/reconcile 竞态**：`acquireSession` 开头捕获 `startEpoch`，每次 blocking wait 后 `poolEpoch !== startEpoch` 即抛 abort（shutdown 唤醒 waiter → 正确失败、不重开 session）。reconcile 只 bump `currentGeneration`（非 poolEpoch），不误触发 shutdown abort。
 
+## GHC 大请求 `HTTP 408 user_request_timeout`：先判上传层，再谈重试
+
+症状形态：客户端向本项目提交数 MB 请求，本项目已建立上游 HTTP/2 stream，约 1～2 分钟后 GHC 返回：
+
+```text
+HTTP 408
+{"error":{"code":"user_request_timeout","message":"Timed out reading request body. Try again, or use a smaller request size."}}
+```
+
+这不是响应生成超时，也不是 `status=0` 的 pre-response close：GHC 已返回结构化 HTTP 响应，错误主体是**读取我方请求 body**。不要看到“大 payload + 408”就直接归因于大小限制、`req.write()` 截断或 stale `content-length`；按下面顺序逐层证伪。
+
+1. **取真实 History 工件。** 从 `/history/api/entries/:id` 读取 `clientRequest.body`、`attempts[].upstreamRequest.body`、两侧 headers、attempt timing 与原始 408 body。分别以 UTF-8 JSON 紧凑序列化计字节。比较入站与翻译后 wire 大小，判断是否异常膨胀；数值必须带 request id、commit／运行实例和生成方法。`upstreamRequest.body` 是我方记录的待发送表示，只能证明准备了什么，**不能证明远端实际收到了这些字节**。
+2. **核 framing。** 客户端的 `content-length` 只描述入站原 body，代理重建 body 后不得透传。检查 `upstreamRequest.headers` 是否含 stale `content-length`／`content-encoding`／`transfer-encoding`；HTTP/2 无 `content-length` 时可由 END_STREAM 正确定界。header 干净只能排除 framing mismatch，不能证明 GHC 已读完 body。
+3. **用生产 `http2Fetch` 做本地逐字节 oracle。** 起本地 h2c server（非 4141），server 累计 `data` chunk 字节并在 `end` 回报；通过 `setHttp2SessionFactoryForTests(() => http2.connect(url))` 驱动真实 `runHttp2Fetch`，至少测事故同量级和更大正控。若预期字节数与服务端实收一致，可排除“该 runtime／该实现对该体量固定截断”；**不能外推为真实 GHC、proxy、拥塞窗口或所有并发条件都正常**。
+4. **再查上传时序与环境差异。** 本地探针失败时，沿 `write`／`drain`／`finish`／`end`／`close`／`error`／abort 追上传停顿。若只在 proxy 或并发高峰复现，做同 body 的直连／proxy、空闲／负载对照。`ClientHttp2Stream.write()` 返回 `false` 表示 chunk 已接受但缓冲达到 highWaterMark；忽略返回值首先是内存／生产者节流问题，不等于已证明丢字节。
+5. **只有证据排除本地固定缺字节后，才把它视为 GHC 边缘读取超时的瞬态 transport failure。** 不要把错误文案升级成“GHC 保证零处理”；一次有界重放是项目的可用性裁决，不是 HTTP 协议幂等保证。
+
+**生产重试边界的权威来源：** [`docs/request-pipeline.md`](../../../docs/request-pipeline.md)“重试策略”。当前只在三条件同时成立时分类为 `network_error`：HTTP status `408`、JSON `error.code === "user_request_timeout"`、`error.message` 以 `Timed out reading request body.` 开头；复用 `network-retry`，等待 1 秒、同 payload 至多一次。普通 408、仅 code 相同、仅 message 相同、非 JSON body 均保持终态 `bad_request`。本 skill 完整解释诊断方法和证据边界，但不另立第二份产品契约；若此处与 `docs/request-pipeline.md` 冲突，以后者为准并在同一变更中修正本节。
+
 ## http2 流错误分类（结构化 tag 权威 + 子串 fallback）
 
 从 undici 迁 `node:http2` 后 h2 流错误分类须同步。**2026-07-23 起：分类由 transport 在产生点打的结构化 tag 主导**（`src/lib/error/transport-reason.ts` 的 `tagTransportError`，Symbol-keyed、survives cause-chain），`classifyError` 先读 tag（穷尽 `switch`+`never`）、子串匹配降为**未打 tag 时的 defense-in-depth fallback**——消除「三个错误串须永不重叠、靠人工审计」的脆性。
@@ -65,3 +84,15 @@ https 上游绕过 undici，故代理也不能靠 undici ProxyAgent——在 `tr
 ## 维护
 
 新增上游 fetch 走 `upstreamFetch`；绝不改回裸 `"undici"`（dispatcher 静默丢、无报错，C1 测试守）。升 undici 前实测加载/dispatch/ss。例外：`upstream-ws-connection.ts` 裸 undici WebSocket 无 dispatcher、无害。非 undici 唯一解=手搓 `net.connect`+`setKeepAlive(true,idleMs)`+`tls.connect({socket})`（顺序不可反，`Bun.connect` delay 参数坏）。node:http2 keepalive 必经 `createConnection`（直调 `client.socket.setKeepAlive` 抛 ERR_HTTP2_NO_SOCKET_MANIPULATION），`.body` 手搓 ReadableStream（`Readable.toWeb` 在 Bun 抛 ERR_STREAM_PREMATURE_CLOSE）。
+
+## 自验：只能在真实使用中检验的断言
+
+静态文本不能证明 future session 会自动召回或正确执行本 skill。正常使用后按同目录 [verification-log.md](verification-log.md) 的协议追加观察；作者本轮只能记录设计与测试，不能给自己的新断言投“已证实”票。
+
+| ID | 断言 | 确认形态 | 证伪形态 |
+|---|---|---|---|
+| V1 | 未点名 skill、只给出大请求 `HTTP 408 user_request_timeout`／`Timed out reading request body` 时会自动召回本 skill | 在诊断动作前由触发链自动加载，并从上传层开始 | 用户／reviewer 点名后才加载，或先按响应生成超时／keepalive 排查 |
+| V2 | 408 配方在真实事故中可按 History → framing → h2c 字节 oracle → 环境差异执行 | 四阶段均能取得对应证据，缺信息时明确指出缺口 | 某阶段不可执行、字段不存在、或必须临场发明关键步骤 |
+| V3 | 使用者会保持证据能力边界，不把 History／本地 h2c／错误文案外推为远端实收、全环境正常或 GHC 零处理保证 | 结论逐层限定，并把一次重放称为项目可用性裁决 | 仅凭任一局部证据宣称完整上传、普遍根因、协议幂等或可放宽所有 408 |
+
+**拆分观察：** 当前 408 与 History、framing、`http2Fetch`、proxy／并发诊断高度共用，保持一份 skill。若未来出现流式请求上传、请求压缩、HTTP/3，或本章节形成独立验证资产与维护周期，需要脱离其它 transport 症状单独加载，再提议拆出 `debugging-ghc-request-upload`；拆分本身由使用记录与评审裁决，不由作者仅凭篇幅决定。

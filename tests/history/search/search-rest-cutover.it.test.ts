@@ -155,6 +155,51 @@ describe.skipIf(!NATIVE)("GET /history/api/search — real end-to-end sidecar (P
     expect(await json<{ entries: Array<{ id: string }>; total: number }>(res)).toMatchObject({ entries: [{ id: "list-cutover-op" }], total: 1 })
   }, 20_000)
 
+  /**
+   * 400 and 503 are different answers to different questions — "I cannot serve THIS request" versus
+   * "I cannot serve requests" — and the distinction spans four modules (native → daemon → uds →
+   * handler). Both directions run here against the same live sidecar so neither can be satisfied by
+   * a blanket status: if the bad query returned 503 the search box would take the whole listing down
+   * over a typed `:`, and if the dead sidecar returned 400 the caller would be told its request was
+   * at fault and would not degrade.
+   */
+  test("an unparsable query is 400 while an unreachable sidecar stays 503", async () => {
+    const dbPath = path.join(freshDir("search-status-db-"), "history-v3.db")
+    const socketPath = path.join(freshDir("search-status-sock-"), "history-search.sock")
+    const indexPath = path.join(freshDir("search-status-index-"), "index")
+
+    commitOperation(dbPath, "status-op", "distinctiveStatusNeedle")
+    PATHS.HISTORY_SEARCH_SOCKET = socketPath
+    setHistoryConfig({ historyDbPath: dbPath })
+    await initHistory(true)
+    startHistoryBackfills()
+
+    const sidecar = spawnSidecar(["--db", dbPath, "--socket", socketPath, "--index", indexPath])
+    spawnedChildren.push(sidecar)
+    await waitUntil(async () => (await get("/api/entries?search=distinctiveStatusNeedle")).status === 200, {
+      timeout: 15_000,
+      interval: 200,
+      label: "sidecar to cover the frozen target",
+    })
+
+    // Things a person types into a free-text box that Tantivy's parser refuses.
+    for (const query of ["foo:", "(x", "-lead"]) {
+      const res = await get(`/api/entries?search=${encodeURIComponent(query)}`)
+      expect(res.status).toBe(400)
+      expect(await json<{ error: string }>(res)).toMatchObject({ error: expect.stringContaining("Unsupported search query") })
+    }
+    // A query that parses still works, so the 400 above is about the query and not about searching.
+    expect((await get("/api/entries?search=distinctiveStatusNeedle")).status).toBe(200)
+
+    sidecar.kill("SIGTERM")
+    await sidecar.exited
+    await waitUntil(async () => (await get("/api/entries?search=distinctiveStatusNeedle")).status === 503, {
+      timeout: 15_000,
+      interval: 200,
+      label: "list search to report the sidecar unavailable",
+    })
+  }, 40_000)
+
   test("source=inbound with a reachable sidecar returns genuine hits, mapped to full EntrySummary rows", async () => {
     const dbDir = freshDir("search-cutover-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

@@ -1,6 +1,6 @@
 ---
 name: methodology-full-suite-red-classify-before-pollution-playbook
-description: 「全套件红」未必是测试污染;套用污染 playbook 前先逐个单跑分类(oracle/doc 漂移 vs 真污染 vs timing flake)
+description: 「全套件红」未必是测试污染;套用污染 playbook 前先逐个单跑分类(oracle/doc 漂移 vs 真污染 vs timing flake vs 一次崩溃抬高计数),且先读失败名单不读失败计数
 metadata: 
   node_type: memory
   type: feedback
@@ -13,6 +13,7 @@ metadata:
 - **oracle/count 漂移**(单跑就挂):并发 landed 特性漏更下游 golden/count。实例=`e8112c82` 让 pipelineInfo 经 `mergedPipelineInfo` 无条件带 `streamIdleTimeoutMs`,打破 `payload-rewrite-registry` 的「no rewrite→no pipelineInfo」;`NEGOTIATION_CATEGORIES` 加第 11 类 `cacheControlSubfields` 打破 negotiation count=10。
 - **doc 死条目**(单跑就挂、deterministic):并发删/改名文件漏更 DESIGN.md,撞 L1 existence guard。实例=`412e8f71` 删 `src/lib/auto-truncate/` 迁 `src/lib/models/calibration/`、DESIGN.md 旧路径成死引用。
 - **timing flake**(单跑必过但慢、全套件间歇挂):实例=`request-payload` 的 o200k tokenizer 对 60KB 串估算 ~6s,全套件 CPU 争用下撞 per-test 超时。
+- **runtime 崩溃把失败计数整体抬高**(2026-08-10 补的第四类):一个 worker/shard 进程崩掉,它那一片**全部**记成 fail,于是「失败数」这个聚合量与「多少条测试真的断言失败」脱钩。实例=History Worker Batch 2b:`bun run test:it` 报 **58 fail** 而基线 6,我据这个差值判断「约 52 条测试建立在不落盘之上、需逐条甄别」,并**把已修好的缺陷回退掉**;复查失败名单,58 里只有约 16 条真断言失败,其余来自一次 Bun **SIGILL** 崩溃(`credential-four-track.it.test.ts`),且失败名五花八门(systemd sdNotify、SonicBoom flush、openai-cc codec、gemini reverse wire)——与 History 毫无关系,不可能是「为迁就不落盘而写的断言」。重新施加修复后连跑两次均 5 fail 且无崩溃,与基线一致。
 真正的跨文件单例污染(单跑过、全套件必挂、随顺序变)本轮**一个都没有**——那次「彻底修复」的反污染基建(autoRestoreState/useIsolatedRuntime)是稳的。用户的「污染」假设被 ground truth 证伪。
 
-**How to apply:** 抓失败断言 received vs expected → **逐个失败单跑**(`bun test <file>`):单跑挂=漂移/死条目/慢 flake(非污染,修 oracle/doc 或查 perf);单跑过+全套件挂=才进污染 playbook(pairing 找污染者)。**并发会话在你调查期间还在往 master 提交**,失败集合两次全量跑之间会变(第一次 5 个 oracle、第二次换成 doc+flake)——这是 moving target 不是你手抖,靠 `git log --diff-filter=D` / `-S` 定位是哪个 peer commit 引入。修 oracle 时钉 SSOT(引 `NEGOTIATION_CATEGORIES.length` 非硬编码数字)、剥正交诊断(rewriteDiag() 去 timeout 字段)防复发。verification 簇 [[feedback-pass-null-clean-not-self-validating]]、污染实操 skill `debugging-test-pollution`。
+**How to apply:** **先读失败名单,别读失败计数**——聚合量会被一次 runtime 崩溃整体抬高,任何据它下的「爆炸半径 / 需要甄别多少条」结论都不成立;名单里的失败**与你改的东西无关**就是崩溃或漂移的信号,而不是「影响面比想象大」。判不准就**连跑两次**,崩溃通常不复现、真断言失败会稳定复现。然后抓失败断言 received vs expected → **逐个失败单跑**(`bun test <file>`):单跑挂=漂移/死条目/慢 flake(非污染,修 oracle/doc 或查 perf);单跑过+全套件挂=才进污染 playbook(pairing 找污染者)。**并发会话在你调查期间还在往 master 提交**,失败集合两次全量跑之间会变(第一次 5 个 oracle、第二次换成 doc+flake)——这是 moving target 不是你手抖,靠 `git log --diff-filter=D` / `-S` 定位是哪个 peer commit 引入。修 oracle 时钉 SSOT(引 `NEGOTIATION_CATEGORIES.length` 非硬编码数字)、剥正交诊断(rewriteDiag() 去 timeout 字段)防复发。verification 簇 [[feedback-pass-null-clean-not-self-validating]]、污染实操 skill `debugging-test-pollution`。

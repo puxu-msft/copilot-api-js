@@ -23,8 +23,8 @@ import { SYNTHETIC_REASONING_SIGNATURE_PREFIX } from "~/lib/anthropic/synthetic-
 describe("buildClaudeSignatureCarrier / extractClaudeSignature — byte-exact round-trip (load-bearing oracle)", () => {
   test("a real-shaped Claude signature round-trips byte-exact through the carrier", () => {
     // A realistic-shaped signature (base64 blob, matches the general shape observed in probe (e)).
-    const realSignature
-      = "EpICCokBCA8YAipAkdxBdM3kLmY5kjjU5zOzASAQcL3DFFfb2jejUZOPjuJrMtaWdV77O5dZQCe6TEwRUbfCexFp39fpi0cd4ykzlDIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiRjZWQxZjk4ZS0wYjUxLTQ2MTAtODI4Mi00ZTVkODgzODQ1NzQSDOs7RCuEB888OvuLNhoM3xA3Q2NqM5+1orROIjCe3TDVg0QV+sqXfUrhxYebYTWPknMSB3iCL160MLikP+K0wU9w6tWedTxyog121S8qNjVdBnPMoozhFNYKLKsPeEyEYB+zdGg05tT61eIEdiwvcsghbPUaikuA3KefU4ufD6pD8xfldxgB"
+    const realSignature =
+      "EpICCokBCA8YAipAkdxBdM3kLmY5kjjU5zOzASAQcL3DFFfb2jejUZOPjuJrMtaWdV77O5dZQCe6TEwRUbfCexFp39fpi0cd4ykzlDIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiRjZWQxZjk4ZS0wYjUxLTQ2MTAtODI4Mi00ZTVkODgzODQ1NzQSDOs7RCuEB888OvuLNhoM3xA3Q2NqM5+1orROIjCe3TDVg0QV+sqXfUrhxYebYTWPknMSB3iCL160MLikP+K0wU9w6tWedTxyog121S8qNjVdBnPMoozhFNYKLKsPeEyEYB+zdGg05tT61eIEdiwvcsghbPUaikuA3KefU4ufD6pD8xfldxgB"
     const carrier = buildClaudeSignatureCarrier(realSignature)
     expect(carrier).toBeDefined()
     const recovered = extractClaudeSignature(carrier)

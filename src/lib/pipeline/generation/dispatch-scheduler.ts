@@ -47,7 +47,7 @@ export interface DispatchSettlement {
 }
 
 export interface DispatchRecordingPort {
-  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }): CandidateHandle
   settleCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   beginDispatch(input: {
     candidate: CandidateHandle
@@ -105,8 +105,12 @@ export interface ScheduledDispatch {
 }
 
 export interface DispatchScheduler {
-  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal }): Promise<ScheduledDispatch>
+  run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal; initialStrategy?: string }): Promise<ScheduledDispatch>
+  /** Dispose the one ready-but-unconsumed dispatch while preserving the caller's terminal settlement. */
+  disposeActiveWithSettlement(input: DispatchSettlement): Promise<void>
   cancelActive(reason: string): Promise<void>
+  /** Assert a fully consumed response no longer occupies an active scheduler slot. */
+  assertNoActiveReadyDispatch(dispatch: DispatchHandle): void
   settle(dispatch: DispatchHandle, input: DispatchSettlement): Promise<void>
 }
 
@@ -124,8 +128,26 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
 
   const recordSettlement = (dispatch: DispatchHandle, settlement: DispatchSettlement): void => {
     if (settled.has(dispatch)) return
-    settled.add(dispatch)
     input.recording.settleDispatch(dispatch, settlement)
+    settled.add(dispatch)
+  }
+
+  const distinctErrors = (errors: ReadonlyArray<unknown>): Array<unknown> => {
+    const unique: Array<unknown> = []
+    for (const error of errors) if (!unique.includes(error)) unique.push(error)
+    return unique
+  }
+
+  const diagnosticError = (errors: ReadonlyArray<unknown>): Pick<DispatchSettlement, "error"> | Record<never, never> => {
+    if (errors.length === 0) return {}
+    if (errors.length === 1) return { error: errors[0] }
+    return { error: new AggregateError(errors, "Dispatch settlement errors") }
+  }
+
+  const throwFailures = (errors: ReadonlyArray<unknown>, message: string): void => {
+    if (errors.length === 0) return
+    if (errors.length === 1) throw errors[0]
+    throw new AggregateError(errors, message)
   }
 
   const disposeDispatch = (
@@ -137,40 +159,51 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     const pending = cleanup.get(dispatch)
     if (pending) return pending
     const task = (async () => {
-      let disposalError: unknown
+      const cleanupErrors: Array<unknown> = []
       if (cancelFirst) {
         try {
           lifecycle.cancel(settlement.reason)
         } catch (error) {
-          disposalError = error
+          cleanupErrors.push(error)
         }
       }
       try {
         await lifecycle.dispose(settlement.reason)
       } catch (error) {
-        disposalError = error
+        cleanupErrors.push(error)
       }
       try {
         await lifecycle.quiesced
       } catch (error) {
-        disposalError ??= error
+        cleanupErrors.push(error)
       }
-      active.delete(dispatch)
-      recordSettlement(dispatch, {
-        ...settlement,
-        ...(disposalError !== undefined && settlement.error === undefined && { error: disposalError }),
-      })
-      if (disposalError !== undefined) throw asError(disposalError)
+      const uniqueCleanupErrors = distinctErrors(cleanupErrors)
+      const settlementErrors = distinctErrors([...("error" in settlement ? [settlement.error] : []), ...uniqueCleanupErrors])
+      let recordingFailed = false
+      let recordingFailure: unknown
+      try {
+        recordSettlement(dispatch, {
+          ...settlement,
+          ...(uniqueCleanupErrors.length > 0 && { verdict: "failed" as const }),
+          ...diagnosticError(settlementErrors),
+        })
+      } catch (error) {
+        recordingFailed = true
+        recordingFailure = error
+      } finally {
+        active.delete(dispatch)
+      }
+      throwFailures(distinctErrors([...uniqueCleanupErrors, ...(recordingFailed ? [recordingFailure] : [])]), "Dispatch cleanup and settlement failed")
     })()
     cleanup.set(dispatch, task)
     return task
   }
 
   const scheduler: DispatchScheduler = {
-    async run({ candidate, env, signal }) {
+    async run({ candidate, env, signal, initialStrategy }) {
       let current = env
       let reason: DispatchReason = "initial"
-      let strategy: string | undefined
+      let strategy: string | undefined = initialStrategy
       let forceHttp = false
       let acceptedResolution: ((env: RequestEnvelope) => void | Promise<void>) | undefined
       let dispatchNumber = 0
@@ -182,7 +215,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         const dispatchBudget = input.generationBudget?.reserveDispatch()
         const wire = input.prepareWire(current, { reason, forceHttp })
         const dispatch = input.recording.beginDispatch({ candidate, reason, ...(strategy !== undefined && { strategy }), wire, forceHttp, env: current })
-        const model = current.model.id || "unknown"
+        const model = current.request.model.id || "unknown"
         let admission
         try {
           admission = await input.admission.acquire({ model, candidateId: candidate, dispatchId: dispatch, signal })
@@ -201,7 +234,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         let response: PhysicalTransportResponse
         const dispatchedAtMonotonic = monotonicNow()
         try {
-          const options: TransportDispatchOptions = { signal, ...(forceHttp && { forceHttp: true }) }
+          const options: TransportDispatchOptions = { dispatch, signal, ...(forceHttp && { forceHttp: true }) }
           response = await input.open(wire, current, options)
         } catch (error) {
           dispatchBudget?.release()
@@ -300,6 +333,18 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
       }
     },
 
+    async disposeActiveWithSettlement(settlement) {
+      const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
+      if (entries.length !== 1) throw new Error(`[dispatch-scheduler] expected exactly one active ready dispatch, found ${entries.length}`)
+      const results = await Promise.allSettled(entries.map(([dispatch, owned]) => disposeDispatch(dispatch, owned.lifecycle, settlement, true)))
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+      if (errors.length > 0)
+        throw new AggregateError(
+          errors.map((error) => asError(error)),
+          "Ready dispatch disposal failed",
+        )
+    },
+
     async cancelActive(reason) {
       const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
       const cancellationErrors: Array<unknown> = []
@@ -321,14 +366,42 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         )
     },
 
+    assertNoActiveReadyDispatch(dispatch) {
+      if (active.has(dispatch)) throw new Error(`[dispatch-scheduler] consumed dispatch ${dispatch} remains active`)
+    },
+
     async settle(dispatch, settlement) {
       if (settled.has(dispatch)) return
       const owned = active.get(dispatch)
+      const quiescenceErrors: Array<unknown> = []
       if (owned) {
-        await owned.lifecycle.quiesced
-        active.delete(dispatch)
+        try {
+          await owned.lifecycle.quiesced
+        } catch (error) {
+          quiescenceErrors.push(error)
+        } finally {
+          active.delete(dispatch)
+        }
       }
-      recordSettlement(dispatch, settlement)
+      const uniqueQuiescenceErrors = distinctErrors(quiescenceErrors)
+      if (uniqueQuiescenceErrors.length === 0) {
+        recordSettlement(dispatch, settlement)
+        return
+      }
+      let recordingFailed = false
+      let recordingFailure: unknown
+      try {
+        recordSettlement(dispatch, {
+          ...settlement,
+          verdict: "failed",
+          reason: "settlement-quiesce-failed",
+          ...diagnosticError(distinctErrors([...("error" in settlement ? [settlement.error] : []), ...uniqueQuiescenceErrors])),
+        })
+      } catch (error) {
+        recordingFailed = true
+        recordingFailure = error
+      }
+      throwFailures(distinctErrors([...uniqueQuiescenceErrors, ...(recordingFailed ? [recordingFailure] : [])]), "Dispatch quiescence and settlement failed")
     },
   }
 

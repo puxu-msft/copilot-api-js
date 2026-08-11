@@ -1,14 +1,14 @@
 # NGHTTP2_CANCEL 系列交接
 
-> **状态：草稿·未评审**
+> **状态：已评审·交接定稿**
 >
 > **核验基线：** 2026-08-06T20:56:17Z 首次读取本地 `master` 为 `fa2bfd2d902af444517b2fed1a44428c8bb47367`；成稿前刷新为 `17a7f612ba2cfda5c4c212555643b8626eb101d0`，提交时间 2026-08-06T20:56:03+00:00。复现：`git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master` 与 `git -C /home/xp/src/copilot-api-js show -s --format=%cI refs/heads/master`。`c23ed804`、`fa2bfd2d`、`17a7f612` 均在当前 `master` ancestry；Supporting evidence 的代码评审与运行探针锚定 `fa2bfd2d`，`fa2bfd2d..17a7f612` 是否改变其事实结论未在本任务中重新调查，标为 unresolved，接手第一步必须核对。
 >
-> **分支与 worktree：** `fa2bfd2d` 核账时，成果分支 `nghttp2-history-fixes` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-history-fixes`，tip `50941d32fad621395f66d54b35ee837bbbd93598`；承接分支 `nghttp2-resume` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-resume`，tip `c23ed8044e47b3313f74d4fd8d7e4627e0352567`；二者均为当时 `master` 的祖先且相对 `master` 无增量。复现：`git merge-base --is-ancestor <tip> master` 与 `git diff --quiet master...<branch>`。本交接编写 worktree 为 `/home/xp/src/copilot-api-js/.worktree/agent-adfcf471909fc141b`，分支 `agent-adfcf471909fc141b`，基线 `2c8b3d009f6b85c19553431a8a2ad50f3da7d83f`；只写 job tmp，不修改仓库。成稿时 current repo 是 `/home/xp/src/copilot-api-js`；分支 tip 与差异必须现场刷新。
+> **分支与 worktree：** `fa2bfd2d` 核账时，成果分支 `nghttp2-history-fixes` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-history-fixes`，tip `50941d32fad621395f66d54b35ee837bbbd93598`；承接分支 `nghttp2-resume` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-resume`，tip `c23ed8044e47b3313f74d4fd8d7e4627e0352567`；二者均为当时 `master` 的祖先且相对 `master` 无增量。复现：`git merge-base --is-ancestor <tip> master` 与 `git diff --quiet master...<branch>`。初稿由 `0840b929b0d0494b64c2a9ec532d0e859b159d14` 提交；`/home/xp/src/copilot-api-js/.worktree/agent-adfcf471909fc141b` 及其基线只属于历史写作 provenance，不代表接手现场。接手时必须刷新分支 tip、差异与运行状态，不得把本文历史基线当 current master。
 >
 > **未提交 WIP：** 只作指针，不在本文复制易腐清单。接手时分别运行 `git -C /home/xp/src/copilot-api-js status --short`、`git -C /home/xp/src/copilot-api-js/.worktree/nghttp2-resume status --short`，按路径与 hunk 确认归属；不得覆盖、还原、stage 或提交 peer WIP。2026-08-06 运行实例自报 `gitDirty=true`，故运行字节不能等同于 commit tree；当前脏文件明细为 TBD，必须由接手者现场重取。
 
-**阅读顺序：** 先读本文，再读计划的“实施状态”、A4 与 Phase B（`/home/xp/src/copilot-api-js/docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`）；随后按问题读取 `/home/xp/src/copilot-api-js/docs/DESIGN.md` 的 transport／History 活架构、`/home/xp/src/copilot-api-js/docs/history.md` 的 History 契约、`/home/xp/src/copilot-api-js/docs/API.md` 的 `/api/status` 与 History REST 契约。计划是阶段契约 SSOT，本文只交接状态、证据、冲突与开工顺序。
+**阅读顺序：** 第一入口是仓库内本文件及同目录 `KICKOFF.md`；再读计划的“实施状态”、A4 与 Phase B（`../2026-08-06-history-read-path-and-h2-diagnostics.md`），随后按问题读取 `../../DESIGN.md` 的 transport／History 活架构、`../../history.md` 的 History 契约、`../../API.md` 的 `/api/status` 与 History REST 契约。计划是阶段契约 SSOT，本文只交接状态、证据、冲突与开工顺序。
 
 **系列承接链：** `4f1f3be9-79eb-4cf1-8185-4ebc1bfd5c79` 完成故障分型并启动 A1/A2，因 context overflow 交给 `2a1071f7-25a6-4c5e-8675-c7ffde1138ff`；后者完成 A2 到 `50941d32`，因 context overflow 交给 `174f2b81-cab9-4415-a3b3-ef61f8033c2a`；后者整合分支并实现 A3 大部，因 context overflow 交给 `2684f077-d2ec-4112-9456-3371f8cb7f9d`；最后一会话提交并合入 A3、收到 `fa2bfd2d` 评审结论，并回到尚未实施的 CANCEL transport 主线。会话数量为 4，口径是 job 名或 transcript title 命中完整系列名；复现命令与排除项见 Supporting evidence 的 `session-inventory.md`。
 
@@ -23,7 +23,154 @@
 
 **Agent dispatch packet：** 新会话主会话拥有编排权。每次分派 agent 时必须逐项填写：任务边界；相关 session IDs；transcript／job／tasks 绝对路径；repo 与目标 worktree；base commit 与 target commit 的 full SHA；必读 Supporting evidence；已有结论及“禁止重查”的范围；允许写入的精确路径；期望验收输出、正控、证伪和报告落盘路径。缺字段必须写 `TBD`，不得让 agent 自猜路径、状态或调查范围。对当前任务，默认禁止重复考古四个会话、重复核账 A1–A3 已落 commits、或把 A4 当作旁支未合并；只有刷新 `17a7f612` 相对 `fa2bfd2d` 的增量与执行未闭合任务属于新调查。
 
-**Supporting evidence：** 以下 job tmp 文件是本交接的逐项证据，后续建议原样归档进仓库同一交接目录，文件名分别为 `session-inventory.md`、`completed-detour.md`、`mainline-evidence.md`、`handover-structure.md`、`review-core-a3.md`、`review-docs-layered-delivery.md`。归档前不得把 point-in-time review 改写成现状结论；应另写 disposition，并让报告保留原 commit／时间锚。当前来源绝对路径依次为 `/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-session-inventory.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-completed-detour.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-mainline-evidence.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-handover-structure.md`、`/home/xp/.claude/jobs/2684f077/tmp/review-core-a3.md`、`/home/xp/.claude/jobs/2684f077/tmp/review-docs-layered-delivery.md`。
+**Canonical 入口与证据集：** `0840b929b0d0494b64c2a9ec532d0e859b159d14` 锚定当时初稿目录中的 8 个文件：`HANDOVER.md`、`KICKOFF.md`、`session-inventory.md`、`completed-detour.md`、`mainline-evidence.md`、`handover-structure.md`、`review-core-a3.md`、`review-docs-layered-delivery.md`。冻结的 26 项 blob 清单由 `evidence-manifest.sha256` 持有；manifest 不列自身或后续 R10；双 R9 以其原始旧 manifest 声明作为不可改写历史内容进入新 manifest，不构成对新 manifest 的引用。首轮至 R9 是不可改写的历史发现链；R7 证明终态化前技术机制双绿，R8 factual 为 0 blocker／0 major，而 R8 successor 发现 manifest 缺口；R9 继续发现 FINAL 对象类型与全文机器字段缺口。最终收口由同一 `FINAL_COMMIT` 中、不进入 manifest 的 `review-factual-r10.md` 与 `review-successor-r10.md` 双绿证明。job tmp、job state、tasks 与 transcript 只保留为历史 provenance 或必要时深挖的恢复坐标，不是后继执行的必需入口或状态真相源。point-in-time review 保留原 commit／时间锚；后续处置另写 disposition，不改 Supporting evidence 或 review 覆写历史结论。
+
+## 最终提交证据门
+
+本交接的状态头描述文档定稿状态；**提交有效性以本门在调用方明确指定的 `FINAL_COMMIT` 上通过为准**。不得默认使用 `HEAD`，不得从 checkout 目录扫描或反推证据清单。R7 是终态化前技术机制双绿；R8 是终态状态审，其中 factual 为 0 blocker／0 major，successor 发现冻结 manifest 缺口；R9 发现 FINAL 对象类型门与全文机器字段门仍有缺口；首轮至 R9 均为不可改写的历史发现链。R10 只复核修订后的 manifest／gate，必须 factual 与 successor 双绿后才算最终收口。
+
+R10 两份报告顶部必须各自包含以下机器字段，且 manifest hash 取自同一 `FINAL_COMMIT` 中的 manifest blob：
+
+```text
+- evidence-manifest-sha256: <64hex>
+- verdict: 0 blocker / 0 major
+```
+
+调用方显式设置完整 40 位 commit 后，原样运行以下只读 gate：
+
+```bash
+set -euo pipefail
+: "${FINAL_COMMIT:?set FINAL_COMMIT to the exact 40-hex final commit}"
+MANIFEST_PATH='docs/plan/2026-08-06-nghttp2-cancel-series/evidence-manifest.sha256'
+python3 - "$FINAL_COMMIT" "$MANIFEST_PATH" <<'PY_EVIDENCE_GATE'
+import hashlib
+import re
+import subprocess
+import sys
+
+final_commit, manifest_path = sys.argv[1:]
+if not re.fullmatch(r"[0-9a-f]{40}", final_commit):
+    raise SystemExit("FINAL_COMMIT must be an explicit lowercase 40-hex commit")
+
+def git_bytes(*args: str) -> bytes:
+    try:
+        return subprocess.check_output(["git", *args], stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip()
+        raise SystemExit(f"git {' '.join(args)} failed: {detail}") from exc
+
+def git_text(*args: str) -> str:
+    return git_bytes(*args).decode("utf-8", "strict").strip()
+
+# A 40-hex tree/blob/tag can still serve <object>:<path>; require the exact input object itself to be a commit before reading any evidence blob.
+if git_text("cat-file", "-t", final_commit) != "commit":
+    raise SystemExit("FINAL_COMMIT object type is not commit")
+peeled_commit = git_text("rev-parse", f"{final_commit}^{{commit}}")
+if peeled_commit != final_commit:
+    raise SystemExit(f"FINAL_COMMIT does not resolve exactly to itself as a commit: {peeled_commit}")
+
+expected_paths = (
+    'docs/plan/2026-08-06-nghttp2-cancel-series/HANDOVER.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/KICKOFF.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/session-inventory.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/completed-detour.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/mainline-evidence.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/handover-structure.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-core-a3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-docs-layered-delivery.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r2.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r4.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r5.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r6.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r7.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r8.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r2.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r4.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r5.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r6.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r7.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r8.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r9.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r9.md',
+)
+expected_set = set(expected_paths)
+if len(expected_paths) != 26 or len(expected_set) != 26:
+    raise SystemExit("internal evidence path set is not exactly 26 unique literals")
+
+def blob(path: str) -> bytes:
+    try:
+        return git_bytes("show", f"{final_commit}:{path}")
+    except SystemExit as exc:
+        raise SystemExit(f"missing evidence in FINAL_COMMIT: {path}") from exc
+
+manifest_bytes = blob(manifest_path)
+manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+try:
+    manifest_lines = manifest_bytes.decode("utf-8").splitlines()
+except UnicodeDecodeError as exc:
+    raise SystemExit("evidence manifest is not UTF-8") from exc
+if len(manifest_lines) != 26:
+    raise SystemExit(f"manifest must contain exactly 26 lines, got {len(manifest_lines)}")
+entries = {}
+line_re = re.compile(r"^([0-9a-f]{64})  ([^\r\n]+)$")
+for line in manifest_lines:
+    match = line_re.fullmatch(line)
+    if not match:
+        raise SystemExit(f"invalid sha256sum manifest line: {line!r}")
+    digest, path = match.groups()
+    if path in entries:
+        raise SystemExit(f"duplicate manifest path: {path}")
+    entries[path] = digest
+if set(entries) != expected_set:
+    missing = sorted(expected_set - set(entries))
+    extra = sorted(set(entries) - expected_set)
+    raise SystemExit(f"manifest literal set mismatch; missing={missing}, extra={extra}")
+for path in expected_paths:
+    actual = hashlib.sha256(blob(path)).hexdigest()
+    if actual != entries[path]:
+        raise SystemExit(f"blob hash mismatch for {path}: manifest={entries[path]}, actual={actual}")
+
+r10_paths = (
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r10.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r10.md',
+)
+manifest_prefix = "- evidence-manifest-sha256:"
+manifest_field = re.compile(r"^- evidence-manifest-sha256: ([0-9a-f]{64})$")
+verdict_prefix = "- verdict:"
+verdict_field = "- verdict: 0 blocker / 0 major"
+for path in r10_paths:
+    try:
+        report_text = blob(path).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"R10 report is not UTF-8: {path}") from exc
+    lines = report_text.splitlines()
+    manifest_lines = [(index, line) for index, line in enumerate(lines) if line.startswith(manifest_prefix)]
+    verdict_lines = [(index, line) for index, line in enumerate(lines) if line.startswith(verdict_prefix)]
+    if len(manifest_lines) != 1:
+        raise SystemExit(f"{path} must contain exactly one full-file manifest field")
+    manifest_index, manifest_line = manifest_lines[0]
+    manifest_match = manifest_field.fullmatch(manifest_line)
+    if manifest_index >= 20 or manifest_match is None or manifest_match.group(1) != manifest_sha256:
+        raise SystemExit(f"{path} manifest field must be exact, unique, and within the first 20 lines")
+    if len(verdict_lines) != 1:
+        raise SystemExit(f"{path} must contain exactly one full-file verdict field")
+    verdict_index, verdict_line = verdict_lines[0]
+    if verdict_index >= 20 or verdict_line != verdict_field:
+        raise SystemExit(f"{path} verdict field must be exact, unique, and within the first 20 lines")
+    findings = [line for line in lines if line.strip().lower().startswith(("[blocker]", "[major]"))]
+    if findings:
+        raise SystemExit(f"{path} contains blocker/major finding markers: {findings}")
+print(f"FINAL_COMMIT={final_commit}")
+print(f"evidence_manifest_sha256={manifest_sha256}")
+print("evidence_paths=26")
+print("r10_verdicts=2x(0 blocker / 0 major)")
+PY_EVIDENCE_GATE
+```
+
 
 # A．偏离 CANCEL 主线但已完成的内容状态
 
@@ -42,16 +189,26 @@ A1、A2、A3 的已实现部分均已落 `master@fa2bfd2d902af444517b2fed1a44428
 
 ## A.2 A3 在 `fa2bfd2d` 的六条 major
 
-以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象；准确 file:line、反例与建议见 `review-core-a3.md`，接手时须先核 `fa2bfd2d..17a7f612` 增量，再打开最终文件复验行号。
+以下六条均以 `master@fa2bfd2d902af444517b2fed1a44428c8bb47367` 为对象提出；准确 file:line、反例与建议见 `review-core-a3.md`（该报告是时点记录，不随修复改写）。**六条现已全部处置**，逐条落点如下——其中第 4 条仍在分支上、尚未合并，合并前不得把它算作 master 状态。
 
-1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。
-2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。
-3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。
-4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。
-5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。
-6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。
+1. 已持久化 recent terminal 可绕过 strict sidecar ID 集合，导致错误 index 仍 false-green，且 entries 与 total 可不一致。**已闭合**：归属与目标在单一冻结原语 `freezeHistorySearchTarget` 里一次性确定（定义 `src/lib/history/v3/summary-store.ts:102`，唯一调用点 `src/lib/history/queries.ts:380`）。
+2. sidecar await 前后重分类读取不同快照，可能得到 `entries.length=1,total=0`。**已闭合**：同上，await 两侧不再各自取快照。
+3. `state` 覆盖 `success`，违反 frozen spec 的 AND 语义，现有测试还把错误行为固化为正样本。**已闭合**：`lifecycleStatesForQuery` 成为唯一判定源，冲突谓词返回空集而非放宽（`src/lib/history/lifecycle-state.ts`）。
+4. native `list-search` 物化全部全文命中后再过滤排序，复杂度随全库线性增长，与计划的 fast-field keyset＋`limit+1` 不符。**已实现，待合并**（分支 `nghttp2-cancel-a3-next`）：改为按 term ordinal 在列式 fast field 上过滤 + 每段一次批量解析 id；精确 `total`、tuple 顺序、keyset 四项语义均未变（遍历全部命中仍是精确计数的前提，被消除的是评分堆与 stored-doc 物化）。实测与「它没有证明什么」见 `exp/history-search-list-perf/README.md`，条目收口在 `docs/todo/deferred-backlog.md`。
+5. list query 参数缺少枚举、有限数与范围校验，错误输入可变成 500/503 或放大资源消耗，而不是统一 400。**已闭合**：`rejectsInvalidListQuery`（`src/routes/history/handler.ts`），按用户 2026-08-08 裁决**只作用于 `/api/entries`**，`/api/search` 保持既有宽松降级契约。
+6. durable cursor 未绑定 Tantivy index generation；旧 cursor 配空／重建 index 可被认证为完整。**已闭合**：cursor 记录 `indexOpstamp`，与 `HistoryIndex.generation()` 比对，不匹配即弃用重新 tail（`src/lib/history/search/daemon.ts`）。
 
-A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport 进展。验收：六条 finding 均有实现修复、目标回归、正确样本与目标缺陷 mutation，独立复评在同一最终 commit 上达到 0 blocker／0 major。证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。正控：分别构造正确 recent/persisted 合并、await 窗口无换态、`state` 与 `success` 一致、有限小命中、合法 query、cursor 与 matching generation，确认修复后的 gate 不误拒正确状态。
+A3 尾项作为独立工作单元处置，未混写成 CANCEL transport 进展。
+
+**合并态复评已闭合（2026-08-09，分支 `nghttp2-cancel-a3-next`）**：六条 finding 的合并态经两位异模型 reviewer 独立复评**六轮**，逐轮 major 数 8 → 3 → 3 → 3 → 2 → 1，全部复核成立并修复，两位均已给出收口意见。处置表与逐轮报告在 `docs/tmp/2026-08-08-a3-merged-state-review-*.md`（`dispositions.md` 是入口）。
+
+两处需要后人知道的状态订正：
+- 原记「第 4 条的 `alive_bitset` 分支实测不可达、因而无测试覆盖」——**该结论是错的**。同一探针复跑六次有五次产生 tombstone；当初只跑了一次、恰好撞上被取代文档独占单文档 segment 而整段被丢弃的少数情形。现已有回归 `tests/history/search/daemon.it.test.ts`（先断言 `meta.json` 真的出现 tombstone 再断言过滤），变异去掉该检查会报 `total=220`（应 200）。
+- 复评过程中在 overlay 与 Tantivy 索引的匹配一致性上另修了七条缺陷（含 `entries.length=1,total=0` 的两种新形态、多词语义 AND/OR 反了、非拉丁文字漏配、短 term 与超长 token 两端过宽）。该不变量**已从注释迁移为机器判据**：`tests/history/search/overlay-index-agreement.it.test.ts` 以真实索引为 oracle，双向、双 lane。
+
+**遗留项均已记入 `docs/todo/deferred-backlog.md`**，其中两条是**用户裁决**：搜索的多词语义现为 OR（词越多结果越宽，与多数搜索框的 AND 直觉相反）；以及若干 perf 判据挂在 wall-clock 绝对值上、应交 perf 专项重定基线。
+
+证伪：任一原反例仍可复现，或测试在注入对应缺陷后仍绿。
 
 ## A.3 文档／流程整改与后续 gate
 
@@ -77,11 +234,17 @@ A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport
 1. **传输层核心修复没有实施，不是“已实现但未合并”。** `nghttp2-history-fixes`、`nghttp2-resume`、`h2-observability-block-delivery-docs` 三个相关 branch tip 均为 `master@fa2bfd2d` 祖先且相对 master 无增量；自计划提交后，`master` 的 transport／transport-reason／transport tests 无 A4 相关提交。复现命令与搜索范围见 `mainline-evidence.md` §8 与 `completed-detour.md` 的实际核账命令。
 2. **冻结调查窗口确有 23 条 `NGHTTP2_CANCEL`。** population 是 `2026-08-05T03:28:10.512Z..2026-08-06T03:28:10.512Z` 的 3038 个 GPT 请求，其中 57 失败、23 条为该错误；该数字来自 `b6fb0947` 计划记录，本交接未重算。当前 strict History search 返回 503，因此不能把旧数字写成当前运行率。
 3. **现有 transport 已有 TCP keepalive、15 秒 H2 PING、N=1 容量池及 REFUSED／pre-response retry，但它们没有消灭全部 CANCEL。** 运行 PID `3575452` 的 `/api/status` 与 `ss` 在 2026-08-06 探测到 `tcpKeepaliveProbeDelayMs=15000`、`h2PingIntervalMs=15000` 与内核 keepalive timer；新鲜样本 `req_1786048981227_99` 在约 162.6 秒、6031 个 upstream SSE events 后仍报 CANCEL，最后 token 到终止约 121ms。该样本锚定运行指纹 `gitSha=fa2bfd2d`、`gitDirty=true`；只回答“现有机制未消灭全部 CANCEL”，不回答发起方或根因。复跑查询与字段见 `mainline-evidence.md` §8。
-4. **样本至少有活动输出后立即 CANCEL 与活动后长尾静默 CANCEL 两型。** 另两条旧一代样本分别有 3509／5013 events，末 token 到终止约 107.9／114.2 秒。对象、运行代与查询见 `mainline-evidence.md` §3；这组数字不能外推两型占比。
+4. **两条旧一代 CANCEL 只保留为不可独立复跑的历史线索。** 既有记录称它们分别有 3509／5013 events，末 token 到终止约 107.9／114.2 秒，但 Supporting evidence 没有保存稳定 entry/request ID，无法把通用查询模板绑定到具体对象。因此这些数字不是可复跑证据，不能独立承担“两型存在”的结论，也不得从时间相关性推导 peer RST、session lifecycle、event-loop stall 或其他根因。
 5. **4141 仍有间歇性长 stall／排队，但 HTTP 延迟不能单独归因。** 同一 PID 的 `/health` 曾约 1.94～1.98ms，收尾复验一次为 8.691s；`/api/status` 曾约 0.340～0.741s，也曾在 10s 内零字节超时后恢复。population 是该报告记录的点探针，不是持续基准；它证明间歇性失活存在，不证明是 History、event-loop 或 upstream I/O。
 6. **当前诊断不能区分 peer CANCEL 与 local abort。** 本地 pre-response abort、post-response signal abort 与 ReadableStream cancel 都会 `req.close(NGHTTP2_CANCEL)`；session 无稳定 ID，GOAWAY 丢 code／lastStreamID／opaqueData，PING ACK 是 NOOP，stream 诊断未按 explicit dispatch 持久化。源码锚点与 final file:line 见 `mainline-evidence.md` §4、§8。
 
-## B.2 已排除与仍未决线索
+## B.2 并行只读证据工作：被动查找新的可复跑 CANCEL 样本
+
+该工作由 KICKOFF 的只读 evidence agent 执行，可与 A4 实现并行；没有自然产生的新 CANCEL **不阻断 A4**。agent 只被动读取 4141 History，不主动制造 4141 流量，不修改、停止或重启 4141。发现样本时，报告稳定 History entry ID、request ID、observedAt、请求开始与终止时间、请求／解析模型、attempt 序号、终止形态、运行 PID 与代码指纹、读取字段路径，以及可直接重复执行的完整查询命令。若 History 搜索端点不可用，可用只读列表／详情端点定位，但最终命令必须含具体 ID，不能保留 `<id>` 占位符；没有新样本时如实报告 `none observed`，不视为 agent 失败。
+
+新自然样本是 Phase B 因果裁决前置，不是确定性 A4 h2c 双控的前置。进入 Phase B 前，另一执行者必须能仅凭报告的命令与 ID 重读同一 entry／attempt；只有 PID、时间窗口、事件数或通用模板均不满足。任何自然样本的时序都不能直接写成根因。
+
+## B.3 已排除与仍未决线索
 
 **已排除的全称解释：** 不是所有 CANCEL 都由 TCP keepalive 未生效、单 session 多流 blast radius 或全程零帧静默造成；REFUSED 未重试也不是当前缺口。证据分别是内核 timer、新鲜 N=1 形态下 CANCEL、6031-event 样本与当前 retry 分类。这里排除的是全称，不是排除这些机制对部分样本有贡献。
 
@@ -89,7 +252,7 @@ A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport
 
 PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；不能证明 DATA stream 可写、flow-control 未耗尽、上游应用健康或随后不会 GOAWAY／RST。当前 ACK callback 被丢弃，所以连这一有限结论也还没有 per-session 时序证据。
 
-## B.3 硬 gate 与环境禁区
+## B.4 硬 gate 与环境禁区
 
 - **绝不 kill、停止或重启用户的 4141 主服务器。** 不用 `kill`／`pkill`／`killall`，不做任何会终止它的操作。测试服务器只用非 4141 端口，并只按 PID 清理自己启动的实例。
 - **先证明运行代码身份。** 接手时记录 listener PID、`/proc/<pid>/{cmdline,cwd,cgroup}`、启动时间、进程持有配置、History detail 的 `process.gitSha/gitDirty` 或等价 build 指纹。配置文件、`is-active`、branch tip 与文档声明不能替代运行态身份。若 `gitDirty=true`，只能写“从该 HEAD 的脏树启动”，不能断言运行字节等于 commit tree。
@@ -97,61 +260,174 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 - **真实迁移、主库写入、备份覆盖与维护窗口需用户逐项授权。** 性能、迁移与协议实验只用临时副本／非 4141 隔离实例。
 - **每个 correctness gate 同时做正确样本与目标缺陷 mutation。** 绿色结果若未证明命中目标路径，不得作为完成证据。
 
-## B.4 下一步：先 A4，再 Phase B
+## B.5 下一步：先 A4，再 Phase B
 
-### B.4.1 接手现场复验
+### B.5.1 现场复验与并行证据工作
 
-动作：刷新 `master` full SHA/date、branch/worktree、ancestry、各树 WIP 归属，再读取 4141 listener 与运行代码身份；把与本文不一致处标为新事实，不覆盖旧证据。
+先执行 B.4 的 Git／WIP／运行身份 gate。身份与归属闭合后，A4 可直接依靠正式计划的确定性 h2c 双控开工；不要求先出现自然 CANCEL。B.2 的只读 evidence agent 与 A4 并行运行；没有新样本只记 `none observed`。只有 Phase B 因果裁决仍要求至少一条带稳定 ID 与完整只读命令的新自然 CANCEL。
 
-验收：产出一条带 observedAt、PID、full SHA、dirty 状态、配置来源和复跑命令的现场记录；明确本文哪些易腐字段已过期。
+### B.5.2 A4 canonical diagnostics
 
-证伪：PID 或运行指纹拿不到、`gitDirty=true` 却仍声称字节等于 commit、或 ancestry/WIP 未查就开始改文件。
+**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口（2026-08-09 更新）：** A4 已开工、**尚未完成**；下述批次 1 已合并 master，批次 2–5 未实施，因此「现有 History 无法回答取消发起方、也无法回答 **H2 transport session**（H2 连接身份，即计划 §Transport event schema 要新增的 H2 session ref）关联」这一判断**仍然成立**。⚠️ **别把它读成「History 没有任何 session 概念」**：History 早已有客户端会话维度 `sessionId`（`EntrySummary.sessionId` 在 `src/lib/history/core-types.ts`、`HistoryEntry.sessionId` 在 `src/lib/history/types.ts`，由 `src/lib/history/v3/projection.ts` 从 `record.identity.sessionId` 投影），那是**另一个身份域**——客户端 conversation，不是 H2 连接。**绝不可拿 `sessionId` 承载 H2 connection identity**，两者碰撞会同时毁掉两边的可裁决性。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
 
-正控：用当前 `master` full SHA 解析成功作为查询链可用的正确样本；再用一个确定不存在的 SHA／PID 做只读查询，确认探针会失败而不是静默跳过。
+**批次划分与状态**（划分由执行会话所拟，不是正式计划的一部分；正式计划只给整体范围、未分批）。**状态核验于 `7f7a073003618f290bfe1881a7adcd310e165ff1`**；表里的「未开始」是那一刻的读数，**不要当作当前态直接引用**，按下方命令重取：
 
-第一步命令：
+| 批次 | 内容 | 状态（@ `7f7a0730`） |
+|---|---|---|
+| A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
+| A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
+| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **已完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`、session 身份 + settle 时采样 `f566f734`。见下方「A4-3 实施记录」 |
+| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | **部分完成**（2026-08-11）：exactly-once slot `3173d29d`、teardown barrier `61731d34`。**未做**：`open → forcing → sealed` sink 状态机、强制 RST_CANCEL / forced-session-dispose、`barrier_timeout`／`close_missing` 诊断。见下方「A4-4 实施记录」 |
+| A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
 
-```bash
-git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master
-git -C /home/xp/src/copilot-api-js show -s --format='%H %cI %s' refs/heads/master
-git -C /home/xp/src/copilot-api-js status --short
-git -C /home/xp/src/copilot-api-js worktree list --porcelain
-ss -ltnp 'sport = :4141'
-```
+**怎么重取这张表的状态**（三条都要跑，缺一会误判）：
 
-### B.4.2 实施 A4 canonical diagnostics，不改 transport 行为
+1. A4-1 是否仍在主线：`git merge-base --is-ancestor c9a115a5 master && echo landed`。
+2. 相关路径此后有无新提交：`git log --oneline 7f7a0730..master -- src/lib/transport src/lib/pipeline src/lib/context src/lib/history/v3/projection.ts`。
+3. 符号是否已出现：`git grep -nE 'H2StreamDiagnostic|H2SessionDiagnostic|onTransportDiagnostic|releaseStreamSlot|transportFailure' master -- src packages tests`。
 
-动作：按计划 A4 传递必填 `DispatchHandle`，建立有界 `H2SessionDiagnostic` 与按 explicit dispatch 归属的 `H2StreamDiagnostic`，记录 session identity、RST、GOAWAY、local cancellation provenance、PING seq／ACK／RTT、stream phase 与 settle snapshot，并通过 quiescence barrier 落最终 canonical Attempt/History。不得用 legacy `currentAttempt` 或日志字符串代替归属。
+⚠️ **第 3 条为空不能单独证明「未开始」**——它只证明这几个**拼写**不存在，换个命名的等价实现照样为空。**只要第 2 条有输出，就必须去读那些提交的源码再下判断**，别拿空 grep 收工。（这正是本仓 `freeze-hit-set-not-zero-hits` 与「否定性结论不自证」那条教训的实例。）
 
-验收：从最终持久 History record 读取诊断，能区分 peer CANCEL 与 local `req.close(CANCEL)`，GOAWAY/session close 只关联受影响 dispatch，PING ACK 与 RTT 有独立时序；正常 close 与 force-dispose 都 exactly-once release slot，sealed 后迟到 callback 不再写 canonical recorder。完整契约以计划 A4 为 SSOT。
+**A4-1 的验收证据**（测于 `7f7a0730`，命令可重跑）：`bun run typecheck` 绿；`bun run test:backend` 0 fail；判别性断言做过变异对照——把实现换成 sibling 的 `selectGenerationAttempt` + 写当前 attempt 的写法后，`records a diagnostic against the named dispatch without moving the ambient current attempt` 精确转红在「ambient 游标未被移动」那条断言上（**归属断言在变异下仍绿**，故它单独没有判别力）。**未做**：独立 reviewer／verifier 与 merged-state review——按下方验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批次一次。
 
-证伪：删除／错绑 dispatch handle 后测试仍绿；local abort 与 peer RST 仍产出同一事实形状；任意 session 事件被复制给所有 sibling；只在内存 callback 看见而最终 History 缺失；timeout 后迟到 close 导致重复减 slot 或写 sealed recorder。
+### ⚠️ A4-2 派发件对账查出的两条待裁决事项（2026-08-09 登记，2026-08-11 处置见每条末尾）
 
-正控：忠实 h2c fake 分别制造正常 end、peer CANCEL、local close(CANCEL)、REFUSED、GOAWAY、session destroy、丢 ACK、ACK 正常但 DATA stall，先确认每个正确样本映射到预期独立诊断；fake 要用真实 Node/Bun `node:http2` 事件序列校准，不能使用已知会假绿的 `stream.close(code)` 代替真实 RST 制造方式。
+派发件 [`KICKOFF-a4-2.md`](KICKOFF-a4-2.md) 写作前做了一次计划↔代码对账，查出两条**与冻结 A4 的表述冲突**的代码现状。按 `no-silently-cut-but-defer`，它们登记为**待裁决**，**未**自行改写 A4 范围：
 
-### B.4.3 A4 独立验收与文档同步
+1. **【可能动摇 A4 与 Phase B 的中心目标】生产 runtime 可能观测不到 peer RST。** `tests/transport/http2-client.it.test.ts` 有一条明确记载（"mid-stream truncation detection is NOT unit-testable under Bun"）：Bun 的 `node:http2` 对**任何**中途终止都交付 `end`／`rstCode=0`，干净 server `RST_STREAM` 与连接掉线同形；`error`/`close-before-end` 只在 Node 兼容 runtime 下触发。⚠️ **证据强度须如实标注**：该 NOTE 自称 "verified, exp/upstream-models-hang/"，但**该目录不存在、git 历史中也从未存在**（`git log --all -- 'exp/upstream-models-hang'` 为空），故这是一条**无法从仓库复现的二手记载**，须先实测复核。**若复核成立，推论是**：local abort 仍可正向识别，**peer CANCEL 在 Bun 上不可正向识别**，从而 A4「机械区分 peer CANCEL 与 local abort」与 Phase B「裁决取消发起方」的前提在生产 runtime 上**部分不成立**。**待裁决方向**（不由执行方自选）：①接受「只能正向识别 local，其余归未知」并改写 A4/Phase B 判据；②在 Node 兼容 runtime 上单独取证；③换一个能看到原始帧的观测点。🚫 **绝不允许**把「没观测到 local-cancel」当成「所以是 peer CANCEL」——那是拿缺失证据当结论。
 
-动作：按计划运行 transport/history diagnostic 目标测试、typecheck、lint、backend，并由独立 reviewer/verifier 做错误状态与正确状态双向验收；同步 `docs/API.md` 的加性 detail 字段、`docs/DESIGN.md` transport 活架构和 History schema carrier。报告与 disposition 分开保存。
+    **✅ 处置（2026-08-11，实测结案，无需三选一裁决）：该 claim 为假，且方向相反。** 证据在 [`exp/h2-termination-observability/`](../../../exp/h2-termination-observability/FINDINGS.md)（三个脚本，Bun 1.3.14 + Node v24.16.0 双跑，可复现）。三条结论：
+    1. **真正的 peer `RST_STREAM(CANCEL)` 在 Bun 下完全可观测** —— Bun 抛 `error(ERR_HTTP2_STREAM_ERROR, "…NGHTTP2_CANCEL")` 且 `rstCode=8`。反倒是 **Node** 把 peer CANCEL 折成无 error 的干净 `end`。原记载把两个 runtime 说反了。
+    2. **原观测是真的，但来自一个写错的场景**——见下面对注入配方的更正。它从未真的发出过 peer RST。
+    3. **仍然成立的那一半**：**无帧的 TCP 断连**在两个 runtime 上都表现为合成的干净 `end` 且 `rstCode=8`。所以 **`rstCode === 8` 单独绝不能读成「对端取消了」**——本地 abort 与死连接都带 8。Bun 下靠「有没有 stream error」可分，Node 下此层分不了。
+    **对 A4 / Phase B 的影响**：中心目标不受动摇，peer CANCEL 与 local abort 可机械区分。但 Phase B 的 CANCEL 分型必须把「connection drop」与「peer CANCEL」当成**在 Node 下不可分、在 Bun 下靠 error 存在性可分**来预注册，不能假定 `rstCode` 自己就是分型依据。原 `tests/transport/http2-client.it.test.ts` 里那条错误 NOTE 已就地更正（`d03991d1`）。
 
-验收：最终同一 commit 上 0 blocker／0 major；API、DESIGN、History 与代码对账；mutation 能精确咬住 explicit ownership、ACK、barrier、listener fence、seal 顺序和 release primitive。
+2. **【范围归属】GOAWAY 在 A4-2 不可达。** 生产 `runHttp2Fetch` 传 `createLocalTerminationCommitPort()`，其默认源无条件返回空 GOAWAY 快照；真正的 `session.on("goaway", …)` 只做 session retire，未喂 ledger。且快照只有 `opaqueDataLength`／`evidence`，**无原始 `opaqueData`**。**提议**把 GOAWAY ledger 接线归入 A4-3，并在计划里就「是否需要原始 opaqueData」补一句 disposition。**在裁决前，A4-2 的验收不含 GOAWAY。**
 
-证伪：评审仍有未处置 blocker/major、文档把 ACK 写成 stream 健康证明、或只跑 isolated callback 测试而没有最终持久 record oracle。
+    **✅ 处置（2026-08-11）：按提议执行——GOAWAY ledger 接线归 A4-3，A4-2 的验收不含 GOAWAY，已照此交付。** 补一条实测事实供 A4-3 用：**session 级 GOAWAY 帧本身在两个 runtime 上都能到达客户端**（探针里 `session.on("goaway")` 拿到了 `code`/`lastStreamID`），所以 A4-3 要做的是把这个已经可得的事件喂给 ledger，不是去解决可观测性问题。「是否需要原始 `opaqueData`」仍**未裁决**，留给 A4-3。
 
-正控：正常请求无 failure diagnostic 但有可关联 session snapshot，且 A4 不改变请求输出、retry、PING cadence 或 session lifecycle。
+    **↳ 后续（2026-08-11，A4-3 已接线 `923dd4e6`）：** 喂 ledger 已完成。**原始 opaqueData 这条实际上已被解决**——`RegisteredGoawayEvidence` 本就按内容寻址存了完整字节（sha256 digest + `evidenceBytes(digest)` 取回），producer 现在把 GOAWAY 的 opaque data 原样注册进去，快照里除 `opaqueDataLength` 外还带 `evidence.digest`。所以不需要新增字段，**该问题关闭**。
 
-### B.4.4 Phase B 分型与实验
+### ⚠️ 冻结 A4 的 HTTP/2 注入配方有误，必须先改再用（2026-08-11 实测）
 
-前置 gate：B.4.2 与 B.4.3 已闭合，并积累可按 explicit dispatch 归属的样本。否则保持诊断，不改行为。
+本节下方「验收边界」里那句 **「对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`」是错的**，且是会**静默制造 false negative** 的那种错。逐帧抓包实测（`exp/h2-termination-observability/frame-oracle.mjs`）：
 
-动作顺序：先校准 h2c fake；再在非 4141 固定负载实例做 PING 15s vs disabled；随后独立做 TCP keepalive 15s vs disabled，并用 `ss -tno` 作 L4 oracle；再做正常 vs 等价 History stall 注入、fresh-session-per-request vs pooled；最后才按 pre-content、mid-body pre/post committed block 分型评估 buffered／continuation 恢复。实验正文与“它没有证明什么”落 `exp/nghttp2-cancel/`。
+| 服务端写法（已 `respond()`+`write()`、未 `end()`） | 实际上线的帧 |
+|---|---|
+| `stream.close(NGHTTP2_CANCEL)` | `DATA[10B]` → **`DATA[END_STREAM, 0B]`，根本没有 RST_STREAM** |
+| `stream.close(NGHTTP2_INTERNAL_ERROR)` | 同上，**也没有 RST_STREAM** |
+| `stream.destroy()` | `DATA[10B]` → `RST_STREAM[errorCode=0]` |
+| `stream.destroy(new Error())` | `DATA[10B]` → `RST_STREAM[errorCode=2]` |
 
-验收：每个数字带 population、命令、full commit、配置、运行身份，并由不同原理交叉验证；分型至少能机械区分 peer RST、session close／GOAWAY、local abort、starvation 与 clean EOF missing terminator；只按计划 B3 的裁决规则提出产品行为变化。
+`close(code)` 会先把可写侧收尾（发 END_STREAM），流一旦关闭 RST 就不再发出。**照这个配方写出来的验收测试，会在「从未发出过 peer CANCEL」的情况下得出「peer CANCEL 不可观测」的结论**，并且读起来像一条深刻的 runtime 发现。
 
-证伪：同时改两个变量、用一次成功裁决、以 `/api/status` 配置值冒充 PING ACK、以 `ss` 冒充 stream 健康、或没有无重复／无丢失／完整终止符 oracle 就启用 mid-body retry。
+**替代配方**：没有任何服务端写法能在 body 中途发出 `RST_STREAM(CANCEL=8)`。要那个确切的帧，用 [`exp/h2-termination-observability/peer-rst-injector.mjs`](../../../exp/h2-termination-observability/peer-rst-injector.mjs) 的 TCP 中继注入（它直接写 9 字节帧头 + 4 字节错误码），或退而用 `stream.destroy(err)` 接受 `RST(2)`。**任何 A4 验收断言在写之前，先用 `frame-oracle.mjs` 确认目标帧真的上了线。**
 
-正控：固定一个已知健康的正常流，确认实验 harness 不把它误分成 CANCEL；再注入已知 peer CANCEL 与 local abort，确认分型和统计分别增加对应桶。
+验收边界：最终持久 record 是 oracle；peer CANCEL 与 local abort 可机械区分；session 事件不误归 sibling；诊断不改变 transport 行为；目标缺陷 mutation 转红、正确样本保持绿；独立 reviewer／verifier 与 merged-state review 在同一最终 commit 上闭合。HTTP/2 注入按 Node 官方语义：对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`，本地 `req.close(NGHTTP2_CANCEL)` 注入 local abort，并核对两端 `rstCode`／事件序列；`stream.destroy(error)` 未预设 code 时属于 INTERNAL_ERROR／destruction 分支，不用于制造 peer CANCEL。
 
-## B.5 unresolved 与 TBD
+> ⚠️ **上一段里加粗的那句注入配方已被实测证否**（见上面「冻结 A4 的 HTTP/2 注入配方有误」节）：`stream.close(NGHTTP2_CANCEL)` 不发 RST_STREAM。保留原文是为了让记得旧配方的人看到它被撤销，**不要照它写测试**。同段其余部分（最终持久 record 是 oracle、诊断不改行为、mutation 双控、三道验收在 A4 最终 commit 闭合）仍然有效。
+
+### A4-2 实施记录（2026-08-11）
+
+**分支** `worktree-a4-h2-diagnostics`，基于 `f2a44579`。**已提交、未合并、未推送。**
+
+| commit | 内容 |
+|---|---|
+| `6469aef5` | `exp/h2-termination-observability/` —— 三个探针脚本 + FINDINGS |
+| `61acc9f0` | 实现：`onTermination` 接到显式 dispatch，落进持久 record + 两条测试 |
+| `3db0e546` | 修主线既有红：discovery baseline 缺 4 个已落地测试文件 |
+| `d03991d1` | 更正 `http2-client.it.test.ts` 里那条方向写反的 NOTE |
+
+**做法**（第 3 节那个 A/B/C/D 设计分叉：**按用户 2026-08-11「快做快合」裁决直接选 A，未走裁决轮**）：诊断 `data` 直接承载完整 `TransportTerminationSnapshot`，不新建并行的 `H2StreamDiagnostic` 投影。理由：快照在源头已 bounded + frozen，`AttemptDiagnostic.data` 本就是 `unknown`，再手工维护第二份 schema 只会与传输层漂移。**代价**（如实记录）：History 的诊断载荷形状因此与传输层类型耦合，若将来 detail/export 需要稳定契约，得在那时加投影层——**这是被接受的取舍，不是遗漏**。
+
+**接线**：`http-transport` → `sendUpstreamHttp` → `upstreamFetch`，逐字照搬既有 `onTrailers` 的同一条缝。归属用 A4-1 的显式 `recordGenerationDispatchDiagnostic(dispatch, …)`；**没有 dispatch handle 时不记录**，绝不回退 ambient 当前 attempt。诊断 `kind` = `transport.h2.termination`，`severity` = `info`（终止本身不是失败）。
+
+**测试**（`tests/transport/http-transport.it.test.ts`，2 条）：从**最终持久 record** 读，不是断内存回调被调；断的是**哪一种**终止（`firstObservedSignal` + `localCancel.source`），不是「有一条诊断」。**变异对照**：删掉 `send.ts` 的 pass-through → 恰好这 2 条转红、其余 12 条保持绿；用重新编辑恢复，`git diff` 复核无残留。
+
+**验收状态**：`bun run typecheck` 绿；改动文件 `bunx eslint --no-cache` 干净；`bun run test:backend` **7776 pass / 0 fail**（跑了两轮：首轮撞 baseline 那条既有红，修掉后次轮 0 fail；中间一轮 `hooks/loader.unit.test.ts` 因 shard 崩溃假红，单跑 8/8 通过）。**未做**：独立 reviewer／verifier 与 merged-state review —— 按本节验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批一次。
+
+**未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。
+
+### A4-3 实施记录（2026-08-11，部分完成）
+
+**分支** `worktree-a4-3-session-diagnostics`，基于 `aaace65e`。
+
+| commit | 内容 |
+|---|---|
+| `923dd4e6` | GOAWAY ledger 接线：producer（记 errorCode/lastStreamID/opaqueData）+ consumer（按 dispatch 租用），双向 h2 实测 |
+| `919dee0d` | 把 GOAWAY 架构守卫从「匹配处理器名字」改成「绑定实际注册的处理器并要求它触达 `retire()`」 |
+| `6c8427f4` | 真实 PING ACK/RTT 观测，进 `getH2SessionStatusSnapshot()` |
+
+**GOAWAY**：ledger 此前**有完整实现与单测、但零 producer 零 consumer**——`session.on("goaway", retire)` 只把事件当路由信号、丢掉全部参数，而每个 fetch 都用默认源（无条件报 not-observed）。现在 producer 在 retire 前记帧（`try/finally`，ledger 出错绝不让 GOAWAY'd session 继续可路由），consumer 在**有 dispatch handle 时**租用 ledger；**无 handle 时保持 not-observed 默认**，绝不把连接级事件安给恰好在结束的那条流。
+
+⚠️ **顺带修的一个真缺陷**：`createLocalTerminationCommitPort` 名义上接受 `GoawaySnapshotSource`，实际签名被钉死在 `GoawaySnapshotSource<null>`，**真实 lease 根本传不进去**。改成真泛型，而不是在调用点 `as` 掉。
+
+**PING**：Node 的 ping callback 本来就给 `(err, durationMs, payload)`，此前被 no-op 丢掉。现在每个 session 带滚动统计（sent/acked/outstanding/lastRttMs/lastAckEpochMs/lastError），**有界**（计数器 + 最后一次观测，绝不长列表——session 会 ping 到天荒地老）。**cadence 未改、失联也不据此关 session**（那仍是独立决策，不作为「开始观测」的副作用）。`outstanding = sent − acked` 是承重字段：`onSent` 由发送驱动而非 ack 驱动，所以对端不答时计数会发散而不是看着像空闲。
+
+**ACK 的解释边界已写进类型注释**：只证明对端 HTTP/2 endpoint 回了控制帧；**不**证明 DATA 流能推进、flow control 有余量、上游应用健康、或此刻没有 GOAWAY/RST 在飞。
+
+**验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7839 pass / 0 fail**。两批各做变异对照且失败点正确——GOAWAY 改回 `retire` 令 observed 那条在 availability 断言处转红而 no-owner 那条保持绿；PING 改回 no-op ack 精确红在真实往返那条。
+
+⚠️ **一条实测教训**（写在这里因为下一个人会犯同一个错）：把 ping 间隔调快**不是** `setUpstreamTransportConfig({ http2: { pingIntervalMs: 20 } })`——那个 key 是我编的，会被**静默忽略**、退回 15s 默认，表现为「ping 永远不 ack」。真实 key 是 `upstreamH2PingInterval`，**单位是秒**（`getUpstreamH2PingIntervalMs()` 再乘 1000）。
+
+**A4-3 剩余**：把 session 级观测（GOAWAY 事件、PING/RTT、session 身份与生命周期）作为计划里的 `H2SessionDiagnostic` **记进 dispatch 的 diagnostics**——目前它们只到 `getH2SessionStatusSnapshot()`（status 面），History 的 dispatch detail 仍只有 A4-2 的 stream 终止快照。计划要求的「不把每个周期的 PING 复制给所有 sibling、只在 settle 时附 session rolling snapshot」尚未实现。
+
+    **✅ 已完成（2026-08-11，`f566f734`）。** 终止快照新增 `session: TransportSessionSnapshot | null`，在 **stream 终止那一刻**采样所在连接：`sessionId`（进程内单调、永不复用）、origin、generation、`lifecycleAtSnapshot`、`activeStreamCountAtSnapshot`、以及该连接的 ping 计数。**按 settle 时采样而非逐周期推送**，所以一次 PING 不会复制给所有 sibling dispatch，长命 session 也撑不大任何单条记录。
+
+    **这条同时把上一批的 PING 数据从「只有运维价值」变成「有事后诊断价值」**——此前它只活在 `/api/status` 实时轮询里，等你在 History 里看那条 CANCEL 时计数器早已滚过去、且从未与那次 dispatch 关联。
+
+    ⚠️ **`sessionId` 是 H2 连接身份域，与 `HistoryEntry.sessionId`／`EntrySummary.sessionId`（客户端会话）是两回事**，两个类型里都写了警告。**兄弟流关联**由此成为可能：同一 `sessionId` 上多条 dispatch 是否同刻终止，是区分「连接级事件」与「单流取消」最锋利的判据——`rstCode` 做不到，因为 local abort／真 peer CANCEL／连接已死**三者都是 8**。
+
+    判别力靠**成对**测试保证：「兄弟流同 id」单独会被常量 id 满足，故与「新连接必须换 id」配对；变异实测——把 id 钉成常量后前者仍绿、后者转红。
+
+### ⚠️ 更正：A4-3 前两批确实新增了对外字段（原记录写错）
+
+上面 A4-2 实施记录里那句「`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段」对 A4-2 成立，但**被错误地沿用到了 A4-3 前两批**。事实是：`H2SessionStatusRow` 经 `src/lib/transport/status-snapshot.ts` 进入 **`GET /api/status` 的 `transport.h2Sessions`**，并被 `ui-v4` 的 Overview 直接消费。A4-3 给它加了 `ping`（`6c8427f4`）与 `sessionId`（`f566f734`），**都是对外可见字段**。
+
+`docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
+
+**未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
+
+### A4-4 实施记录（2026-08-11，部分完成）
+
+**分支** `worktree-a4-4-stream-slot`。
+
+| commit | 内容 |
+|---|---|
+| `3173d29d` | exactly-once stream slot：合并两处重复的释放序列，全文件只剩一个 `activeStreamCount -= 1` |
+| `61731d34` | teardown barrier：`dispose()` 等物理关流、按 cleanup grace 有界、超时报 `connectionReusable: false` |
+
+**exactly-once slot**：释放槽位的四步（减计数 / retiring 回收 / 归零后 arm idle reaper / 唤醒被容量挡住的等待者）此前**逐字写了两遍**。现在只有一个 `releaseSessionSlot`，且 stream 那条经 exactly-once 闩。**该闩当前不可观测**（Node 保证 `close` 只触发一次，`req.once` 再保一道），建它是因为 A4-4 的 force-dispose 会释放同一个槽位——**两个独立释放者操作同一个计数器正是容量记账漂移的成因**：多减一次，池就以为自己有一个并不存在的槽位，直到 cap 开始放行本该排队的流才暴露。计数器自身没有下界，所以幂等必须落在释放者。**故本批未为它写测试**，等 force-dispose 落地、路径真实可达时再补。
+
+**teardown barrier**：`dispose()` 此前一关掉 body 迭代器就返回并宣称连接可复用——那是关于**我们自己的记账**的断言，不是关于**线路**的。现在传输层注册 barrier，`dispose()` 等物理关流，由 `generationCleanupGraceSec`（默认 10s）限时；超时则报 **不可复用**（连接状态已未知，猜「没事」等于把下一个请求放到一条不明状态的流上）。
+
+⚠️ **一个差点上线的设计错误，记下来**：barrier 最初写成**无条件注册**，看着完全正确。实则 **undici（plain-HTTP）路径根本不拥有 h2 stream、永远不会报 close**，于是它的每一次 dispose 都会干等满 10s 再把一条健康连接判为不可用。改为**在 stream 真正 open 时才 arm**——只有真正持有流的传输才配拥有一个它能满足的 barrier。
+
+⚠️ **本批放宽了一条既有守卫，经用户显式裁决、非自判**：`generation-engine-boundaries` 的 `dispatch disposal cannot own pooled HTTP/2 sessions` 原先断言 `toContain("connectionReusable: true")`，即「disposal **恒**报可复用」；而冻结计划原文要求超时返回 `connectionReusable=false`，两者**真冲突**。用户裁决「按计划走、相应重塑守卫」。**保住的那部分才是要害**：报「不可复用」是给调用方的**报告**、不是对池的**动作**——守卫仍然禁止该文件碰 session 与 timer，且正常路径仍须报可复用（否则一个悲观地把所有连接都判死的 barrier 会被抓住）。理由与放宽经过已写进该测试。
+
+**验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7859 pass / 0 fail**。barrier 两个方向都有测试（必须挡住 disposal、也必须在宽限到期后放行），外加「未注册 barrier 时行为与改动前完全一致」。
+
+**A4-4 剩余**：`open → forcing → sealed` 的 dispatch diagnostic sink 状态机、超时后强制 RST_CANCEL 与 forced-session-dispose（含受影响 sibling refs）、`barrier_timeout`／`close_missing` 诊断落进 History。`TeardownBarrier.onTimeout` 已作为这批的挂载点留好、目前只被测试消费。
+
+    **↳ 续（2026-08-11，`0ea9ba5f`）：强制处置已落地。** barrier 超时现在会：① 记 `transport.h2.barrier_timeout` 诊断（severity `warning`，**先记后强制**，强制过程出岔也不影响诊断留存）；② 发 RST_CANCEL；③ 经固定短尾窗（`FORCED_TEARDOWN_TAIL_MS`）后**无论对端答不答都回收槽位**——否则一条永不关闭的流会永久占着槽位，而池慢慢丢槽位这件事，要等到 cap 开始拒收本该放行的请求时才暴露，离成因已经很远。
+
+    交给适配层的能力**只有一个动词**（`H2StreamControl.forceClose`）：池化 session 与 sibling 共享，dispatch 只被允许**放弃自己那条流**，不得关闭或驱逐底下的连接——那条架构守卫仍然成立。
+
+    **这同时让上一批的 exactly-once 闩第一次可达**：`forceClose` 与最终的 `close` 是同一个槽位的两个独立释放者，正是当初建那道闩的理由。
+
+    ⚠️ **变异对照的一次失败，值得记下**：第一版测试**没能抓住**去掉闩。第二次释放挂在 250ms 尾窗上，而断言只在 close 之后 80ms 就跑了——双减尚未发生，于是测试全绿。**那是一条看起来很严谨、实则是装饰品的测试**。把窗口拉到尾窗之后，去掉闩会让槽位计数变成 **-1**，正是它要防的那种静默池损坏。教训：**异步释放路径的测试，断言窗口必须覆盖被测机制的最长延迟**，否则变异不咬而你会以为已经证明了。
+
+    **仍未做**：`open → forcing → sealed` 的 diagnostic sink 状态机（迟到的 close/error 目前靠 detached listener 与 exactly-once no-op 挡住，尚无显式 sealed 状态）、forced-session-dispose（驱逐不可复用 session 并记受影响 sibling refs）、`close_missing` 诊断。
+
+### B.5.3 Phase B 预注册缺口与启动门
+
+Phase B 的分型、实验矩阵、执行顺序和裁决规则只以正式计划 [Phase B — NGHTTP2_CANCEL 根因实验与缓解裁决](../2026-08-06-history-read-path-and-h2-diagnostics.md#Phase-B--NGHTTP2_CANCEL-根因实验与缓解裁决) 为准。A4 合并态未闭合、没有新可复跑样本、或预注册缺口未关闭时，不启动用于因果裁决的实验，也不调整产品行为。
+
+现有正式计划尚不足以防止看见结果后改变统计口径。每轮实验 artifact carrier 固定为 `docs/plan/2026-08-06-nghttp2-cancel-series/phase-b/<ROUND_ID>/`，其中 `preregistration.md` 是冻结预注册、`data-manifest.json` 绑定该轮原始数据位置与 digest、`results.md` 保存按预注册方法得到的结果；完整实验契约仍只在正式计划。首次实验前，冻结计划或用户裁决必须补齐并落盘：每个 cell 的目标有效样本量与最大尝试量；主／次指标及分母；CANCEL 分类规则；fresh／pooled 与开关矩阵；置信区间或比较方法；排除规则；超时预算；提前停止／继续／升级触发条件。数值不得由交接文档发明；无人裁决的值保持 TBD，任一 TBD 存在即不得采集裁决数据。正式计划已有的字段只引用，不在预注册或本文重述。
+
+验收边界：预注册 artifact 早于数据采集并锚定 full commit、配置、运行身份和冻结时间；独立 verifier 不看结果即可判断纳入、分母、分类、比较和停止／升级；结果出现后任何口径修改都开启新一轮预注册，旧结果降为探索性证据。任一字段事后修改、失败尝试被静默排除、secondary metric 替换 primary、正控不咬或负控制造差异，均使该轮因果结论无效。
+
+## B.6 unresolved 与 TBD
 
 - **unresolved：** A3 frozen filter spec 与当前实现的 `state`／`success` 语义冲突应以哪份已接受裁决为准。reviewer 指向 spec 的 AND 语义，代码与测试采用 precedence；接手者必须回 ADR／frozen spec／用户原话裁决，不能自行改文档迁就代码。
 - **unresolved：** “分层迭代原则必须下沉 skill”是否已有用户决定。只有 reviewer 证明载体缺失，尚无一手决策证据。

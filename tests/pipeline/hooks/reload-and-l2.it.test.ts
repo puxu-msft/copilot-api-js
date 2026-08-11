@@ -66,6 +66,7 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { setHooksConfig } from "~/lib/state"
+import { semanticSseMessage } from "~/lib/transport/parsed-sse-frame"
 import { hooksRoutes } from "~/routes/hooks/route"
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
@@ -146,7 +147,7 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     if (!result.ok) throw new Error("expected ok result")
     const frames: Array<UpstreamFrame> = []
-    for await (const f of result.upstream.frames) frames.push(f)
+    for await (const f of result.upstream.frames) frames.push(semanticSseMessage(f))
     return frames[0]?.data ?? ""
   }
 
@@ -252,17 +253,12 @@ describe("Task 5.3b — exchange fires once per L1×L2 attempt, across a strateg
   function makeEnv(): RequestEnvelope {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     return {
-      clientFormat: "anthropic",
-      targetEndpoint: "/v1/messages",
-      model: {},
-      stream: true,
-      body: {},
+      request: { clientFormat: "anthropic", model: {}, stream: true } as RequestEnvelope["request"],
+      attempt: { body: {}, targetEndpoint: "/v1/messages", prepareHints: {} } as RequestEnvelope["attempt"],
+      candidate: {} as RequestEnvelope["candidate"],
       view: {},
-      prepareHints: {},
-      ctx,
-      with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-        return { ...this, ...patch } as unknown as RequestEnvelope
-      },
+      ctx: ctx,
+      createView: () => ({}) as RequestEnvelope["view"],
     } as unknown as RequestEnvelope
   }
 

@@ -16,15 +16,21 @@ export function captureInboundHeaders(headers: Headers): Record<string, string> 
 }
 
 /**
- * Create an AbortSignal for the response-header (first-byte) timeout if configured.
- * Controls the time from request start to receiving response headers. Resolves the
- * per-model override (`resolveResponseHeaderTimeoutMs`) when `model` is given,
- * else the scalar. Returns undefined when the effective timeout is 0 (disabled).
+ * Create the persistent first-event clock owned by the upstream WebSocket path.
+ * Resolves the per-model response-header timeout setting because that setting also
+ * governs WS first-event arrival. Returns undefined when the effective timeout is 0.
+ * HTTP callers must pass the resolved duration to `upstreamFetch` instead.
  */
-export function createResponseHeaderTimeoutSignal(model?: string): AbortSignal | undefined {
+export function createUpstreamFirstEventTimeoutSignal(model?: string): AbortSignal | undefined {
   const ms = resolveResponseHeaderTimeoutMs(model)
   return ms > 0 ? AbortSignal.timeout(ms) : undefined
 }
+
+export {
+  //
+  createResponseHeaderDeadline,
+  createResponseHeaderTimeoutError,
+} from "~/lib/transport/response-header-deadline"
 
 /**
  * Populate a HeadersCapture object with request and response headers.

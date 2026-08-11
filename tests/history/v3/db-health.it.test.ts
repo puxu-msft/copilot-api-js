@@ -109,6 +109,27 @@ describe("DB-health adopted into the V3 open path (Phase 4b)", () => {
     expect(pragmaInt(db, "freelist_count")).toBe(0)
   })
 
+  test("maybeVacuumOnStartup skips while another connection still holds the database (restart overlap)", () => {
+    const dbPath = freshDbPath()
+    bloatPastVacuumThreshold(dbPath)
+
+    // Stand in for the predecessor during a graceful-restart overlap: a second connection holding an open read transaction, which is exactly what a successor meets when it opens the db while the old process is still serving (the handoff signal is not sent until `notifyReady`, much later).
+    const peer = createDatabase(dbPath)
+    peer.exec("PRAGMA busy_timeout = 0;")
+    peer.exec("BEGIN")
+    peer.prepare("SELECT count(*) AS n FROM v3_objects").all()
+
+    try {
+      const db = openDatabase(dbPath)
+      // The bloat must SURVIVE. Reclaiming it here would hold an exclusive write lock for the length of a full-file rewrite and starve the peer's in-flight writes past their 5s busy_timeout; deferring to a later, uncontended start is the correct trade.
+      // Paired with the test above — same bloated db, the only difference being this peer. Be precise about WHICH difference does the work: an open connection alone is NOT enough (measured: a peer that holds no transaction returns `busy:0` and is let through). What makes the gate fire is the held transaction, which is why this test opens one explicitly instead of just constructing a second `Database`.
+      expect(pragmaInt(db, "freelist_count")).toBeGreaterThan(0)
+    } finally {
+      peer.exec("COMMIT")
+      peer.close()
+    }
+  })
+
   test("seedAnalyzeIfNeeded fires on first open: sqlite_stat1 exists", () => {
     const dbPath = freshDbPath()
     const db = openDatabase(dbPath)
@@ -130,10 +151,10 @@ describe("DB-health adopted into the V3 open path (Phase 4b)", () => {
     const optimizeSpy = spyOn(connection, "runOptimize")
 
     expect(isV3MaintenanceRunningForTests()).toBe(false)
-    startV3Maintenance(3600) // long interval — this test drives the tick directly, not via the timer
+    startV3Maintenance(connection.getDatabase(), 3600) // long interval — this test drives the tick directly, not via the timer
     expect(isV3MaintenanceRunningForTests()).toBe(true)
 
-    runV3MaintenanceTick()
+    runV3MaintenanceTick(connection.getDatabase())
 
     expect(checkpointSpy).toHaveBeenCalledTimes(1)
     expect(vacuumSpy).toHaveBeenCalledTimes(1)

@@ -180,7 +180,7 @@ describe("translateChatCompletionsToAnthropic — tools / tool_choice", () => {
 })
 
 describe("translateChatCompletionsToAnthropic — W3 empty/placeholder guards (reverse leg, pre-upstream)", () => {
-  test("a tool message MISSING tool_call_id is SKIPPED (never produces tool_use_id:\"\" — GHC 400 risk)", () => {
+  test('a tool message MISSING tool_call_id is SKIPPED (never produces tool_use_id:"" — GHC 400 risk)', () => {
     const a = translateChatCompletionsToAnthropic(
       cc({
         messages: [
@@ -216,7 +216,12 @@ describe("translateChatCompletionsToAnthropic — W3 empty/placeholder guards (r
 
   test("a user message with an EMPTY content array is SKIPPED (never produces content:[] — GHC 400 risk)", () => {
     const a = translateChatCompletionsToAnthropic(
-      cc({ messages: [{ role: "user", content: [] }, { role: "user", content: "real" }] }),
+      cc({
+        messages: [
+          { role: "user", content: [] },
+          { role: "user", content: "real" },
+        ],
+      }),
     )
     expect(a.messages).toEqual([{ role: "user", content: "real" }])
     expect(JSON.stringify(a)).not.toContain('"content":[]')
@@ -224,15 +229,18 @@ describe("translateChatCompletionsToAnthropic — W3 empty/placeholder guards (r
 
   test("a user message with an EMPTY string content is SKIPPED (symmetric guard)", () => {
     const a = translateChatCompletionsToAnthropic(
-      cc({ messages: [{ role: "user", content: "" }, { role: "user", content: "real" }] }),
+      cc({
+        messages: [
+          { role: "user", content: "" },
+          { role: "user", content: "real" },
+        ],
+      }),
     )
     expect(a.messages).toEqual([{ role: "user", content: "real" }])
   })
 
   test("a user message whose only parts are non-text drops nothing meaningful → still emits (image survives)", () => {
-    const a = translateChatCompletionsToAnthropic(
-      cc({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }),
-    )
+    const a = translateChatCompletionsToAnthropic(cc({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }))
     expect(a.messages).toHaveLength(1)
     expect((a.messages[0]?.content as Array<ContentBlockParam>)[0]).toMatchObject({ type: "image" })
   })

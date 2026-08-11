@@ -1,5 +1,13 @@
-/** Supported API endpoint types. */
-export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content"
+/**
+ * Supported API endpoint types.
+ *
+ * `openai-embeddings` is written by the embeddings producer (`routes/embeddings/route.ts`) and
+ * reaches the `endpoint` column through `v3/projection.ts`, so omitting it made legitimate records
+ * unrepresentable — the read path judged them poison and the list validator rejected the value as
+ * unknown. Adding it is the prerequisite fix that `docs/spec/2026-07-28-history-read-path-core.md`
+ * §5.7.4 requires before any endpoint-enum gate.
+ */
+export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content" | "openai-embeddings"
 
 /** Lifecycle state shared by rich history records and narrow read projections. */
 export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed" | "aborted" | "interrupted"
@@ -13,7 +21,7 @@ export interface QueryOptions {
   model?: string
   endpoint?: EndpointType
   success?: boolean
-  /** Exact lifecycle-state filter. When both are present, this takes precedence over `success`. */
+  /** Exact lifecycle-state filter. When both are present, both predicates apply; a conflict matches nothing. */
   state?: RequestLifecycleState
   /** Exclude active in-flight entries from the merged result. */
   terminalOnly?: boolean
@@ -80,6 +88,7 @@ export interface EntrySummary {
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
+  historyAdmissionWaitMs?: number
   attemptCount?: number
   currentStrategy?: string
   pid?: number

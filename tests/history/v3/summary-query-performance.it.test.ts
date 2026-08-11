@@ -9,6 +9,7 @@ import {
 
 import type { Database } from "~/lib/history/sqlite/connection"
 
+import { clearInFlight } from "~/lib/history/in-flight"
 import { getHistorySummaries } from "~/lib/history/queries"
 import { getSessionSummaries } from "~/lib/history/sessions"
 import {
@@ -27,6 +28,7 @@ import {
   getV3StoreStatus,
 } from "~/lib/history/v3/store"
 import { SUMMARY_PROJECTION_READY_KEY } from "~/lib/history/v3/summary-store"
+import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 
 const ROW_COUNT = 512
 const LARGE_MANIFEST_BYTES = 256 * 1024
@@ -79,6 +81,7 @@ function seedRows(db: Database): void {
     }
   })
   seed()
+  db.prepare("UPDATE v3_operation_summaries SET projection_status='ready',projection_error=NULL").run()
   setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
 }
 
@@ -114,6 +117,8 @@ async function measure<T>(action: () => T): Promise<Measurement<T>> {
 }
 
 beforeEach(async () => {
+  clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   closeDatabase()
   openInMemoryDatabase()
   ensureV3Schema(getDatabase())
@@ -130,6 +135,8 @@ describe("History summary read performance", () => {
     const db = getDatabase()
     const small = await measure(readBundle)
     db.prepare("UPDATE v3_operations SET manifest_gz=zeroblob(?)").run(LARGE_MANIFEST_BYTES)
+    db.prepare("UPDATE v3_operation_summaries SET projection_status='ready',projection_error=NULL").run()
+    setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
     const large = await measure(readBundle)
     const legacy = await measure(() => {
       const rows = db.prepare("SELECT manifest_gz FROM v3_operations").all() as Array<{ manifest_gz: Uint8Array }>

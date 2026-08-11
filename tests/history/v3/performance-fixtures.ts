@@ -101,12 +101,18 @@ export function highBranchFixture(id = "perf-branch", branches = 12, branchBytes
 
 export function largeSseFixture(id = "perf-sse", frameCount = 2_048, frameTextBytes = 192): ModelOperationRecord {
   const recorder = beginRecord(id)
-  const request = recorder.registerPayload({ model: "claude-sonnet-4.6", messages: [{ role: "user", content: "large SSE" }] }, { origin: { stage: "ingress", track: "client" } })
+  const request = recorder.registerPayload(
+    { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "large SSE" }] },
+    { origin: { stage: "ingress", track: "client" } },
+  )
   recorder.recordIngress({ format: "anthropic-messages", request: { payload: request } })
   recorder.recordRouting({ requestedModel: "sonnet", resolvedModel: "claude-sonnet-4.6", upstreamEndpoint: "/v1/messages", transport: "http" })
   const attempt = recorder.beginAttempt({ transport: "http", effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
   const frames = Array.from({ length: frameCount }, (_, index) =>
-    recorder.registerFrame(sseFrame(index, frameTextBytes), { origin: { stage: "upstream-capture", track: "upstream", attempt }, mediaType: "text/event-stream" }),
+    recorder.registerFrame(sseFrame(index, frameTextBytes), {
+      origin: { stage: "upstream-capture", track: "upstream", attempt },
+      mediaType: "text/event-stream",
+    }),
   )
   recorder.settleAttempt(attempt, { verdict: "committed", upstreamResponse: { frames, status: 200 } })
   recorder.recordEgress({ upstream: { frames, status: 200 }, client: { frames, status: 200 } })
@@ -115,13 +121,21 @@ export function largeSseFixture(id = "perf-sse", frameCount = 2_048, frameTextBy
 
 export function bufferedRetryFixture(id = "perf-buffered", attempts = 4, framesPerAttempt = 256): ModelOperationRecord {
   const recorder = beginRecord(id)
-  const request = recorder.registerPayload({ model: "claude-opus-4.8", messages: [{ role: "user", content: deterministicText(7, 8_192) }] }, { origin: { stage: "ingress", track: "client" } })
+  const request = recorder.registerPayload(
+    { model: "claude-opus-4.8", messages: [{ role: "user", content: deterministicText(7, 8_192) }] },
+    { origin: { stage: "ingress", track: "client" } },
+  )
   recorder.recordIngress({ format: "anthropic-messages", request: { payload: request } })
   recorder.recordRouting({ resolvedModel: "claude-opus-4.8", upstreamEndpoint: "/v1/messages", transport: "http" })
   let committedAttempt: ReturnType<typeof recorder.beginAttempt> | undefined
   let committedFrames: Array<ReturnType<typeof recorder.registerFrame>> = []
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex++) {
-    const attempt = recorder.beginAttempt({ strategy: attemptIndex === 0 ? "initial" : "buffered-retry", transport: "http", effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
+    const attempt = recorder.beginAttempt({
+      strategy: attemptIndex === 0 ? "initial" : "buffered-retry",
+      transport: "http",
+      effectiveRequest: { payload: request },
+      upstreamRequest: { payload: request },
+    })
     const frames = Array.from({ length: framesPerAttempt }, (_, frameIndex) =>
       recorder.registerFrame(sseFrame(frameIndex + attemptIndex * 17, 160), {
         origin: { stage: "upstream-capture", track: "upstream", attempt },
@@ -143,10 +157,13 @@ export function bufferedRetryFixture(id = "perf-buffered", attempts = 4, framesP
   return recorder.commitTerminal({ outcome: "completed", committedAttempt })
 }
 
-export function countTokensFloodFixtures(count = 256): ModelOperationRecord[] {
+export function countTokensFloodFixtures(count = 256): Array<ModelOperationRecord> {
   return Array.from({ length: count }, (_, index) => {
     const recorder = beginRecord(`perf-count-${index}`, "count_tokens")
-    const request = recorder.registerPayload({ model: "claude-haiku-4.5", messages: [{ role: "user", content: deterministicText(index % 13, 256) }] }, { origin: { stage: "ingress", track: "client" } })
+    const request = recorder.registerPayload(
+      { model: "claude-haiku-4.5", messages: [{ role: "user", content: deterministicText(index % 13, 256) }] },
+      { origin: { stage: "ingress", track: "client" } },
+    )
     recorder.recordIngress({ format: "anthropic-messages", path: "/v1/messages/count_tokens", request: { payload: request } })
     recorder.recordRouting({ resolvedModel: "claude-haiku-4.5", transport: "local" })
     const attempt = recorder.beginAttempt({ effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
@@ -164,8 +181,13 @@ export function embeddingBatchFixture(id = "perf-embeddings", items = 256, dimen
   recorder.recordIngress({ format: "openai-embeddings", path: "/v1/embeddings", request: { payload: request } })
   recorder.recordRouting({ resolvedModel: "text-embedding-3-small", upstreamEndpoint: "/embeddings", transport: "http" })
   const attempt = recorder.beginAttempt({ transport: "http", effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
-  const vectors = Array.from({ length: items }, (_, item) => Array.from({ length: dimensions }, (_, dimension) => ((item * 31 + dimension * 17) % 1_009) / 1_009))
-  const response = recorder.registerPayload({ data: vectors, usage: { prompt_tokens: items * 64, total_tokens: items * 64 } }, { origin: { stage: "upstream-response", track: "upstream", attempt } })
+  const vectors = Array.from({ length: items }, (_, item) =>
+    Array.from({ length: dimensions }, (_, dimension) => ((item * 31 + dimension * 17) % 1_009) / 1_009),
+  )
+  const response = recorder.registerPayload(
+    { data: vectors, usage: { prompt_tokens: items * 64, total_tokens: items * 64 } },
+    { origin: { stage: "upstream-response", track: "upstream", attempt } },
+  )
   recorder.settleAttempt(attempt, { verdict: "committed", upstreamResponse: { payload: response, status: 200 } })
   recorder.recordEgress({ upstream: { payload: response }, client: { payload: response, status: 200 } })
   return recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt, usage: { inputTokens: items * 64 } })

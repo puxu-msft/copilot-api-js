@@ -44,7 +44,7 @@ async function runWithTerminatedDelivery() {
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
   const rawSink: ClientSink = { async write() {}, close() {} }
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
@@ -63,7 +63,7 @@ async function runWithTornDelivery() {
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({
@@ -91,6 +91,8 @@ test("each torn-wire outcome gets a fresh diagnostic Error instance", async () =
   const first = await runWithTornDelivery()
   const second = await runWithTornDelivery()
   if (first.kind !== "stream-error" || second.kind !== "stream-error") throw new Error("expected stream-error outcomes")
+  expect(first.source).toBe("delivery-owner")
+  expect(second.source).toBe("delivery-owner")
   expect(first.error).toBeInstanceOf(Error)
   expect(second.error).toBeInstanceOf(Error)
   expect(first.error).not.toBe(second.error)
@@ -108,7 +110,7 @@ test("an in-flight pump returns delivery-finished only after another path settle
     decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     transport: makeTransport(async () => emptyStream()),
   })
-  const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
+  const request = await driver.runRequest({ body: env.attempt.body, headers: new Headers(), method: "POST", path: "/v1/messages" })
   if (!request.ok) throw new Error("unexpected routing rejection")
 
   const entered = deferred()

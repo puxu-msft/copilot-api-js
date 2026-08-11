@@ -55,17 +55,12 @@ function makeEnv(clientFormat: ClientFormat, targetEndpoint: string): RequestEnv
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   ctx.beginAttempt({})
   return {
-    clientFormat,
-    targetEndpoint,
-    model: {},
-    stream: true,
-    body: {},
+    request: { clientFormat: clientFormat, model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: {}, targetEndpoint: targetEndpoint, prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
-    ctx,
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    ctx: ctx,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

@@ -25,6 +25,7 @@ import consola from "consola"
 import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { setBundledConfigForTests } from "~/lib/config/config"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import { setModels } from "~/lib/models/cache"
@@ -186,7 +187,7 @@ async function post(body: unknown): Promise<Response> {
 describe("CC v4 driver path", () => {
   useIsolatedRuntime()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     upstreamFetchMock.mockClear()
     lastCcWire = undefined
     lastResponsesWire = undefined
@@ -198,12 +199,17 @@ describe("CC v4 driver path", () => {
     // mapping (Stage B / B4). Since `chatCompletionsBufferedRetry` defaults to true (2026-07-14 flip),
     // pin it OFF here so these tests exercise `runResponseSink`, not `runResponseBufferedSink` — the
     // buffered path has its own coverage in tests/chat-completions/cc-buffered.integration.test.ts.
+    // Requests hot-load bundled config before dispatch. Pin the config seam to only the other
+    // shipped behavior this suite explicitly owns (tool-name sanitization), while leaving
+    // chat_completions.buffered_retry absent so the state-level live-path override is retained.
+    // Without this seam, the first request loads the repository's entire bundled config and makes
+    // this suite depend on whichever shipped defaults happen to be present.
+    setBundledConfigForTests({ sanitize_tool_names: true })
     setStateForTests({ copilotToken: "tok", chatCompletionsBufferedRetry: false })
   })
 
   afterEach(() => {
-    // The deferred-tool/feature ledgers are reset per-suite elsewhere; nothing
-    // global to restore here now that the driver flag is gone.
+    setBundledConfigForTests(null)
   })
 
   test("non-streaming passthrough: client json + wire payload", async () => {

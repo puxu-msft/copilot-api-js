@@ -10,7 +10,7 @@
  *
  * Drives the REAL production seam directly (mirroring `tests/anthropic/forward-leg-strategies.it.test.ts`'s
  * "assembly-level directness" pattern): for the DIRECT `/v1/messages` cell, `codec.parse(raw)` alone
- * (synchronous, no driver/HTTP round-trip) populates `env.requestState` (betaProbe/truncateBaseline/
+ * (synchronous, no driver/HTTP round-trip) populates the envelope's request + candidate scopes (betaProbe/truncateBaseline/
  * resanitize — the supply `buildLegStrategies` reads) + a REAL `env.ctx` (built via `withCapturingManager`,
  * so `env.ctx.recordFeature` publishes into a local array instead of the real bus). `resolveCellAssembly
  * ("anthropic", ENDPOINT.MESSAGES).buildStrategies(env)` then exercises the delegation wrap (`.canHandle()`
@@ -57,7 +57,7 @@ const directMessagesStrategies = (env: RequestEnvelope) => resolveCellAssembly("
 
 /**
  * Build a REAL post-`codec.parse()` DIRECT `/v1/messages` `RequestEnvelope`, with a real (capturing,
- * not-bus-published) `env.ctx` — so `env.requestState` is populated (the supply `buildLegStrategies` reads)
+ * not-bus-published) `env.ctx` — so the leg supply is populated (what `buildLegStrategies` reads)
  * and `env.ctx.recordFeature` is exercisable.
  */
 function makeParsedMessagesEnv(): {
@@ -79,15 +79,14 @@ function makeParsedMessagesEnv(): {
 /**
  * A hand-built fake env for a FORWARD translate leg (anthropic client → CC/Responses OUTBOUND, no real
  * `.ctx`). clientFormat "anthropic" + a CC/Responses targetEndpoint selects the cc-family FORWARD branch
- * (reads env.body, no requestState needed) — mirrors `forward-leg-strategies.it.test.ts`'s ccLegEnv.
+ * (reads env.attempt.body, no candidate supply needed) — mirrors `forward-leg-strategies.it.test.ts`'s ccLegEnv.
  */
 function forwardLegEnv(leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope {
   return {
-    clientFormat: "anthropic",
-    targetEndpoint: leg,
-    body: { model: MODEL, messages: [] },
-    model: { id: MODEL },
-    requestState: {},
+    request: { clientFormat: "anthropic", model: { id: MODEL } } as RequestEnvelope["request"],
+    attempt: { body: { model: MODEL, messages: [] }, targetEndpoint: leg } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 

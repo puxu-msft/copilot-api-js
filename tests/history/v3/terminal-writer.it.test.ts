@@ -29,12 +29,14 @@ import {
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
 
+import { historyTestReservation } from "../../helpers/history-terminal-publication"
+
 beforeEach(() => {
   closeDatabase()
   openInMemoryDatabase()
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
-  subscribeModelOperationTerminals(enqueueModelOperation)
+  subscribeModelOperationTerminals(async (publication) => await enqueueModelOperation(publication.record))
 })
 
 afterEach(async () => {
@@ -46,7 +48,7 @@ afterEach(async () => {
 
 describe("canonical terminal → V3 writer", () => {
   test("persists a generation terminal without delaying delivery", async () => {
-    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", historyReservation: historyTestReservation() })
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: "ok" })
     ctx.finalizeModelOperationDelivery({ clientPayload: { role: "assistant", content: "ok" } })
@@ -60,7 +62,13 @@ describe("canonical terminal → V3 writer", () => {
 
   test("persists a lightweight count_tokens terminal", async () => {
     const request = new Request("http://localhost/v1/messages/count_tokens", { method: "POST", body: "{}" })
-    const operation = createLightweightModelOperation({ kind: "count_tokens", request, semanticRequest: {}, requestedModel: "m" })
+    const operation = createLightweightModelOperation({
+      kind: "count_tokens",
+      request,
+      semanticRequest: {},
+      requestedModel: "m",
+      historyReservation: historyTestReservation(),
+    })
     operation.recordRouting({ source: "local", resolvedModel: "m" })
     const attempt = operation.beginAttempt({ source: "local", effectiveRequest: {}, wireRequest: {} })
     attempt.commit({ result: { input_tokens: 3 }, usage: { inputTokens: 3 } })

@@ -34,6 +34,7 @@ import {
   upstreamFetch,
 } from "~/lib/transport/upstream-fetch"
 
+import { FakeClock } from "../helpers/fake-clock"
 import { autoRestoreState } from "../helpers/state-fixture"
 
 describe("upstreamFetch — test bridge", () => {
@@ -72,6 +73,169 @@ describe("upstreamFetch — test bridge", () => {
     })
     void upstreamFetch("https://x.example", {})
     expect(used).toBe(true)
+  })
+
+  test("response-header deadline rejects a transport that never resolves headers", async () => {
+    setUpstreamFetchForTests(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason as Error), { once: true })
+        }),
+    )
+
+    const pending = upstreamFetch("https://upstream.example/stall", { responseHeaderTimeoutMs: 10 })
+    const error = await Promise.race([
+      pending.catch((value: unknown) => value),
+      new Promise((resolve) => setTimeout(() => resolve(new Error("test guard expired")), 100)),
+    ])
+
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as Error).name).toBe("TimeoutError")
+  })
+
+  test("response-header deadline disarms when fetch resolves, so a long body survives", async () => {
+    setUpstreamFetchForTests((_url, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const onAbort = () => controller.error(init.signal?.reason)
+          init.signal?.addEventListener("abort", onAbort, { once: true })
+          setTimeout(() => {
+            init.signal?.removeEventListener("abort", onAbort)
+            controller.enqueue(new TextEncoder().encode("late-body"))
+            controller.close()
+          }, 40)
+        },
+      })
+      return Promise.resolve(new Response(body, { status: 200 }))
+    })
+
+    const response = await upstreamFetch("https://upstream.example/stream", { responseHeaderTimeoutMs: 10 })
+
+    expect(await response.text()).toBe("late-body")
+  })
+
+  test("disarming the header deadline does not disarm the request lifecycle signal", async () => {
+    const lifecycle = new AbortController()
+    const reason = new DOMException("request_deadline", "AbortError")
+    setUpstreamFetchForTests((_url, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true })
+        },
+      })
+      return Promise.resolve(new Response(body, { status: 200 }))
+    })
+    const response = await upstreamFetch("https://upstream.example/stream", {
+      signal: lifecycle.signal,
+      responseHeaderTimeoutMs: 1000,
+    })
+
+    lifecycle.abort(reason)
+
+    const result = Promise.race([response.text(), new Promise((_, reject) => setTimeout(() => reject(new Error("test guard expired")), 100))])
+    await expect(result).rejects.toBe(reason)
+  })
+
+  test("response-header deadline disarms when the transport throws synchronously", () => {
+    const clock = new FakeClock()
+    clock.install()
+    const error = new Error("transport setup failed")
+    setUpstreamFetchForTests(() => {
+      throw error
+    })
+
+    try {
+      expect(() => upstreamFetch("https://upstream.example/fail", { responseHeaderTimeoutMs: 10 })).toThrow(error)
+      expect(clock.liveTimerCount).toBe(0)
+    } finally {
+      clock.restore()
+    }
+  })
+})
+
+describe("createResponseHeaderDeadline", () => {
+  type Deadline = { signal: AbortSignal; complete(): boolean }
+  type DeadlineFactory = (ms: number) => Deadline
+  const clock = new FakeClock()
+
+  afterEach(() => clock.restore())
+
+  async function loadDeadlineModule(): Promise<{
+    createResponseHeaderDeadline?: DeadlineFactory
+    createResponseHeaderTimeoutError?: (ms: number) => DOMException
+  }> {
+    return import("~/lib/fetch-utils")
+  }
+
+  async function loadFactory(): Promise<DeadlineFactory | undefined> {
+    return (await loadDeadlineModule()).createResponseHeaderDeadline
+  }
+
+  test("exports a scoped response-header deadline primitive", async () => {
+    expect(await loadFactory()).toBeFunction()
+  })
+
+  test("builds the canonical response-header timeout error", async () => {
+    const createError = (await loadDeadlineModule()).createResponseHeaderTimeoutError
+
+    expect(createError).toBeFunction()
+    if (!createError) return
+    const error = createError(250)
+    expect(error).toBeInstanceOf(DOMException)
+    expect(error.name).toBe("TimeoutError")
+    expect(error.message).toBe("Upstream response headers not received within 250ms")
+  })
+
+  test("headers completion wins when registered first at the deadline tick", async () => {
+    const createDeadline = await loadFactory()
+    if (!createDeadline) return
+    clock.install()
+    let completed: boolean | undefined
+    const holder: { deadline?: Deadline } = {}
+    setTimeout(() => {
+      completed = holder.deadline?.complete()
+    }, 10)
+    const deadline = createDeadline(10)
+    holder.deadline = deadline
+
+    await clock.advance(10)
+
+    expect(completed).toBe(true)
+    expect(deadline.signal.aborted).toBe(false)
+    expect(deadline.complete()).toBe(false)
+    expect(clock.liveTimerCount).toBe(0)
+  })
+
+  test("timeout wins when registered first at the deadline tick", async () => {
+    const createDeadline = await loadFactory()
+    if (!createDeadline) return
+    clock.install()
+    const deadline = createDeadline(10)
+    let completed: boolean | undefined
+    setTimeout(() => {
+      completed = deadline.complete()
+    }, 10)
+
+    await clock.advance(10)
+
+    expect(deadline.signal.aborted).toBe(true)
+    expect((deadline.signal.reason as Error).name).toBe("TimeoutError")
+    expect(completed).toBe(false)
+    expect(deadline.complete()).toBe(false)
+    expect(clock.liveTimerCount).toBe(0)
+  })
+
+  test("external completion clears the timer exactly once", async () => {
+    const createDeadline = await loadFactory()
+    if (!createDeadline) return
+    clock.install()
+    const deadline = createDeadline(10)
+
+    expect(deadline.complete()).toBe(true)
+    expect(deadline.complete()).toBe(false)
+    expect(clock.liveTimerCount).toBe(0)
+    await clock.advance(10)
+    expect(deadline.signal.aborted).toBe(false)
   })
 })
 

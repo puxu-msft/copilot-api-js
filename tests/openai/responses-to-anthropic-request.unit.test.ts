@@ -288,7 +288,12 @@ describe("translateResponsesToAnthropicRequest — Phase 5 reverse round-trip: a
   test("a reasoning item with OUR carrier reconstructs a thinking block with the byte-exact recovered signature", () => {
     const realSignature = "REAL-CLAUDE-SIGNATURE-that-must-round-trip-byte-exact"
     const carrier = buildClaudeSignatureCarrier(realSignature)
-    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "recovered reasoning" }], encrypted_content: carrier }
+    const item: ResponsesInputItem = {
+      type: "reasoning",
+      id: "r1",
+      summary: [{ type: "summary_text", text: "recovered reasoning" }],
+      encrypted_content: carrier,
+    }
     const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
 
     const assistantMsg = result.messages.find((m) => m.role === "assistant")
@@ -332,7 +337,12 @@ describe("translateResponsesToAnthropicRequest — Phase 5 reverse round-trip: a
 
   test("a bare-carrier reasoning item with only summary text (no `content`) still reconstructs the block from `summary`", () => {
     const carrier = buildClaudeSignatureCarrier("SIG-FROM-SUMMARY")
-    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "from summary field" }], encrypted_content: carrier }
+    const item: ResponsesInputItem = {
+      type: "reasoning",
+      id: "r1",
+      summary: [{ type: "summary_text", text: "from summary field" }],
+      encrypted_content: carrier,
+    }
     const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
     const assistantMsg = result.messages.find((m) => m.role === "assistant")
     const content = assistantMsg?.content as Array<{ type: string; thinking?: string }>
@@ -371,7 +381,9 @@ describe("translateResponsesToAnthropicRequest — tools / tool_choice (equivale
   })
 
   test("a builtin tool (web_search) is dropped — this reverse leg only forwards function tools (server-tool passthrough on this direction is not implemented; Claude web_search_tool_result carries real encrypted_content, a separate backlog item)", () => {
-    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tools: [{ type: "web_search" }, { type: "function", name: "get_weather", parameters: { type: "object" } }] }))
+    const result = translateResponsesToAnthropicRequest(
+      responsesPayload([userMessage("x")], { tools: [{ type: "web_search" }, { type: "function", name: "get_weather", parameters: { type: "object" } }] }),
+    )
     // only the function tool survives; the builtin is dropped, never mis-forwarded.
     expect(result.tools).toEqual([{ name: "get_weather", input_schema: { type: "object" } }])
   })

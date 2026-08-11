@@ -610,11 +610,18 @@ describe("distribution histograms", () => {
     expect(hist.buckets.reduce((a, b) => a + b, 0)).toBe(10) // Σbuckets == count
   })
 
-  test("input/output token + queue-wait histograms observe their respective quantities", () => {
+  test("input/output token + rate-limit/history queue histograms observe independent quantities", () => {
     const now = Date.now()
     recordSettledRequest(
       { model: "m" },
-      { startedAt: now, endedAt: now + 5, success: true, queueWaitMs: 250, usage: { input_tokens: 4000, output_tokens: 80 } },
+      {
+        startedAt: now,
+        endedAt: now + 5,
+        success: true,
+        queueWaitMs: 250,
+        historyAdmissionWaitMs: 17,
+        usage: { input_tokens: 4000, output_tokens: 80 },
+      },
     )
     const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
     expect(hist.input_tokens.count).toBe(1)
@@ -622,6 +629,17 @@ describe("distribution histograms", () => {
     expect(hist.output_tokens.sum).toBe(80)
     expect(hist.queue_wait_ms.sum).toBe(250)
     expect(hist.queue_wait_ms.p50).toBeGreaterThan(100) // 250 lands in the (100,250] bucket
+    expect(hist.history_admission_wait_ms.count).toBe(1)
+    expect(hist.history_admission_wait_ms.sum).toBe(17)
+  })
+
+  test("does not observe History admission wait when the request did not acquire a reservation", () => {
+    const now = Date.now()
+    recordSettledRequest({ endpoint: "status" }, { startedAt: now, endedAt: now + 1, success: true, queueWaitMs: 9 })
+
+    const hist = getDimensionBreakdown("endpoint", "sinceStart", 20, now).keys[0].histograms
+    expect(hist.queue_wait_ms.sum).toBe(9)
+    expect(hist.history_admission_wait_ms).toBeUndefined()
   })
 
   test("7d histogram stub (T7.2): sinceStart histograms are FULL (feed /metrics); 7d histograms are empty {}", () => {

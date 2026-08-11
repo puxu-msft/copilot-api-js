@@ -23,6 +23,7 @@
  */
 
 import consola from "consola"
+import { createHash } from "node:crypto"
 import http2 from "node:http2"
 import tls from "node:tls"
 
@@ -42,6 +43,7 @@ import {
   state,
 } from "~/lib/state"
 
+import type { SnapshotScalar } from "./http2-observation-types"
 import type { UpstreamFetchInit } from "./upstream-fetch"
 
 import {
@@ -49,6 +51,17 @@ import {
   withErrorSink,
   withRejectionObserver,
 } from "./crash-safety"
+import {
+  //
+  RegisteredGoawayEvidence,
+  SessionGoawayLedger,
+} from "./http2-goaway-ledger"
+import {
+  //
+  createHttp2TerminationRecorder,
+  createLocalTerminationCommitPort,
+  toBoundedObservationText,
+} from "./http2-termination"
 import { connectProxiedSocket } from "./proxy-connect"
 
 /**
@@ -94,6 +107,14 @@ const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
  */
 interface H2SessionEntry {
   session: http2.ClientHttp2Session
+  /**
+   * Process-monotonic identity for THIS h2 connection, stable for its whole life.
+   *
+   * The point is correlation across dispatches: "did three requests on one connection die at the same instant?" separates a connection-level event from a per-stream cancel, and that question is unanswerable without a shared key. `rstCode` cannot answer it — a local abort, a peer CANCEL and a dead connection all surface as 8 (measured, exp/h2-termination-observability/).
+   *
+   * ⚠️ NOT `HistoryEntry.sessionId` / `EntrySummary.sessionId`, which is the CLIENT conversation dimension. Two different identity domains; collapsing them destroys both.
+   */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
@@ -103,6 +124,16 @@ interface H2SessionEntry {
   effectiveKeepAliveMs: number | undefined
   /** idle-reap timer, armed when an ACTIVE session's activeStreamCount hits 0; cleared on the next reservation. */
   idleTimer: NodeJS.Timeout | undefined
+  /**
+   * Per-session GOAWAY record. Every stream on this session leases a view of it, so a dispatch that ends
+   * around a GOAWAY can say which frame it saw rather than reporting an unexplained termination.
+   * The ledger owns its own bounded storage; this entry only owns closing it exactly once.
+   */
+  goawayLedger: SessionGoawayLedger
+  /** `error` and `close` both route to `dispose`, and the ledger owner may only be closed once. */
+  goawayLedgerClosed: boolean
+  /** Rolling PING liveness for this session; mutated by the keepalive observer, read by the status snapshot. */
+  pingStats: H2SessionPingStats
 }
 
 /** Multiple capacity-routed h2 sessions per origin (all resolved + live, routable for new requests). */
@@ -119,6 +150,14 @@ const pending = new Map<string, Promise<H2SessionEntry>>()
 let poolEpoch = 0
 /** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
 let currentGeneration = 0
+/** Monotonic within the process — never reused, so a session id in History always names one physical connection. */
+let nextSessionSequence = 0
+/**
+ * How long a forcibly-cancelled stream gets to actually close before its pool slot is reclaimed anyway.
+ *
+ * Deliberately short and fixed: the long wait already happened (the teardown barrier's grace expired to get here), so this is only the tail for the peer to answer an RST it has already been sent.
+ */
+const FORCED_TEARDOWN_TAIL_MS = 250
 let reconcileState: "idle" | "running" | "failed" = "idle"
 let lastCompletedGeneration = 0
 let lastReconcileError: string | null = null
@@ -225,8 +264,50 @@ function awaitH2Handshake(sock: tls.TLSSocket, timeoutMs: number): Promise<void>
   })
 }
 
-/** No-op ack for keepalive PINGs — see {@link scheduleH2KeepalivePing}. */
-const NOOP_PING_ACK = (): void => {}
+/**
+ * Rolling PING liveness for one pooled session. Bounded by construction — counters and a last-observation, never a growing list — because a long-lived session pings forever and nothing here may grow with uptime.
+ *
+ * `outstanding` is the interesting one: it is sent-minus-acked, so a session whose peer has stopped acking shows a climbing count while everything else still looks healthy.
+ *
+ * Read this as connection-endpoint liveness ONLY. An ACK proves the peer's HTTP/2 endpoint answered a control frame. It does NOT prove a DATA stream can make progress, that flow control has room, that the upstream application is healthy, or that a GOAWAY/RST is not already in flight.
+ */
+export interface H2SessionPingStats {
+  sent: number
+  acked: number
+  /** sent − acked. A climbing value is the signal; a single outstanding ping is normal mid-interval. */
+  outstanding: number
+  lastRttMs: number | undefined
+  lastAckEpochMs: number | undefined
+  /** Most recent ack error (Node hands the ping callback an Error when the session dies first). */
+  lastError: string | undefined
+}
+
+function createPingStats(): H2SessionPingStats {
+  return { sent: 0, acked: 0, outstanding: 0, lastRttMs: undefined, lastAckEpochMs: undefined, lastError: undefined }
+}
+
+/** Sink for {@link scheduleH2KeepalivePing}; the session entry owns the stats object it mutates. */
+export interface H2PingObserver {
+  onSent(): void
+  onAck(error: Error | null, durationMs: number): void
+}
+
+function pingObserverFor(stats: H2SessionPingStats, now: () => number = Date.now): H2PingObserver {
+  return {
+    onSent() {
+      stats.sent += 1
+      stats.outstanding = stats.sent - stats.acked
+    },
+    onAck(error, durationMs) {
+      stats.acked += 1
+      stats.outstanding = stats.sent - stats.acked
+      stats.lastAckEpochMs = now()
+      // A failed ack carries no meaningful round trip; leaving the previous RTT would be a lie.
+      stats.lastRttMs = error === null ? durationMs : undefined
+      stats.lastError = error === null ? undefined : error.message
+    },
+  }
+}
 
 /**
  * Periodic HTTP/2 PING keepalive for a pooled upstream session. The application-
@@ -246,11 +327,28 @@ const NOOP_PING_ACK = (): void => {}
  * `intervalMs <= 0` disables it (returns undefined). The timer is `unref`'d so it
  * never keeps the process alive at shutdown; the caller clears it on session end.
  */
-export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, "ping">, intervalMs: number): NodeJS.Timeout | undefined {
+type IntervalScheduler = (callback: () => void, delayMs: number) => NodeJS.Timeout
+
+export function scheduleH2KeepalivePing(
+  session: Pick<http2.ClientHttp2Session, "ping">,
+  intervalMs: number,
+  schedule: IntervalScheduler = (callback, delayMs) => setInterval(callback, delayMs),
+  observer?: H2PingObserver,
+): NodeJS.Timeout | undefined {
   if (intervalMs <= 0) return undefined
-  const timer = setInterval(() => {
+  const timer = schedule(() => {
     try {
-      session.ping(NOOP_PING_ACK)
+      // The ack was a no-op until A4-3. Node hands the callback (err, durationMs, payload), so the
+      // round trip is free once someone is listening; observing it does NOT change cadence, and a
+      // missed ack still does not close the session — that teardown remains a separate decision.
+      session.ping((error: Error | null, durationMs: number) => {
+        try {
+          observer?.onAck(error, durationMs)
+        } catch {
+          // Observation is diagnostic-only and must never reach the session's error path.
+        }
+      })
+      observer?.onSent()
     } catch {
       // Session closed/destroyed between the timer firing and this call
       // (ERR_HTTP2_INVALID_SESSION) — the session `close` handler clears this
@@ -467,12 +565,37 @@ function clearIdleTimer(entry: H2SessionEntry): void {
   }
 }
 
-/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
-function releaseReservation(entry: H2SessionEntry): void {
+/**
+ * Give back one slot on `entry` and re-run the consequences of a session becoming less busy.
+ *
+ * The four steps travel together and must not be split: the count drop is what makes the session eligible for reclaim, reaching zero is what arms the idle reaper, and a freed slot is what a capacity-blocked waiter is sleeping on. Dropping any one of them strands either the session or the waiter.
+ */
+function releaseSessionSlot(entry: H2SessionEntry): void {
   entry.activeStreamCount -= 1
   maybeReclaimRetiringSession(entry)
   if (entry.activeStreamCount === 0) armIdleTimer(entry)
   wakeOriginSlotWaiter(entry.origin) // a slot on this origin just freed → let a capped waiter retry
+}
+
+/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
+function releaseReservation(entry: H2SessionEntry): void {
+  releaseSessionSlot(entry)
+}
+
+/**
+ * The slot owned by ONE live stream, releasable at most once.
+ *
+ * Today the normal `close` path is the only releaser and is guaranteed to fire once, so exactly-once is currently unobservable — but it is guarded by construction rather than by argument because A4-4's force-dispose path releases the same slot when a stream refuses to close. Two independent releasers on one counter is exactly how capacity accounting drifts: a double release makes the pool believe it has a slot it does not, and the drift is silent until the cap starts admitting streams it should have queued.
+ *
+ * The counter has no floor of its own, so the idempotence has to live here.
+ */
+function createStreamSlotRelease(entry: H2SessionEntry): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    releaseSessionSlot(entry)
+  }
 }
 
 /**
@@ -536,9 +659,11 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
     // keepalive must keep pinging them until `close` fires (guaranteed to follow,
     // and clears the timer then). Clearing on retire would strand a draining
     // long-thinking stream in exactly the silence this keepalive exists to defeat.
-    const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs)
+    const pingStats = createPingStats()
+    const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs, undefined, pingObserverFor(pingStats))
     const entry: H2SessionEntry = {
       session,
+      sessionId: `h2-${(nextSessionSequence += 1)}`,
       origin,
       generation: currentGeneration, // === generationAtStart, confirmed above
       lifecycle: "active",
@@ -547,12 +672,20 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       effectivePingIntervalMs,
       effectiveKeepAliveMs,
       idleTimer: undefined, // armed later, only when it goes idle (activeStreamCount → 0)
+      goawayLedger: new SessionGoawayLedger(),
+      goawayLedgerClosed: false,
+      pingStats,
     }
     const dispose = (): void => {
       if (entry.pingTimer) clearInterval(entry.pingTimer)
       clearIdleTimer(entry)
       removeSessionEntry(entry)
       retiringSessions.delete(entry)
+      // Both `error` and `close` route here, and the ledger owner may only be closed once.
+      if (!entry.goawayLedgerClosed) {
+        entry.goawayLedgerClosed = true
+        entry.goawayLedger.closeSessionOwner()
+      }
       wakeOriginSlotWaiter(entry.origin) // a session left the pool → room under the per-origin cap
     }
     const retire = (): void => {
@@ -567,9 +700,40 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       // blocks new requests behind old sessions still draining).
       wakeOriginSlotWaiter(entry.origin)
     }
+    /**
+     * A GOAWAY is the one termination the peer explains, so record the frame BEFORE retiring: `retire()` only stops routing new streams, it says nothing about why.
+     * Recording never affects retirement — a ledger failure must not leave a GOAWAY'd session routable, hence the try/finally.
+     */
+    const recordGoawayThenRetire = (errorCode: number, lastStreamID: number, opaqueData?: Buffer): void => {
+      try {
+        if (entry.goawayLedgerClosed) return // a GOAWAY delivered after error/close has nowhere to land
+        const opaqueDataLength: SnapshotScalar<number> =
+          opaqueData === undefined ? { availability: "not-observed-before-snapshot" } : { availability: "observed", value: opaqueData.byteLength }
+        if (opaqueData === undefined || opaqueData.byteLength === 0) {
+          entry.goawayLedger.appendUnavailable({
+            errorCode,
+            lastStreamID,
+            opaqueDataLength,
+            evidence: { availability: "unavailable-at-source", reason: toBoundedObservationText("peer sent no GOAWAY opaque data", 128) },
+          })
+          return
+        }
+        const bytes = new Uint8Array(opaqueData)
+        entry.goawayLedger.appendObserved({
+          errorCode,
+          lastStreamID,
+          opaqueDataLength,
+          evidence: new RegisteredGoawayEvidence(createHash("sha256").update(bytes).digest("hex"), bytes),
+        })
+      } catch {
+        // Diagnostic-only: a hostile or malformed GOAWAY must never keep the session routable.
+      } finally {
+        retire()
+      }
+    }
     session.on("error", dispose)
     session.on("close", dispose)
-    session.on("goaway", retire)
+    session.on("goaway", recordGoawayThenRetire)
     session.unref()
     addSessionEntry(entry)
     return entry
@@ -800,22 +964,29 @@ export function reconcileH2SessionsForConfigChange(): void {
 
 /** Per-origin h2 session status row for /api/status (P5). */
 export interface H2SessionStatusRow {
+  /** Process-monotonic h2 CONNECTION id — the same key that appears in History's termination snapshots, so a live session can be tied to a past incident. NOT the client conversation `sessionId`. */
+  sessionId: string
   origin: string
   generation: number
   lifecycle: "active" | "retiring"
   activeStreamCount: number
   effectivePingIntervalMs: number
   effectiveKeepAliveMs: number | undefined
+  /** Connection-endpoint liveness only — see {@link H2SessionPingStats} for what an ACK does and does not prove. */
+  ping: H2SessionPingStats
 }
 
 function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
   return {
+    sessionId: entry.sessionId,
     origin: entry.origin,
     generation: entry.generation,
     lifecycle: entry.lifecycle,
     activeStreamCount: entry.activeStreamCount,
     effectivePingIntervalMs: entry.effectivePingIntervalMs,
     effectiveKeepAliveMs: entry.effectiveKeepAliveMs,
+    // Copied, not aliased: a status row is a snapshot, and the live object keeps mutating under the keepalive timer.
+    ping: { ...entry.pingStats },
   }
 }
 
@@ -973,6 +1144,120 @@ export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<
  * session-connect failure or a pre-flight abort — flows through one promise that
  * {@link withRejectionObserver} guards.
  */
+interface Http2TerminalStream {
+  readonly rstCode: number | null
+  once(event: "end" | "close", listener: () => void): this
+  once(event: "error", listener: (error: unknown) => void): this
+  close(code: number): void
+}
+
+interface Http2BodyController {
+  close(): void
+  error(reason: unknown): void
+}
+
+/** @internal Exported for the deterministic terminal-seam harness; production uses this exact wiring. */
+export function registerHttp2BodyTerminationHandlers(
+  req: Http2TerminalStream,
+  controller: Http2BodyController,
+  termination: ReturnType<typeof createHttp2TerminationRecorder>,
+  signal?: AbortSignal,
+): { cancel(reason: unknown): void } {
+  let ended = false
+  let abortAttached = false
+  const detachAbort = (): void => {
+    if (!abortAttached) return
+    abortAttached = false
+    signal?.removeEventListener("abort", onAbort)
+  }
+  const onAbort = (): void => {
+    detachAbort()
+    termination.recordLocalCancel("post-response-signal-abort", signal?.reason, req.rstCode)
+    req.close(http2.constants.NGHTTP2_CANCEL)
+  }
+  req.once("end", () => {
+    ended = true
+    detachAbort()
+    termination.recordEnd(req.rstCode)
+    try {
+      controller.close()
+    } catch {
+      /* already closed (e.g. cancelled) */
+    }
+  })
+  req.once("error", (error) => {
+    detachAbort()
+    termination.recordError(error, req.rstCode)
+    try {
+      controller.error(error instanceof Error ? tagTransportError(error, "mid-body-close") : error)
+    } catch {
+      /* already errored */
+    }
+  })
+  req.once("close", () => {
+    detachAbort()
+    if (ended) return
+    const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
+    termination.recordCloseBeforeEnd(error, req.rstCode)
+    try {
+      controller.error(error)
+    } catch {
+      /* already closed/errored */
+    }
+  })
+  if (signal) {
+    abortAttached = true
+    signal.addEventListener("abort", onAbort, { once: true })
+  }
+  return {
+    cancel(reason) {
+      termination.recordLocalCancel("body-cancel", reason, req.rstCode)
+      req.close(http2.constants.NGHTTP2_CANCEL)
+    },
+  }
+}
+
+interface PreResponseTerminalState {
+  observeHeaders(streamId: number | null): void
+}
+
+/** @internal Exported for the deterministic terminal-seam harness; production uses this exact wiring. */
+export function registerHttp2PreResponseTerminationHandlers(
+  req: Http2TerminalStream,
+  signal: AbortSignal | undefined,
+  termination: ReturnType<typeof createHttp2TerminationRecorder>,
+  rejectAfterRequestClosed: (error: Error) => void,
+): PreResponseTerminalState {
+  let headersReceived = false
+  const onAbort = (): void => {
+    termination.recordLocalCancel("other-local", signal?.reason, req.rstCode)
+    req.close(http2.constants.NGHTTP2_CANCEL)
+    rejectAfterRequestClosed(abortError(signal))
+  }
+  signal?.addEventListener("abort", onAbort, { once: true })
+  req.once("error", (error) => {
+    signal?.removeEventListener("abort", onAbort)
+    const normalized = error instanceof Error ? error : new Error(String(error))
+    if (normalized.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(normalized, "refused-stream")
+    termination.recordError(normalized, req.rstCode)
+    rejectAfterRequestClosed(normalized)
+  })
+  req.once("close", () => {
+    if (headersReceived) return
+    signal?.removeEventListener("abort", onAbort)
+    const error = tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close")
+    termination.recordCloseBeforeEnd(error, req.rstCode)
+    rejectAfterRequestClosed(error)
+  })
+  return {
+    observeHeaders(streamId) {
+      headersReceived = true
+      termination.observeHeaders(streamId)
+      signal?.removeEventListener("abort", onAbort)
+    },
+  }
+}
+
 async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
   const signal = init.signal
   // Preflight: the composite signal can ALREADY be aborted before we get here (e.g. the
@@ -1022,6 +1307,24 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       return
     }
 
+    const termination = createHttp2TerminationRecorder({
+      // With a dispatch handle we can lease the SESSION's GOAWAY record, so this stream's snapshot
+      // reports the frame the session actually received. Without one there is no owner to attribute
+      // a shared session event to, so the snapshot keeps its default not-observed GOAWAY.
+      commitPort: createLocalTerminationCommitPort(init.dispatch === undefined ? undefined : entry.goawayLedger.acquireDispatchLease(init.dispatch)),
+      onTermination: init.onTermination,
+      // Sampled when THIS stream ends, so the sibling count and ping counters describe the connection
+      // at the moment of the termination being explained — not at the moment the request started.
+      sessionSnapshot: () => ({
+        sessionId: entry.sessionId,
+        origin: entry.origin,
+        generation: entry.generation,
+        lifecycleAtSnapshot: entry.lifecycle,
+        activeStreamCountAtSnapshot: entry.activeStreamCount,
+        ping: { ...entry.pingStats },
+      }),
+    })
+
     // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
     // the pooled session remains available to siblings. Resolve cancellation/rejection only
     // after the stream's close event confirms teardown.
@@ -1029,18 +1332,32 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     const requestClosed = new Promise<void>((resolve) => {
       resolveRequestClosed = resolve
     })
-
     // activeStreamCount bookkeeping: the stream now owns the reservation acquired
     // above. Node guarantees `close` fires exactly once per h2 stream regardless of
-    // outcome (normal end / RST / abort before or after headers) — this single
-    // platform-guaranteed event releases the reservation exactly once, without
-    // hand-decrementing on every distinct termination path below (global
-    // constraint #3). PATH 1 (the sole path once the stream exists).
+    // outcome (normal end / RST / abort before or after headers) — but the release is
+    // routed through an exactly-once primitive rather than resting on that guarantee,
+    // so the force-dispose path can share it without double-counting the same slot.
+    const releaseStreamSlot = createStreamSlotRelease(entry)
+    // A physical stream now exists on a pooled session, so a caller may arm teardown waits that only
+    // this path can satisfy. Announced before any close listener so an immediate close cannot beat it.
+    init.onStreamOpened?.({
+      forceClose: () => {
+        try {
+          // CANCEL is the honest code here: we are abandoning our own stream, not reporting a fault.
+          req.close(http2.constants.NGHTTP2_CANCEL)
+        } catch {
+          // Already destroyed/closed — the slot release below is what actually matters.
+        }
+        // A short tail for the peer to answer the RST. If it does, `close` releases the slot and this
+        // timer's release is a no-op; if it does not, we reclaim the slot anyway rather than leaking
+        // pool capacity to a stream that will never close. Exactly-once makes both orders safe.
+        const tail = setTimeout(releaseStreamSlot, FORCED_TEARDOWN_TAIL_MS)
+        tail.unref()
+      },
+    })
     req.once("close", () => {
-      entry.activeStreamCount -= 1
-      maybeReclaimRetiringSession(entry)
-      if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
-      wakeOriginSlotWaiter(entry.origin) // a stream slot freed → session reusable → let a capped waiter retry
+      termination.observePhysicalClose()
+      releaseStreamSlot()
       init.onStreamClosed?.()
       resolveRequestClosed()
     })
@@ -1053,19 +1370,10 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       void requestClosed.then(() => reject(error))
     }
 
-    // Pre-response abort → reject; the post-response abort (cancel the body
-    // stream) is wired inside the `response` handler below.
-    const onPreResponseAbort = (): void => {
-      req.close(http2.constants.NGHTTP2_CANCEL)
-      rejectAfterRequestClosed(abortError(signal))
-    }
-    signal?.addEventListener("abort", onPreResponseAbort, { once: true })
-
-    let headersReceived = false
+    const preResponseTermination = registerHttp2PreResponseTerminationHandlers(req, signal, termination, rejectAfterRequestClosed)
 
     req.once("response", (h) => {
-      headersReceived = true
-      signal?.removeEventListener("abort", onPreResponseAbort)
+      preResponseTermination.observeHeaders(req.id ?? null)
       if (rejectionScheduled) return
       responseResolved = true
 
@@ -1081,102 +1389,30 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       // a `trailers` event (after the data frames, before `end`) when the upstream
       // sends a trailing HEADERS frame. Currently rare from GHC, but the transport
       // observes them, so capture-when-present instead of silently discarding.
-      if (init.onTrailers) {
-        req.once("trailers", (t: http2.IncomingHttpHeaders) => {
-          const record: Record<string, string> = {}
-          for (const [key, value] of Object.entries(t)) {
-            if (key.startsWith(":")) continue
-            if (Array.isArray(value)) record[key] = value.join(", ")
-            else if (value !== undefined) record[key] = value
-          }
-          if (Object.keys(record).length > 0) init.onTrailers?.(record)
-        })
-      }
+      req.once("trailers", (t: http2.IncomingHttpHeaders) => {
+        termination.observeTrailers()
+        if (!init.onTrailers) return
+        const record: Record<string, string> = {}
+        for (const [key, value] of Object.entries(t)) {
+          if (key.startsWith(":")) continue
+          if (Array.isArray(value)) record[key] = value.join(", ")
+          else if (value !== undefined) record[key] = value
+        }
+        if (Object.keys(record).length > 0) init.onTrailers(record)
+      })
 
+      let bodyTermination!: ReturnType<typeof registerHttp2BodyTerminationHandlers>
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
-          let ended = false
           req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-          req.once("end", () => {
-            ended = true
-            try {
-              controller.close()
-            } catch {
-              /* already closed (e.g. cancelled) */
-            }
-          })
-          // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
-          // the consumer (guardSseIterable) sees a failure, NOT a silent
-          // truncation read as success.
-          //
-          // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
-          // delivered by Bun's node:http2 as a normal `end` with rstCode=0
-          // (verified), so that exact case is undetectable here under Bun. The
-          // dominant real failure — a dropped connection — emits `close` without
-          // `end` and IS caught by the backstop below. App-layer backstops
-          // (guardSseIterable idle-timeout, missing terminal SSE event) cover
-          // the residual.
-          req.once("error", (err) => {
-            try {
-              // Post-header body error (session drop / RST after response headers)
-              // — a truncated body. Tag it mid-body-close so classifyError reads
-              // the structured reason instead of node's error string (this is the
-              // OTHER real mid-body producer besides the bare-close backstop below).
-              controller.error(err instanceof Error ? tagTransportError(err, "mid-body-close") : err)
-            } catch {
-              /* already errored */
-            }
-          })
-          // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
-          // WITHOUT an `error` on a server-initiated reset. A close before `end`
-          // is a truncated body — surface it as a stream error, never a clean done.
-          req.once("close", () => {
-            if (!ended) {
-              try {
-                controller.error(tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close"))
-              } catch {
-                /* already closed/errored */
-              }
-            }
-          })
+          bodyTermination = registerHttp2BodyTerminationHandlers(req, controller, termination, signal)
         },
-        async cancel() {
-          req.close(http2.constants.NGHTTP2_CANCEL)
+        async cancel(reason) {
+          bodyTermination.cancel(reason)
           await requestClosed
         },
       })
-
-      if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
-
       resolve(new Response(body, { status, headers: responseHeaders }))
-    })
-
-    // Error before headers (connect failure, RST before response) → reject. Tag a
-    // REFUSED_STREAM (node:http2 surfaces it here, pre-response) so classifyError
-    // reads the structured reason instead of matching the error string.
-    req.once("error", (err: Error) => {
-      signal?.removeEventListener("abort", onPreResponseAbort)
-      if (err.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(err, "refused-stream")
-      rejectAfterRequestClosed(err)
-    })
-
-    // Backstop (P4, empirically verified against Bun's node:http2): a whole-session
-    // teardown before any response headers arrive (e.g. the upstream session is
-    // destroyed) does NOT always reach this stream's `error` listener under Bun —
-    // it can surface as a BARE `close` (rstCode=0), with neither `response` nor
-    // `error` ever firing. Without this, the returned promise hangs forever (a
-    // genuine hang, not just an internal-counter miss — verified via a minimal
-    // reproduction: `session.destroy(err)` on the SERVER side produces a client
-    // `req` sequence of goaway → session close → stream close, with the stream's
-    // own `error` event never emitted). If headers were never received by the
-    // time `close` fires, this is a truncated pre-response failure — reject it.
-    req.once("close", () => {
-      if (!headersReceived) {
-        signal?.removeEventListener("abort", onPreResponseAbort)
-        rejectAfterRequestClosed(
-          tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close"),
-        )
-      }
     })
 
     if (init.body !== undefined) req.write(init.body)

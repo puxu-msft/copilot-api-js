@@ -20,8 +20,6 @@
  * concern (retry-transport.md §4.1, P2.4) — this adapter is HTTP-only.
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
-
 import type { HeadersCapture } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -36,7 +34,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { getShutdownSignal } from "~/lib/shutdown"
+import { state } from "~/lib/state"
 import {
   //
   combineAbortSignals,
@@ -51,19 +49,24 @@ export interface UpstreamHttpTransportDeps {
   clientAbortSignal?: AbortSignal
   /** Stream idle-timeout (ms) for `guardSseIterable` (`state.streamIdleTimeout * 1000`). */
   idleTimeoutMs: number
-  /**
-   * When true, a shutdown-caused non-streaming fetch abort is rewritten to a
-   * retryable 529 inside `sendUpstreamHttp` (parity with the legacy Anthropic
-   * client). The Anthropic v4 transport opts in; CC / Responses / Gemini leave it
-   * off (their AbortError flows through unchanged).
-   */
-  rewriteShutdownAbort?: boolean
 }
 
 /** Build an HTTP {@link Transport} for one request. */
 export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Transport & PhysicalTransport {
-  const send: Transport["send"] = async (wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream> => {
-    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal, getShutdownSignal()))
+  const send = async (
+    wire: PreparedRequest,
+    env: RequestEnvelope,
+    options?: TransportDispatchOptions,
+  ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
+    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
+    // The h2 path reports its physical stream close here, so `dispose()` can wait on the WIRE rather than on our own bookkeeping.
+    // The barrier is registered when a stream is actually OPENED, never up front: the plain-HTTP (undici) path owns no h2 stream and would never report a close, so an unconditional barrier would stall every one of its disposals for the full grace and then declare a healthy connection unusable.
+    let resolveStreamClosed!: () => void
+    const streamClosed = new Promise<void>((resolve) => {
+      resolveStreamClosed = resolve
+    })
+    // A4-1 made this handle the canonical owner of the dispatch. It stays optional here only because legacy/compat callers may still send without an options bag; when absent we record nothing rather than falling back to ambient attribution, which would blame the wrong dispatch under hedging.
+    const dispatch = options?.dispatch
     const headers = Object.fromEntries(wire.headers.entries())
     const body = wire.body as { model?: unknown; tools?: unknown }
     // Transport-local capture: sendUpstreamHttp fills `.response` (via
@@ -83,7 +86,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         body: wire.body,
         stream: wire.stream,
         errorLabel: errorLabelFor(wire.url),
-        modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
+        modelId: typeof body.model === "string" ? body.model : (env.request.model as Model | undefined)?.id,
         diagnosticsTools: body.tools,
         headersCapture,
         clientAbortSignal: deps.clientAbortSignal,
@@ -92,7 +95,42 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
         // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
         onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
-        ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
+        // Fires after the h2 stream is physically gone and its local callbacks are detached — the only honest signal that teardown finished.
+        onStreamClosed: () => resolveStreamClosed(),
+        // Armed only once an h2 stream exists, so the undici path never acquires a barrier it could not satisfy.
+        onStreamOpened: (control) =>
+          lifecycle.registerTeardownBarrier({
+            closed: streamClosed,
+            graceMs: state.generationCleanupGraceSec * 1000,
+            onTimeout: () => {
+              // Record BEFORE forcing: this is the diagnosis of a stream that would not close, and it
+              // must survive even if the forced teardown below goes badly.
+              if (dispatch) {
+                env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+                  kind: "transport.h2.barrier_timeout",
+                  // A stream that ignores its teardown grace is a genuine fault, not an observation.
+                  severity: "warning",
+                  message: "h2 stream did not close within the teardown grace; forcing RST_CANCEL and reclaiming its pool slot",
+                  data: { graceMs: state.generationCleanupGraceSec * 1000 },
+                })
+              }
+              control.forceClose()
+            },
+          }),
+        // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
+        // Attribution is the EXPLICIT dispatch handle, never the ambient current attempt — a hedged request has several dispatches in flight at once.
+        ...(dispatch && {
+          dispatch,
+          onTermination: (snapshot) => {
+            env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+              kind: "transport.h2.termination",
+              // Purely observational: the stream already ended, and how it ended is not by itself a failure — a local cancel is often the correct outcome of a hedge race.
+              severity: "info",
+              // The whole snapshot, not a projection: it is already bounded and frozen at the source, and a second hand-maintained schema here would drift from it.
+              data: snapshot,
+            })
+          },
+        }),
       })
     } catch (error) {
       lifecycle.complete()
@@ -114,15 +152,14 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     // (ctx.lifecycleSignal) is a DISTINCT provenance from `clientSignal` so a
     // mid-stream reaper-cancel reaches a still-connected client as an error frame
     // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
-    const frames = guardSseIterable(result as AsyncIterable<ServerSentEventMessage>, {
+    const frames = guardSseIterable(result as AsyncIterable<import("./parsed-sse-frame").ParsedSseFrame>, {
       idleTimeoutMs: deps.idleTimeoutMs,
-      shutdownSignal: getShutdownSignal(),
       clientSignal: deps.clientAbortSignal,
       reaperSignal: env.ctx.lifecycleSignal,
       dispatchSignal: lifecycle.signal,
-    }) as AsyncIterable<UpstreamFrame>
+    })
 
-    return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle }
+    return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle } as UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame>
   }
   return { send, ...physicalTransportFromSend(send) }
 }

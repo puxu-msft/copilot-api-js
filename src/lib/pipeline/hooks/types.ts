@@ -3,9 +3,9 @@ import type {
   //
   ClientFrame,
   PreparedRequest,
-  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
+import type { SseFrame } from "~/lib/stream"
 
 /**
  * Symmetric four-point hook surface (RFC 2026-07-14-symmetric-four-point-hooks).
@@ -30,9 +30,14 @@ export interface UpstreamHook {
   client?: {
     /**
      * Client-native inbound request rewrite, ONE-SHOT, at driver S1a→S1b (after parse, before
-     * translate/sanitize) — the ONLY point where every format's body is client-native (RFC §3). The
-     * driver hands the hook a defensive body clone and, on `undefined`, keeps the original parsed env
-     * (immutable-return + defense-in-depth: §3.5). Return a new env to rewrite the request.
+     * translate/sanitize) — the ONLY point where every format's body is client-native (RFC §3).
+     *
+     * The hook is handed the LIVE parsed env, not a defensive clone (the clone was removed 2026-08-11
+     * with the move to mutable scopes: the core trusts a hook to know what it is doing, and a hook that
+     * gets it wrong should fail loudly rather than be silently papered over). So both shapes work and
+     * both reach the wire: mutate `env.attempt.body` in place and return `undefined`, or return an env
+     * built with `writeAttempt`. Note that `writeAttempt` returns the SAME env object — do not keep a
+     * reference to the pre-rewrite env expecting it to still hold the old body.
      */
     inbound?: (env: RequestEnvelope) => RequestEnvelope | undefined
     /**
@@ -48,7 +53,7 @@ export interface UpstreamHook {
   /** upstream/target format. */
   upstream?: {
     /** Per upstream response frame (was `rewriteUpstreamFrame`). Return undefined to drop the frame. */
-    inbound?: (frame: UpstreamFrame, env: RequestEnvelope) => UpstreamFrame | undefined
+    inbound?: (frame: SseFrame, env: RequestEnvelope) => SseFrame | undefined
     /** Upstream-bound request, post-sanitize/pre-exchange, one-shot (was `onRequest`). */
     outbound?: (env: RequestEnvelope) => RequestEnvelope | undefined
   }

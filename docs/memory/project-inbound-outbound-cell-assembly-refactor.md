@@ -7,6 +7,8 @@ metadata:
   originSessionId: 8d7d43df-e5a9-408c-96f4-cd6335272573
 ---
 
+> **时效注记（2026-08-11）**：本文多处写的载体 `env.requestState` **已不存在**。RequestEnvelope 改为三作用域——纯值住 `env.request`、逐候选重建的不透明可变持有者住 `env.candidate`、下一次派发的输入住 `env.attempt`；cell-fork 判别式也从「`requestState` 存在性」换成显式 `env.request.legSupplyReady`。下文按当时状态原样保留（它记的是那轮重构的教训，不是当前形状）；**当前形状以 [DESIGN.md](../DESIGN.md)「活的架构现状」为准**。
+
 **codec 对象模型重构（cell-assembly）**——源起 Phase 7 前向腿生产 500 bug 暴露的**结构性轴错配**:通用翻译矩阵的两轴（clientFormat 入站 × targetEndpoint 出站）只活在数据层（env 两字段）,对象层只有一根轴（`FormatCodec` by clientFormat）,出站关切被打散进 `{strategy-registry 供料袋 + 4 handler 供料工厂 + codec 跨格 delegate + codec 内 isForwardTranslateLeg 分叉}`——漏填一腿供料 = 深埋 handler 静默 500,每加一格复发。用户授权全拆分、长远正确、评审委托 agents。
 
 **状态：C0-C6 全 landed 并 merged master（含与并发 remove-auto-truncate 项目的 reconcile）。全 12 出站 cell 走单一 `resolveCellAssembly`、driver cell-keyed fork 双向证成、字节等价、reviewed、全套件 4779 pass / 0 fail。全部清理项完成**：codec 出站方法删除 + 死 accessor 清理、HIGH-1 hub 提取、gemini 剥前缀（见下）。**gemini cc delegate 移除评估后不采纳**（RFC 判它反模式是因它兼做出站;出站已删后 delegate 收缩为纯响应侧复用 CC InboundCodec 归一化——passthrough/反向 translator/accumulator 三路 dispatch + gemini 加 CC→Gemini 跳,是合法组合非死码,移除=在 gemini 重复三路 dispatch 反损可维护性;HIGH-1 只提取其中一条叶子原语不改此结论）。权威进度 = [PROGRESS.md](../plan/inbound-outbound-split/PROGRESS.md)。**
@@ -30,7 +32,7 @@ metadata:
 - **dead code 推迟 C5 统一删**:fork 互斥（migrated 只走 assembly）,codec direct/reverse 分支 + handler MESSAGES 供料变 dead 但**非双活**,与 codec 出站方法一起 C5 删（无双活安全不变量已满足,删除是清理非安全）。
 - **踩坑**:①改 ctx 加 side-channel 写 → 测试 ctx double 须补该方法（Guard B/C 缺 setInitialSanitizationInfo 抛错）②driver-level reverse IT 注入 strategies 绕过真装配器（R4 反例）→ 改传 reverseMapperHolder 驱动真 assembly ③base 有第 6 条**间歇** payload timeout flake（全套件高负载偶发 5000ms,隔离过,与重构无关,别当回归）④gpt-souls agent 底座故障（proxy 把 gpt 路由 /v1/messages 被拒,正是本重构要修的 bug 类）→ 改主会话 inline / Claude agent。
 
-**权威文档**（同一事实只写一处,深层看这些）:
+**权威文档**（以下来源负责深层契约与冲突裁决；本 memory 保留接手该主题所需的完整语境，并引用这些来源）:
 - [RFC 2026-07-13](../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)——**§0.1 三轮首轮裁决 + §11 定稿设计 + §11.9 v3 修订为权威**（§2-§10 是被证伪的 v1 ⊥ 正交,存档对照）。
 - 三层 plan [docs/plan/inbound-outbound-split/](../plan/inbound-outbound-split/)（plan.md:C0-C6 factory 锚点表 + 12-cell 真实策略栈 + R1-R5 红线;prompts/README:严格串行 DAG）。
 - [交接 kickoff](../rfc/inbound-outbound-split-kickoff.md)（T1-T3 已完成、新会话从 T4 起）。

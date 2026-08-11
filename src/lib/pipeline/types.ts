@@ -11,7 +11,11 @@
  * `~/lib/request/retry-types` and enter the driver through the payload adapter.
  */
 
-import type { OperationKind } from "~/lib/context/model-operation-record"
+import type {
+  //
+  DispatchHandle,
+  OperationKind,
+} from "~/lib/context/model-operation-record"
 import type {
   //
   EffectiveRequest,
@@ -19,6 +23,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
@@ -26,10 +31,12 @@ import type {
   SseFrame,
   StreamErrorKind,
 } from "~/lib/stream"
+import type { ParsedSseFrame } from "~/lib/transport/parsed-sse-frame"
 
 // `import type` — erased at runtime, so this does NOT create a runtime cycle with
 // rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
 // used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type { BufferedFlushContext } from "./buffered-flush"
 import type {
   //
   CanonicalBlock,
@@ -44,16 +51,18 @@ import type {
 } from "./envelope"
 import type { FrameAction } from "./rewrite-registry"
 
+export type { BufferedFlushContext } from "./buffered-flush"
+export type { OwnerOperation } from "./owner-operation"
+
 // ============================================================================
 // SSE frames + upstream stream
 // ============================================================================
 
-/**
- * One SSE frame flowing from upstream, pre-rewrite. Today this is the raw wire
- * shape (`{ event?, data? }`); it gains a parsed-view discriminant when the
- * response rewrite/translate stages (S5/S6) land (P1/P2).
- */
+/** Semantic SSE fields exposed to upstream observers, rewrites, hooks, and codecs. */
 export type UpstreamFrame = SseFrame
+
+/** Transport-owned parsed frame entering the response processor before semantic projection. */
+export type TransportUpstreamFrame = ParsedSseFrame | UpstreamFrame
 
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
@@ -68,9 +77,9 @@ export interface DispatchDisposalResult {
 export interface UpstreamDispatchLifecycle {
   /** Cooperative cancellation; returns immediately. */
   cancel(reason?: string): void
-  /** Idempotent force-disposal barrier; no local frame/header callback can fire after resolve. */
+  /** Idempotent force-disposal barrier; resolves after natural completion or successful cleanup, and rejects with the cleanup failure when disposal fails. */
   dispose(reason?: string): Promise<DispatchDisposalResult>
-  /** Resolves on natural completion or disposal. */
+  /** Resolves on natural completion or successful disposal; rejects with the original cleanup failure. */
   quiesced: Promise<void>
 }
 
@@ -79,8 +88,8 @@ export interface UpstreamDispatchLifecycle {
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
  * carries the upstream HTTP response headers for capture (Retry-After, quota).
  */
-export interface UpstreamStream {
-  frames: AsyncIterable<UpstreamFrame>
+export interface UpstreamStream<Frame extends TransportUpstreamFrame = TransportUpstreamFrame> {
+  frames: AsyncIterable<Frame>
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
@@ -119,8 +128,17 @@ export interface PreparedRequest {
   stream: boolean
 }
 
-/** Scheduler-owned controls for ONE physical transport dispatch. */
+/**
+ * Scheduler-owned controls for ONE physical transport dispatch.
+ *
+ * `dispatch` is the canonical ownership link: every transport-level observation is attributed to THIS handle, never to whatever attempt happens to be "current" on the request context.
+ * Ambient attribution is wrong the moment two dispatches overlap — hedged candidates and buffered retry both do exactly that — and the failure is silent, because a misattributed diagnostic still lands on a real attempt.
+ *
+ * It is required, and so is the options bag itself, so that a new dispatch site cannot compile without deciding whose dispatch it is.
+ */
 export interface TransportDispatchOptions {
+  /** Canonical owner of this dispatch; every diagnostic recorded below is attributed here. */
+  dispatch: DispatchHandle
   /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
   forceHttp?: boolean
   /** Candidate/dispatch-local cancellation, independent from request-level lifecycle signals. */
@@ -135,18 +153,22 @@ export interface TransportDispatchOptions {
  * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<UpstreamStream>
 }
 
 export type PhysicalTransportResponse =
-  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | {
+      kind: "stream"
+      upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }
+      lifecycle: UpstreamDispatchLifecycle
+    }
   | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
 
 /** Mandatory physical ownership contract consumed by the generation dispatch scheduler. */
 export interface PhysicalTransport {
-  open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
+  open(wire: PreparedRequest, env: RequestEnvelope, options: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
 
 // ============================================================================
@@ -231,6 +253,32 @@ export type ExchangeStage = (env: RequestEnvelope) => Promise<UpstreamStream>
 // Driver
 // ============================================================================
 
+const historyBodySnapshotBrand: unique symbol = Symbol("historyBodySnapshot")
+
+/**
+ * A caller-owned, private copy of the client body that History may retain.
+ *
+ * The only constructor deep-clones `source`; after construction the caller must
+ * treat `body` as immutable. This prevents a route and a codec from both taking
+ * a full request-sized copy merely to establish the same history boundary.
+ */
+export interface HistoryBodySnapshot {
+  readonly body: unknown
+  readonly [historyBodySnapshotBrand]: true
+}
+
+/** Create the private History snapshot required when a route will mutate its wire body. */
+export function snapshotHistoryBody(source: unknown): HistoryBodySnapshot {
+  return Object.freeze({ body: structuredClone(source), [historyBodySnapshotBrand]: true })
+}
+
+/** Read a route-created snapshot and reject forged, aliased history bodies at the codec boundary. */
+export function historySnapshotBody(snapshot: HistoryBodySnapshot): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/no-unnecessary-boolean-literal-compare -- runtime must reject values forged through `as`, outside TypeScript's nominal brand.
+  if (snapshot[historyBodySnapshotBrand] !== true) throw new Error("originalBodyForHistory must be created by snapshotHistoryBody")
+  return snapshot.body
+}
+
 /**
  * The inbound HTTP request abstraction handed to S1 (`codec.parse`). Thin: it
  * carries only what parse needs — the already-JSON-parsed body, inbound headers
@@ -264,14 +312,12 @@ export interface RawHttpRequest {
    */
   readonly stream?: boolean
   /**
-   * The client's raw inbound body for the history snapshot, when it differs from
-   * `body`. The route applies the async, non-idempotent system-prompt injection
-   * to `body` BEFORE `codec.parse` (parse is sync — P2.2-D3); it passes the
-   * pre-injection client body here so parse records the inboundRequest as what
-   * the client actually sent (not the server-modified wire body). Defaults to
-   * `body` when omitted (no system-prompt injection happened).
+   * A private client-body snapshot supplied by a route before it mutates `body`.
+   * Construct only with {@link snapshotHistoryBody}; codecs retain this exact
+   * value as History ingress and therefore never clone it again. When omitted,
+   * `body` has no private-ownership guarantee, so the codec must clone it.
    */
-  readonly originalBodyForHistory?: unknown
+  readonly originalBodyForHistory?: HistoryBodySnapshot
   /**
    * Model resolution computed by the route BEFORE the sync parse, at the legacy
    * timing point (before the async system-prompt's `applyConfigToState` config
@@ -282,6 +328,7 @@ export interface RawHttpRequest {
    */
   readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Non-HTTP operation identity supplied by transport entry points such as Responses WS. */
+  readonly historyReservation?: HistoryReservation
   readonly operationIdentity?: {
     readonly kind: OperationKind
     readonly connectionId?: string
@@ -293,13 +340,6 @@ export interface RawHttpRequest {
 }
 
 export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
-export type OwnerOperation =
-  | "allocate-anchor"
-  | "allocate-real-block"
-  | "begin-leg"
-  | "close-anchor-before-real"
-  | "close-anchor-terminal"
-  | "write-block-frame"
 export type OwnerResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
@@ -316,6 +356,12 @@ export interface WireEnvelopeFactory {
   keepalive(frame: ClientFrame): WireWriteSpec
 }
 
+export interface RecoveryBatchBuild {
+  readonly specs: ReadonlyArray<WireWriteSpec>
+  /** Owner-only callback: invoked inside the serializer if an anchor is actually open. */
+  readonly closeOpenAnchorBefore?: (index: number, envelope: Pick<WireEnvelopeFactory, "anchor">) => WireWriteSpec
+}
+
 export interface WireBlockAllocationPort {
   readonly wireState?: GenerationWireState
   allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
@@ -324,6 +370,8 @@ export interface WireBlockAllocationPort {
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
   ): Promise<OwnerResult<WireBlockMapping>>
   beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
+  /** Stages a completed recovery's client-shaped frames, then publishes the whole batch at one C9 point. */
+  publishRecoveryBatch(source: LegSource, build: (envelope: WireEnvelopeFactory) => RecoveryBatchBuild): Promise<OwnerResult<"published">>
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
@@ -333,6 +381,8 @@ export interface WireBlockAllocationPort {
 
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
+  /** `publish` is the normal client-delivery path; `evaluate` is an isolated candidate-only drain. */
+  responseMode?: "publish" | "evaluate"
   /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
   wireAllocationPort?: WireBlockAllocationPort
   /**
@@ -565,8 +615,17 @@ export interface AnchorState {
  *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
  *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
  *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
+ *   - `"precontent-recovery-success"` / `"precontent-recovery-exhausted"`: reserved B2 counters for
+ *     a fresh dispatch that follows a failure before real content reaches the client.
  */
-export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade" | "continuation-exhausted"
+export type ProtectStreamingOutcome =
+  | "success"
+  | "exhausted"
+  | "retreated"
+  | "partial-degrade"
+  | "continuation-exhausted"
+  | "precontent-recovery-success"
+  | "precontent-recovery-exhausted"
 
 /**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
@@ -574,12 +633,6 @@ export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "p
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
-/** The flush-triggering cause + (for boundary flushes) the frame that closed the block (spec §4). */
-export interface BufferedFlushContext {
-  cause: "boundary" | "terminal-drain" | "retreat"
-  boundaryFrame?: ClientFrame
-}
-
 export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Anthropic synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
@@ -811,7 +864,7 @@ export interface ClientSink {
    */
   close?(): void
   /** Seal the canonical operation after every real/synthetic client frame has been delivered. */
-  finalize?(): void
+  finalize?(): void | Promise<void>
 }
 
 /**
@@ -845,9 +898,18 @@ export interface ClientSink {
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
+export type ResponseFailureSource = "upstream-transport" | "codec-render" | "downstream-sink" | "delivery-owner"
+
+/** Retains the failure that a later codec/flush failure superseded as the client terminal. */
+export interface ResponseFailureDiagnostics {
+  readonly supersededError: unknown
+  readonly supersededSource: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
+  readonly flushError: unknown
+}
+
 export type ResponseOutcome =
   | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
-  | { kind: "stream-error"; error: unknown; truncated?: boolean }
+  | { kind: "stream-error"; error: unknown; source: ResponseFailureSource; diagnostics?: ResponseFailureDiagnostics; truncated?: boolean }
   | { kind: "settled-abort" }
   | { kind: "delivery-finished" }
 
@@ -968,7 +1030,7 @@ export interface FormatCodec {
    * S2: translate body to the target-endpoint format (passthrough = identity). OPTIONAL since the
    * CellAssembly refactor — the outbound leg (`OUTBOUND_LEGS[targetEndpoint].translateOut`) owns this for
    * every real request (the driver dispatches through `migratedCell(env)`); a codec only implements it as
-   * the mock/legacy fallback for a driver-orchestration unit test whose env has no `requestState`.
+   * the mock/legacy fallback for a driver-orchestration unit test whose env has no leg supply (`request.legSupplyReady` unset).
    */
   translateOut?(env: RequestEnvelope): RequestEnvelope
 
@@ -1001,7 +1063,7 @@ export interface FormatCodec {
    */
   createCandidateRenderer?(env: RequestEnvelope): CandidateResponseRenderer
 
-  /** Fork opaque request-side state for one candidate; real codecs with mutable requestState implement this. */
+  /** Fork the opaque candidate-scope state for one candidate; real codecs with per-candidate mutable supply implement this. */
   createCandidateStateFactory?(env: RequestEnvelope): import("./generation/candidate-state").CandidateStateFactory
 
   /** S6 non-streaming: translate the whole upstream response back to the client. */

@@ -37,6 +37,7 @@ import {
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { writeAttempt } from "~/lib/pipeline/envelope"
 
 const ORDER_SANITIZE = 300
 
@@ -85,14 +86,14 @@ export function createReverseAnthropicSanitizeRewrite(holder: ReverseAnthropicMa
     order: ORDER_SANITIZE,
     // Two-axis gate (RFC §3.1): the Anthropic sanitize produces the UPSTREAM /v1/messages wire, so it
     // gates on the OUTBOUND leg — fires exactly on a reverse cc/responses/gemini → messages leg.
-    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
+    appliesTo: (env) => env.attempt.targetEndpoint === ENDPOINT.MESSAGES,
     apply: (env) => applyReverseAnthropicSanitize(env, holder),
   }
 }
 
 function applyReverseAnthropicSanitize(env: RequestEnvelope, holder: ReverseAnthropicMapperHolder): RewriteResult {
   const ctx = env.ctx
-  const baseline = env.body as MessagesPayload
+  const baseline = env.attempt.body as MessagesPayload
   const { payload: sanitized, sanitizeResult } = runAnthropicPayloadRewrites(baseline, { toolNameMapper: holder.resolve(baseline) })
   const stats = sanitizeResult.stats
 
@@ -108,5 +109,5 @@ function applyReverseAnthropicSanitize(env: RequestEnvelope, holder: ReverseAnth
     })
   }
 
-  return { env: env.with({ body: sanitized }), changed: sanitized !== baseline }
+  return { env: writeAttempt(env, { body: sanitized }), changed: sanitized !== baseline }
 }

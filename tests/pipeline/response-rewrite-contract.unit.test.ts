@@ -67,17 +67,12 @@ function makeCtx(): RequestContext {
 
 function makeEnv(): RequestEnvelope {
   const env = {
-    clientFormat: "openai-cc",
-    targetEndpoint: "/chat/completions",
-    model: {},
-    stream: true,
-    body: {},
+    request: { clientFormat: "openai-cc", model: {}, stream: true } as RequestEnvelope["request"],
+    attempt: { body: {}, targetEndpoint: "/chat/completions", prepareHints: {} } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
     ctx: makeCtx(),
-    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
-      return { ...this, ...patch } as unknown as RequestEnvelope
-    },
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }

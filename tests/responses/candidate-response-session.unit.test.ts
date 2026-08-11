@@ -43,13 +43,18 @@ const DELTA_DATA = JSON.stringify({ type: "response.output_text.delta", delta: "
 
 function env(): RequestEnvelope {
   return {
-    clientFormat: "openai-responses",
-    targetEndpoint: "/responses",
-    model: { id: "gpt-5" },
-    stream: true,
-    body: { model: "gpt-5", input: "hello" },
+    request: {
+      clientFormat: "openai-responses",
+      model: { id: "gpt-5" },
+      stream: true,
+    } as RequestEnvelope["request"],
+    attempt: {
+      targetEndpoint: "/responses",
+      body: { model: "gpt-5", input: "hello" },
+      prepareHints: {},
+    } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
     view: {},
-    prepareHints: {},
     ctx: {
       toolNameMapper: undefined,
       recordStreamProgress() {},
@@ -60,6 +65,7 @@ function env(): RequestEnvelope {
       setGenerationDispatchSseEvents() {},
       setGenerationDispatchTimingEpoch() {},
     } as never,
+    createView: () => ({}) as RequestEnvelope["view"],
   } as unknown as RequestEnvelope
 }
 
@@ -80,14 +86,23 @@ function createSession(transport: "http" | "ws") {
 
 describe("Responses candidate session transport wiring", () => {
   test("HTTP mounts output-item commit boundaries while WS intentionally omits them", () => {
-    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0 }) }
-    const delta = { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "x" }) }
+    const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { id: "item_1" } }) }
+    const delta = {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }),
+    }
+    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "item_1" } }) }
     const http = createSession("http")
     const ws = createSession("ws")
 
-    expect(http.responseOpts.commitBoundaries?.(done)).toBe(true)
-    expect(http.responseOpts.commitBoundaries?.(delta)).toBe(false)
+    http.responseOpts.onRenderedFrame?.(added)
+    const renderedDelta = http.responseOpts.onRenderedFrame?.(delta) ?? delta
+    const renderedDone = http.responseOpts.onRenderedFrame?.(done) ?? done
+    expect(http.responseOpts.commitBoundaries?.(renderedDone)).toBe(true)
+    expect(http.responseOpts.commitBoundaries?.(renderedDelta)).toBe(false)
     expect(ws.responseOpts.commitBoundaries).toBeUndefined()
+    expect(http.adapter.deliveryMode).toBe("unit")
+    expect(ws.adapter.deliveryMode).toBe("response-terminal")
   })
 })
 

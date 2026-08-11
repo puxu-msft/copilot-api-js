@@ -184,6 +184,11 @@ const HISTOGRAMS: ReadonlyArray<StatHistogram> = [
     extract: (opts) => opts.queueWaitMs,
   },
   {
+    name: "history_admission_wait_ms",
+    boundaries: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30_000],
+    extract: (opts) => opts.historyAdmissionWaitMs,
+  },
+  {
     name: "input_tokens",
     boundaries: [100, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000],
     extract: (opts) => opts.usage?.input_tokens,
@@ -371,6 +376,8 @@ interface SettledTelemetryInput {
   multiplier?: number
   /** Time the request spent queued (rate-limiter) before dispatch — the `queue_wait_ms` histogram observation + `queueWaitMs` sum. */
   queueWaitMs?: number
+  /** Time the operation waited for a History persistence reservation before context creation. */
+  historyAdmissionWaitMs?: number
   /**
    * Per-request thinking-block emptiness tally (from the sink's `extractThinkingBlockCounts`).
    * Undefined for non-Anthropic / no-thinking responses → the three feature measures stay 0.

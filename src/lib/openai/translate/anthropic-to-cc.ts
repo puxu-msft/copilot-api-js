@@ -24,11 +24,6 @@
  *   - `stop_reason` → `finish_reason`; `usage` → CC usage.
  */
 
-import {
-  refusalCategoryForDiagnostics,
-  type RefusalTranslationDegradationReporter,
-} from "~/lib/anthropic/refusal-detail"
-
 import type {
   //
   ContentBlock,
@@ -43,14 +38,17 @@ import type {
   ToolCall,
 } from "~/types/api/openai-chat-completions"
 
+import {
+  //
+  refusalCategoryForDiagnostics,
+  type RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
+
 // ============================================================================
 // Top-level response translation (Anthropic → CC)
 // ============================================================================
 
-export type {
-  RefusalTranslationDegradation,
-  RefusalTranslationDegradationReporter,
-} from "~/lib/anthropic/refusal-detail"
+export type { RefusalTranslationDegradation, RefusalTranslationDegradationReporter } from "~/lib/anthropic/refusal-detail"
 
 /**
  * Translate an Anthropic Messages response into a Chat Completions response (reverse-leg response).
@@ -59,10 +57,7 @@ export type {
  * upstream endpoint's own render (Responses / Gemini second hop) consumes this CC shape downstream.
  * `onDegradation` is the out-of-band observability channel for refusal category metadata CC cannot carry.
  */
-export function translateAnthropicResponseToCC(
-  response: AnthropicResponse,
-  onDegradation?: RefusalTranslationDegradationReporter,
-): ChatCompletionResponse {
+export function translateAnthropicResponseToCC(response: AnthropicResponse, onDegradation?: RefusalTranslationDegradationReporter): ChatCompletionResponse {
   const message = foldContentBlocks(response.content)
   if (response.stop_reason === "refusal") {
     onDegradation?.({
@@ -85,7 +80,7 @@ export function translateAnthropicResponseToCC(
         logprobs: null,
       },
     ],
-    ...(response.usage && { usage: mapUsage(response.usage) }),
+    usage: mapUsage(response.usage),
   }
 }
 
@@ -204,10 +199,10 @@ export function mapUsage(usage: AnthropicUsageLike): ChatCompletionUsage {
   const cacheRead = usage.cache_read_input_tokens
   const cacheCreation = usage.cache_creation_input_tokens
   const promptDetails =
-    cacheRead != null || cacheCreation != null ?
+    (cacheRead !== null && cacheRead !== undefined) || (cacheCreation !== null && cacheCreation !== undefined) ?
       {
-        ...(cacheRead != null && { cached_tokens: cacheRead }),
-        ...(cacheCreation != null && { cache_write_tokens: cacheCreation }),
+        ...(cacheRead !== null && cacheRead !== undefined && { cached_tokens: cacheRead }),
+        ...(cacheCreation !== null && cacheCreation !== undefined && { cache_write_tokens: cacheCreation }),
       }
     : undefined
   // Anthropic `input_tokens` is the NET uncached input (disjoint from the cache legs); CC

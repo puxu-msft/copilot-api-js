@@ -8,7 +8,11 @@ import {
 } from "bun:test"
 
 import type { RequestContext } from "~/lib/context/request"
-import type { PartialResponseInfo, ResponseData } from "~/lib/context/request"
+import type {
+  //
+  PartialResponseInfo,
+  ResponseData,
+} from "~/lib/context/request"
 import type { HistoryEntry } from "~/lib/history/types"
 
 import { createRequestContext } from "~/lib/context/request"
@@ -32,12 +36,11 @@ import {
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
 
-const NULL_CATEGORY_BYTES =
-  '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
-const BIO_CATEGORY_BYTES =
-  '{"type":"refusal","category":"bio","explanation":"API integrators: you can reduce refusals..."}'
-const CYBER_CATEGORY_BYTES =
-  '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
+import { historyTestReservation } from "../helpers/history-terminal-publication"
+
+const NULL_CATEGORY_BYTES = '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
+const BIO_CATEGORY_BYTES = '{"type":"refusal","category":"bio","explanation":"API integrators: you can reduce refusals..."}'
+const CYBER_CATEGORY_BYTES = '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
 
 function rawStopDetails(bytes: string): unknown {
   return JSON.parse(bytes)
@@ -50,7 +53,7 @@ function assertVerbatimStopDetails(entry: HistoryEntry, expectedBytes: string): 
 }
 
 async function persistAndProject(settle: (ctx: RequestContext) => void): Promise<HistoryEntry> {
-  const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  const ctx = createRequestContext({ endpoint: "anthropic-messages", historyReservation: historyTestReservation() })
   ctx.beginAttempt({})
   settle(ctx)
   ctx.finalizeModelOperationDelivery()
@@ -88,7 +91,7 @@ beforeEach(() => {
   openInMemoryDatabase()
   resetV3WriterForTests()
   resetModelOperationTerminalBusForTests()
-  subscribeModelOperationTerminals(enqueueModelOperation)
+  subscribeModelOperationTerminals(async (publication) => await enqueueModelOperation(publication.record))
 })
 
 afterEach(async () => {

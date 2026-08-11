@@ -18,7 +18,7 @@ import {
   copilotHeaders,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 import { state } from "~/lib/state"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
@@ -49,7 +49,7 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
   const response = await upstreamFetch(`${copilotBaseUrl(state)}/models`, {
     headers,
     // Model-catalog fetch has no per-model concept — intentionally scalar (no model arg).
-    signal: createResponseHeaderTimeoutSignal(),
+    responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(undefined),
   })
 
   if (response.status === 304) {

@@ -49,6 +49,27 @@ export interface NativeHistoryListSearchResult {
   hasOlder: boolean
   hasNewer: boolean
   invalidCursor: boolean
+  /**
+   * The query string is not one the index can parse. A field rather than a thrown error, so it
+   * cannot be confused with a genuine index failure — the napi status is shared with
+   * request-decoding faults (a missing field also arrives as `InvalidArg`), so inferring intent
+   * from it would report a caller/index version skew as a bad query.
+   */
+  invalidQuery: boolean
+}
+
+/**
+ * The index's own commit state, read from Tantivy (`Searcher::num_docs` +
+ * `IndexMeta::opstamp`) rather than from a marker this project writes beside it.
+ *
+ * Used to bind the durable tail cursor to the index that produced it: both numbers only
+ * move forward while one index lives, so a lower `opstamp` — or a zero `docCount` under
+ * a non-null cursor — means the index was wiped or rebuilt underneath a cursor that
+ * outlived it, and that cursor can no longer attest anything.
+ */
+export interface NativeHistoryIndexGeneration {
+  docCount: number
+  opstamp: number
 }
 
 /** Stateful handle over one on-disk Tantivy index (napi class instance). */
@@ -61,6 +82,8 @@ export interface NativeHistoryIndex {
   flush(): Promise<void>
   search(query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>>
   listSearch(request: NativeHistoryListSearchRequest): Promise<NativeHistoryListSearchResult>
+  /** This index's own commit state — see {@link NativeHistoryIndexGeneration}. */
+  generation(): Promise<NativeHistoryIndexGeneration>
   /** Flush any staged documents before the handle is released. */
   close(): Promise<void>
 }

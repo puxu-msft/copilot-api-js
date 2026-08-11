@@ -1,17 +1,18 @@
 ---
 name: project-upstream-silence-commit-timing-spec
-description: 上游数分钟静默(deferred-header)+ delayed-commit 不可逆致硬失败的设计 spec；Q5 已实测闭合(证伪等-header)、B2 主线定+Q6 高上限定、plan 定稿+两轮对抗审；实施进行中(Task 0.5 done、下一 0.6，B1 已被主线 supersede)；Q1 已闭合(CC pre-header≈300s，归 undici headersTimeout)、Q2 未定论
+description: 上游 deferred-header 与 delayed-commit 恢复：direct Anthropic live B2 已本地集成 master；buffered／translated 与真实 GHC 效力仍待后续
 metadata: 
   node_type: memory
   type: project
-  originSessionId: c920d902-6204-44cc-a3c9-8980aa0b5232
-  modified: 2026-07-23T08:41:38.130Z
+  originSessionId: 5cbe8f72-b4ad-4b37-8a03-2bfe84487e37
+  modified: 2026-08-08T08:58:00.731Z
 ---
 
-第二波事故带出的一类**决策 1/2 都救不了**的失败（req_57/58/63）：GHC 上游收下大请求后 0 帧干挂 126-206s 才 rstCode=0，我方 ~20s(`streamCommitAfterSec`) 已 delayed-commit 200（只发合成脚手架），commit 后流式协议不可逆 → 硬失败、用户等 2-3 分钟。权威 spec [docs/spec/2026-07-23-upstream-silence-commit-timing.md]（architect-advisor 起草 → 异模型对抗审 4 HIGH 订正 → B2-vs-B5 PoC 折叠 §6.1）。
+上游静默事故簇的权威现状已落在项目文档：当前架构见 `docs/DESIGN.md` 的“Anthropic post-commit pre-content recovery（B2）”，实施与证据见 `docs/plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md`，规范与历史实证见 `docs/spec/2026-07-23-upstream-silence-commit-timing.md`。
 
-**核心发现（Q5 已实测闭合，2026-07-23）**：「等 header 判别 A 挂起 vs B 长思考」假设**已实测证伪**——GHC **deferred-header 模式**确证（heavy-thinking 请求思考算完前不发响应头）。早前草案的 header 时刻是 SSE offset **反推**（偏晚、非直读、对抗审 HIGH-1/2 存疑）；本会话用**直读** `upstreamHeadersAt`（REST 投影 `projection.ts:277-283` 已 landed）对 4141 只读分析：300 采样 / 108 streaming 候选 / **34 条正样本** `upstreamHeadersAt−startedAt > 20s ∩ responseSuccess`，header 直读到达 **47-231s**，抽查首帧全 `synthetic:"keepalive"`。逻辑气密：header 直读 > 20s 窗口 ⟹ 必走 COMMIT 分支。**结论升「实测结论」，对抗审 HIGH-1/2 闭合，持久化 commit verdict 非必需。** spec §0/§3/§8-Q5/§9 已回填（commit `9f886ade`）。
+截至 2026-08-08，本地 `master` 已包含 direct Anthropic live B2：delayed-commit pre-ready、ready transport close、ready clean EOF before `message_stop` 三入口；仅确定性上游死亡且客户端尚无真实 block structure／content 时 fresh dispatch，所有 timeout／reaper／request cancel 等 abort provenance fail-closed。最终本地整合基线为 `master@e45536af`，未 push；该 feature worktree 与分支已在确认完全合并后删除。
 
-**方案（B2 主线，PoC 定 + 用户 2026-07-23 裁决）**：B1 加宽 commit 窗口（低成本）；**B2 post-commit pre-semantic-content 内部重试**（commit 后失败发 fresh dispatch 把真实内容拼进同一 sink）；B3 fail-fast 兜底=**Q6 用户定高上限 ~300s(≈header-timeout)/纯逃生舱/零误伤**（B2 主救、B3 只压最坏尾巴）；B5 pre-header hedge 备选。**PoC 实证**（`exp/silence-recovery-b2-vs-b5/`）：默认 `ping` 模式 fresh `message_start` 自然成首消息**无需 remap**（anchor remap 只是 `empty_text` 机件）；B2 **不是** continuation 小变体（pre-header 失败无 ready parent、`committedAny=false`），须新建 pre-ready recovery 控制面 + semantic gate + sink supervisor；server-tool 双执行须复用 `classifyServerExecutionRisk`（实际在 `src/lib/pipeline/generation/hedge-policy.ts:153`，`allowServerTools:true` bypass 主线不得用）。
+仍未完成的边界只有正式文档列出的三类：buffered B2、translated recovery publication，以及真实 GHC 大上下文 fresh-retry 成功率。不得把离线 wire／控制流验收推广成真实事故必然恢复。
 
-**Q1/Q2 实测门（`gpt-souls:poc-runner`，2026-07-23，`exp/silence-recovery-gates/FINDINGS.md`）**：**Q1 已闭合**（2026-07-27 续测）= CC pre-header 容忍度 **≈300s**，直接触发器与 undici 默认 `headersTimeout` 一致——**不是** SDK 的 1200/1250s request timer、**也不是** CC 响应头后才武装的 stream-idle watchdog（裸 TCP socket 420.1s 未被关，排除我方服务端）。作用域 = 本机 CC 2.1.220 + Node v26.3.0 transport 默认，非协议常量。事故 RST 的 126-206s **整段落在窗口内**，故 B1 抬默认窗口即可覆盖事故形态（比原判断乐观）。⚠ **不得**推出「总预算 T+300s / ~600s 天花板」——commit 后那个 300s 是可重置 idle watchdog；**Q2 = 未能定论**（4 次 270KB 真 GHC 全成功、未复现 0 帧干挂、无合法 retry 正样本，弱推断事故间歇/瞬态、B2「根治」仍待验、需上线埋点）。**B2 TDD plan 已定稿并跨模型对抗审两轮 + consensus**（`docs/plan/2026-07-23-upstream-silence-recovery/`，1 CRITICAL[gate 用 delivery-level 非 boundary.result] + 1 HIGH[MED-2 seal-race] 已整合）。**实施进行中**（2026-07-28）：隔离 worktree `.worktrees/upstream-silence-recovery` @ `feat/upstream-silence-recovery`，**未合 master**；已完成 B2-P0（配置+telemetry 骨架）/ Task 0.2（delivery-level semantic gate）/ 0.3（`runRecoveryFromPreReadyFailure`）/ 0.4（`runPreContentRecovery` + server-tool gate 经安全审计无绕过）/ 0.5（sink lifetime supervisor），**全部未接线**、逐任务异模型 review。**B1 已被主线 supersede**（master 自己落地：窗口默认 180 / ceiling 240 / ingress-relative deadline），本分支已合并 master（128 提交）。**下一步 = Task 0.6**（seal-race：守卫整个 `recordOpened`）→ P4~P6（最硬）→ B3（默认关）→ 终审 → ff。⚠ **底座漂移**：master 重写 delivery/heartbeat 生命周期，plan-3 的 `file:line` 假设多半过时、接线前必重读现状。**接手权威 = handover §0.2**（`docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md`）。**Q5 复审两 MED 入 backlog**（MED-1 dispatch-open timing 测试缺口；**MED-2** timing 抛错 vs 同族 capture 静默丢弃不对称 → deferred-header 放大的 post-seal crash race，已折进 Task 0.6）。关联 [[project-h2-pool-capacity-routing-and-pre-response-retry]]、[[feedback-recovery-is-only-path-not-risk-tradeoff]]、[[project-request-lifecycle-cancel-settle-quiesce]]。
+**Why:** 旧记忆停在 2026-07-28 的 Task 0.6 前，继续保留会让新会话重跑已经完成并合入 master 的整套实施。
+**How to apply:** 只把本条当作触发指针；所有当前状态、测试证据、deferred 边界以 `docs/DESIGN.md`、implementation report 与 backlog 为准。关联 [[project-h2-pool-capacity-routing-and-pre-response-retry]]、[[feedback-recovery-is-only-path-not-risk-tradeoff]]、[[project-request-lifecycle-cancel-settle-quiesce]]。

@@ -32,20 +32,41 @@
 // package.json + the C1 regression test (upstream-fetch.unit.test.ts) guard it.
 import { fetch as undiciFetch } from "undici/index.js"
 
+import type { DispatchHandle } from "~/lib/context/model-operation-record"
+
 import {
   //
   getUpstreamDispatcher,
   getUpstreamH2Favor,
 } from "~/lib/proxy"
+import { combineAbortSignals } from "~/lib/stream"
+
+import type { TransportTerminationSnapshot } from "./http2-observation-types"
 
 import { http2Fetch } from "./http2-client"
+import { createResponseHeaderDeadline } from "./response-header-deadline"
+
+/**
+ * What a caller may do to an h2 stream it does not own.
+ *
+ * Deliberately one verb. The pooled session is shared with sibling streams, so a dispatch is allowed to give up on ITS stream and nothing more — it may not close, evict or otherwise touch the connection underneath.
+ */
+export interface H2StreamControl {
+  /**
+   * Give up on this stream: RST_CANCEL it, then reclaim its pool slot even if the peer never answers.
+   *
+   * Reclaiming without a confirmed close is the point. A stream that refuses to close would otherwise hold its slot forever, and a pool that slowly loses slots to unclosable streams stops admitting work long before anything looks broken. The slot release is idempotent, so the late `close` (if it ever arrives) is a no-op rather than a second decrement.
+   */
+  forceClose: () => void
+}
 
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
-export interface UpstreamFetchInit {
-  method?: string
+export interface UpstreamFetchInit {  method?: string
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignal | undefined
+  /** Maximum time to receive response headers. Disarmed as soon as the transport resolves. */
+  responseHeaderTimeoutMs?: number
   /**
    * Best-effort HTTP/2 response-trailers callback. Invoked (h2 path only) when the
    * upstream sends a trailing HEADERS frame — fired AFTER the body's data frames and
@@ -55,6 +76,16 @@ export interface UpstreamFetchInit {
   onTrailers?: (trailers: Record<string, string>) => void
   /** HTTP/2-only physical stream close notification, after all local req callbacks are detached/fired. */
   onStreamClosed?: () => void
+  /** HTTP/2-only: an actual stream now exists on a pooled session. Lets a caller arm teardown waits only for transports that own one, and hands it the means to force that stream shut. */
+  onStreamOpened?: (control: H2StreamControl) => void
+  /** Best-effort first consumer-terminal observation for the HTTP/2 path; never called by plain HTTP. */
+  onTermination?: (snapshot: TransportTerminationSnapshot) => void
+  /**
+   * Canonical owner of this dispatch, when the caller has one. The h2 path uses it to lease a view of the
+   * pooled session's GOAWAY ledger, so a stream that ends around a GOAWAY reports the frame the SESSION saw.
+   * Absent, the termination snapshot reports GOAWAY as not-observed rather than guessing an owner.
+   */
+  dispatch?: DispatchHandle
 }
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>
@@ -91,7 +122,19 @@ let activeUpstreamFetch: UpstreamFetchFn = productionUpstreamFetch
 
 /** Issue an upstream HTTP request — HTTP/2 for https, undici for plaintext http. */
 export function upstreamFetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
-  return activeUpstreamFetch(url, init)
+  const { responseHeaderTimeoutMs = 0, signal, ...transportInit } = init
+  if (responseHeaderTimeoutMs <= 0) return activeUpstreamFetch(url, { ...transportInit, signal })
+
+  const deadline = createResponseHeaderDeadline(responseHeaderTimeoutMs)
+  try {
+    return activeUpstreamFetch(url, {
+      ...transportInit,
+      signal: combineAbortSignals(signal, deadline.signal),
+    }).finally(() => deadline.complete())
+  } catch (error) {
+    deadline.complete()
+    throw error
+  }
 }
 
 /**

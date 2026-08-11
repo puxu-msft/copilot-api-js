@@ -25,7 +25,7 @@ import {
 
 // A minimal envelope stub — the assemblers only read what `appliesTo` reads.
 function envWith(clientFormat: string): RequestEnvelope {
-  return { clientFormat } as unknown as RequestEnvelope
+  return { request: { clientFormat } as RequestEnvelope["request"] } as unknown as RequestEnvelope
 }
 
 function reqRewrite(name: string, order: number, gate: (env: RequestEnvelope) => boolean): RequestRewrite {
@@ -48,7 +48,7 @@ function respRewrite(name: string, order: number, gate: (env: RequestEnvelope) =
 
 describe("assembleRequestRewrites", () => {
   test("filters by appliesTo", () => {
-    const registry = [reqRewrite("a", 100, (e) => e.clientFormat === "anthropic"), reqRewrite("b", 200, (e) => e.clientFormat === "openai-cc")]
+    const registry = [reqRewrite("a", 100, (e) => e.request.clientFormat === "anthropic"), reqRewrite("b", 200, (e) => e.request.clientFormat === "openai-cc")]
     const chain = assembleRequestRewrites(envWith("anthropic"), registry)
     expect(chain.map((r) => r.name)).toEqual(["a"])
   })
@@ -95,9 +95,9 @@ describe("assembleRequestRewrites", () => {
 describe("assembleResponseRewrites", () => {
   test("filters by appliesTo and sorts by order", () => {
     const registry = [
-      respRewrite("server-tool-filter", 300, (e) => e.clientFormat === "anthropic"),
-      respRewrite("thinking-sig", 100, (e) => e.clientFormat === "anthropic"),
-      respRewrite("cc-only", 300, (e) => e.clientFormat === "openai-cc"),
+      respRewrite("server-tool-filter", 300, (e) => e.request.clientFormat === "anthropic"),
+      respRewrite("thinking-sig", 100, (e) => e.request.clientFormat === "anthropic"),
+      respRewrite("cc-only", 300, (e) => e.request.clientFormat === "openai-cc"),
     ]
     const chain = assembleResponseRewrites(envWith("anthropic"), registry)
     expect(chain.map((r) => r.name)).toEqual(["thinking-sig", "server-tool-filter"])

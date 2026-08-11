@@ -18,6 +18,7 @@ import type {
   TruncationInfo,
   WarningMessage,
 } from "~/lib/history/store"
+import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type {
   //
   AttemptSnapshot,
@@ -36,7 +37,13 @@ import {
   REQUEST_DEADLINE_CANCEL_REASON,
 } from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
+import {
+  //
+  createModelOperationTerminalPublication,
+  createRawOperationAttachmentOwner,
+} from "~/lib/history/terminal-publication"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
+import { isHistoryPersistenceReservation } from "~/lib/history/worker/http-admission"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { state as appState } from "~/lib/state"
@@ -53,6 +60,12 @@ import type {
   OperationSyntheticKind,
   PayloadNodeHandle,
 } from "./model-operation-record"
+import type {
+  //
+  CanonicalFinalizationState,
+  DeliveryLifecycleState,
+  OperationLifecycleSnapshot,
+} from "./operation-lifecycle"
 import type {
   //
   Attempt,
@@ -74,6 +87,11 @@ import type {
 
 import { snapshotWithSummary } from "./activity-summary"
 import { createModelOperationRecorder } from "./model-operation-record"
+import {
+  //
+  deriveOperationBlocker,
+  isDeliveryTerminal,
+} from "./operation-lifecycle"
 import { createOperationScope } from "./operation-scope"
 
 export type {
@@ -259,6 +277,9 @@ export function createRequestContext(opts: {
   query?: InboundQuery
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
+  historyReservation?: HistoryReservation
+  /** Manager-owned construction defers binding until the operation registry is published. */
+  deferHistoryReservationBinding?: boolean
   operationIdentity?: {
     kind: OperationKind
     connectionId?: string
@@ -272,6 +293,8 @@ export function createRequestContext(opts: {
    * event channel (the bus is the single event channel since P0.3).
    */
   onSettled?: (id: string) => void
+  /** Returns true only after the process shutdown failure barrier owns this lifecycle error. */
+  onLifecycleFailure?: (id: string, input: { phase: "delivery" | "canonical"; error: unknown }) => boolean
   /**
    * Scoped publisher for `request.*` ObservabilityEvent emissions. Optional —
    * tests/call sites that omit it leave the emit methods state-only (no bus
@@ -280,8 +303,12 @@ export function createRequestContext(opts: {
   publisher?: ScopedPublisher<"request">
 }): RequestContext {
   const id = `req_${Date.now()}_${++idCounter}`
+  if (!opts.deferHistoryReservationBinding) opts.historyReservation?.bindOperationId(id)
+  const historyAdmissionWaitMs = isHistoryPersistenceReservation(opts.historyReservation) ? opts.historyReservation.historyAdmissionWaitMs : undefined
+  const rawAttachmentOwner = createRawOperationAttachmentOwner()
   const startTime = Date.now()
   const onSettled = opts.onSettled
+  const onLifecycleFailure = opts.onLifecycleFailure
   const publisher = opts.publisher
   const method = opts.method ?? "UNKNOWN"
   const path = opts.path ?? "/"
@@ -396,7 +423,8 @@ export function createRequestContext(opts: {
   const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
   let syntheticFrameRoot: FrameNodeHandle | undefined
   let unresolvedTransformRoot: FrameNodeHandle | undefined
-  let deliveryFinalizationRequested = false
+  let deliveryState: DeliveryLifecycleState = Object.freeze({ state: "open" })
+  let canonicalState: CanonicalFinalizationState = "waiting"
   let pendingDeliveryClientPayload: unknown
   let pendingGenerationTerminal:
     | {
@@ -432,12 +460,24 @@ export function createRequestContext(opts: {
   const generationAttemptByHandle = new Map<DispatchHandle, GenerationAttemptCapture>()
   let activeGenerationDispatch: DispatchHandle | undefined
   let selectedGenerationDispatch: DispatchHandle | undefined
+  let terminalGenerationDispatch: DispatchHandle | undefined
   let primaryGenerationCandidate: import("./model-operation-record").CandidateHandle | undefined
   const clientFrameHandles: Array<FrameNodeHandle> = []
   const clientFrameObservations: Array<OperationFrameObservation> = []
 
   const currentGenerationAttempt = (): GenerationAttemptCapture | undefined =>
     (activeGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(activeGenerationDispatch)) ?? generationAttempts.at(-1)
+  const terminalGenerationAttempt = (): GenerationAttemptCapture | undefined =>
+    (terminalGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(terminalGenerationDispatch)) ?? currentGenerationAttempt()
+  const terminalAttempt = (): Attempt | undefined => {
+    const capture = terminalGenerationAttempt()
+    return capture === undefined ? _attempts.at(-1) : _attempts[capture.v2Index]
+  }
+  const terminalAttemptIndex = (): number => terminalGenerationAttempt()?.v2Index ?? Math.max(0, _attempts.length - 1)
+  const activeAttempt = (): Attempt | undefined => {
+    const capture = currentGenerationAttempt()
+    return capture === undefined ? _attempts.at(-1) : _attempts[capture.v2Index]
+  }
   const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
     const attempt = generationAttemptByHandle.get(handle)
     if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
@@ -496,9 +536,31 @@ export function createRequestContext(opts: {
     gap: "semantic payload/frames captured; exact raw bytes unavailable; headers/trailers originate from folded views, so repeated header/trailer tuples and original field ordering are unavailable",
   }
 
+  interface CanonicalFrameFields {
+    readonly event?: unknown
+    readonly data?: unknown
+    readonly id?: unknown
+    readonly retry?: unknown
+    readonly raw?: unknown
+  }
+
+  function canonicalFrameFields(frame: unknown): CanonicalFrameFields {
+    if (typeof frame !== "object" || frame === null) return { data: String(frame) }
+    const candidate = frame as CanonicalFrameFields & { kind?: unknown; message?: unknown; idField?: unknown }
+    if (candidate.kind !== "parsed-sse" || typeof candidate.message !== "object" || candidate.message === null) return candidate
+    const message = candidate.message as CanonicalFrameFields
+    const idField = candidate.idField as { kind?: unknown; value?: unknown } | undefined
+    return {
+      ...(message.event !== undefined && { event: message.event }),
+      ...(message.data !== undefined && { data: message.data }),
+      ...(idField?.kind === "present" && { id: idField.value }),
+      ...(message.retry !== undefined && { retry: message.retry }),
+    }
+  }
+
   function frameWireKey(frame: unknown): string | undefined {
     if (typeof frame !== "object" || frame === null) return typeof frame === "string" ? `string:${frame}` : undefined
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     let data: string | undefined
     if (typeof candidate.data === "string") data = candidate.data
     else if (typeof candidate.raw === "string") data = candidate.raw
@@ -513,12 +575,7 @@ export function createRequestContext(opts: {
 
   function captureRawFrame(frame: unknown, sequence: number, track: string): void {
     if (!rawCaptureLease.requested) return
-    const candidate = (typeof frame === "object" && frame !== null ? frame : { data: String(frame) }) as {
-      event?: unknown
-      data?: unknown
-      id?: unknown
-      retry?: unknown
-    }
+    const candidate = canonicalFrameFields(frame)
     const bytes = new TextEncoder().encode(
       JSON.stringify({
         event: typeof candidate.event === "string" ? candidate.event : null,
@@ -532,14 +589,7 @@ export function createRequestContext(opts: {
   }
 
   function canonicalFrameValue(frame: unknown, record?: SseEventRecord): Readonly<Record<string, unknown>> {
-    if (typeof frame !== "object" || frame === null) {
-      return Object.freeze({
-        data: typeof frame === "string" ? frame : String(frame),
-        ...(record?.type !== undefined && { type: record.type }),
-        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
-      })
-    }
-    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    const candidate = canonicalFrameFields(frame)
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
       ...(candidate.data !== undefined && { data: candidate.data }),
@@ -737,10 +787,10 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown): void {
+  function settleGenerationAttempt(attempt: GenerationAttemptCapture, settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
-    if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
+    if (settlement.verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -754,7 +804,7 @@ export function createRequestContext(opts: {
     if (response?.status !== undefined) responseStatus = response.status
     else if (attemptError?.status !== undefined) responseStatus = attemptError.status
     modelOperationRecorder.settleDispatch(attempt.handle, {
-      verdict,
+      verdict: settlement.verdict,
       ...(hasUpstreamResponse && {
         upstreamResponse: {
           ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
@@ -767,8 +817,8 @@ export function createRequestContext(opts: {
           ...(responseMetadata(response, attemptError) === undefined ? {} : { metadata: responseMetadata(response, attemptError) }),
         },
       }),
-      ...(reason !== undefined && { reason }),
-      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      ...(settlement.reason !== undefined && { reason: settlement.reason }),
+      ...("error" in settlement && { error: snapshotForRecorder(settlement.error) }),
     })
     attempt.settled = true
   }
@@ -834,9 +884,13 @@ export function createRequestContext(opts: {
     attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string },
   ): void {
     if (modelOperationRecorder.sealed || pendingGenerationTerminal !== undefined) return
-    const currentAttempt = currentGenerationAttempt()
+    const currentAttempt = terminalGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
-      settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
+      settleGenerationAttempt(currentAttempt, {
+        verdict: outcome === "completed" ? "committed" : "failed",
+        reason: `terminal:${outcome}`,
+        ...((outcome === "failed" || outcome === "aborted") && error !== undefined && { error }),
+      })
     pendingGenerationTerminal = {
       outcome,
       ...(error !== undefined && { error: snapshotForRecorder(error) }),
@@ -849,21 +903,52 @@ export function createRequestContext(opts: {
     startGenerationFinalizerIfReady()
   }
 
+  function registerLifecycleFailure(phase: "delivery" | "canonical", error: unknown): boolean {
+    try {
+      return onLifecycleFailure?.(id, { phase, error }) === true
+    } catch {
+      // A throwing callback has not registered the error with the process barrier.
+      return false
+    }
+  }
+
+  function beginGenerationDeliveryFinalization(): void {
+    if (deliveryState.state !== "open") return
+    deliveryState = Object.freeze({ state: "finalizing" })
+  }
+
+  function isDeliveryOutcomeLocked(state: DeliveryLifecycleState): boolean {
+    return state.state === "finalized" || state.state === "failed"
+  }
+
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed || generationFinalizerPromise !== undefined) return
-    deliveryFinalizationRequested = true
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
     if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+    deliveryState = Object.freeze({ state: "finalized" })
     startGenerationFinalizerIfReady()
   }
 
+  function failGenerationDelivery(error: unknown): void {
+    if (modelOperationRecorder.sealed || isDeliveryOutcomeLocked(deliveryState)) return
+    const failureRegistered = registerLifecycleFailure("delivery", error)
+    deliveryState = Object.freeze({ state: "failed", error, failureRegistered })
+    if (failureRegistered) startGenerationFinalizerIfReady()
+  }
+
   function startGenerationFinalizerIfReady(): void {
-    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !deliveryFinalizationRequested) return
+    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !isDeliveryTerminal(deliveryState)) return
+    canonicalState = "running"
     const clientPayload = pendingDeliveryClientPayload
     const finalizer = withRejectionObserver(
       (async (): Promise<ModelOperationRecord> => {
-        await operationScope.whenOperationQuiesced()
         try {
-          return commitGenerationObservabilityTerminal(clientPayload)
+          await operationScope.whenOperationQuiesced()
+          const record = commitGenerationObservabilityTerminal(clientPayload)
+          canonicalState = "completed"
+          return record
+        } catch (error) {
+          if (registerLifecycleFailure("canonical", error)) canonicalState = "failed"
+          throw error
         } finally {
           rawCaptureLease.release()
         }
@@ -876,7 +961,7 @@ export function createRequestContext(opts: {
   function commitGenerationObservabilityTerminal(clientPayload?: unknown): ModelOperationRecord {
     const terminal = pendingGenerationTerminal
     if (terminal === undefined) throw new Error("[request-context] generation finalizer started without a logical terminal")
-    const finalAttempt = currentGenerationAttempt()
+    const finalAttempt = terminalGenerationAttempt()
     const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.sourceBodyPayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {
       clientPayloadHandle = capturePayload(clientPayload, {
@@ -942,12 +1027,14 @@ export function createRequestContext(opts: {
     const terminalMetadata = {
       durationMs: finalEndTime - startTime,
       queueWaitMs: _queueWaitMs,
+      ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
       ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
       ...(mergedInfo && { pipelineInfo: mergedInfo }),
       ...(mergedInfo?.preprocessing && { preprocessing: mergedInfo.preprocessing }),
       ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
       ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(deliveryState.state === "failed" && { deliveryFailure: snapshotForRecorder(deliveryState.error) }),
     }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: terminal.outcome,
@@ -958,7 +1045,9 @@ export function createRequestContext(opts: {
       ...(terminal.attribution !== undefined && { attribution: terminal.attribution }),
       metadata: terminalMetadata,
     })
-    publishModelOperationTerminal(modelOperationTerminalRecord)
+    if (isHistoryPersistenceReservation(opts.historyReservation)) {
+      publishModelOperationTerminal(createModelOperationTerminalPublication(modelOperationTerminalRecord, rawAttachmentOwner))
+    }
     return modelOperationTerminalRecord
   }
 
@@ -986,10 +1075,10 @@ export function createRequestContext(opts: {
    * doesn't have to (and so it stays correct if the model is unregistered
    * mid-flight).
    */
-  function snapshot(): RequestContextSnapshot {
+  function snapshot(attempt = activeAttempt()): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
-    const currentAttempt = _attempts.at(-1)
+    const currentAttempt = attempt
     return {
       id,
       endpoint: opts.endpoint,
@@ -1003,6 +1092,7 @@ export function createRequestContext(opts: {
       state: _state,
       startTime,
       queueWaitMs: _queueWaitMs,
+      ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
       ...(requestBodySize !== undefined && { requestBodySize }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
       ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
@@ -1101,6 +1191,9 @@ export function createRequestContext(opts: {
       _wirePartialDeliveryInfo = diag
       recordAttemptDiagnostic("delivery.wire_partial", "error", diag)
     },
+    recordResponseFailureSupersession(input) {
+      recordAttemptDiagnostic("response.failure-supersession", "error", input)
+    },
     recordBufferedMergeInfo(diag) {
       // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in
       // 9853e768 — pipelineInfo now reaches SQLite solely via mergedPipelineInfo() → commitTerminal's
@@ -1173,6 +1266,18 @@ export function createRequestContext(opts: {
     get modelOperationTerminalRecord() {
       return modelOperationTerminalRecord
     },
+    get modelOperationSealed() {
+      return modelOperationRecorder.sealed
+    },
+    get operationLifecycle(): OperationLifecycleSnapshot {
+      const base = {
+        settled,
+        operationScope: operationScope.snapshot,
+        delivery: deliveryState,
+        canonical: canonicalState,
+      }
+      return Object.freeze({ logicalState: _state, ...base, blocker: deriveOperationBlocker(base) })
+    },
     get originalRequest() {
       return _originalRequest
     },
@@ -1195,17 +1300,16 @@ export function createRequestContext(opts: {
       return _attempts
     },
     get currentAttempt() {
-      if (activeGenerationDispatch !== undefined) {
-        const generationAttempt = generationAttemptByHandle.get(activeGenerationDispatch)
-        if (generationAttempt) return _attempts[generationAttempt.v2Index] ?? null
-      }
-      return _attempts.at(-1) ?? null
+      return activeAttempt() ?? null
     },
     get initialSanitizationInfo() {
       return _initialSanitizationInfo
     },
     get queueWaitMs() {
       return _queueWaitMs
+    },
+    get historyAdmissionWaitMs() {
+      return historyAdmissionWaitMs
     },
     get warningMessages() {
       return _warningMessages
@@ -1249,8 +1353,16 @@ export function createRequestContext(opts: {
       })
     },
 
+    beginModelOperationDeliveryFinalization() {
+      beginGenerationDeliveryFinalization()
+    },
+
     finalizeModelOperationDelivery(input) {
       finalizeGenerationDelivery(input?.clientPayload)
+    },
+
+    failModelOperationDelivery(error) {
+      failGenerationDelivery(error)
     },
 
     whenModelOperationFinalized() {
@@ -1410,6 +1522,9 @@ export function createRequestContext(opts: {
     },
 
     setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
+      // Once sealed, every late timing observation is discarded, including one with an unknown handle;
+      // the semantic "unknown generation dispatch" error remains loud only while the record is writable.
+      if (modelOperationRecorder.sealed) return
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
       const attempt = _attempts[generationAttempt.v2Index]
@@ -1422,6 +1537,17 @@ export function createRequestContext(opts: {
     setGenerationDispatchError(dispatch, error) {
       selectGenerationAttempt(dispatch)
       ctx.setAttemptError(error)
+    },
+
+    recordGenerationDispatchDiagnostic(dispatch, diagnostic) {
+      // Sealed-first, mirroring setGenerationDispatchTimingEpoch: a transport producer can still be
+      // draining when the record seals, and a late observation is not a programming error.
+      if (modelOperationRecorder.sealed) return
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      // Deliberately NOT selectGenerationAttempt + recordAttemptDiagnostic: that pair writes through
+      // the ambient current attempt and, worse, leaves it moved for every later ambient write.
+      recordAttemptDiagnostic(diagnostic.kind, diagnostic.severity, diagnostic.data, diagnostic.message, generationAttempt)
     },
 
     setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
@@ -1449,6 +1575,11 @@ export function createRequestContext(opts: {
       captureFrameActionFor(attempt, inputFrames, outputFrames, transform)
     },
 
+    pinGenerationTerminalDispatch(dispatch) {
+      if (!generationAttemptByHandle.has(dispatch)) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      terminalGenerationDispatch = dispatch
+    },
+
     selectGenerationWinner(candidate, dispatch) {
       const operation = modelOperationRecorder.snapshot()
       const row = operation.dispatches.find((entry) => entry.handle === dispatch)
@@ -1456,23 +1587,28 @@ export function createRequestContext(opts: {
       if (row.candidate !== candidate) throw new Error(`[request-context] dispatch ${dispatch} does not belong to candidate ${candidate}`)
       activeGenerationDispatch = dispatch
       selectedGenerationDispatch = dispatch
+      terminalGenerationDispatch = dispatch
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (generationAttempt?.sseEvents !== undefined) ctx.setSseEvents(generationAttempt.sseEvents)
     },
 
     settleGenerationDispatch(dispatch, input) {
       const attempt = selectGenerationAttempt(dispatch)
-      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)
+      settleGenerationAttempt(attempt, {
+        verdict: input.verdict,
+        ...("reason" in input && { reason: input.reason }),
+        ...("error" in input && { error: input.error }),
+      })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
       const previous = currentGenerationAttempt()
-      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+      if (previous && !previous.settled) settleGenerationAttempt(previous, { verdict: "discarded", reason: "superseded by next attempt" })
       ctx.beginGenerationDispatch({ candidate: ensurePrimaryGenerationCandidate(), ...attemptOpts })
     },
 
     setAttemptSanitization(info: SanitizationInfo) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.sanitization = info
         recordAttemptDiagnostic("request.sanitization", "info", info)
@@ -1484,7 +1620,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && fields.length > 0) {
         attempt.cacheControlStripped = [...fields]
         recordAttemptDiagnostic("request.cache_control_stripped", "info", { fields })
@@ -1492,7 +1628,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptEffectiveRequest(req: EffectiveRequest) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.effectiveRequest = req
         const generationAttempt = currentGenerationAttempt()
@@ -1513,7 +1649,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptWireRequest(req: WireRequest) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.wireRequest = req
         const generationAttempt = currentGenerationAttempt()
@@ -1537,7 +1673,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptTransport(transport: Attempt["transport"]) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.transport = transport
         const generationAttempt = currentGenerationAttempt()
@@ -1549,11 +1685,11 @@ export function createRequestContext(opts: {
     },
 
     setAttemptResponse(response: ResponseData) {
-      const attempt = ctx.currentAttempt
+      const attempt = terminalAttempt()
       if (attempt) {
         attempt.response = response
         attempt.durationMs = Date.now() - attempt.startTime
-        const generationAttempt = currentGenerationAttempt()
+        const generationAttempt = terminalGenerationAttempt()
         if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
           generationAttempt.responsePayload = capturePayload(response.content, {
             stage: "upstream-response-projection",
@@ -1578,12 +1714,11 @@ export function createRequestContext(opts: {
             }
           }
           recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", responseMetadata(response))
-          settleGenerationAttempt(
-            generationAttempt,
-            response.success ? "committed" : "failed",
-            response.success ? undefined : response.error,
-            response.success ? undefined : (attempt.error?.raw ?? response.error),
-          )
+          settleGenerationAttempt(generationAttempt, {
+            verdict: response.success ? "committed" : "failed",
+            ...(response.success ? {} : { reason: response.error }),
+            ...(response.success ? {} : { error: attempt.error?.raw ?? response.error }),
+          })
         }
       }
     },
@@ -1593,7 +1728,7 @@ export function createRequestContext(opts: {
       // EVERY attempt (success: UpstreamStream.headers; failure: apiError.responseHeaders) —
       // unlike `response` (final attempt only via complete/fail). Small → rides the attempt
       // summary (head blob), no heavy stage.
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.responseHeaders = headers
         recordAttemptDiagnostic("response.headers", "info", { headers })
@@ -1610,7 +1745,8 @@ export function createRequestContext(opts: {
     },
 
     setAttemptTimingEpoch(kind, epoch, mode) {
-      const attempt = ctx.currentAttempt
+      if (modelOperationRecorder.sealed) return
+      const attempt = activeAttempt()
       if (!attempt) return
       if (mode === "once" && attempt[kind] !== undefined) return
       attempt[kind] = epoch
@@ -1672,7 +1808,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptError(error: ApiError) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.error = error
         attempt.durationMs = Date.now() - attempt.startTime
@@ -1696,7 +1832,7 @@ export function createRequestContext(opts: {
      * Snapshot (not alias) so a later `resetSseEvents()` / re-set can't perturb it.
      */
     commitAttemptSseEvents() {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && attempt.sseEvents === undefined) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
     },
 
@@ -1706,7 +1842,7 @@ export function createRequestContext(opts: {
      * 使 [RETRY] 行的 lastMs 有真值。已定稿（>0）则不覆盖。
      */
     finalizeCurrentAttemptDuration() {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && attempt.durationMs === 0) {
         attempt.durationMs = Date.now() - attempt.startTime
         recordAttemptDiagnostic("timing.duration", "info", { durationMs: attempt.durationMs })
@@ -1730,7 +1866,8 @@ export function createRequestContext(opts: {
     transition(newState: RequestState, meta?: Record<string, unknown>) {
       const previousState = _state
       _state = newState
-      publisher?.publish({ kind: "request.state_changed", ctx: snapshotWithSummary(ctx), previousState, ...(meta !== undefined && { meta }) })
+      const attempt = newState === "completed" || newState === "failed" || newState === "aborted" ? terminalAttempt() : activeAttempt()
+      publisher?.publish({ kind: "request.state_changed", ctx: snapshotWithSummary(ctx, attempt), previousState, ...(meta !== undefined && { meta }) })
     },
 
     complete(response: ResponseData) {
@@ -1759,7 +1896,7 @@ export function createRequestContext(opts: {
       // the `completed`/`failed` handler).
       ctx.transition("completed")
       const entry = ctx.toHistoryEntry()
-      publisher?.publish({ kind: "request.completed", ctx: snapshotWithSummary(ctx), entry })
+      publisher?.publish({ kind: "request.completed", ctx: snapshotWithSummary(ctx, terminalAttempt()), entry })
       onSettled?.(id)
     },
 
@@ -1842,10 +1979,10 @@ export function createRequestContext(opts: {
       // docstring), not a side effect of the state field.
       ctx.transition("failed")
       const entry = ctx.toHistoryEntry()
-      const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+      const finalUpstream = entry.attempts?.[terminalAttemptIndex()]?.upstreamResponse
       publisher?.publish({
         kind: "request.failed",
-        ctx: snapshotWithSummary(ctx),
+        ctx: snapshotWithSummary(ctx, terminalAttempt()),
         entry,
         error: entry._index?.derived?.failureReason ?? _response.error ?? "Unknown error",
         ...(finalUpstream?.status !== undefined && { statusCode: finalUpstream.status }),
@@ -1880,7 +2017,7 @@ export function createRequestContext(opts: {
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
-      publisher?.publish({ kind: "request.aborted", ctx: snapshotWithSummary(ctx), entry })
+      publisher?.publish({ kind: "request.aborted", ctx: snapshotWithSummary(ctx, terminalAttempt()), entry })
       onSettled?.(id)
     },
 
@@ -1907,6 +2044,7 @@ export function createRequestContext(opts: {
         active: false,
         lastUpdatedAt: endedAt,
         queueWaitMs: _queueWaitMs,
+        ...(historyAdmissionWaitMs !== undefined && { historyAdmissionWaitMs }),
         durationMs: endedAt - startTime,
         ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
         ...(ctx.transport ? { transport: ctx.transport } : {}),
@@ -1920,7 +2058,7 @@ export function createRequestContext(opts: {
       // Fed into `_index.derived.failureReason` (recompute-only projection) below.
       const failureReasonValue =
         _state === "failed" || _state === "aborted" || _state === "interrupted" ?
-          (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+          (_failureReason ?? _response?.error ?? terminalAttempt()?.error?.message ?? undefined)
         : undefined
 
       // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
@@ -2012,7 +2150,7 @@ export function createRequestContext(opts: {
       // carries its FULL new legs (effectiveSource/upstreamRequest/upstreamResponse),
       // so retries preserve every wire payload + upstream response.
       if (_attempts.length > 0) {
-        const finalIdx = _attempts.length - 1
+        const finalIdx = terminalAttemptIndex()
         entry.attempts = _attempts.map((a, i) => {
           const isFinal = i === finalIdx
           // A failed attempt has no captured `response`; fall back to a response
@@ -2071,8 +2209,9 @@ export function createRequestContext(opts: {
       // exact field entry-view `resolveResponseSuccess` reads); `currentStrategy` /
       // `attemptCount` mirror the deprecated top-level fields; `failureReason` reuses the
       // entry-level projection value above. Dual-written alongside the legacy fields.
-      const finalUpstreamResponseSuccess = entry.attempts?.at(-1)?.upstreamResponse?.success
-      const derivedCurrentStrategy = _attempts.at(-1)?.strategy
+      const terminalAttemptForProjection = terminalAttempt()
+      const finalUpstreamResponseSuccess = entry.attempts?.[terminalAttemptIndex()]?.upstreamResponse?.success
+      const derivedCurrentStrategy = terminalAttemptForProjection?.strategy
       entry._index = {
         derived: {
           ...(finalUpstreamResponseSuccess !== undefined && { responseSuccess: finalUpstreamResponseSuccess }),
@@ -2118,7 +2257,10 @@ export function createRequestContext(opts: {
                 "openai-chat-completions": "openai-cc",
                 "openai-responses": "openai-responses",
                 "gemini-generate-content": "gemini",
-              } as const
+                // `openai-embeddings` is deliberately absent: it has no codec cell, so there is no
+                // client format to report and `clientFormat` stays undefined rather than claiming a
+                // neighbouring generation format.
+              } as Partial<Record<EndpointType, string>>
             )[opts.endpoint],
           upstreamEndpoint: info.outboundEndpoint,
           metadata: info,
@@ -2155,7 +2297,7 @@ export function createRequestContext(opts: {
     },
 
     recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }) {
-      const a = ctx.currentAttempt
+      const a = activeAttempt()
       const snap: AttemptSnapshot = {
         attemptIndex: a?.index ?? 0,
         ...(a?.durationMs !== undefined && { durationMs: a.durationMs }),
@@ -2183,7 +2325,11 @@ export function createRequestContext(opts: {
         let reason = "failed"
         if (args.nextStrategy !== undefined) reason = `retry:${args.nextStrategy}`
         else if (args.willRetry) reason = "retry"
-        settleGenerationAttempt(generationAttempt, args.willRetry ? "discarded" : "failed", reason, a?.error)
+        settleGenerationAttempt(generationAttempt, {
+          verdict: args.willRetry ? "discarded" : "failed",
+          reason,
+          ...(a?.error !== undefined && { error: a.error }),
+        })
       }
       publisher?.publish({
         kind: "request.attempt_failed",

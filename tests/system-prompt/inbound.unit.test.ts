@@ -19,11 +19,10 @@ autoRestoreState()
 // 最小 fake env：只实现分发函数触达的 clientFormat/body/with。
 function fakeEnv(clientFormat: string, body: unknown): RequestEnvelope {
   const env = {
-    clientFormat,
-    body,
-    with(patch: { body?: unknown }) {
-      return fakeEnv(clientFormat, patch.body ?? body)
-    },
+    request: { clientFormat: clientFormat } as RequestEnvelope["request"],
+    attempt: { body: body } as RequestEnvelope["attempt"],
+    candidate: {} as RequestEnvelope["candidate"],
+    createView: () => ({}) as RequestEnvelope["view"],
   }
   return env as unknown as RequestEnvelope
 }
@@ -32,7 +31,7 @@ describe("applyInboundSystemPrompt", () => {
   test("anthropic：无 system 时 early-return 原 env（不改 body 引用）", async () => {
     const env = fakeEnv("anthropic", { model: "m", messages: [] })
     const out = await applyInboundSystemPrompt(env)
-    expect(out.body).toBe(env.body) // 同引用 = 未改
+    expect(out.attempt.body).toBe(env.attempt.body) // 同引用 = 未改
   })
 
   test("gemini：passthrough 返回原 env（不经 env 层分发）", async () => {
@@ -43,9 +42,10 @@ describe("applyInboundSystemPrompt", () => {
 
   test("anthropic：有 system 时经 processAnthropicSystem 注入到 system 字段", async () => {
     const env = fakeEnv("anthropic", { model: "m", system: "hi", messages: [] })
+    // 取用调用前的引用：env 现在是可变的，调用后再读 env.attempt.body 拿到的已是新 body，比较就恒等了。守的不变量不变——body 是被整体替换、不是就地改。
+    const before = env.attempt.body
     const out = await applyInboundSystemPrompt(env)
-    // system 被处理（body 引用改变；system 字段仍存在）
-    expect(out.body).not.toBe(env.body)
-    expect((out.body as { system?: unknown }).system).toBeDefined()
+    expect(out.attempt.body).not.toBe(before)
+    expect((out.attempt.body as { system?: unknown }).system).toBeDefined()
   })
 })

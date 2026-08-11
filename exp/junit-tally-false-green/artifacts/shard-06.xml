@@ -1,0 +1,688 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="429" assertions="1016" failures="1" skipped="0" time="37.875880002">
+  <testsuite name="tests/stream-accumulator-usage.unit.test.ts" file="tests/stream-accumulator-usage.unit.test.ts" tests="2" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testcase name="openai accumulator captures cache_write + modality + prediction (prompt_tokens_details)" classname="" time="0.00069" file="tests/stream-accumulator-usage.unit.test.ts" line="21" assertions="4" />
+    <testcase name="responses accumulator captures cache_write from input_tokens_details" classname="" time="0.000432" file="tests/stream-accumulator-usage.unit.test.ts" line="40" assertions="3" />
+  </testsuite>
+  <testsuite name="tests/openai/cc-non-stream-truncation.http.test.ts" file="tests/openai/cc-non-stream-truncation.http.test.ts" tests="3" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="POST /chat/completions — non-streaming semantic-truncation detection" file="tests/openai/cc-non-stream-truncation.http.test.ts" line="62" tests="3" assertions="7" failures="0" skipped="0" time="1.7" hostname="CPC-puxu-WC402E">
+      <testcase name="empty choices array → no crash; client gets the 200, history FAILED (MEDIUM-1)" classname="POST /chat/completions — non-streaming semantic-truncation detection" time="1.000257" file="tests/openai/cc-non-stream-truncation.http.test.ts" line="72" assertions="3" />
+      <testcase name="missing finish_reason → FAILED" classname="POST /chat/completions — non-streaming semantic-truncation detection" time="0.376473" file="tests/openai/cc-non-stream-truncation.http.test.ts" line="81" assertions="2" />
+      <testcase name="complete (finish_reason present) → success" classname="POST /chat/completions — non-streaming semantic-truncation detection" time="0.32422" file="tests/openai/cc-non-stream-truncation.http.test.ts" line="89" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/responses/cc-to-responses.unit.test.ts" file="tests/responses/cc-to-responses.unit.test.ts" tests="8" assertions="18" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="splitInstructionsAndConversation" file="tests/responses/cc-to-responses.unit.test.ts" line="20" tests="1" assertions="2" failures="0" skipped="0" time="0.021" hostname="CPC-puxu-WC402E">
+      <testcase name="collects system and developer messages from the full conversation" classname="splitInstructionsAndConversation" time="0.021034" file="tests/responses/cc-to-responses.unit.test.ts" line="21" assertions="2" />
+    </testsuite>
+    <testsuite name="translateChatCompletionsToResponses" file="tests/responses/cc-to-responses.unit.test.ts" line="40" tests="7" assertions="16" failures="0" skipped="0" time="0.014" hostname="CPC-puxu-WC402E">
+      <testcase name="[DI-9] tool message missing tool_call_id throws 400 identifying the offending message" classname="translateChatCompletionsToResponses" time="0.001563" file="tests/responses/cc-to-responses.unit.test.ts" line="41" assertions="2" />
+      <testcase name="translates messages, tools, response format, and stream options" classname="translateChatCompletionsToResponses" time="0.013776" file="tests/responses/cc-to-responses.unit.test.ts" line="56" assertions="5" />
+      <testcase name="stringifies tool content arrays without text parts" classname="translateChatCompletionsToResponses" time="0.000214" file="tests/responses/cc-to-responses.unit.test.ts" line="189" assertions="1" />
+      <testcase name="converts null tool content to empty output and joins text parts" classname="translateChatCompletionsToResponses" time="0.000638" file="tests/responses/cc-to-responses.unit.test.ts" line="218" assertions="1" />
+      <testcase name="emits only function_call items for an assistant message with null content and tool_calls" classname="translateChatCompletionsToResponses" time="0.000239" file="tests/responses/cc-to-responses.unit.test.ts" line="260" assertions="1" />
+      <testcase name="throws 400 HTTPError when a tool message lacks tool_call_id (M6)" classname="translateChatCompletionsToResponses" time="0.000176" file="tests/responses/cc-to-responses.unit.test.ts" line="307" assertions="3" />
+      <testcase name="assistant message with neither text nor tool_calls injects empty placeholder + warns (M7)" classname="translateChatCompletionsToResponses" time="0.000275" file="tests/responses/cc-to-responses.unit.test.ts" line="330" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/responses/server-ws-close-code-tolerance.unit.test.ts" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="downstream server-side WS close-code tolerance (固化 / lock-in)" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" line="98" tests="4" assertions="4" failures="0" skipped="0" time="0.166" hostname="CPC-puxu-WC402E">
+      <testcase name="Bun server ws.close(1000) — ws.ts normal-closure baseline — is accepted (does not throw)" classname="downstream server-side WS close-code tolerance (固化 / lock-in)" time="0.082948" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" line="100" assertions="1" />
+      <testcase name="Bun server ws.close(1001) — broadcast.ts:135 (Server shutting down) — is accepted (does not throw)" classname="downstream server-side WS close-code tolerance (固化 / lock-in)" time="0.053041" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" line="100" assertions="1" />
+      <testcase name="Bun server ws.close(1011) — ws.ts (Internal error) + broadcast.ts backpressure — is accepted (does not throw)" classname="downstream server-side WS close-code tolerance (固化 / lock-in)" time="0.018544" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" line="100" assertions="1" />
+      <testcase name="Bun server ws.close(1013) — ws.ts (Try again later — connection cap) — is accepted (does not throw)" classname="downstream server-side WS close-code tolerance (固化 / lock-in)" time="0.013387" file="tests/responses/server-ws-close-code-tolerance.unit.test.ts" line="100" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/responses/resolve-buffered-merge.unit.test.ts" file="tests/responses/resolve-buffered-merge.unit.test.ts" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="resolveResponsesBufferedMerge" file="tests/responses/resolve-buffered-merge.unit.test.ts" line="16" tests="2" assertions="2" failures="0" skipped="0" time="0.006" hostname="CPC-puxu-WC402E">
+      <testcase name="reads the two knobs from state" classname="resolveResponsesBufferedMerge" time="0.006456" file="tests/responses/resolve-buffered-merge.unit.test.ts" line="19" assertions="1" />
+      <testcase name="defaults reflect spec §3 (drop-delta / repair-if-incomplete)" classname="resolveResponsesBufferedMerge" time="0.000119" file="tests/responses/resolve-buffered-merge.unit.test.ts" line="24" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/responses/responses-stream-truncation.http.test.ts" file="tests/responses/responses-stream-truncation.http.test.ts" tests="1" assertions="12" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="Responses v4 — upstream stream truncation detection" file="tests/responses/responses-stream-truncation.http.test.ts" line="72" tests="1" assertions="12" failures="0" skipped="0" time="0.336" hostname="CPC-puxu-WC402E">
+      <testcase name="truncated Responses stream → error frame to client, history FAILED" classname="Responses v4 — upstream stream truncation detection" time="0.336796" file="tests/responses/responses-stream-truncation.http.test.ts" line="88" assertions="12" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/responses/stream-id-sync.unit.test.ts" file="tests/responses/stream-id-sync.unit.test.ts" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="fixStreamEventIds" file="tests/responses/stream-id-sync.unit.test.ts" line="14" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="returns data unchanged when event type is not handled" classname="fixStreamEventIds" time="0.000112" file="tests/responses/stream-id-sync.unit.test.ts" line="15" assertions="1" />
+      <testcase name="tracks canonical id from output_item.added and rewrites mismatched done event" classname="fixStreamEventIds" time="0.000414" file="tests/responses/stream-id-sync.unit.test.ts" line="21" assertions="1" />
+      <testcase name="generates a stable id when added event is missing item.id" classname="fixStreamEventIds" time="0.000258" file="tests/responses/stream-id-sync.unit.test.ts" line="34" assertions="2" />
+      <testcase name="returns original data on malformed JSON instead of throwing (best-effort)" classname="fixStreamEventIds" time="0.000254" file="tests/responses/stream-id-sync.unit.test.ts" line="43" assertions="4" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/token-refresh-strategy.unit.test.ts" file="tests/pipeline/token-refresh-strategy.unit.test.ts" tests="10" assertions="20" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="createTokenRefreshStrategy" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="66" tests="10" assertions="20" failures="0" skipped="0" time="0.006" hostname="CPC-puxu-WC402E">
+      <testcase name="has name &apos;token-refresh&apos;" classname="createTokenRefreshStrategy" time="0.002868" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="75" assertions="1" />
+      <testcase name="canHandle returns true for auth_expired error" classname="createTokenRefreshStrategy" time="0.000183" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="82" assertions="1" />
+      <testcase name="canHandle returns true for 403 auth_expired" classname="createTokenRefreshStrategy" time="0.004362" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="87" assertions="1" />
+      <testcase name="canHandle returns false for non-auth_expired errors" classname="createTokenRefreshStrategy" time="0.000167" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="92" assertions="3" />
+      <testcase name="canHandle returns false after first handle (prevents double-refresh)" classname="createTokenRefreshStrategy" time="0.000656" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="99" assertions="2" />
+      <testcase name="canHandle returns false after failed handle too" classname="createTokenRefreshStrategy" time="0.000346" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="108" assertions="2" />
+      <testcase name="handle returns retry with same payload on successful refresh" classname="createTokenRefreshStrategy" time="0.000281" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="120" assertions="4" />
+      <testcase name="handle returns abort when refresh fails (returns false)" classname="createTokenRefreshStrategy" time="0.000438" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="132" assertions="2" />
+      <testcase name="handle returns abort when no token runtime is installed" classname="createTokenRefreshStrategy" time="0.000316" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="144" assertions="2" />
+      <testcase name="each createTokenRefreshStrategy call has independent state" classname="createTokenRefreshStrategy" time="0.000193" file="tests/pipeline/token-refresh-strategy.unit.test.ts" line="158" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/anchor-injector-mirror-state.it.test.ts" file="tests/pipeline/anchor-injector-mirror-state.it.test.ts" tests="3" assertions="19" failures="0" skipped="0" time="0.015" hostname="CPC-puxu-WC402E">
+    <testcase name="an unsatisfied independent-content precondition leaves its latch untouched" classname="" time="0.010745" file="tests/pipeline/anchor-injector-mirror-state.it.test.ts" line="64" assertions="4" />
+    <testcase name="a pre-commit owner throw restores every legacy mirror flag" classname="" time="0.004154" file="tests/pipeline/anchor-injector-mirror-state.it.test.ts" line="72" assertions="9" />
+    <testcase name="a post-commit keepalive abort preserves irreversible anchor mirror state" classname="" time="0.001346" file="tests/pipeline/anchor-injector-mirror-state.it.test.ts" line="97" assertions="6" />
+  </testsuite>
+  <testsuite name="tests/pipeline/recovery-batch-publication.it.test.ts" file="tests/pipeline/recovery-batch-publication.it.test.ts" tests="11" assertions="41" failures="0" skipped="0" time="0.019" hostname="CPC-puxu-WC402E">
+    <testcase name="empty recovery batch fails before C9 without writing and leaves primary fallback available" classname="" time="0.004146" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="76" assertions="3" />
+    <testcase name="recovery batch build throw happens before C9 without writing" classname="" time="0.000303" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="84" assertions="3" />
+    <testcase name="terminating session rejects recovery batch before C9 without writing" classname="" time="0.000597" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="96" assertions="2" />
+    <testcase name="compound recovery batch closes an open anchor before writing the staged remapped recovery frame" classname="" time="0.0015" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="104" assertions="4" />
+    <testcase name="anchor stop first-write failure leaves the owner anchor open" classname="" time="0.001199" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="114" assertions="3" />
+    <testcase name="anchor stop successful before an R write failure closes the owner anchor" classname="" time="0.001123" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="129" assertions="3" />
+    <testcase name="successful recovery batch preserves order and candidate provenance while advancing the semantic gate" classname="" time="0.000625" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="146" assertions="4" />
+    <testcase name="pre-C9 recovery hook rejection writes nothing and reports committed false" classname="" time="0.000444" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="165" assertions="3" />
+    <testcase name="first recovery batch write client abort is committed and finalizes delivery" classname="" time="0.000636" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="178" assertions="4" />
+    <testcase name="first non-client recovery batch write tears the frontier while terminal error and finalization remain available" classname="" time="0.005386" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="196" assertions="8" />
+    <testcase name="Nth non-client recovery batch write leaves only the written prefix and tears the wire" classname="" time="0.007607" file="tests/pipeline/recovery-batch-publication.it.test.ts" line="237" assertions="4" />
+  </testsuite>
+  <testsuite name="tests/pipeline/context-management-retry-strategy.unit.test.ts" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" tests="14" assertions="24" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="parseExtraInputsError" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="55" tests="6" assertions="6" failures="0" skipped="0" time="0.091" hostname="CPC-puxu-WC402E">
+      <testcase name="extracts the field name" classname="parseExtraInputsError" time="0.041458" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="56" assertions="1" />
+      <testcase name="extracts non-context_management field names too" classname="parseExtraInputsError" time="0.001002" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="60" assertions="1" />
+      <testcase name="returns null for unrelated messages" classname="parseExtraInputsError" time="0.002092" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="64" assertions="1" />
+      <testcase name="does NOT match a dotted tool-path field (C1)" classname="parseExtraInputsError" time="0.005504" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="72" assertions="1" />
+      <testcase name="does NOT match a dotted nested message-path field (C1)" classname="parseExtraInputsError" time="0.015931" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="76" assertions="1" />
+      <testcase name="still matches a genuine top-level field even when other text precedes it" classname="parseExtraInputsError" time="0.027594" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="80" assertions="1" />
+    </testsuite>
+    <testsuite name="parseContextManagementExtraInputsError (deprecated)" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="85" tests="1" assertions="3" failures="0" skipped="0" time="0.002" hostname="CPC-puxu-WC402E">
+      <testcase name="matches only context_management variant" classname="parseContextManagementExtraInputsError (deprecated)" time="0.002694" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="86" assertions="3" />
+    </testsuite>
+    <testsuite name="createBodyFieldRejectionStrategy" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="93" tests="7" assertions="15" failures="0" skipped="0" time="0.03" hostname="CPC-puxu-WC402E">
+      <testcase name="has the expected strategy name" classname="createBodyFieldRejectionStrategy" time="0.000998" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="94" assertions="1" />
+      <testcase name="createContextManagementRetryStrategy alias preserved" classname="createBodyFieldRejectionStrategy" time="0.002766" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="98" assertions="1" />
+      <testcase name="canHandle matches any field&apos;s extra-inputs error" classname="createBodyFieldRejectionStrategy" time="0.011202" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="102" assertions="2" />
+      <testcase name="canHandle returns false for unrelated 400s" classname="createBodyFieldRejectionStrategy" time="0.003734" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="108" assertions="1" />
+      <testcase name="context_management: retry with explicit null sentinel + marks unsupported" classname="createBodyFieldRejectionStrategy" time="0.006916" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="119" assertions="6" />
+      <testcase name="context_management: aborts if already null" classname="createBodyFieldRejectionStrategy" time="0.004577" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="140" assertions="1" />
+      <testcase name="generic field: retry by deleting field + marks unsupported" classname="createBodyFieldRejectionStrategy" time="0.004579" file="tests/pipeline/context-management-retry-strategy.unit.test.ts" line="148" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" tests="13" assertions="18" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="createAdaptiveThinkingRejectionRetryStrategy" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="38" tests="13" assertions="18" failures="0" skipped="0" time="0.002" hostname="CPC-puxu-WC402E">
+      <testcase name="has the expected strategy name" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000274" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="39" assertions="1" />
+      <testcase name="canHandle matches the adaptive-not-supported rejection" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000367" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="43" assertions="1" />
+      <testcase name="canHandle returns false for the legacy enabled→adaptive rejection" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000104" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="48" assertions="1" />
+      <testcase name="canHandle returns false for unrelated 400s" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000042" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="54" assertions="1" />
+      <testcase name="canHandle returns false for non-400 errors" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000072" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="59" assertions="1" />
+      <testcase name="handle rewrites adaptive→enabled and retries (default budget when no effort)" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.00078" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="65" assertions="3" />
+      <testcase name="handle maps output_config.effort → budget_tokens (low/medium/high)" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.001149" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="76" assertions="3" />
+      <testcase name="handle drops output_config.effort but keeps other output_config fields" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000291" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="88" assertions="1" />
+      <testcase name="handle removes output_config entirely when effort was its only field" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000193" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="99" assertions="1" />
+      <testcase name="handle preserves display when rewriting" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000193" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="106" assertions="1" />
+      <testcase name="handle aborts when thinking is already enabled (no loop)" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000178" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="117" assertions="1" />
+      <testcase name="handle aborts when no thinking field" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.001913" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="124" assertions="1" />
+      <testcase name="does not mutate the input payload" classname="createAdaptiveThinkingRejectionRetryStrategy" time="0.000159" file="tests/pipeline/adaptive-thinking-rejection-retry-strategy.unit.test.ts" line="131" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/generation-coordinator.it.test.ts" file="tests/pipeline/generation-coordinator.it.test.ts" tests="10" assertions="54" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="P6-T2 generation coordinator" file="tests/pipeline/generation-coordinator.it.test.ts" line="156" tests="10" assertions="54" failures="0" skipped="0" time="0.584" hostname="CPC-puxu-WC402E">
+      <testcase name="primary success creates one candidate, one dispatch, and exactly one processor" classname="P6-T2 generation coordinator" time="0.035186" file="tests/pipeline/generation-coordinator.it.test.ts" line="159" assertions="5" />
+      <testcase name="buffered recovery is a child candidate and preserves the coordinator delivery identity" classname="P6-T2 generation coordinator" time="0.038187" file="tests/pipeline/generation-coordinator.it.test.ts" line="177" assertions="8" />
+      <testcase name="recovery disposes an unread ready parent with one explicit discarded settlement" classname="P6-T2 generation coordinator" time="0.013812" file="tests/pipeline/generation-coordinator.it.test.ts" line="201" assertions="5" />
+      <testcase name="recovery disposal failure remains a discarded primary and rejects before opening recovery" classname="P6-T2 generation coordinator" time="0.087409" file="tests/pipeline/generation-coordinator.it.test.ts" line="267" assertions="6" />
+      <testcase name="concurrent recovery calls atomically consume one ready parent" classname="P6-T2 generation coordinator" time="0.108667" file="tests/pipeline/generation-coordinator.it.test.ts" line="330" assertions="7" />
+      <testcase name="recovery rejects an already consumed parent without opening another candidate" classname="P6-T2 generation coordinator" time="0.103126" file="tests/pipeline/generation-coordinator.it.test.ts" line="355" assertions="3" />
+      <testcase name="ready-state pre-content recovery can override the History next-strategy marker" classname="P6-T2 generation coordinator" time="0.047871" file="tests/pipeline/generation-coordinator.it.test.ts" line="373" assertions="1" />
+      <testcase name="buffered continuation is a child candidate; parent settles `continued` (not failed) — partial delivery" classname="P6-T2 generation coordinator" time="0.073398" file="tests/pipeline/generation-coordinator.it.test.ts" line="391" assertions="7" />
+      <testcase name="chained buffered recovery advances the parent while preserving one delivery identity" classname="P6-T2 generation coordinator" time="0.049551" file="tests/pipeline/generation-coordinator.it.test.ts" line="416" assertions="9" />
+      <testcase name="request cancellation reaches the active primary candidate" classname="P6-T2 generation coordinator" time="0.031252" file="tests/pipeline/generation-coordinator.it.test.ts" line="442" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" tests="5" assertions="5" failures="0" skipped="0" time="0.002" hostname="CPC-puxu-WC402E">
+    <testcase name="A&apos;: text block_start then delta then cut without content_block_stop records an open text block" classname="" time="0.0028" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" line="13" assertions="1" />
+    <testcase name="zero-delta B: tool_use block_start followed by an immediate cut records an open tool_use block" classname="" time="0.000081" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" line="22" assertions="1" />
+    <testcase name="B-closed: tool_use block_stop closes the most recently observed tool_use block" classname="" time="0.000069" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" line="30" assertions="1" />
+    <testcase name="thinking after a closed text block replaces text as the last wire block" classname="" time="0.000112" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" line="40" assertions="1" />
+    <testcase name="a stale content_block_stop cannot close a newer last wire block" classname="" time="0.000073" file="tests/pipeline/max-tokens-terminal-observer.unit.test.ts" line="52" assertions="1" />
+  </testsuite>
+  <testsuite name="tests/pipeline/driver-precontent-recovery.it.test.ts" file="tests/pipeline/driver-precontent-recovery.it.test.ts" tests="9" assertions="21" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="driver pre-content recovery" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="127" tests="9" assertions="21" failures="0" skipped="0" time="0.042" hostname="CPC-puxu-WC402E">
+      <testcase name="runRequest still rejects exactly as before when the primary dispatch never becomes ready" classname="driver pre-content recovery" time="0.015016" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="128" assertions="1" />
+      <testcase name="after a pre-ready primary failure, runPreContentRecovery starts a fresh recovery candidate that can open" classname="driver pre-content recovery" time="0.004376" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="138" assertions="4" />
+      <testcase name="runPreContentRecovery without a preceding pre-ready failure throws a programmer error" classname="driver pre-content recovery" time="0.002469" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="158" assertions="1" />
+      <testcase name="runPreContentRecovery gates server-executed tools before dispatching a fresh attempt" classname="driver pre-content recovery" time="0.002356" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="167" assertions="3" />
+      <testcase name="a ready upstream that stream-errors before semantic content dispatches response recovery with the precontent History strategy" classname="driver pre-content recovery" time="0.009431" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="183" assertions="6" />
+      <testcase name="runResponseSink tags renderer failures as codec-render" classname="driver pre-content recovery" time="0.00489" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="227" assertions="1" />
+      <testcase name="runResponseSink tags sink write failures as downstream-sink" classname="driver pre-content recovery" time="0.002798" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="246" assertions="1" />
+      <testcase name="delivery gate prevents callers from selecting ready-state recovery after real content" classname="driver pre-content recovery" time="0.001285" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="259" assertions="1" />
+      <testcase name="runResponseRecovery gates server-executed tools before dispatching a ready-state recovery" classname="driver pre-content recovery" time="0.003243" file="tests/pipeline/driver-precontent-recovery.it.test.ts" line="276" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/coordinator-hedge.unit.test.ts" file="tests/pipeline/coordinator-hedge.unit.test.ts" tests="10" assertions="24" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="generation coordinator hedge race" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="141" tests="10" assertions="24" failures="0" skipped="0" time="0.031" hostname="CPC-puxu-WC402E">
+      <testcase name="mixed hedge failures (primary transport then hedge codec) fail closed as codec-render" classname="generation coordinator hedge race" time="0.000221" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="146" assertions="1" />
+      <testcase name="mixed hedge failures (hedge codec then primary transport) fail closed as codec-render" classname="generation coordinator hedge race" time="0.000019" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="146" assertions="1" />
+      <testcase name="mixed hedge failures (same-tick candidate order) fail closed as codec-render" classname="generation coordinator hedge race" time="0.000006" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="146" assertions="1" />
+      <testcase name="all transport hedge failures remain upstream-transport" classname="generation coordinator hedge race" time="0.000064" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="151" assertions="1" />
+      <testcase name="secondary first complete block wins, cancels primary, and winner processor continues" classname="generation coordinator hedge race" time="0.020806" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="159" assertions="4" />
+      <testcase name="primary wins a same-turn tie by candidate order and loser frames never enter the winner buffer" classname="generation coordinator hedge race" time="0.002117" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="181" assertions="4" />
+      <testcase name="a failed primary does not beat a secondary successful boundary" classname="generation coordinator hedge race" time="0.003893" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="200" assertions="2" />
+      <testcase name="all candidate failures surface one aggregate and a race cannot be replayed" classname="generation coordinator hedge race" time="0.002443" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="222" assertions="4" />
+      <testcase name="all transport hedge aggregate retains every tagged member for downstream taxonomy" classname="generation coordinator hedge race" time="0.003857" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="251" assertions="4" />
+      <testcase name="terminal and failed candidates release shared generation capacity" classname="generation coordinator hedge race" time="0.001661" file="tests/pipeline/coordinator-hedge.unit.test.ts" line="288" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/rewrite-registry.unit.test.ts" file="tests/pipeline/rewrite-registry.unit.test.ts" tests="8" assertions="12" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="assembleRequestRewrites" file="tests/pipeline/rewrite-registry.unit.test.ts" line="49" tests="6" assertions="9" failures="0" skipped="0" time="0.002" hostname="CPC-puxu-WC402E">
+      <testcase name="filters by appliesTo" classname="assembleRequestRewrites" time="0.002553" file="tests/pipeline/rewrite-registry.unit.test.ts" line="50" assertions="1" />
+      <testcase name="sorts by order ascending" classname="assembleRequestRewrites" time="0.000189" file="tests/pipeline/rewrite-registry.unit.test.ts" line="56" assertions="1" />
+      <testcase name="stable order for equal-order ties (registry insertion order preserved)" classname="assembleRequestRewrites" time="0.000156" file="tests/pipeline/rewrite-registry.unit.test.ts" line="62" assertions="1" />
+      <testcase name="does not mutate the registry" classname="assembleRequestRewrites" time="0.000124" file="tests/pipeline/rewrite-registry.unit.test.ts" line="68" assertions="1" />
+      <testcase name="encodes the §3 order contract (T &lt; sanitize, A6 &lt; A8, A7 &lt; A8)" classname="assembleRequestRewrites" time="0.000145" file="tests/pipeline/rewrite-registry.unit.test.ts" line="75" assertions="3" />
+      <testcase name="defaults to the module registry (empty in P1.1)" classname="assembleRequestRewrites" time="0.000032" file="tests/pipeline/rewrite-registry.unit.test.ts" line="89" assertions="2" />
+    </testsuite>
+    <testsuite name="assembleResponseRewrites" file="tests/pipeline/rewrite-registry.unit.test.ts" line="95" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="filters by appliesTo and sorts by order" classname="assembleResponseRewrites" time="0.000295" file="tests/pipeline/rewrite-registry.unit.test.ts" line="96" assertions="1" />
+      <testcase name="defaults to the module registry (empty in P1.1)" classname="assembleResponseRewrites" time="0.000039" file="tests/pipeline/rewrite-registry.unit.test.ts" line="106" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/non-streaming-completeness.unit.test.ts" file="tests/pipeline/non-streaming-completeness.unit.test.ts" tests="3" assertions="16" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="non-streaming semantic-truncation detection" file="tests/pipeline/non-streaming-completeness.unit.test.ts" line="15" tests="3" assertions="16" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="anthropic: missing stop_reason → reason; present → null" classname="non-streaming semantic-truncation detection" time="0.000161" file="tests/pipeline/non-streaming-completeness.unit.test.ts" line="16" assertions="6" />
+      <testcase name="openai/gemini: missing finish_reason → reason; present → null" classname="non-streaming semantic-truncation detection" time="0.000043" file="tests/pipeline/non-streaming-completeness.unit.test.ts" line="25" assertions="5" />
+      <testcase name="responses: missing/in_progress status → reason; terminal status → null" classname="non-streaming semantic-truncation detection" time="0.000072" file="tests/pipeline/non-streaming-completeness.unit.test.ts" line="33" assertions="5" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/generation-budget.unit.test.ts" file="tests/pipeline/generation-budget.unit.test.ts" tests="3" assertions="11" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="generation competition budget" file="tests/pipeline/generation-budget.unit.test.ts" line="10" tests="3" assertions="11" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="tracks active and total candidates independently" classname="generation competition budget" time="0.000832" file="tests/pipeline/generation-budget.unit.test.ts" line="11" assertions="5" />
+      <testcase name="tracks dispatch reservations and releases active capacity" classname="generation competition budget" time="0.000321" file="tests/pipeline/generation-budget.unit.test.ts" line="27" assertions="4" />
+      <testcase name="reservations are idempotent and invalid limits fail fast" classname="generation competition budget" time="0.000172" file="tests/pipeline/generation-budget.unit.test.ts" line="41" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/pipeline/owner-failure.unit.test.ts" file="tests/pipeline/owner-failure.unit.test.ts" tests="2" assertions="9" failures="0" skipped="0" time="0.008" hostname="CPC-puxu-WC402E">
+    <testcase name="classifies every reachable owner failure without losing committed state" classname="" time="0.008511" file="tests/pipeline/owner-failure.unit.test.ts" line="30" assertions="7" />
+    <testcase name="OwnerResult excludes committed session-terminating and wire-torn failures" classname="" time="0.000082" file="tests/pipeline/owner-failure.unit.test.ts" line="53" assertions="2" />
+  </testsuite>
+  <testsuite name="tests/pipeline/delivery-finished-outcome.it.test.ts" file="tests/pipeline/delivery-finished-outcome.it.test.ts" tests="3" assertions="10" failures="0" skipped="0" time="0.043" hostname="CPC-puxu-WC402E">
+    <testcase name="each torn-wire outcome gets a fresh diagnostic Error instance" classname="" time="0.026389" file="tests/pipeline/delivery-finished-outcome.it.test.ts" line="90" assertions="7" />
+    <testcase name="an in-flight pump returns delivery-finished only after another path settles the context" classname="" time="0.015521" file="tests/pipeline/delivery-finished-outcome.it.test.ts" line="103" assertions="1" />
+    <testcase name="a prematurely terminated delivery is a loud stream error while the request context is pending" classname="" time="0.002504" file="tests/pipeline/delivery-finished-outcome.it.test.ts" line="147" assertions="2" />
+  </testsuite>
+  <testsuite name="tests/pipeline/inspect-request.unit.test.ts" file="tests/pipeline/inspect-request.unit.test.ts" tests="8" assertions="26" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="driver.inspectRequest" file="tests/pipeline/inspect-request.unit.test.ts" line="80" tests="8" assertions="26" failures="0" skipped="0" time="0.006" hostname="CPC-puxu-WC402E">
+      <testcase name="runs S1-S3, snapshots each stage + records per-rewrite {name, changed}" classname="driver.inspectRequest" time="0.006779" file="tests/pipeline/inspect-request.unit.test.ts" line="88" assertions="6" />
+      <testcase name="stopAfter=parse stops before S2 (no translate/rewrite-in stages)" classname="driver.inspectRequest" time="0.000314" file="tests/pipeline/inspect-request.unit.test.ts" line="98" assertions="4" />
+      <testcase name="stopAfter=translate stops before S3" classname="driver.inspectRequest" time="0.00019" file="tests/pipeline/inspect-request.unit.test.ts" line="106" assertions="3" />
+      <testcase name="snapshots are deep — a later mutating rewrite does not perturb the parse snapshot" classname="driver.inspectRequest" time="0.000221" file="tests/pipeline/inspect-request.unit.test.ts" line="113" assertions="1" />
+      <testcase name="S2 reject → stoppedAt reject with status/reason, no translate stage" classname="driver.inspectRequest" time="0.00029" file="tests/pipeline/inspect-request.unit.test.ts" line="118" assertions="4" />
+      <testcase name="never calls transport (S4 short-circuited)" classname="driver.inspectRequest" time="0.000141" file="tests/pipeline/inspect-request.unit.test.ts" line="127" assertions="1" />
+      <testcase name="stopAfter=prepare-wire runs S4-pre wire prep on the post-rewrite env (note: first-attempt only)" classname="driver.inspectRequest" time="0.000457" file="tests/pipeline/inspect-request.unit.test.ts" line="132" assertions="6" />
+      <testcase name="stopAfter=prepare-wire never calls transport either" classname="driver.inspectRequest" time="0.000279" file="tests/pipeline/inspect-request.unit.test.ts" line="153" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/shutdown/drain-waits-operation.unit.test.ts" file="tests/shutdown/drain-waits-operation.unit.test.ts" tests="3" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="shutdown drain waits on operation quiesce (C5 drain-switch)" file="tests/shutdown/drain-waits-operation.unit.test.ts" line="20" tests="3" assertions="7" failures="0" skipped="0" time="0.131" hostname="CPC-puxu-WC402E">
+      <testcase name="drain does NOT complete while a settled ctx has pending operation-body work" classname="shutdown drain waits on operation quiesce (C5 drain-switch)" time="0.072832" file="tests/shutdown/drain-waits-operation.unit.test.ts" line="21" assertions="4" />
+      <testcase name="drain completes promptly for an unwired settled ctx (behavior-preserving)" classname="shutdown drain waits on operation quiesce (C5 drain-switch)" time="0.013212" file="tests/shutdown/drain-waits-operation.unit.test.ts" line="45" assertions="1" />
+      <testcase name="drain waits after operation quiescence until delivery starts the generation finalizer" classname="shutdown drain waits on operation quiesce (C5 drain-switch)" time="0.046263" file="tests/shutdown/drain-waits-operation.unit.test.ts" line="55" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/tui/terminal-session.unit.test.ts" file="tests/tui/terminal-session.unit.test.ts" tests="2" assertions="13" failures="0" skipped="0" time="0.001" hostname="CPC-puxu-WC402E">
+    <testsuite name="TerminalSession" file="tests/tui/terminal-session.unit.test.ts" line="19" tests="1" assertions="6" failures="0" skipped="0" time="0.001" hostname="CPC-puxu-WC402E">
+      <testcase name="owns raw input and restores cooked mode even when visual restore fails" classname="TerminalSession" time="0.001309" file="tests/tui/terminal-session.unit.test.ts" line="20" assertions="6" />
+    </testsuite>
+    <testcase name="suspend drains restore bytes, cooks before SIGTSTP, then SIGCONT reattaches raw input and unregisters exit hook" classname="" time="0.001377" file="tests/tui/terminal-session.unit.test.ts" line="46" assertions="7" />
+  </testsuite>
+  <testsuite name="tests/tui/log-line-color.it.test.ts" file="tests/tui/log-line-color.it.test.ts" tests="33" assertions="38" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" file="tests/tui/log-line-color.it.test.ts" line="186" tests="33" assertions="38" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="cache-hit hit 80% → dim (≥80 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000154" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="cache-hit hit 79% → yellow" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000013" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="cache-hit hit 40% → yellow (≥40 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="cache-hit hit 39% → red" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="cache-hit hit 20% → red (≥20 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="cache-hit hit 19% → bold red" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000006" file="tests/tui/log-line-color.it.test.ts" line="190" assertions="1" />
+      <testcase name="duration 3s → white" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000054" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 20s → white (≤20 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000005" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 20.001s → yellow" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 60s → yellow (≤60 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 60.001s → red" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 180s → red (≤180 boundary)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 180.001s → bold red" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="duration 200s → bold red" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="196" assertions="1" />
+      <testcase name="stop_reason end_turn → green (normal completion)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000038" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason stop → green (openai normal)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000005" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason tool_use → white (agentic)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason tool_use with names → white token incl (Bash,Edit)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason tool_use with AskUserQuestion → cyan (interactive pause)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason tool_calls → white (openai agentic)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason max_tokens → yellow (truncation)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason length → yellow (openai truncation)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason refusal → red (problematic)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason content_filter → red (openai problematic)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000005" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="stop_reason surprise → dim (unknown fallback, shown raw)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="202" assertions="1" />
+      <testcase name="response-thinking plaintext thinking → gray think:&lt;chars&gt;(&lt;blocks&gt;)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000044" file="tests/tui/log-line-color.it.test.ts" line="208" assertions="1" />
+      <testcase name="response-thinking encrypted (empty+signed) → gray think:enc" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000005" file="tests/tui/log-line-color.it.test.ts" line="208" assertions="1" />
+      <testcase name="response-thinking poisoned (empty+unsigned) → yellow think:poison" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000003" file="tests/tui/log-line-color.it.test.ts" line="208" assertions="1" />
+      <testcase name="session-block main agent → colored solid square" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000031" file="tests/tui/log-line-color.it.test.ts" line="214" assertions="1" />
+      <testcase name="session-block subagent ❶ → same session color, circled 1" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000006" file="tests/tui/log-line-color.it.test.ts" line="214" assertions="1" />
+      <testcase name="session-block subagent ❷ → same session color, circled 2" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000004" file="tests/tui/log-line-color.it.test.ts" line="214" assertions="1" />
+      <testcase name="main and subagent of one session share the exact color code (only the glyph differs)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000067" file="tests/tui/log-line-color.it.test.ts" line="219" assertions="2" />
+      <testcase name="bands are mutually distinct (a fast/high-hit case is never colored like a severe one)" classname="formatLogLine severity coloring (FORCE_COLOR integration — authoritative)" time="0.000102" file="tests/tui/log-line-color.it.test.ts" line="224" assertions="5" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/protect-streaming-stats.unit.test.ts" file="tests/anthropic/protect-streaming-stats.unit.test.ts" tests="13" assertions="29" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="protect-streaming-stats" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="27" tests="13" assertions="29" failures="0" skipped="0" time="0.004" hostname="CPC-puxu-WC402E">
+      <testcase name="starts empty (no vendor buckets)" classname="protect-streaming-stats" time="0.004393" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="30" assertions="1" />
+      <testcase name="partial-degrade + vendor dimension counted per-vendor" classname="protect-streaming-stats" time="0.000417" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="34" assertions="5" />
+      <testcase name="accumulates per outcome + sums retries within a vendor bucket" classname="protect-streaming-stats" time="0.000085" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="46" assertions="1" />
+      <testcase name="totalRetries counts every leg; retriesBeforeDegrade ONLY the partial-degrade legs" classname="protect-streaming-stats" time="0.000068" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="67" assertions="3" />
+      <testcase name="continuation split (§5.3): meta.continuationRetries splits totalRetries into pre-first-block vs continuation; continuation-exhausted is its own bucket" classname="protect-streaming-stats" time="0.00006" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="77" assertions="5" />
+      <testcase name="hit-rate folds partial-degrade into the denominator (success / (success + exhausted + partialDegrade))" classname="protect-streaming-stats" time="0.000076" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="90" assertions="1" />
+      <testcase name="hit-rate is null when there are no denominator engagements" classname="protect-streaming-stats" time="0.000034" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="100" assertions="1" />
+      <testcase name="getter returns a deep snapshot copy (not the live objects)" classname="protect-streaming-stats" time="0.000043" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="105" assertions="2" />
+      <testcase name="reset clears all vendor buckets" classname="protect-streaming-stats" time="0.000033" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="113" assertions="1" />
+      <testcase name="continuation-exhausted increments its own counter and counts in the hit-rate denominator" classname="protect-streaming-stats" time="0.000059" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="120" assertions="2" />
+      <testcase name="precontent recovery outcomes increment their dedicated counters" classname="protect-streaming-stats" time="0.00006" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="129" assertions="2" />
+      <testcase name="retries split into pre-first-block vs continuation counts (telemetry-architecture: finest factors)" classname="protect-streaming-stats" time="0.000039" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="138" assertions="3" />
+      <testcase name="legacy callers (no continuationRetries) attribute all retries to pre-first-block" classname="protect-streaming-stats" time="0.000034" file="tests/anthropic/protect-streaming-stats.unit.test.ts" line="147" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/precontent-recovery-gate.it.test.ts" file="tests/anthropic/precontent-recovery-gate.it.test.ts" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="shouldAttemptPreContentRecovery delivery integration" file="tests/anthropic/precontent-recovery-gate.it.test.ts" line="44" tests="2" assertions="3" failures="0" skipped="0" time="0.028" hostname="CPC-puxu-WC402E">
+      <testcase name="a delivered delta before content_block_stop belongs to continuation, not pre-content recovery" classname="shouldAttemptPreContentRecovery delivery integration" time="0.011919" file="tests/anthropic/precontent-recovery-gate.it.test.ts" line="45" assertions="1" />
+      <testcase name="a decorated sink cannot resolve delivery state, so recovery must fail closed" classname="shouldAttemptPreContentRecovery delivery integration" time="0.017313" file="tests/anthropic/precontent-recovery-gate.it.test.ts" line="60" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/message-mapping.unit.test.ts" file="tests/anthropic/message-mapping.unit.test.ts" tests="15" assertions="15" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="buildMessageMapping" file="tests/anthropic/message-mapping.unit.test.ts" line="34" tests="6" assertions="6" failures="0" skipped="0" time="0.011" hostname="CPC-puxu-WC402E">
+      <testcase name="maps identical arrays 1:1" classname="buildMessageMapping" time="0.009201" file="tests/anthropic/message-mapping.unit.test.ts" line="35" assertions="1" />
+      <testcase name="maps rewritten (subset) to original indices" classname="buildMessageMapping" time="0.000095" file="tests/anthropic/message-mapping.unit.test.ts" line="45" assertions="1" />
+      <testcase name="handles empty rewritten array" classname="buildMessageMapping" time="0.000054" file="tests/anthropic/message-mapping.unit.test.ts" line="63" assertions="1" />
+      <testcase name="handles empty original array" classname="buildMessageMapping" time="0.000035" file="tests/anthropic/message-mapping.unit.test.ts" line="69" assertions="1" />
+      <testcase name="maps a split turn (1 original → 2 rewritten) back to the source original index" classname="buildMessageMapping" time="0.00022" file="tests/anthropic/message-mapping.unit.test.ts" line="74" assertions="1" />
+      <testcase name="split combined with a deletion still maps correctly" classname="buildMessageMapping" time="0.002795" file="tests/anthropic/message-mapping.unit.test.ts" line="104" assertions="1" />
+    </testsuite>
+    <testsuite name="messagesMatch" file="tests/anthropic/message-mapping.unit.test.ts" line="129" tests="9" assertions="9" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="matches identical string content messages" classname="messagesMatch" time="0.000083" file="tests/anthropic/message-mapping.unit.test.ts" line="130" assertions="1" />
+      <testcase name="does not match different roles" classname="messagesMatch" time="0.000038" file="tests/anthropic/message-mapping.unit.test.ts" line="135" assertions="1" />
+      <testcase name="matches by prefix for string content" classname="messagesMatch" time="0.000049" file="tests/anthropic/message-mapping.unit.test.ts" line="141" assertions="1" />
+      <testcase name="matches tool_use blocks by id" classname="messagesMatch" time="0.00005" file="tests/anthropic/message-mapping.unit.test.ts" line="148" assertions="1" />
+      <testcase name="does not match tool_use blocks with different ids" classname="messagesMatch" time="0.000046" file="tests/anthropic/message-mapping.unit.test.ts" line="160" assertions="1" />
+      <testcase name="matches tool_result blocks by tool_use_id" classname="messagesMatch" time="0.000052" file="tests/anthropic/message-mapping.unit.test.ts" line="172" assertions="1" />
+      <testcase name="matches when both have empty content arrays" classname="messagesMatch" time="0.000041" file="tests/anthropic/message-mapping.unit.test.ts" line="184" assertions="1" />
+      <testcase name="matches a downgraded server_tool_use against the original tool_use by id" classname="messagesMatch" time="0.000097" file="tests/anthropic/message-mapping.unit.test.ts" line="190" assertions="1" />
+      <testcase name="does not match a downgraded server_tool_use against a different id" classname="messagesMatch" time="0.00006" file="tests/anthropic/message-mapping.unit.test.ts" line="204" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" tests="8" assertions="18" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="stripReadToolResultTags" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="36" tests="8" assertions="18" failures="0" skipped="0" time="0.013" hostname="CPC-puxu-WC402E">
+      <testcase name="should not modify messages without system-reminder tags" classname="stripReadToolResultTags" time="0.013967" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="37" assertions="2" />
+      <testcase name="should strip trailing system-reminder tags from Read results" classname="stripReadToolResultTags" time="0.000142" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="45" assertions="3" />
+      <testcase name="should strip leading system-reminder tags from Read results" classname="stripReadToolResultTags" time="0.000088" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="61" assertions="2" />
+      <testcase name="should strip multiple tags (both leading and trailing)" classname="stripReadToolResultTags" time="0.000102" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="75" assertions="2" />
+      <testcase name="should not affect non-Read tool results" classname="stripReadToolResultTags" time="0.000101" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="93" assertions="2" />
+      <testcase name="should handle mixed Read and non-Read tools" classname="stripReadToolResultTags" time="0.000091" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="103" assertions="3" />
+      <testcase name="should handle Array content form in tool_result" classname="stripReadToolResultTags" time="0.000211" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="126" assertions="2" />
+      <testcase name="should return same reference when no Read tool_use blocks exist" classname="stripReadToolResultTags" time="0.000051" file="tests/anthropic/strip-read-tool-result-tags.unit.test.ts" line="141" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/anthropic-prepare-steps.unit.test.ts" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" tests="4" assertions="5" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="ANTHROPIC_PREPARE_STEPS order contract" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" line="26" tests="4" assertions="5" failures="0" skipped="0" time="0.03" hostname="CPC-puxu-WC402E">
+      <testcase name="steps are named and ordered: coerce → adjust → clamp → strip-partner-features → rewrite-memory → cache → headers" classname="ANTHROPIC_PREPARE_STEPS order contract" time="0.029559" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" line="27" assertions="1" />
+      <testcase name="thinking shape coercion precedes budget and effort clamping (B3&lt;B4&lt;B5)" classname="ANTHROPIC_PREPARE_STEPS order contract" time="0.000153" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" line="40" assertions="2" />
+      <testcase name="header build runs last — headers derive from the final wire body" classname="ANTHROPIC_PREPARE_STEPS order contract" time="0.000049" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" line="46" assertions="1" />
+      <testcase name="prepareAnthropicRequest actually iterates the step list in order (runner ↔ STEPS coupling)" classname="ANTHROPIC_PREPARE_STEPS order contract" time="0.001365" file="tests/anthropic/anthropic-prepare-steps.unit.test.ts" line="50" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/streaming-l2-baseline.http.test.ts" file="tests/anthropic/streaming-l2-baseline.http.test.ts" tests="2" assertions="14" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="L2 baseline — Anthropic live streaming (locked before L2 lands)" file="tests/anthropic/streaming-l2-baseline.http.test.ts" line="119" tests="2" assertions="14" failures="0" skipped="0" time="0.382" hostname="CPC-puxu-WC402E">
+      <testcase name="complete stream → forwarded frames in exact order + tool_use content intact + history completed" classname="L2 baseline — Anthropic live streaming (locked before L2 lands)" time="0.303507" file="tests/anthropic/streaming-l2-baseline.http.test.ts" line="137" assertions="6" />
+      <testcase name="mid-stream transport-close (NGHTTP2_CANCEL) → partial frames + synthetic error, NO message_stop, history failed" classname="L2 baseline — Anthropic live streaming (locked before L2 lands)" time="0.079479" file="tests/anthropic/streaming-l2-baseline.http.test.ts" line="172" assertions="8" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" file="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" tests="3" assertions="11" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="POST /v1/messages (non-streaming) — unrepairable malformed tool-input fail (P5)" file="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" line="87" tests="3" assertions="11" failures="0" skipped="0" time="0.253" hostname="CPC-puxu-WC402E">
+      <testcase name="repair mode: unrepairable string input → history FAILED, partial preserved" classname="POST /v1/messages (non-streaming) — unrepairable malformed tool-input fail (P5)" time="0.10557" file="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" line="95" assertions="7" />
+      <testcase name="repair mode: a repairable antml-bleed string input → SUCCEEDS with a structured object on the wire" classname="POST /v1/messages (non-streaming) — unrepairable malformed tool-input fail (P5)" time="0.098864" file="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" line="113" assertions="3" />
+      <testcase name="repair off (default): unrepairable string input is forwarded as-is, request completes" classname="POST /v1/messages (non-streaming) — unrepairable malformed tool-input fail (P5)" time="0.050625" file="tests/anthropic/tool-input-repair-fail-nonstream.http.test.ts" line="128" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/quarantine-e2e.it.test.ts" file="tests/anthropic/quarantine-e2e.it.test.ts" tests="5" assertions="15" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="Guard A — driver-level ordering over the REAL codec rewrites" file="tests/anthropic/quarantine-e2e.it.test.ts" line="174" tests="1" assertions="4" failures="0" skipped="0" time="0.07" hostname="CPC-puxu-WC402E">
+      <testcase name="assembleRequestRewrites sorts L3(250) before L1(300) regardless of registration order" classname="Guard A — driver-level ordering over the REAL codec rewrites" time="0.070087" file="tests/anthropic/quarantine-e2e.it.test.ts" line="175" assertions="4" />
+    </testsuite>
+    <testsuite name="Guard B — L3×L1 interaction: proactive strip-all makes de-stack a no-op (no orphan markers)" file="tests/anthropic/quarantine-e2e.it.test.ts" line="188" tests="2" assertions="4" failures="0" skipped="0" time="0.143" hostname="CPC-puxu-WC402E">
+      <testcase name="quarantined conversation with ADJACENT thinking → final body has NO thinking AND NO synthetic marker" classname="Guard B — L3×L1 interaction: proactive strip-all makes de-stack a no-op (no orphan markers)" time="0.080936" file="tests/anthropic/quarantine-e2e.it.test.ts" line="191" assertions="2" />
+      <testcase name="CONTRAST — same payload + strategy but NOT quarantined → L3 no-op, de-stack fires: thinking preserved + synthetic marker present" classname="Guard B — L3×L1 interaction: proactive strip-all makes de-stack a no-op (no orphan markers)" time="0.063563" file="tests/anthropic/quarantine-e2e.it.test.ts" line="204" assertions="2" />
+    </testsuite>
+    <testsuite name="Guard C — cross-turn producer→consumer loop (L2 onResolved commit → next-turn L3 proactive), shared store" file="tests/anthropic/quarantine-e2e.it.test.ts" line="218" tests="2" assertions="7" failures="0" skipped="0" time="0.088" hostname="CPC-puxu-WC402E">
+      <testcase name="turn 1 L2 strip-all success commits quarantine → turn 2 same session is proactively stripped, no marker" classname="Guard C — cross-turn producer→consumer loop (L2 onResolved commit → next-turn L3 proactive), shared store" time="0.028026" file="tests/anthropic/quarantine-e2e.it.test.ts" line="219" assertions="4" />
+      <testcase name="un-committed session is NOT quarantined → turn 2 keeps its thinking (loop is closed by the commit, not ambient)" classname="Guard C — cross-turn producer→consumer loop (L2 onResolved commit → next-turn L3 proactive), shared store" time="0.060545" file="tests/anthropic/quarantine-e2e.it.test.ts" line="245" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/response-preview.unit.test.ts" file="tests/history/response-preview.unit.test.ts" tests="13" assertions="13" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="summarizeResponseMessage" file="tests/history/response-preview.unit.test.ts" line="20" tests="7" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="anthropic array content: tools first then text → [A, B] text" classname="summarizeResponseMessage" time="0.000257" file="tests/history/response-preview.unit.test.ts" line="21" assertions="1" />
+      <testcase name="string content + tool_calls (CC/Responses/Gemini shape)" classname="summarizeResponseMessage" time="0.000114" file="tests/history/response-preview.unit.test.ts" line="33" assertions="1" />
+      <testcase name="only text" classname="summarizeResponseMessage" time="0.000069" file="tests/history/response-preview.unit.test.ts" line="42" assertions="1" />
+      <testcase name="only tools" classname="summarizeResponseMessage" time="0.000071" file="tests/history/response-preview.unit.test.ts" line="46" assertions="1" />
+      <testcase name="empty → &apos;&apos;" classname="summarizeResponseMessage" time="0.000042" file="tests/history/response-preview.unit.test.ts" line="51" assertions="1" />
+      <testcase name="truncates to ~100 chars" classname="summarizeResponseMessage" time="0.00008" file="tests/history/response-preview.unit.test.ts" line="55" assertions="1" />
+      <testcase name="server_tool_use block → [web_search]" classname="summarizeResponseMessage" time="0.00006" file="tests/history/response-preview.unit.test.ts" line="60" assertions="1" />
+    </testsuite>
+    <testsuite name="extractResponsePreviewText" file="tests/history/response-preview.unit.test.ts" line="66" tests="6" assertions="6" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="non-streaming body (anthropic)" classname="extractResponsePreviewText" time="0.0002" file="tests/history/response-preview.unit.test.ts" line="67" assertions="1" />
+      <testcase name="streaming forwarded frames (anthropic)" classname="extractResponsePreviewText" time="0.000787" file="tests/history/response-preview.unit.test.ts" line="77" assertions="1" />
+      <testcase name="failed entry with no content → error fallback" classname="extractResponsePreviewText" time="0.000093" file="tests/history/response-preview.unit.test.ts" line="91" assertions="1" />
+      <testcase name="errorFallback level 2: no attempts[].error → _index.derived.failureReason (truncated ~100)" classname="extractResponsePreviewText" time="0.000071" file="tests/history/response-preview.unit.test.ts" line="101" assertions="1" />
+      <testcase name="errorFallback level 3: no error/failureReason → first line of rawBody" classname="extractResponsePreviewText" time="0.000149" file="tests/history/response-preview.unit.test.ts" line="111" assertions="1" />
+      <testcase name="in-flight (no attempts) → &apos;&apos;" classname="extractResponsePreviewText" time="0.000055" file="tests/history/response-preview.unit.test.ts" line="119" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/history-types.unit.test.ts" file="tests/history/history-types.unit.test.ts" tests="3" assertions="6" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="History barrel type exports" file="tests/history/history-types.unit.test.ts" line="15" tests="3" assertions="6" failures="0" skipped="0" time="0.001" hostname="CPC-puxu-WC402E">
+      <testcase name="exports CursorResult from ~/lib/history" classname="History barrel type exports" time="0.001997" file="tests/history/history-types.unit.test.ts" line="16" assertions="2" />
+      <testcase name="exports SseEventRecord from ~/lib/history" classname="History barrel type exports" time="0.000436" file="tests/history/history-types.unit.test.ts" line="28" assertions="2" />
+      <testcase name="exports ServerToolResultContentBlock from ~/lib/history" classname="History barrel type exports" time="0.000048" file="tests/history/history-types.unit.test.ts" line="39" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/in-flight-response-preview.unit.test.ts" file="tests/history/in-flight-response-preview.unit.test.ts" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="toEntrySummary responsePreviewText" file="tests/history/in-flight-response-preview.unit.test.ts" line="12" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="terminal entry with tool_use response → summarized" classname="toEntrySummary responsePreviewText" time="0.000267" file="tests/history/in-flight-response-preview.unit.test.ts" line="13" assertions="1" />
+      <testcase name="in-flight entry (no attempts) → &apos;&apos;" classname="toEntrySummary responsePreviewText" time="0.0001" file="tests/history/in-flight-response-preview.unit.test.ts" line="31" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts" file="tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts" tests="2" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="pre-content recovery evaluator reachability" file="tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts" line="35" tests="2" assertions="8" failures="0" skipped="0" time="1.005" hostname="CPC-puxu-WC402E">
+      <testcase name="evaluation mode invokes only the collector and keeps every non-complete outcome on the discard/fallback path" classname="pre-content recovery evaluator reachability" time="0.91335" file="tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts" line="36" assertions="5" />
+      <testcase name="unexpected evaluator outcomes are reachable only at the driver throw and snapshot-read boundaries" classname="pre-content recovery evaluator reachability" time="0.09274" file="tests/architecture/precontent-recovery-evaluator-reachability.unit.test.ts" line="66" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/architecture/source-ast.unit.test.ts" file="tests/architecture/source-ast.unit.test.ts" tests="62" assertions="90" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="mayContainDecoded" file="tests/architecture/source-ast.unit.test.ts" line="67" tests="10" assertions="21" failures="0" skipped="0" time="0.037" hostname="CPC-puxu-WC402E">
+      <testcase name="放行只在解码后才出现的拼法：hex escape" classname="mayContainDecoded" time="0.02309" file="tests/architecture/source-ast.unit.test.ts" line="68" assertions="3" />
+      <testcase name="放行只在解码后才出现的拼法：unicode escape" classname="mayContainDecoded" time="0.000578" file="tests/architecture/source-ast.unit.test.ts" line="68" assertions="3" />
+      <testcase name="放行只在解码后才出现的拼法：unicode code point escape" classname="mayContainDecoded" time="0.014648" file="tests/architecture/source-ast.unit.test.ts" line="68" assertions="3" />
+      <testcase name="放行只在解码后才出现的拼法：identity escape（`\e` → `e`，`/\\[ux]/` 版就漏在这）" classname="mayContainDecoded" time="0.000809" file="tests/architecture/source-ast.unit.test.ts" line="68" assertions="3" />
+      <testcase name="放行只在解码后才出现的拼法：line continuation（反斜杠+换行把 needle 劈成两行）" classname="mayContainDecoded" time="0.000199" file="tests/architecture/source-ast.unit.test.ts" line="68" assertions="3" />
+      <testcase name="原始文本直接含有目标：放行（最便宜的一档）" classname="mayContainDecoded" time="0.000082" file="tests/architecture/source-ast.unit.test.ts" line="75" assertions="1" />
+      <testcase name="不含反斜杠就一定不含解码差异：挡下（这一档没了预过滤就没有意义）" classname="mayContainDecoded" time="0.000037" file="tests/architecture/source-ast.unit.test.ts" line="79" assertions="1" />
+      <testcase name="有反斜杠但解码后仍无目标：挡下（否则退化成「见反斜杠就解析」，实测慢 5 倍）" classname="mayContainDecoded" time="0.000336" file="tests/architecture/source-ast.unit.test.ts" line="83" assertions="1" />
+      <testcase name="模板字面量与标识符里的转义同样看得见" classname="mayContainDecoded" time="0.000391" file="tests/architecture/source-ast.unit.test.ts" line="87" assertions="2" />
+      <testcase name="注释里的目标也放行——这一层不做语义判断，语义归调用方的 AST 判据" classname="mayContainDecoded" time="0.000044" file="tests/architecture/source-ast.unit.test.ts" line="92" assertions="1" />
+    </testsuite>
+    <testsuite name="allModuleSpecifiers：模板字面量形态" file="tests/architecture/source-ast.unit.test.ts" line="105" tests="4" assertions="13" failures="0" skipped="0" time="0.797" hostname="CPC-puxu-WC402E">
+      <testcase name="dynamic import 的模板实参照样算一条边（tsc 认它，守卫就必须认）" classname="allModuleSpecifiers：模板字面量形态" time="0.004615" file="tests/architecture/source-ast.unit.test.ts" line="109" assertions="1" />
+      <testcase name="require 的模板实参照样算一条边（tsc 认它，守卫就必须认）" classname="allModuleSpecifiers：模板字面量形态" time="0.0225" file="tests/architecture/source-ast.unit.test.ts" line="109" assertions="1" />
+      <testcase name="带插值的模板不报（没有静态 specifier 可报，编造一个是撒谎而不是补洞）" classname="allModuleSpecifiers：模板字面量形态" time="0.111713" file="tests/architecture/source-ast.unit.test.ts" line="113" assertions="1" />
+      <testcase name="import()/require() 之外的位置写模板是 TS1141——所以那些位置故意只认 StringLiteral" classname="allModuleSpecifiers：模板字面量形态" time="0.660963" file="tests/architecture/source-ast.unit.test.ts" line="117" assertions="10" />
+    </testsuite>
+    <testsuite name="importedModuleSpecifiers" file="tests/architecture/source-ast.unit.test.ts" line="135" tests="2" assertions="4" failures="0" skipped="0" time="0.009" hostname="CPC-puxu-WC402E">
+      <testcase name="动态 import / require 的模板实参照样算一条运行时边" classname="importedModuleSpecifiers" time="0.009842" file="tests/architecture/source-ast.unit.test.ts" line="136" assertions="2" />
+      <testcase name="仍然排除 type-only import（它没有运行时边）" classname="importedModuleSpecifiers" time="0.000736" file="tests/architecture/source-ast.unit.test.ts" line="141" assertions="2" />
+    </testsuite>
+    <testsuite name="moduleLoadSites" file="tests/architecture/source-ast.unit.test.ts" line="159" tests="13" assertions="14" failures="0" skipped="0" time="0.024" hostname="CPC-puxu-WC402E">
+      <testcase name="动态 import 字面量：目标是字面量就报出来" classname="moduleLoadSites" time="0.000998" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="无插值模板：目标是字面量就报出来" classname="moduleLoadSites" time="0.000394" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="ambient require：目标是字面量就报出来" classname="moduleLoadSites" time="0.000281" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="createRequire 铸造后**直接调用**（callee 本身是一次调用）：目标是字面量就报出来" classname="moduleLoadSites" time="0.015552" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="import.meta.require：目标是字面量就报出来" classname="moduleLoadSites" time="0.000444" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="先绑定再调用：目标是字面量就报出来" classname="moduleLoadSites" time="0.000431" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="动态 import 解构出的 createRequire：目标是字面量就报出来" classname="moduleLoadSites" time="0.00121" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="var 提升出 block（自写 binder 曾在这里判错）：目标是字面量就报出来" classname="moduleLoadSites" time="0.000444" file="tests/architecture/source-ast.unit.test.ts" line="184" assertions="1" />
+      <testcase name="模板插值：目标算不可判定" classname="moduleLoadSites" time="0.008171" file="tests/architecture/source-ast.unit.test.ts" line="192" assertions="1" />
+      <testcase name="标识符实参：目标算不可判定" classname="moduleLoadSites" time="0.000385" file="tests/architecture/source-ast.unit.test.ts" line="192" assertions="1" />
+      <testcase name="token 之间插注释：目标算不可判定" classname="moduleLoadSites" time="0.000282" file="tests/architecture/source-ast.unit.test.ts" line="192" assertions="1" />
+      <testcase name="普通调用不算（否则登记表会被整个代码库淹没）" classname="moduleLoadSites" time="0.000471" file="tests/architecture/source-ast.unit.test.ts" line="196" assertions="1" />
+      <testcase name="过近似的方向是已知且刻意的：这些确实会被报出来" classname="moduleLoadSites" time="0.000797" file="tests/architecture/source-ast.unit.test.ts" line="200" assertions="2" />
+    </testsuite>
+    <testsuite name="referencedFilePaths" file="tests/architecture/source-ast.unit.test.ts" line="207" tests="2" assertions="3" failures="0" skipped="0" time="0.069" hostname="CPC-puxu-WC402E">
+      <testcase name="triple-slash reference 是一条没有 specifier 的依赖边，同样要报" classname="referencedFilePaths" time="0.069579" file="tests/architecture/source-ast.unit.test.ts" line="208" assertions="2" />
+      <testcase name="没有 reference 的文件返回空" classname="referencedFilePaths" time="0.000525" file="tests/architecture/source-ast.unit.test.ts" line="215" assertions="1" />
+    </testsuite>
+    <testsuite name="moduleCapabilityAcquisitions" file="tests/architecture/source-ast.unit.test.ts" line="230" tests="13" assertions="15" failures="0" skipped="0" time="0.019" hostname="CPC-puxu-WC402E">
+      <testcase name="具名 import 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.006635" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="改名导入（按名字追那版漏的就是它） 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000382" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="namespace import 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000312" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="default import 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.00011" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="无 node: 前缀 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000106" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="side-effect import 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000086" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="re-export 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000534" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="import = require 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000157" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="动态 import 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.001064" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="require 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.000238" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="process.getBuiltinModule 算一次能力获取" classname="moduleCapabilityAcquisitions" time="0.012931" file="tests/architecture/source-ast.unit.test.ts" line="243" assertions="1" />
+      <testcase name="普通模块不算（否则每个文件都会被报出来，登记表就没有意义了）" classname="moduleCapabilityAcquisitions" time="0.000828" file="tests/architecture/source-ast.unit.test.ts" line="247" assertions="2" />
+      <testcase name="能力判据独立于「按名字追 loader」是否追得到（这正是它存在的理由）" classname="moduleCapabilityAcquisitions" time="0.000652" file="tests/architecture/source-ast.unit.test.ts" line="253" assertions="2" />
+    </testsuite>
+    <testsuite name="callArgumentLiterals" file="tests/architecture/source-ast.unit.test.ts" line="268" tests="7" assertions="8" failures="0" skipped="0" time="0.006" hostname="CPC-puxu-WC402E">
+      <testcase name="普通调用：callee 怎么拼都不影响" classname="callArgumentLiterals" time="0.000532" file="tests/architecture/source-ast.unit.test.ts" line="277" assertions="1" />
+      <testcase name="括号 callee：callee 怎么拼都不影响" classname="callArgumentLiterals" time="0.006187" file="tests/architecture/source-ast.unit.test.ts" line="277" assertions="1" />
+      <testcase name="计算属性访问：callee 怎么拼都不影响" classname="callArgumentLiterals" time="0.000525" file="tests/architecture/source-ast.unit.test.ts" line="277" assertions="1" />
+      <testcase name="深层成员访问：callee 怎么拼都不影响" classname="callArgumentLiterals" time="0.000312" file="tests/architecture/source-ast.unit.test.ts" line="277" assertions="1" />
+      <testcase name="无插值模板实参：callee 怎么拼都不影响" classname="callArgumentLiterals" time="0.000271" file="tests/architecture/source-ast.unit.test.ts" line="277" assertions="1" />
+      <testcase name="非字面量实参不报（编造目标比漏掉更糟）" classname="callArgumentLiterals" time="0.000455" file="tests/architecture/source-ast.unit.test.ts" line="281" assertions="2" />
+      <testcase name="它是构件不是守卫：一切字符串首参都会返回，由调用方按自己的前缀过滤" classname="callArgumentLiterals" time="0.000264" file="tests/architecture/source-ast.unit.test.ts" line="286" assertions="1" />
+    </testsuite>
+    <testsuite name="ambientRequireReferences" file="tests/architecture/source-ast.unit.test.ts" line="296" tests="9" assertions="9" failures="0" skipped="0" time="0.016" hostname="CPC-puxu-WC402E">
+      <testcase name="直接调用 都算引用" classname="ambientRequireReferences" time="0.000682" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="赋给别名 都算引用" classname="ambientRequireReferences" time="0.000259" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="两跳别名 都算引用" classname="ambientRequireReferences" time="0.005067" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="Reflect.apply 都算引用" classname="ambientRequireReferences" time="0.001141" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="import.meta.require 调用 都算引用" classname="ambientRequireReferences" time="0.001153" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="import.meta.require 赋给别名 都算引用" classname="ambientRequireReferences" time="0.009186" file="tests/architecture/source-ast.unit.test.ts" line="304" assertions="1" />
+      <testcase name="别人的成员 不算（这条判据很钝，但不能钝到误伤声明本身）" classname="ambientRequireReferences" time="0.000543" file="tests/architecture/source-ast.unit.test.ts" line="312" assertions="1" />
+      <testcase name="自己声明的同名绑定 不算（这条判据很钝，但不能钝到误伤声明本身）" classname="ambientRequireReferences" time="0.000724" file="tests/architecture/source-ast.unit.test.ts" line="312" assertions="1" />
+      <testcase name="形参 不算（这条判据很钝，但不能钝到误伤声明本身）" classname="ambientRequireReferences" time="0.000896" file="tests/architecture/source-ast.unit.test.ts" line="312" assertions="1" />
+    </testsuite>
+    <testsuite name="containedIn" file="tests/architecture/source-ast.unit.test.ts" line="318" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="不存在的目标按词法比较，而不是抛 ENOENT 把整个守卫带走" classname="containedIn" time="0.000482" file="tests/architecture/source-ast.unit.test.ts" line="319" assertions="2" />
+      <testcase name="按路径段比较：兄弟目录同前缀不算包内" classname="containedIn" time="0.000207" file="tests/architecture/source-ast.unit.test.ts" line="324" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/infra/utils.unit.test.ts" file="tests/infra/utils.unit.test.ts" tests="22" assertions="26" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="bytesToKB" file="tests/infra/utils.unit.test.ts" line="28" tests="4" assertions="5" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="converts bytes to KB with rounding" classname="bytesToKB" time="0.000081" file="tests/infra/utils.unit.test.ts" line="29" assertions="1" />
+      <testcase name="handles 0" classname="bytesToKB" time="0.000129" file="tests/infra/utils.unit.test.ts" line="33" assertions="1" />
+      <testcase name="rounds to nearest integer" classname="bytesToKB" time="0.000047" file="tests/infra/utils.unit.test.ts" line="37" assertions="2" />
+      <testcase name="handles large values" classname="bytesToKB" time="0.000048" file="tests/infra/utils.unit.test.ts" line="42" assertions="1" />
+    </testsuite>
+    <testsuite name="getErrorMessage" file="tests/infra/utils.unit.test.ts" line="49" tests="10" assertions="13" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="extracts message from Error" classname="getErrorMessage" time="0.000086" file="tests/infra/utils.unit.test.ts" line="50" assertions="1" />
+      <testcase name="returns string as-is" classname="getErrorMessage" time="0.000034" file="tests/infra/utils.unit.test.ts" line="54" assertions="1" />
+      <testcase name="returns fallback for non-Error object" classname="getErrorMessage" time="0.000038" file="tests/infra/utils.unit.test.ts" line="59" assertions="3" />
+      <testcase name="uses custom fallback message" classname="getErrorMessage" time="0.000019" file="tests/infra/utils.unit.test.ts" line="65" assertions="1" />
+      <testcase name="extracts message from HTTPError with JSON responseText" classname="getErrorMessage" time="0.000134" file="tests/infra/utils.unit.test.ts" line="69" assertions="1" />
+      <testcase name="uses plain responseText for non-JSON" classname="getErrorMessage" time="0.000472" file="tests/infra/utils.unit.test.ts" line="74" assertions="1" />
+      <testcase name="prepends HTTP status when present" classname="getErrorMessage" time="0.000324" file="tests/infra/utils.unit.test.ts" line="79" assertions="1" />
+      <testcase name="falls back to error.message for long responseText" classname="getErrorMessage" time="0.000339" file="tests/infra/utils.unit.test.ts" line="84" assertions="1" />
+      <testcase name="includes cause for non-HTTP errors" classname="getErrorMessage" time="0.000734" file="tests/infra/utils.unit.test.ts" line="90" assertions="1" />
+      <testcase name="strips Bun verbose hint for non-HTTP errors" classname="getErrorMessage" time="0.000098" file="tests/infra/utils.unit.test.ts" line="96" assertions="2" />
+    </testsuite>
+    <testsuite name="isNullish" file="tests/infra/utils.unit.test.ts" line="105" tests="5" assertions="5" failures="0" skipped="0" time="0.007" hostname="CPC-puxu-WC402E">
+      <testcase name="returns true for null" classname="isNullish" time="0.000057" file="tests/infra/utils.unit.test.ts" line="106" assertions="1" />
+      <testcase name="returns true for undefined" classname="isNullish" time="0.000044" file="tests/infra/utils.unit.test.ts" line="110" assertions="1" />
+      <testcase name="returns false for 0" classname="isNullish" time="0.007459" file="tests/infra/utils.unit.test.ts" line="114" assertions="1" />
+      <testcase name="returns false for empty string" classname="isNullish" time="0.000056" file="tests/infra/utils.unit.test.ts" line="118" assertions="1" />
+      <testcase name="returns false for false" classname="isNullish" time="0.000042" file="tests/infra/utils.unit.test.ts" line="122" assertions="1" />
+    </testsuite>
+    <testsuite name="generateId" file="tests/infra/utils.unit.test.ts" line="129" tests="3" assertions="3" failures="0" skipped="0" time="0.021" hostname="CPC-puxu-WC402E">
+      <testcase name="generates non-empty string" classname="generateId" time="0.021628" file="tests/infra/utils.unit.test.ts" line="130" assertions="1" />
+      <testcase name="generates unique ids on successive calls" classname="generateId" time="0.000734" file="tests/infra/utils.unit.test.ts" line="135" assertions="1" />
+      <testcase name="respects randomLength parameter" classname="generateId" time="0.000152" file="tests/infra/utils.unit.test.ts" line="140" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/infra/management-routes.http.test.ts" file="tests/infra/management-routes.http.test.ts" tests="12" assertions="74" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="management and history HTTP routes" file="tests/infra/management-routes.http.test.ts" line="244" tests="12" assertions="74" failures="0" skipped="0" time="0.8" hostname="CPC-puxu-WC402E">
+      <testcase name="GET /api/tokens returns both GitHub and Copilot token metadata" classname="management and history HTTP routes" time="0.132147" file="tests/infra/management-routes.http.test.ts" line="268" assertions="2" />
+      <testcase name="GET /api/status returns aggregated server status with quota data" classname="management and history HTTP routes" time="0.067413" file="tests/infra/management-routes.http.test.ts" line="303" assertions="20" />
+      <testcase name="GET /api/status counts persisted operations without parsing summary payloads" classname="management and history HTTP routes" time="0.066265" file="tests/infra/management-routes.http.test.ts" line="390" assertions="2" />
+      <testcase name="GET /history/api/stats returns history stats through the full app route" classname="management and history HTTP routes" time="0.026752" file="tests/infra/management-routes.http.test.ts" line="409" assertions="5" />
+      <testcase name="GET /history/api/entries/:id returns a full history entry through the mounted route" classname="management and history HTTP routes" time="0.034618" file="tests/infra/management-routes.http.test.ts" line="435" assertions="4" />
+      <testcase name="GET /api/stats returns a per-dimension breakdown for a registered dimension" classname="management and history HTTP routes" time="0.059921" file="tests/infra/management-routes.http.test.ts" line="448" assertions="9" />
+      <testcase name="GET /api/stats top-N folds the remainder into an &apos;other&apos; key" classname="management and history HTTP routes" time="0.140624" file="tests/infra/management-routes.http.test.ts" line="477" assertions="5" />
+      <testcase name="GET /api/stats rejects an unknown dimension with 400 + the valid list" classname="management and history HTTP routes" time="0.076678" file="tests/infra/management-routes.http.test.ts" line="492" assertions="3" />
+      <testcase name="GET /api/status stays a totals summary — it does NOT carry the new dimension breakdowns" classname="management and history HTTP routes" time="0.022007" file="tests/infra/management-routes.http.test.ts" line="500" assertions="4" />
+      <testcase name="GET /api/status carries transport diagnostics (D7 HIGH-7): configured values + runtime capability + per-row arrays, not a single generation scalar" classname="management and history HTTP routes" time="0.033434" file="tests/infra/management-routes.http.test.ts" line="511" assertions="10" />
+      <testcase name="GET /api/status surfaces a FAILED upstream WS reconcile (merged-state review fix, spec §4 D7 HIGH-3/HIGH-7 symmetry) — not just h2&apos;s" classname="management and history HTTP routes" time="0.057816" file="tests/infra/management-routes.http.test.ts" line="544" assertions="3" />
+      <testcase name="GET /metrics returns Prometheus exposition projecting the telemetry registry" classname="management and history HTTP routes" time="0.08834" file="tests/infra/management-routes.http.test.ts" line="573" assertions="7" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/infra/upstream-stream-diagnostics.unit.test.ts" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" tests="11" assertions="33" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="upstreamFrameDiagType" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="41" tests="5" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="Responses frame → its `type`" classname="upstreamFrameDiagType" time="0.000128" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="42" assertions="1" />
+      <testcase name="CC chunk (no `type`) → its `object`, NOT the keepalive fallback" classname="upstreamFrameDiagType" time="0.000068" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="46" assertions="1" />
+      <testcase name="`[DONE]` terminator → labelled `[DONE]` (pure-function property; production never feeds it)" classname="upstreamFrameDiagType" time="0.000032" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="50" assertions="1" />
+      <testcase name="empty data → `keepalive` (or the SSE event line when present)" classname="upstreamFrameDiagType" time="0.000087" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="54" assertions="2" />
+      <testcase name="malformed DATA-bearing frame → `malformed` (NOT `keepalive`), or its SSE event line" classname="upstreamFrameDiagType" time="0.000093" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="59" assertions="2" />
+    </testsuite>
+    <testsuite name="createUpstreamFrameDiagnostics" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="67" tests="2" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="counts every observed frame incl. empty keepalive (gap B), sums bytes, records honest types" classname="createUpstreamFrameDiagnostics" time="0.000309" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="68" assertions="5" />
+      <testcase name="empty collector reports zero + its anchor — a genuine no-frame stream is NOT masked" classname="createUpstreamFrameDiagnostics" time="0.000081" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="82" assertions="3" />
+    </testsuite>
+    <testsuite name="logUpstreamStreamError time base (MEDIUM-2 regression)" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="91" tests="1" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="emit derives elapsed/silence from the COLLECTOR&apos;s startedAtMs, not a request-wide base" classname="logUpstreamStreamError time base (MEDIUM-2 regression)" time="0.000835" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="98" assertions="8" />
+    </testsuite>
+    <testsuite name="recordUpstreamFrame native label (LOW-1 parity — no shared/native drift)" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="145" tests="2" assertions="4" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="the native Anthropic pump labels a malformed DATA-bearing frame `malformed`, NOT `keepalive` (delegates to upstreamFrameDiagType)" classname="recordUpstreamFrame native label (LOW-1 parity — no shared/native drift)" time="0.000228" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="151" assertions="3" />
+      <testcase name="empty keepalive frame → `keepalive` (parity with the shared collector)" classname="recordUpstreamFrame native label (LOW-1 parity — no shared/native drift)" time="0.000092" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="169" assertions="1" />
+    </testsuite>
+    <testsuite name="logUpstreamStreamTruncation (HIGH-1 — clean-EOF truncation label)" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="176" tests="1" assertions="6" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="emits kind=truncated with real signals, NOT run through classifyStreamError, NEVER the middlebox hint" classname="logUpstreamStreamTruncation (HIGH-1 — clean-EOF truncation label)" time="0.000434" file="tests/infra/upstream-stream-diagnostics.unit.test.ts" line="177" assertions="6" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/infra/sandbox-paths.unit.test.ts" file="tests/infra/sandbox-paths.unit.test.ts" tests="3" assertions="15" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="test persistence paths are sandboxed (never the real APP_DIR)" file="tests/infra/sandbox-paths.unit.test.ts" line="26" tests="3" assertions="15" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="APP_DIR is under the ephemeral sandbox temp dir" classname="test persistence paths are sandboxed (never the real APP_DIR)" time="0.000107" file="tests/infra/sandbox-paths.unit.test.ts" line="27" assertions="1" />
+      <testcase name="every APP_DIR-derived file is sandboxed, not under the real home" classname="test persistence paths are sandboxed (never the real APP_DIR)" time="0.000156" file="tests/infra/sandbox-paths.unit.test.ts" line="31" assertions="12" />
+      <testcase name="CODEX_CONFIG_TOML is sandboxed (CODEX_HOME redirect, not the real ~/.codex)" classname="test persistence paths are sandboxed (never the real APP_DIR)" time="0.000072" file="tests/infra/sandbox-paths.unit.test.ts" line="39" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/telemetry/db.unit.test.ts" file="tests/telemetry/db.unit.test.ts" tests="5" assertions="13" failures="0" skipped="0" time="0.198" hostname="CPC-puxu-WC402E">
+    <testcase name="openTelemetryDb 建全部 8 表" classname="" time="0.069512" file="tests/telemetry/db.unit.test.ts" line="35" assertions="8" />
+    <testcase name="幂等：同库重复 openTelemetryDb 不报错、表不重建失败" classname="" time="0.05833" file="tests/telemetry/db.unit.test.ts" line="43" assertions="1" />
+    <testcase name="STRICT INTEGER 列拒 REAL（cost 必须 scaled-int，非浮点）" classname="" time="0.038615" file="tests/telemetry/db.unit.test.ts" line="49" assertions="2" />
+    <testcase name="WITHOUT ROWID 复合主键去重（同 (dim,bucket_ts,key_id) 冲突）" classname="" time="0.033931" file="tests/telemetry/db.unit.test.ts" line="59" assertions="1" />
+    <testcase name="SETTLED_TIER_TABLES 覆盖三 rollup 层" classname="" time="0.000103" file="tests/telemetry/db.unit.test.ts" line="67" assertions="1" />
+  </testsuite>
+  <testsuite name="tests/gemini/c0-via-responses-stream-terminal-golden.http.test.ts" file="tests/gemini/c0-via-responses-stream-terminal-golden.http.test.ts" tests="1" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="C0 golden (c-gemini) — via-responses streaming two-hop terminal bytes" file="tests/gemini/c0-via-responses-stream-terminal-golden.http.test.ts" line="74" tests="1" assertions="7" failures="0" skipped="0" time="0.473" hostname="CPC-puxu-WC402E">
+      <testcase name="gemini :streamGenerateContent via Responses → forwarded Gemini SSE byte-locked (incl. terminal usage)" classname="C0 golden (c-gemini) — via-responses streaming two-hop terminal bytes" time="0.473414" file="tests/gemini/c0-via-responses-stream-terminal-golden.http.test.ts" line="86" assertions="7" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/token/copilot-token-manager-dispose.it.test.ts" file="tests/token/copilot-token-manager-dispose.it.test.ts" tests="3" assertions="4" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="CopilotTokenManager.dispose" file="tests/token/copilot-token-manager-dispose.it.test.ts" line="41" tests="3" assertions="4" failures="0" skipped="0" time="0.033" hostname="CPC-puxu-WC402E">
+      <testcase name="initialize arms a refresh timer" classname="CopilotTokenManager.dispose" time="0.001524" file="tests/token/copilot-token-manager-dispose.it.test.ts" line="45" assertions="2" />
+      <testcase name="dispose() during an in-flight refresh leaves NO armed timer (leak guard)" classname="CopilotTokenManager.dispose" time="0.032794" file="tests/token/copilot-token-manager-dispose.it.test.ts" line="56" assertions="1" />
+      <testcase name="scheduled refresh does not re-arm after dispose" classname="CopilotTokenManager.dispose" time="0.000832" file="tests/token/copilot-token-manager-dispose.it.test.ts" line="71" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/diagnostics/owner-retention.it.test.ts" file="tests/diagnostics/owner-retention.it.test.ts" tests="3" assertions="7" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="diagnostic owner retention" file="tests/diagnostics/owner-retention.it.test.ts" line="30" tests="3" assertions="7" failures="0" skipped="0" time="0.049" hostname="CPC-puxu-WC402E">
+      <testcase name="manifest is durable-shaped and a live owner is never deleted" classname="diagnostic owner retention" time="0.029892" file="tests/diagnostics/owner-retention.it.test.ts" line="31" assertions="3" />
+      <testcase name="dead owner expired segments and its manifest are removed" classname="diagnostic owner retention" time="0.018153" file="tests/diagnostics/owner-retention.it.test.ts" line="44" assertions="3" />
+      <testcase name="missing or corrupt owner manifests retain unknown artifacts" classname="diagnostic owner retention" time="0.002474" file="tests/diagnostics/owner-retention.it.test.ts" line="57" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/restart/notify.unit.test.ts" file="tests/restart/notify.unit.test.ts" tests="8" assertions="8" failures="0" skipped="0" time="0.02" hostname="CPC-puxu-WC402E">
+    <testcase name="sdNotify 无 NOTIFY_SOCKET → no-op（不抛）" classname="" time="0.003468" file="tests/restart/notify.unit.test.ts" line="20" assertions="1" />
+    <testcase name="sdNotify 有 NOTIFY_SOCKET 但发送失败 → never-throw" classname="" time="0.00708" file="tests/restart/notify.unit.test.ts" line="24" assertions="1" />
+    <testcase name="notifyReady 在 pm2（有 process.send）时调 process.send(&apos;ready&apos;)" classname="" time="0.000193" file="tests/restart/notify.unit.test.ts" line="29" assertions="1" />
+    <testcase name="notifyReady 无 process.send 时（非 pm2）不抛" classname="" time="0.000102" file="tests/restart/notify.unit.test.ts" line="43" assertions="1" />
+    <testcase name="notifyReady 在 systemd（NOTIFY_SOCKET 有值）时也走 sdNotify 分支，never-throw" classname="" time="0.003034" file="tests/restart/notify.unit.test.ts" line="52" assertions="1" />
+    <testcase name="notifyStopping 无 NOTIFY_SOCKET → no-op（不抛）" classname="" time="0.00015" file="tests/restart/notify.unit.test.ts" line="56" assertions="1" />
+    <testcase name="notifyStopping 有 NOTIFY_SOCKET 时也 never-throw" classname="" time="0.003994" file="tests/restart/notify.unit.test.ts" line="60" assertions="1" />
+    <testcase name="sdNotify abstract socket（&apos;@&apos; 前缀）路径也 never-throw" classname="" time="0.004029" file="tests/restart/notify.unit.test.ts" line="64" assertions="1" />
+  </testsuite>
+  <testsuite name="tests/config/history-enabled-config.unit.test.ts" file="tests/config/history-enabled-config.unit.test.ts" tests="7" assertions="12" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="history.enabled config application (startup-only)" file="tests/config/history-enabled-config.unit.test.ts" line="83" tests="4" assertions="5" failures="0" skipped="0" time="0.04" hostname="CPC-puxu-WC402E">
+      <testcase name="boot apply: history.enabled=false lands in state.historyEnabled" classname="history.enabled config application (startup-only)" time="0.008919" file="tests/config/history-enabled-config.unit.test.ts" line="84" assertions="1" />
+      <testcase name="boot apply: history.enabled=true lands in state.historyEnabled" classname="history.enabled config application (startup-only)" time="0.003245" file="tests/config/history-enabled-config.unit.test.ts" line="90" assertions="1" />
+      <testcase name="absent key: state stays at the default (true)" classname="history.enabled config application (startup-only)" time="0.018473" file="tests/config/history-enabled-config.unit.test.ts" line="96" assertions="1" />
+      <testcase name="hot-reload: a changed history.enabled is IGNORED (startup-only)" classname="history.enabled config application (startup-only)" time="0.011103" file="tests/config/history-enabled-config.unit.test.ts" line="102" assertions="2" />
+    </testsuite>
+    <testsuite name="no-history mode runtime gate" file="tests/config/history-enabled-config.unit.test.ts" line="117" tests="3" assertions="7" failures="0" skipped="0" time="0.034" hostname="CPC-puxu-WC402E">
+      <testcase name="initHistory(false): isHistoryEnabled() false + DB never opened" classname="no-history mode runtime gate" time="0.002287" file="tests/config/history-enabled-config.unit.test.ts" line="125" assertions="2" />
+      <testcase name="initHistory(true): isHistoryEnabled() true + DB opened" classname="no-history mode runtime gate" time="0.017609" file="tests/config/history-enabled-config.unit.test.ts" line="131" assertions="2" />
+      <testcase name="CLI --no-history precedence: false wins even when state.historyEnabled is true" classname="no-history mode runtime gate" time="0.015979" file="tests/config/history-enabled-config.unit.test.ts" line="137" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/config/max-tokens-continuation-config.unit.test.ts" file="tests/config/max-tokens-continuation-config.unit.test.ts" tests="6" assertions="9" failures="0" skipped="0" time="0.079" hostname="CPC-puxu-WC402E">
+    <testcase name="max_tokens_continuation defaults are disabled and preserve the frozen P0 strategy shape" classname="" time="0.012085" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="67" assertions="1" />
+    <testcase name="per-vendor override wins over the shared max_tokens_continuation setting" classname="" time="0.013751" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="78" assertions="2" />
+    <testcase name="schema parses the top-level max_tokens_continuation section and rejects unknown keys" classname="" time="0.011652" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="86" assertions="2" />
+    <testcase name="real YAML application resolves shared policy before the per-vendor override" classname="" time="0.024633" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="109" assertions="2" />
+    <testcase name="passthrough visibility prevents every configured stitch strategy and makes the diagnostic explicit" classname="" time="0.007576" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="126" assertions="1" />
+    <testcase name="transparent visibility preserves continuation strategy without diagnostics" classname="" time="0.012972" file="tests/config/max-tokens-continuation-config.unit.test.ts" line="143" assertions="1" />
+  </testsuite>
+  <testsuite name="tests/pipeline/hooks/reactive-retry-leg.it.test.ts" file="tests/pipeline/hooks/reactive-retry-leg.it.test.ts" tests="2" assertions="14" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFieldRejection → real tool-field-rejection-retry strategy)" file="tests/pipeline/hooks/reactive-retry-leg.it.test.ts" line="49" tests="2" assertions="14" failures="0" skipped="0" time="0.079" hostname="CPC-puxu-WC402E">
+      <testcase name="a hook-mocked 400 tool-field rejection on attempt 1 is handled by the REAL strategy; attempt 2 succeeds — verified via getEntry(), not the hook&apos;s self-report" classname="Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFieldRejection → real tool-field-rejection-retry strategy)" time="0.053641" file="tests/pipeline/hooks/reactive-retry-leg.it.test.ts" line="59" assertions="11" />
+      <testcase name="a hook-mocked rejection for a field the strategy does NOT recognize never retries (canHandle correctly says no) — negative control proving the strategy is doing REAL parsing, not a rubber stamp" classname="Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFieldRejection → real tool-field-rejection-retry strategy)" time="0.026199" file="tests/pipeline/hooks/reactive-retry-leg.it.test.ts" line="119" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/anthropic/header-policy/header-name-match.unit.test.ts" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="matchesHeaderName" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" line="10" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+      <testcase name="matches an exact (lowercased) name" classname="matchesHeaderName" time="0.000234" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" line="14" assertions="2" />
+      <testcase name="matches a prefix" classname="matchesHeaderName" time="0.000167" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" line="19" assertions="2" />
+      <testcase name="does not match unrelated names" classname="matchesHeaderName" time="0.000074" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" line="24" assertions="2" />
+      <testcase name="empty prefix list still matches exact" classname="matchesHeaderName" time="0.000196" file="tests/anthropic/header-policy/header-name-match.unit.test.ts" line="29" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/worker/admission-wiring.http.test.ts" file="tests/history/worker/admission-wiring.http.test.ts" tests="10" assertions="59" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="production History admission wiring" file="tests/history/worker/admission-wiring.http.test.ts" line="46" tests="10" assertions="59" failures="0" skipped="0" time="0.952" hostname="CPC-puxu-WC402E">
+      <testcase name="binds reservations to RequestContext and lightweight operation IDs without reusing rate-limit wait" classname="production History admission wiring" time="0.073699" file="tests/history/worker/admission-wiring.http.test.ts" line="71" assertions="3" />
+      <testcase name="returns a no-op reservation when History is disabled" classname="production History admission wiring" time="0.044161" file="tests/history/worker/admission-wiring.http.test.ts" line="95" assertions="2" />
+      <testcase name="releases an unbound reservation when the operation returns without binding" classname="production History admission wiring" time="0.02827" file="tests/history/worker/admission-wiring.http.test.ts" line="114" assertions="2" />
+      <testcase name="releases an unbound reservation when operation setup throws" classname="production History admission wiring" time="0.021565" file="tests/history/worker/admission-wiring.http.test.ts" line="119" assertions="2" />
+      <testcase name="leaves a bound reservation for the operation finalizer to adjudicate after a handler throw" classname="production History admission wiring" time="0.022178" file="tests/history/worker/admission-wiring.http.test.ts" line="128" assertions="3" />
+      <testcase name="releases a reservation when codec parsing throws after context construction" classname="production History admission wiring" time="0.280989" file="tests/history/worker/admission-wiring.http.test.ts" line="141" assertions="2" />
+      <testcase name="every HTTP operation route blocks at the production admission boundary" classname="production History admission wiring" time="0.116915" file="tests/history/worker/admission-wiring.http.test.ts" line="159" assertions="21" />
+      <testcase name="management, History, metrics, and dry-run surfaces bypass model admission" classname="production History admission wiring" time="0.050437" file="tests/history/worker/admission-wiring.http.test.ts" line="193" assertions="12" />
+      <testcase name="blocks a model operation at capacity without blocking liveness" classname="production History admission wiring" time="0.204817" file="tests/history/worker/admission-wiring.http.test.ts" line="225" assertions="8" />
+      <testcase name="aborts a pre-context waiter when the client disconnects" classname="production History admission wiring" time="0.114075" file="tests/history/worker/admission-wiring.http.test.ts" line="251" assertions="4" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/worker/admission.unit.test.ts" file="tests/history/worker/admission.unit.test.ts" tests="13" assertions="53" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="HistoryAdmissionControllerImpl" file="tests/history/worker/admission.unit.test.ts" line="63" tests="13" assertions="53" failures="0" skipped="0" time="0.005" hostname="CPC-puxu-WC402E">
+      <testcase name="holds capacity by operation count and releases waiters in FIFO order" classname="HistoryAdmissionControllerImpl" time="0.001208" file="tests/history/worker/admission.unit.test.ts" line="64" assertions="8" />
+      <testcase name="aborts only the waiting acquire and close rejects waiters plus future acquires" classname="HistoryAdmissionControllerImpl" time="0.001158" file="tests/history/worker/admission.unit.test.ts" line="100" assertions="4" />
+      <testcase name="binds once, transfers to unacked once, and releases only on terminal sink outcome" classname="HistoryAdmissionControllerImpl" time="0.001259" file="tests/history/worker/admission.unit.test.ts" line="120" assertions="9" />
+      <testcase name="fails closed when a contract-violating sink throws before retaining the outcome callback" classname="HistoryAdmissionControllerImpl" time="0.000495" file="tests/history/worker/admission.unit.test.ts" line="141" assertions="2" />
+      <testcase name="a late callback after a contract-violating sink throw cannot settle twice" classname="HistoryAdmissionControllerImpl" time="0.000418" file="tests/history/worker/admission.unit.test.ts" line="169" assertions="3" />
+      <testcase name="records a returned messageId and a throw after synchronous outcome cannot reverse settlement" classname="HistoryAdmissionControllerImpl" time="0.000343" file="tests/history/worker/admission.unit.test.ts" line="197" assertions="2" />
+      <testcase name="returned messageIds are observable while outcomes remain pending" classname="HistoryAdmissionControllerImpl" time="0.000424" file="tests/history/worker/admission.unit.test.ts" line="212" assertions="3" />
+      <testcase name="failBeforeTerminal releases a bound reservation exactly once" classname="HistoryAdmissionControllerImpl" time="0.001576" file="tests/history/worker/admission.unit.test.ts" line="231" assertions="2" />
+      <testcase name="hot resize preserves reservations and does not release a waiter until reserved is below capacity" classname="HistoryAdmissionControllerImpl" time="0.001038" file="tests/history/worker/admission.unit.test.ts" line="246" assertions="5" />
+      <testcase name="observes queued bytes without using them for admission" classname="HistoryAdmissionControllerImpl" time="0.00051" file="tests/history/worker/admission.unit.test.ts" line="273" assertions="3" />
+      <testcase name="pause drains pre-pause waiters but holds later acquires until resume" classname="HistoryAdmissionControllerImpl" time="0.000667" file="tests/history/worker/admission.unit.test.ts" line="291" assertions="4" />
+      <testcase name="close rejects pending pause barriers and resume cannot reopen admission" classname="HistoryAdmissionControllerImpl" time="0.000456" file="tests/history/worker/admission.unit.test.ts" line="312" assertions="5" />
+      <testcase name="waitForQuiescence resolves only after all reservations settle" classname="HistoryAdmissionControllerImpl" time="0.000407" file="tests/history/worker/admission.unit.test.ts" line="332" assertions="3" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/v3/store-performance.it.test.ts" file="tests/history/v3/store-performance.it.test.ts" tests="4" assertions="10" failures="1" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="History V3 store performance" file="tests/history/v3/store-performance.it.test.ts" line="122" tests="4" assertions="10" failures="1" skipped="0" time="20.44" hostname="CPC-puxu-WC402E">
+      <testcase name="a commit never full-scans a table that grows with history length" classname="History V3 store performance" time="0.09662" file="tests/history/v3/store-performance.it.test.ts" line="123" assertions="3" />
+      <testcase name="reports prepare and commit timing before and after prior session history" classname="History V3 store performance" time="2.899085" file="tests/history/v3/store-performance.it.test.ts" line="202" assertions="0" />
+      <testcase name="CAS live physical bytes are at least 10x smaller than the real compressed V2 write shape" classname="History V3 store performance" time="16.29342" file="tests/history/v3/store-performance.it.test.ts" line="216" assertions="2">
+        <failure type="TimeoutError" />
+      </testcase>
+      <testcase name="writer pending bytes track logical queue bytes and drain releases RSS pressure" classname="History V3 store performance" time="1.152994" file="tests/history/v3/store-performance.it.test.ts" line="249" assertions="5" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/search/daemon-cursor.unit.test.ts" file="tests/history/search/daemon-cursor.unit.test.ts" tests="6" assertions="8" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="tail cursor persistence (pure, no SQLite/native involved)" file="tests/history/search/daemon-cursor.unit.test.ts" line="41" tests="6" assertions="8" failures="0" skipped="0" time="0.033" hostname="CPC-puxu-WC402E">
+      <testcase name="write -&gt; read round-trips exactly" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.009089" file="tests/history/search/daemon-cursor.unit.test.ts" line="42" assertions="1" />
+      <testcase name="readTailCursor: missing file -&gt; null (fresh index, tail from the start)" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.000851" file="tests/history/search/daemon-cursor.unit.test.ts" line="48" assertions="1" />
+      <testcase name="readTailCursor: corrupt JSON -&gt; null (never-throw)" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.013022" file="tests/history/search/daemon-cursor.unit.test.ts" line="52" assertions="1" />
+      <testcase name="readTailCursor: JSON present but missing/wrong-typed fields -&gt; null" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.001404" file="tests/history/search/daemon-cursor.unit.test.ts" line="58" assertions="2" />
+      <testcase name="writeTailCursor: creates the index directory if it does not exist yet, never-throws on a valid path" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.007757" file="tests/history/search/daemon-cursor.unit.test.ts" line="67" assertions="2" />
+      <testcase name="writeTailCursor: overwrites a previous cursor rather than appending" classname="tail cursor persistence (pure, no SQLite/native involved)" time="0.003718" file="tests/history/search/daemon-cursor.unit.test.ts" line="74" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="tests/history/fixtures/pipeline-info-buffered-merge.typecheck.unit.test.ts" file="tests/history/fixtures/pipeline-info-buffered-merge.typecheck.unit.test.ts" tests="1" assertions="1" failures="0" skipped="0" time="0" hostname="CPC-puxu-WC402E">
+    <testsuite name="PipelineInfo.bufferedMerge" file="tests/history/fixtures/pipeline-info-buffered-merge.typecheck.unit.test.ts" line="10" tests="1" assertions="1" failures="0" skipped="0" time="0.005" hostname="CPC-puxu-WC402E">
+      <testcase name="accepts the new buffered-merge diagnostics shape" classname="PipelineInfo.bufferedMerge" time="0.005599" file="tests/history/fixtures/pipeline-info-buffered-merge.typecheck.unit.test.ts" line="11" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>
