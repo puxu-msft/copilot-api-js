@@ -141,3 +141,9 @@ B 的 `--cpu-prof` 覆盖 8 个 warmup + 64 个顺序请求，持续 69.78 s、1
 两次都是**在拿到同口径对照之后才暴露**。因此：**没有同口径对照的性能数字应默认视为可疑，包括自己算出来的**。
 
 另一条独立教训：**profile 的 self time 不能当作「可回收量」**。`freeze` 在 B 组 self time 折算约 187 ms/请求，而关掉递归深冻结的反向对照只回收了 42 ms——高估 4.5 倍。原因是同一个 self-time 桶里混着未被该变异触及的其他调用路径。
+
+## 一个未测的候选（诚实标注）
+
+**History WebSocket 订阅者**这条从未做过对照实验，因此上文「隔离手段已穷尽」应理解为「已穷尽**已测**的候选」。
+
+已知的相关事实，仅够降低它的先验、不足以排除它：`src/lib/ws/broadcast.ts` 只在存在订阅者时才序列化并发送；观测生产实例时（`ss` 看 4141 的对端）未发现浏览器/UI 类连接，`/metrics` 也没有 WS 相关 gauge。另有一条独立发现：`toEntrySummary` 里的 `deriveRequestBytes` 会把整个请求体 `JSON.stringify` 一遍只为取字节数、`deriveResponseBytes` 是 O(帧数)，而 `publishEntryUpdated(toEntrySummary(merged))` 会**无条件先算 summary、再由广播层判断有没有订阅者**——但其唯一入口 `updateEntry` 在生产代码里**零调用点**（仅两处 re-export 与注释引用），所以这条路径当前不可达。若将来有人重新接上它，它会立刻变成每次更新一次全量序列化。
