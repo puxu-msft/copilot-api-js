@@ -1,5 +1,9 @@
 # Anthropic ↔ Responses semantic bridge —— 主实施计划
 
+> **⚠️ 2026-08-11「快做快合」裁决改变了本文的执行方式。** 用户当日裁决放弃 SDD 与 TDD（见 CLAUDE.md「工作节奏：快做快合」）。因此本文里**每片的 `Mutation` 小节、以及「每条不变量各一条违反路径用例」这类穷举式测试要求，一律不再作为执行门**——它们记录的是设计意图，不是必须逐条产出的交付物。测试只写**主路径**与**实际报错过的路径**。**仍然有效**的是：任务 DAG 与依赖顺序、锚点表、每 commit invariant（中间态不得半坏）、以及 RFC 作为契约权威。已按旧口径完成的 C0 与 C1 不回头精简。
+>
+> **进度**：C0.1／C0.2／C0.3 与 C1.1／C1.2／C1.3 已实现并合入 master。C1 的落点是 `src/lib/pipeline/semantic/{types,ledger}.ts` + `tests/pipeline/semantic/`；C1.3 的 `snapshot.ts` 未单独建文件，`snapshot()`／`fork()` 直接落在 `ledger.ts` 内（同一模块、无第二处状态源），结构共享退化为按需深拷贝——调用点是每候选终结一次，不在热路径上。下一片：C2.1。
+>
 > **权威 spec**：[docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted，五轮对抗评审收口）。
 > **决策依据**：[ADR 2026-08-08 protocol-neutral reasoning exchange](../../decisions/2026-08-08-protocol-neutral-reasoning-exchange.md)；收窄的既有决策 [ADR 2026-07-14 lossless-per-pair bridge](../../decisions/2026-07-14-lossless-per-pair-bridge.md)。
 > **本文职责**：HOW —— 任务 DAG + 锚点表（精确 `file:line`）+ 每 commit invariant + 验收与 mutation。**WHY 与公共契约一律以 RFC 为准，本文不重新裁决、不复述类型定义正文**。
