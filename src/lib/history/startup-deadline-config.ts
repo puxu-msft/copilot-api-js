@@ -7,11 +7,13 @@ import consola from "consola"
  */
 
 /**
- * How long process startup waits for History to become usable before giving up.
+ * How long process startup waits for History to become usable before giving up. **0 means wait forever, and that is the default** (user ruling, 2026-08-10, after a restart died on the 30s value this held before).
  *
- * 30s is far longer than a healthy bring-up (schema reconcile plus journal recovery, measured in tens of milliseconds) and longer than the restart budget's 30s backoff cap, so a deadline hit means the failure persisted across several real attempts rather than that one start was slow.
+ * The reasoning that produced 30s was sound about the wrong quantity. It compared the deadline against a *healthy* bring-up (schema reconcile plus journal recovery, tens of milliseconds) and against the restart budget's 30s backoff cap, and concluded that overshooting both meant a persistent failure. What it did not price in is the case that actually fires it: a **graceful-restart overlap**, where the successor opens History while the predecessor is still draining. Since the drain is deliberately unbounded — it ends when the last accepted request ends, or when an operator presses Ctrl+C a second time — the wait the successor faces has **no upper bound derivable at build time**. Any fixed value is therefore guaranteed to be wrong for some legitimate restart, and the observed failure says exactly that: `consecutive startup failures: 0, no retry scheduled` — nothing had failed, the Worker simply had not finished yet.
+ *
+ * Refusing to serve is the correct behaviour when History is genuinely broken; the retry loop and its logs are what surface that. Turning "still waiting" into `exit 1` converts a slow restart into a dead server, which is strictly worse than the silent-hang risk the deadline was added to prevent — an operator can see a process that has not come up, and can always set this knob to a positive value to get the old behaviour back.
  */
-export const HISTORY_STARTUP_DEADLINE_MS = 30_000
+export const HISTORY_STARTUP_DEADLINE_MS = 0
 
 /**
  * Largest delay `setTimeout` can actually hold (2^31 - 1 ms, ~24.9 days).
