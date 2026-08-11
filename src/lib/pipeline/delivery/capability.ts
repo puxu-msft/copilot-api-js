@@ -19,8 +19,17 @@
  */
 
 import type { ClientFormat } from "../envelope"
-import type { LegToken } from "../types"
-import type { DeliveryFrame } from "./types"
+import type {
+  //
+  ClientFrame,
+  LegToken,
+} from "../types"
+import type { DeliveryProtocolAdapter } from "./protocol"
+import type {
+  //
+  DeliveryFrame,
+  DeliveryHeartbeat,
+} from "./types"
 
 /** Physical carrier of a generation's client-visible frames. */
 export type DeliveryTransport = "sse" | "ws"
@@ -34,30 +43,48 @@ export type DeliveryTransport = "sse" | "ws"
  */
 export type IndexedBlockLifecycle = "none" | "anthropic"
 
-/** Pure, format-owned frame construction. Concrete codecs implement it; the delivery layer only calls it. */
-export interface CommonDeliveryBuilders {
-  buildGeneric(payload: unknown): DeliveryFrame
-  buildKeepalive(): DeliveryFrame
-  buildTerminal(intent: TerminalIntent): ReadonlyArray<DeliveryFrame>
-}
-
-/** Anthropic adds the indexed-block builders on top of the common set. */
-export interface AnthropicDeliveryBuilders extends CommonDeliveryBuilders {
-  buildBlockStart(wireIndex: number, payload: unknown): DeliveryFrame
-  buildBlockDelta(wireIndex: number, payload: unknown): DeliveryFrame
-  buildBlockStop(wireIndex: number): DeliveryFrame
+/**
+ * Anthropic's indexed-block frame construction.
+ *
+ * There is deliberately no `CommonDeliveryBuilders` sibling. Every builder such an interface would
+ * declare already exists: terminal / error / done frames are
+ * {@link DeliveryProtocolAdapter.renderTerminal} and friends, implemented by all four adapters in
+ * `delivery/adapters/`; the keepalive frame is {@link DeliveryHeartbeat.frame}. Re-declaring them
+ * here would make a third home for terminal frames and a second for keepalives, and the new copy
+ * would be the weaker one. The profile carries the existing abstractions instead.
+ *
+ * What genuinely has no home yet is the indexed half, and even that is mostly assembly: the anchor
+ * frames come from `anthropic/keepalive-anchor.ts`'s pure functions, and a real block's frames come
+ * from upstream and are remapped rather than built.
+ *
+ * These return a raw {@link ClientFrame}, NOT a {@link DeliveryFrame}. An envelope carries
+ * `sequence`, `observedAtMonotonic` and `provenance`, and a pure builder knows none of them — only
+ * the owner does. Returning envelopes would mean asking the caller to supply what the owner derives
+ * from its own state, which is the shape this whole algebra exists to remove.
+ */
+export interface AnthropicIndexedBuilders {
+  /** The empty-text anchor block at `wireIndex`. */
+  buildAnchorStart(wireIndex: number): ClientFrame
+  /** The empty `text_delta` that actually resets a client watchdog. */
+  buildAnchorDelta(wireIndex: number): ClientFrame
+  buildAnchorStop(wireIndex: number): ClientFrame
+  /** Re-address an already-rendered upstream block frame onto the owner's wire index. */
+  remapToWireIndex(frame: ClientFrame, wireIndex: number, upstreamIndex: number): ClientFrame
 }
 
 interface CommonDeliveryProfile<Format extends ClientFormat, Transport extends DeliveryTransport> {
   readonly format: Format
   readonly transport: Transport
   readonly indexedBlockLifecycle: IndexedBlockLifecycle
-  readonly builders: CommonDeliveryBuilders
+  /** Terminal, error and done frames — the existing per-format adapter, not a reimplementation. */
+  readonly adapter: DeliveryProtocolAdapter
+  /** Keepalive frames. Absent when this generation has no heartbeat. */
+  readonly heartbeat?: DeliveryHeartbeat
 }
 
 export interface AnthropicDeliveryProfile extends CommonDeliveryProfile<"anthropic", "sse"> {
   readonly indexedBlockLifecycle: "anthropic"
-  readonly builders: AnthropicDeliveryBuilders
+  readonly indexedBuilders: AnthropicIndexedBuilders
 }
 
 export interface ResponsesHttpDeliveryProfile extends CommonDeliveryProfile<"openai-responses", "sse"> {
