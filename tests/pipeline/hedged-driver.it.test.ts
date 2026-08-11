@@ -204,6 +204,8 @@ describe("production driver hedged response", () => {
 
   /**
    * The candidate fork must give each candidate its OWN body, and it has to be asserted HERE — on the env the transport actually receives — rather than on `createCandidateStateFactory`'s output. `candidate-state.ts` has always cloned per candidate, but the driver's `forkEnv` bridge discarded that clone and handed every candidate the same `env.attempt.body` reference; a unit test on the factory stays green through exactly that defect. Harmless while envelopes were copy-on-write (nothing wrote a body in place), a live cross-candidate corruption once the scopes became mutable.
+   *
+   * `prepareHints` is asserted alongside it because it is the SIBLING field cloned on the same `forkEnv` line, and it fails the same way for the same reason. An independent round-2 review found the gap by sharing just that one field: every guard in this batch stayed green (92 pass) while each candidate's retry hints aliased its siblings'. Fixing the body half and leaving the sibling is how the original defect got here in the first place.
    */
   test("each hedge candidate reaches the transport with its own body object", async () => {
     const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
@@ -228,6 +230,14 @@ describe("production driver hedged response", () => {
     // Behavioural half: identity alone would still pass if some later stage re-shared the object.
     ;(primaryEnv.attempt.body as Record<string, unknown>).contaminated = true
     expect(hedgeEnv.attempt.body).not.toHaveProperty("contaminated")
+
+    // Same contract, sibling field: retry hints are per-candidate intent, so an in-place write by one
+    // candidate's strategy must not steer its sibling's next dispatch.
+    expect(primaryEnv.attempt.prepareHints).not.toBe(hedgeEnv.attempt.prepareHints)
+    expect(primaryEnv.attempt.prepareHints).toEqual(hedgeEnv.attempt.prepareHints)
+    ;(primaryEnv.attempt.prepareHints as Record<string, unknown>).contaminated = true
+    expect(hedgeEnv.attempt.prepareHints).not.toHaveProperty("contaminated")
+
     // The request scope is the opposite invariant — shared by reference on purpose, so a late request-level write reaches every candidate.
     expect(primaryEnv.request).toBe(hedgeEnv.request)
   })
