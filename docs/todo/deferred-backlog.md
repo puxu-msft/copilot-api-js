@@ -2,12 +2,13 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
-## `tests/history/search/daemon.it.test.ts` 在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
+## history-search 子系统在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
 
-- **现状**：`bun test tests/history/search/daemon.it.test.ts` 单跑 **10 pass / 12 fail**。它进 `test:backend`（`it` 档）而不进 `test:fast`，所以只在跑全后端时才暴露。失败集中在 `history-search native list-search`（`listSearch` 返回的 `total` 与预期不符、空过滤值被当成真过滤、`invalidQuery` 判定）与 `daemon freshness attestation`（frozen target 覆盖判定）。
-- **取证方式（可复算）**：本会话 C2.1 的改动**一个 history 文件都没碰**（`git diff --name-only | grep -i history` 为空）。为排除间接影响，在**父提交** `f12dd4d5~1` 上另开 detached worktree、把 gitignored 的 `native/history-search/copilot_history_search.node` 拷进去（否则测试会 `skipIf` 跳过而不是跑，比较将失去意义），单跑同一文件得到**完全相同的 10 pass / 12 fail**。故为既有红，不是本会话引入。
-- **不是「缺 native 产物」那一类**：本机 `native/history-search/copilot_history_search.node` **存在**，`describe.skipIf(!NATIVE)`（该文件 `:110`／`:160`）因此不跳过，这些用例是真跑真红。别按 CLAUDE.md 里「没产物就显式 skip」那条把它当环境性问题挥手放过。
-- **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面变得无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
+- **现状**：`test:backend` 里稳定 **14 fail**，全部落在两个文件——`tests/history/search/daemon.it.test.ts`（单跑 10 pass / **12 fail**）与 `tests/history/search/search-rest-cutover.it.test.ts`（单跑 **2 fail**）。两者都进 `it` 档、不进 `test:fast`，所以只在跑全后端时暴露。失败面是同一层：`listSearch` 的过滤与 `total` 语义（空过滤值被当成真过滤、`invalidQuery` 判定、命中总数不符），以及 daemon 的 freshness attestation；`search-rest-cutover` 的两条走的是真实 HTTP → UDS → sidecar → Tantivy 端到端链路。
+- **取证方式（可复算）**：本会话 C2.1 的改动**一个 history 文件都没碰**（`git diff --name-only | grep -i history` 为空）。为排除间接影响，在**父提交** `f12dd4d5~1` 上另开 detached worktree、把 gitignored 的 `native/history-search/copilot_history_search.node` 拷进去（否则测试会 `skipIf` 跳过而不是跑，比较将失去意义），单跑 `daemon.it.test.ts` 得到**完全相同的 10 pass / 12 fail**。**取证范围说明**：父提交对照只跑了 `daemon.it.test.ts`；`search-rest-cutover.it.test.ts` 只确认了「当前 HEAD 上单跑即红」，未单独回溯 bisect——把它归到同一条目是因为失败面同层，不是因为已证同因。
+- **不是「缺 native 产物」那一类**：本机 `native/history-search/copilot_history_search.node` **存在**，`describe.skipIf(!NATIVE)`（daemon 文件 `:110`／`:160`）因此不跳过，这些用例是真跑真红。别按 CLAUDE.md 里「没产物就显式 skip」那条把它当环境性问题挥手放过。
+- **与争用假红的分界**：同一轮 `test:backend` 还报过 `web-search-not-found-rejection.http` / `generation-runtime-baseline.http` / `i9-h2-buffered-probe.http` / `shutdown-messages-lossless.http` / `history/client-response-status.it`，**那些是 shard 崩溃带出的假红**——四个 http 文件一起单跑 8 pass / 0 fail，且第二轮 `test:backend` 里自行消失（本机 load average 约 31，长期有无关重负载）。**只有上面两个 history-search 文件在两轮里都红、且单跑也红。**
+- **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
 - **若做需改什么**：先判定方向——是 native 侧（Rust `listSearch` 的过滤与 total 语义）回归，还是 TS 侧断言过时。**别默认后者**：这些断言写的是「空过滤值不得放宽真过滤」这类不变量，改断言去迁就实现会永久废掉它（→ user-rule `red-tests-may-be-guarding-something`）。取证起点是 `git log -- native/history-search/ src/lib/history/search-native*`，看红是否与某次 native 改动同期。
 
 ## 四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11）
