@@ -3,12 +3,14 @@ slug: impl-2b
 base: baef58b356b067da6d42ad1a9f11cd06b52af692
 branch: history-worker-batch-2a
 worktree: /home/xp/src/copilot-api-js/.worktrees/history-worker-batch-2a
-plan: docs/plan/2026-08-07-history-persistence-worker.md
+plan: docs/history-persistence-worker/plan.md
 agent_id: main-session
 status: done
 ---
 
 > **状态：已完成，2026-08-10 fast-forward 合入 `master`（合并提交 `b2444a17`）。** 本文件是 Batch 2b 的进度真相源；`impl-2a` 已停更、只作历史证据。只记 git 不保存的三项：剩余项及验收、在途意图、已作废路线。
+>
+> **frontmatter 的 `branch` / `worktree` 是历史出处，不是可跟随的指针**（2026-08-11 核实）：分支 `history-worker-batch-2a` 与 worktree `.worktrees/history-worker-batch-2a` 都已在收尾时删除。它们记录的是「当时在哪里跑的」，这个事实不变；别照着去找目录。
 >
 > **worktree／branch 沿用 2a 的**（用户 2026-08-09 明确授权复用）。因此路径与分支名里的 `batch-2a` 与本批内容不符——**这是已知的名实不符，不是走错了树**。
 
@@ -68,7 +70,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 1. **2b.1 terminal subscriber 契约测试**（见上「剩余项及验收」的断言集）。
 2. **2b.4 线程隔离正负对照（未做，设计已探明）。** 计划要求「真 Worker 注入 500ms sync block」，但**目前没有这条缝**：真 Worker 入口 `src/lib/history/worker/history-worker.ts` 里写死 `createHistoryWorkerBackend()`（无参），`HistoryWorkerBackendDeps` 只有 `openSemanticDatabase` 与 `delay` 两个注入点，且**主线程无法把它们送进另一个线程**。可行路径（不动生产代码）：新增一个 **test-only Worker 入口**（如 `tests/history/worker/fixtures/blocking-worker.ts`），内容是 `installHistoryWorkerMessageLoop(parentPort, createHistoryWorkerBackend({ openSemanticDatabase: <包一层、在 exec 上同步 busy-wait 500ms 的句柄> }))`，再用 `new HistoryPersistenceRuntimeImpl({ workerUrl: <该文件的 URL> })` 起真线程；`RuntimeOptions.workerUrl` 已经是公开选项，无需改 `src/`。**正控**用同一个 backend deps 喂 `createInProcessHistoryPersistenceRuntime(deps)`（fixture 已支持 deps 透传），必须观察到约 500ms 的 gap——没有这一半，「真 Worker 那边 gap 不跟随」证明不了任何事。主线程侧的观测量用 metronome（`setInterval` 记最大间隔）与 `/health/liveness`。
 3. **启动 deadline（未做，2a 裁决的硬性前置）。** 归属层是**调用方**，不是 runtime：`packages/cli/src/start.ts` 调 `initHistory` 的那一处（或 `initHistory` 自身）加超时，超时后按 spec §7.2 让 shutdown 进入 failed 并 exit 1。runtime 侧已备好可观测出口 `HistoryWorkerStatus.consecutiveFailures` 与 `nextRetryAt`，**不要改 `restart-policy.ts`**（那会与冻结 spec 冲突，2a 已因此撤回过一次上限）。验收 oracle：注入一个**永不清除**的可重试启动错误（`SQLITE_BUSY` 类），断言进程在 deadline 后以非零码退出，而不是停在「未监听」。完整背景见 `docs/todo/deferred-backlog.md` 末节。
-4. **门禁复跑与评审收口**：`env -u RUN_PERF_TESTS bun run test:backend` + `bun run build:backend`（build 已于本会话通过，exit 0）；两份独立评审报告落在 `docs/tmp/2026-08-09-batch2b-review-gpt.md` 与 `docs/tmp/2026-08-09-batch2b-review-testing.md`，须处置到 0 blocker／major 再合 master 并回填计划状态行。
+4. **门禁复跑与评审收口**：`env -u RUN_PERF_TESTS bun run test:backend` + `bun run build:backend`（build 已于本会话通过，exit 0）；两份独立评审报告落在 `docs/history-persistence-worker/2026-08-09-batch2b-review-gpt.md` 与 `docs/history-persistence-worker/2026-08-09-batch2b-review-testing.md`，须处置到 0 blocker／major 再合 master 并回填计划状态行。
 
 ## 已改动的既有守卫（`red-tests-may-be-guarding-something`，逐条落盘待评审裁决）
 
@@ -94,7 +96,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 
 ## 第二轮：GPT 独立评审的处置（commit `25fe6880`…`454b03f8`）
 
-评审报告 `docs/tmp/2026-08-09-batch2b-review-gpt.md`（对 `baef58b3..e3f8e5f2` 合并态），判 **2 blocker + 3 major**。逐条处置如下——**两条 major 经逐行复核确认是真生产缺陷**，不是评审误判。
+评审报告 `docs/history-persistence-worker/2026-08-09-batch2b-review-gpt.md`（对 `baef58b3..e3f8e5f2` 合并态），判 **2 blocker + 3 major**。逐条处置如下——**两条 major 经逐行复核确认是真生产缺陷**，不是评审误判。
 
 ### blocker
 
@@ -177,7 +179,7 @@ Task 2a 的 runtime 无生产调用点，因此缺陷够不到线上。**2b 是 
 | 删 `src/lib/history/startup-deadline.ts` 成功路径的 `clearTimeout` | `tests/history/worker/startup-deadline.it.test.ts` | **10 pass / 0 fail** —— timer 泄漏无人看得见 |
 | 删 rollback 的 `else readDatabase.close()`（**未发布**那一侧） | `tests/history/worker/bringup-lifecycle.it.test.ts` | **6 pass / 0 fail** —— 本次打开但未发布的 readonly fd／读锁泄漏无人看得见 |
 
-两条都不是生产缺陷，是**现有判据看不见资源泄漏**；已按 minor 登记，收口后处理。证据出处：`docs/tmp/2026-08-09-batch2b-review-testing.md`。
+两条都不是生产缺陷，是**现有判据看不见资源泄漏**；已按 minor 登记，收口后处理。证据出处：`docs/history-persistence-worker/2026-08-09-batch2b-review-testing.md`。
 
 ### 合并期的两处非平凡取舍（正文，不只是指向合并提交）
 
