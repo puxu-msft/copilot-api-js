@@ -276,7 +276,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 |---|---|---|
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
 | A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
-| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **部分完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`。**未做**：把 session 级观测作为 `H2SessionDiagnostic` 记进 dispatch（目前只到 `getH2SessionStatusSnapshot()`）。见下方「A4-3 实施记录」 |
+| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **已完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`、session 身份 + settle 时采样 `f566f734`。见下方「A4-3 实施记录」 |
 | A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
 
@@ -371,6 +371,20 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 ⚠️ **一条实测教训**（写在这里因为下一个人会犯同一个错）：把 ping 间隔调快**不是** `setUpstreamTransportConfig({ http2: { pingIntervalMs: 20 } })`——那个 key 是我编的，会被**静默忽略**、退回 15s 默认，表现为「ping 永远不 ack」。真实 key 是 `upstreamH2PingInterval`，**单位是秒**（`getUpstreamH2PingIntervalMs()` 再乘 1000）。
 
 **A4-3 剩余**：把 session 级观测（GOAWAY 事件、PING/RTT、session 身份与生命周期）作为计划里的 `H2SessionDiagnostic` **记进 dispatch 的 diagnostics**——目前它们只到 `getH2SessionStatusSnapshot()`（status 面），History 的 dispatch detail 仍只有 A4-2 的 stream 终止快照。计划要求的「不把每个周期的 PING 复制给所有 sibling、只在 settle 时附 session rolling snapshot」尚未实现。
+
+    **✅ 已完成（2026-08-11，`f566f734`）。** 终止快照新增 `session: TransportSessionSnapshot | null`，在 **stream 终止那一刻**采样所在连接：`sessionId`（进程内单调、永不复用）、origin、generation、`lifecycleAtSnapshot`、`activeStreamCountAtSnapshot`、以及该连接的 ping 计数。**按 settle 时采样而非逐周期推送**，所以一次 PING 不会复制给所有 sibling dispatch，长命 session 也撑不大任何单条记录。
+
+    **这条同时把上一批的 PING 数据从「只有运维价值」变成「有事后诊断价值」**——此前它只活在 `/api/status` 实时轮询里，等你在 History 里看那条 CANCEL 时计数器早已滚过去、且从未与那次 dispatch 关联。
+
+    ⚠️ **`sessionId` 是 H2 连接身份域，与 `HistoryEntry.sessionId`／`EntrySummary.sessionId`（客户端会话）是两回事**，两个类型里都写了警告。**兄弟流关联**由此成为可能：同一 `sessionId` 上多条 dispatch 是否同刻终止，是区分「连接级事件」与「单流取消」最锋利的判据——`rstCode` 做不到，因为 local abort／真 peer CANCEL／连接已死**三者都是 8**。
+
+    判别力靠**成对**测试保证：「兄弟流同 id」单独会被常量 id 满足，故与「新连接必须换 id」配对；变异实测——把 id 钉成常量后前者仍绿、后者转红。
+
+### ⚠️ 更正：A4-3 前两批确实新增了对外字段（原记录写错）
+
+上面 A4-2 实施记录里那句「`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段」对 A4-2 成立，但**被错误地沿用到了 A4-3 前两批**。事实是：`H2SessionStatusRow` 经 `src/lib/transport/status-snapshot.ts` 进入 **`GET /api/status` 的 `transport.h2Sessions`**，并被 `ui-v4` 的 Overview 直接消费。A4-3 给它加了 `ping`（`6c8427f4`）与 `sessionId`（`f566f734`），**都是对外可见字段**。
+
+`docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
 
 **未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
 
