@@ -2,7 +2,7 @@
 
 - 评审目标（冻结）：`638f6f3c898f7562fc086bfb2c5f1f4b04a5b5ad`
 - 工作树：本次会话实际绑定的沙盒树 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest`（已核验 `HEAD = 638f6f3c...`，与派发件要求的评审目标一致；`git status --porcelain` 在写入本报告 / 命题文件之外无残留）。
-- 方法：先读 `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 的 Cross-task integration seam 措辞与 `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-37-seam.md` 冻结不变量，再对 `638f6f3c` 上的当前文件逐条取证；每条给出鉴别力正控（实际注入变异并跑测试）。
+- 方法：先读 `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 的 Cross-task integration seam 措辞与 `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-37-seam.md` 冻结不变量，再对 `638f6f3c` 上的当前文件逐条取证；每条给出鉴别力正控（实际注入变异并跑测试）。
 
 ---
 
@@ -44,7 +44,7 @@
 ## I5 — finish frame 的顺序是 classify + yield 先于 finish verdict
 
 - **判定**：HOLDS。
-- **证据**：`response-processor.ts:298-306`（`processFrames` 尾段）：`const rendererFrames = renderFlush(...)` → `const finish = resolveFinish(opts, rendererFrames)` → `yield* emit(finish.frames)`（这一步对每个 finish frame 调用 `postRender` → `consumeFrame` → `adapter.classify`，即「classify + yield」）→ **之后**才 `publishFinish(opts, finish)`（`:305`，触发 `onFinishResolved` → `adapter.classifyFinish`，即「finish verdict」）。`:298-299` 的注释明确写出该顺序契约（"Renderer flush belongs to this exact candidate instance... before protocol finish classification so meta/closing frames cannot cross siblings"）。这与集成者在 `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-37-seam.md:36` 记录的顺序变更一致（"finish frame现在与普通frame同经该唯一gate"）。
+- **证据**：`response-processor.ts:298-306`（`processFrames` 尾段）：`const rendererFrames = renderFlush(...)` → `const finish = resolveFinish(opts, rendererFrames)` → `yield* emit(finish.frames)`（这一步对每个 finish frame 调用 `postRender` → `consumeFrame` → `adapter.classify`，即「classify + yield」）→ **之后**才 `publishFinish(opts, finish)`（`:305`，触发 `onFinishResolved` → `adapter.classifyFinish`，即「finish verdict」）。`:298-299` 的注释明确写出该顺序契约（"Renderer flush belongs to this exact candidate instance... before protocol finish classification so meta/closing frames cannot cross siblings"）。这与集成者在 `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-37-seam.md:36` 记录的顺序变更一致（"finish frame现在与普通frame同经该唯一gate"）。
 - **鉴别力正控**：**已实测注入变异**。把 `stream/response-processor.ts:302-305` 的顺序从 `yield* emit(finish.frames); publishFinish(opts, finish)` 改为 `publishFinish(opts, finish); yield* emit(finish.frames)`（verdict 先于 classify+yield）。命令：`bun test tests/pipeline/candidate-response-session.unit.test.ts tests/chat-completions/candidate-response-session.unit.test.ts tests/responses/candidate-response-session.unit.test.ts tests/pipeline/response-processor.unit.test.ts`。变异前：`23 pass / 0 fail`（4 个文件）。变异后：`2 fail`，其中一条断言名**直接就是** `classifies and yields each finish frame exactly once before classifying the finish verdict`（`tests/pipeline/response-processor.unit.test.ts`），另一条是 `classifies a finish terminal exactly once on the production session seam`（`candidate-response-session.unit.test.ts:276`）。恢复原文件后重跑：`23 pass / 0 fail`，`git diff` 确认文件精确复原、无残留。
 
 ## I6 — public `createResponses` 保持 flat 形状（内部 rich、对外扁平）
@@ -122,7 +122,7 @@ I9 是真实、可复现、非合成注入的生产缺陷：Anthropic 的 L2 buf
 
 ## 工作树状态
 
-`git status --porcelain` 结束时：仅本报告及本次新增的验证资产（`tests/pipeline/i9-h2-buffered-probe.http.test.ts`）为新增未跟踪文件；`docs/todo/deferred-backlog.md`、`docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-{claims,dispositions,drift}.md` 是协调者本人的在途工作，本次会话未触碰。三处曾用于鉴别力正控的临时变异（`src/lib/pipeline/stream/response-processor.ts` 两次、`src/lib/pipeline/driver.ts` 一次、`src/lib/pipeline/generation/candidate-response-session.ts` 一次）均已用保存的原始副本精确复原并以 `git diff --stat` 确认为空。
+`git status --porcelain` 结束时：仅本报告及本次新增的验证资产（`tests/pipeline/i9-h2-buffered-probe.http.test.ts`）为新增未跟踪文件；`docs/todo/deferred-backlog.md`、`docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-review-seam-{claims,dispositions,drift}.md` 是协调者本人的在途工作，本次会话未触碰。三处曾用于鉴别力正控的临时变异（`src/lib/pipeline/stream/response-processor.ts` 两次、`src/lib/pipeline/driver.ts` 一次、`src/lib/pipeline/generation/candidate-response-session.ts` 一次）均已用保存的原始副本精确复原并以 `git diff --stat` 确认为空。
 
 ## 复审（`434c99c8`）
 

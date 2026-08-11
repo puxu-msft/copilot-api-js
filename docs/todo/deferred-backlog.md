@@ -40,7 +40,7 @@
 
 > **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
 >
-> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
+> **⚠️ 后续目标裁决（2026-08-06，已确认、未实施）**：真实内容的 block-level delivery 已被确立为不可配置的项目公理，见 [block-level buffered retry ADR 的后续裁决](../decisions/2026-07-11-block-level-buffered-retry.md) 与 [mandatory delivery 规格](../mandatory-block-delivery-h2-observability/spec.md)。下文保留的 live／retreat／默认 OFF 叙述仍是当前或历史代码事实，但不得再作为未来方案；实施完成前的活代码状态仍以 [DESIGN.md](../DESIGN.md) 为准。
 
 ## translated Anthropic B2 recovery publication（2026-08-08）
 
@@ -1018,7 +1018,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## Bun HTTP/2 `end + rstCode=0` 能否区分 clean RST 与 END_STREAM（当前任务完成后专项调查，用户保持怀疑）
 
-- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
+- **触发时点**：完成 [mandatory block delivery 与 HTTP/2 终止观测规格](../mandatory-block-delivery-h2-observability/spec.md) 的实施、验收与文档收尾后，立即作为独立调查执行；不阻塞当前任务，也不得在当前任务内用未证启发式扩大范围。
 - **当前已证事实**：应用层在已观察样本中可见 `end`、随后 `close`、`rstCode=0`，且 Responses 协议终止事件缺失。现有 Bun `node:http2` 路径未提供足以在应用层直接裁决“正常 END_STREAM”与“clean RST 被兼容层抹平”的独立信号。因此当前规格只记录原始事实与不可判状态，不把猜测持久化为根因。
 - **用户保留意见**：用户对“无法进一步区分”保持怀疑，要求当前任务完成后仔细排查。该怀疑不是已解决结论，也不是允许当前实现猜测；它要求寻找更强 oracle。
 - **调查问题**：① Bun runtime 内部是否保留但未暴露 RST／END_STREAM 差异；② `ClientHttp2Stream` 是否存在事件顺序、内部字段、诊断通道或 native handle 可可靠观测；③ Node 对照、TLS／HTTP2 帧级代理、GHC request-id 服务端日志能否提供独立 ground truth；④ 不同 RST code、`stream.close(0)`、`stream.destroy()`、正常 `end()` 在 Bun 各版本／Node 上的可重复行为矩阵；⑤ 若 Bun 是根因，最小上游修复或本项目可维护的 runtime patch 是什么。
@@ -1385,7 +1385,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：评审实测 N=2000：**3167ms → 5452ms**。**注意触发条件不是罕见情形**——marker 缺席正是「升级后首次启动、strict scrub 尚未跑完」的常态窗口，也是任一受保护 canonical UPDATE 之后的状态。
 - **理想架构 / 若做需改什么**：与本轮未闭合的 #5（写路径退化无人守）**同一套收口**——把判据从 wall-clock 换成**确定性工作量计数**（本次请求执行的 SQL 语句数 / 扫描行数），断言「第 1 次与第 N 次之比 < 常数」；这类判据不受 CPU 争用影响、无 false-red，且能同时守住读侧这条全表遍历与写侧的每次提交扫描。读侧本身的修法是让 visitor 在攒够 capacity 后返回 `false` 提前终止（游标语义需与 `compareSummaryNewestFirst` 的排序一致，不能简单截断）。
 - **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
-- **发现方**：Task 9 独立验收评审（`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
+- **发现方**：Task 9 独立验收评审（`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
 
 ## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）→ **载体已换 2026-08-09（`e24de3a1`），根因仍未定位**
 
@@ -1407,7 +1407,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：`tests/routes/hooks.http.test.ts` 的 `POST /reload > loads a valid hook module and returns ok:true with exports/version` 在 `bun run test:backend`（16 shards）下偶发失败；**单跑 6 pass / 0 fail**。与 History V3 / 迁移 / 判据改动**零交集**（复评独立核实）。
 - **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
 - **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
-- **发现方**：Task 9 独立验收评审的收口复评（`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md` R2-4）。
+- **发现方**：Task 9 独立验收评审的收口复评（`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-acceptance.md` R2-4）。
 
 ## `initHistory()` 重入只协调 summary backfill，未协调 terminal persistence lifecycle（2026-08-09，合并态评审定位；**master 既有，非合并引入**）
 

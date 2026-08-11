@@ -2,9 +2,9 @@
 
 > 状态：`approved-not-implemented`
 >
-> 权威规格：[`docs/mandatory-block-delivery-h2-observability/spec.md`](../../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)
+> 权威规格：[`docs/mandatory-block-delivery-h2-observability/spec.md`](spec.md)
 >
-> 本目录只定义实施方法；规格是 what/why 单一事实源，当前 live 架构仍以 [`docs/DESIGN.md`](../../DESIGN.md) 为准。执行本阶段前必须先读 [`README.md`](README.md) 的 Global Constraints、文件责任边界、冻结跨层接口与 commit invariants。
+> 本目录只定义实施方法；规格是 what/why 单一事实源，当前 live 架构仍以 [`docs/DESIGN.md`](../DESIGN.md) 为准。执行本阶段前必须先读 [`README.md`](README.md) 的 Global Constraints、文件责任边界、冻结跨层接口与 commit invariants。
 
 ## Task 5：迁移 11 个 production pumps
 

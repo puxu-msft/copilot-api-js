@@ -1,6 +1,6 @@
 # Task 37 收尾终报草稿 —— 接手方第一人称走查评审
 
-- **评审对象**：`/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md`
+- **评审对象**：`/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/2026-08-10-task-37-closeout-terminal-report.md`
 - **评审视角**：假装我明天接手、完全没见过这轮工作。对报告让我做的每一个动作，实地去仓库查那个承载者是否存在、长什么样。
 - **每条发现都带「接手方会因此做出什么错误动作」栏**；没有这一栏的不计为发现。
 
@@ -56,7 +56,7 @@ $ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger
 
 $ git show --name-status 53efd301
 M	docs/mandatory-block-delivery-h2-observability/progress-ledger.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-10-task-37-closeout-terminal-report.md
 ```
 
 即：`worktree-task37-closeout` 确实 ff 合进了 master（C4 成立，master = `d2f66fa9`），**但报告自己和账本修正是在那之后、在另一棵树 `encapsulated-kindling-forest` 上提交的 `53efd301`，这个提交至今没有合回 master**。报告把「合并已完成」写在第 5 行，把「本报告在另一棵树写就」写成一句括号内的环境说明（理由是「后台隔离护栏不允许直接写共享检出」），**从未说明这一支的合并状态**。
@@ -178,9 +178,9 @@ $ git merge-base b5acce8f 71dcfb91
 
 $ git diff --name-status 6d212286 b5acce8f
 M	docs/memory/feedback-fix-all-comparison-sites.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-job-tmp-inventory.md
 M	docs/todo/deferred-backlog.md
 ```
 
@@ -251,7 +251,7 @@ $ printenv CLAUDE_JOB_DIR
 $ ls -la /home/xp/.claude/jobs/a7c2cc1a/tmp/testfast-merged.log
 -rw-r--r-- 1 xp xp 252 Aug 10 09:16 …/testfast-merged.log      # 当下存在，252 字节
 
-$ grep -c 'CLAUDE_JOB_DIR' docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+$ grep -c 'CLAUDE_JOB_DIR' docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-evidence-manifest.md
 0                                                               # 证据清单里没有这条日志的登记
 ```
 
@@ -281,9 +281,9 @@ $ grep -c 'CLAUDE_JOB_DIR' docs/mandatory-block-delivery-h2-observability/closeo
 
 ---
 
-### B8 [MINOR] `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md` 在 master 里（28 KB），报告通篇未提
+### B8 [MINOR] `docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-review-manifest.md` 在 master 里（28 KB），报告通篇未提
 
-C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md`（`git ls-tree -r --name-only master | grep task37` 可见，28377 字节），它是**收尾产物本身**的评审。报告没有引用它。
+C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的 `docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-review-manifest.md`（`git ls-tree -r --name-only master | grep task37` 可见，28377 字节），它是**收尾产物本身**的评审。报告没有引用它。
 
 **接手方会因此做出什么错误动作**：接手方若要判断「这轮收尾产物被谁审过、审出什么」，会以为只有第 1 节说的那四个 agent／六轮（那是**代码接缝**的评审），从而**重新派一轮收尾产物评审**——而那一轮已经跑过并落盘。反方向的浪费。
 
@@ -297,7 +297,7 @@ C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的
 |---|---|
 | `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 第 22 行 = Task 37 条目 | ✅ 行号精确（`grep -n "Task 37 (Task 1b"` → 22） |
 | 同上 第 21/23 行 = Task 3 / Task 4 | ✅ 行号精确（21 = Task 3，23 = Task 4，且 23 行确写 `**unblocked**`） |
-| 六份 `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-*.md` 评审报告 | ✅ 六份全部在 master 树内 |
+| 六份 `docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-review-*.md` 评审报告 | ✅ 六份全部在 master 树内 |
 | `src/lib/anthropic/wire-frame-type.ts` | ✅ 在 master 树内 |
 | C3 `git merge-base --is-ancestor fe8977c0 master` | ✅ 退出 0；`fe8977c0` = `Merge branch 'master' into worktree-encapsulated-kindling-forest` |
 | C4 `master = d2f66fa9` | ✅ `git rev-parse master` 完全一致 |
@@ -332,12 +332,12 @@ C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的
 四项承载者逐个实地核验：
 
 ```
-$ git cat-file -e master:docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md
+$ git cat-file -e master:docs/mandatory-block-delivery-h2-observability/2026-08-10-task-37-closeout-terminal-report.md
 IN-MASTER                                          # 终报本体已在 master
 
 $ git ls-tree -r --name-only master | grep 'draft-review'
-docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-review-draft-claims.md
-docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-review-draft-successor.md
+docs/mandatory-block-delivery-h2-observability/2026-08-10-task-37-closeout-review-draft-claims.md
+docs/mandatory-block-delivery-h2-observability/2026-08-10-task-37-closeout-review-draft-successor.md
                                                    # 两份草稿评审均已在 master
 
 $ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | grep -c '13 call sites across 12 files'
@@ -366,9 +366,9 @@ The earlier wording said "six accumulator feeds and two translators", which is u
 ```
 $ git diff --name-status d2f66fa9^2 d2f66fa9
 M	docs/memory/feedback-fix-all-comparison-sites.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
-A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-job-tmp-inventory.md
 M	docs/todo/deferred-backlog.md
 
 $ git diff --name-only d2f66fa9^2 d2f66fa9 | wc -l

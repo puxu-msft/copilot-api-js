@@ -1,6 +1,6 @@
 ---
 slug: t9
-status: superseded-by docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-range-a-continuation.md
+status: superseded-by docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-range-a-continuation.md
 base: e43d08ec4f65acaddc364d22f05f8d28a0890dd4
 branch: agent-aefcc691bad9daa35
 worktree: /home/xp/src/copilot-api-js/.worktree/agent-aefcc691bad9daa35

@@ -1,8 +1,8 @@
 # Task 37 合并态复审 —— 主会话对评审发现的裁决与独立取证
 
 - 基线：`638f6f3c898f7562fc086bfb2c5f1f4b04a5b5ad`
-- 视角 B 报告：`docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-drift.md`（`gpt-souls:reviewer`）
-- 视角 A 报告：`docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-invariants.md`（`verifier`，进行中）
+- 视角 B 报告：`docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-review-seam-drift.md`（`gpt-souls:reviewer`）
+- 视角 A 报告：`docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-review-seam-invariants.md`（`verifier`，进行中）
 - 本文件只记**主会话亲自复核的结论**，不复述评审原文。
 
 ## D1 —— 判定：不成立（归属误判），撤销其 BLOCKER

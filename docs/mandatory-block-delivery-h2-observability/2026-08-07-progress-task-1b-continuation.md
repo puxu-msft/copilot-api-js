@@ -15,7 +15,7 @@ continuity: 须连续；原 implementer transcript 物理不可达，旧 worktre
 ## 接力来源
 
 - 起点 `c972a946` 缺少原候选链，已按用户指令非破坏性 cherry-pick `130b9c36 f2ec190b 42490038 608b0dc0 e3a02282 c4c2824a 737dc19e ff6972b0 3cd33f48`，本树对应新 SHA 为 `937027bd 2852814b 3bcfe403 55e00cdb fafde806 d564b908 4db592f3 9769bb8b d83218a4`。
-- 原树 `/home/xp/src/copilot-api-js/.worktree/agent-a52f4205c72531f71` 只读；交接事实来自其 `.superpowers/sdd/task-1b-report.md` 与既有 `docs/mandatory-block-delivery-h2-observability/progress/2026-08-07-task-1b.md`。
+- 原树 `/home/xp/src/copilot-api-js/.worktree/agent-a52f4205c72531f71` 只读；交接事实来自其 `.superpowers/sdd/task-1b-report.md` 与既有 `docs/mandatory-block-delivery-h2-observability/2026-08-07-progress-task-1b.md`。
 
 ## 整改中间态
 

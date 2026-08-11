@@ -8,7 +8,7 @@
 | --- | --- |
 | 评审目标（冻结） | `638f6f3c898f7562fc086bfb2c5f1f4b04a5b5ad` |
 | 接缝合并提交 | `bd6afab5`（2026-08-08，`merge: integrate parsed SSE delivery seam`） |
-| 契约来源 | `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 的 “Cross-task integration seam” 节 + `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-37-seam.md` 的「冻结不变量」 |
+| 契约来源 | `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 的 “Cross-task integration seam” 节 + `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-37-seam.md` 的「冻结不变量」 |
 | 计划 | `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` |
 
 ## 为什么现在必须重审：接缝已大幅漂移

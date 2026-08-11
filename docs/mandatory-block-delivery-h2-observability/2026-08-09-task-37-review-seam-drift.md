@@ -137,7 +137,7 @@
 - **最终 verdict：存在 blocker，不可进入下一阶段。**
 - **计数：2 BLOCKER，4 MAJOR（含四条未处置项中的handler死参数与I1判据缺口；D3/D6另两条），2 MINOR。**
 - 测试变异均以预先冻结exact patch注入并通过`git apply --reverse --check`后反向恢复；复跑原两测试为2 pass／0 fail。
-- 最终`git diff`不含本轮变异；`git status --porcelain`仅见并发方新增的未跟踪 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-d1-arbitration.md`，不是本评审创建或修改，未触碰。报告文件本身由调用方指定，已按要求追加。
+- 最终`git diff`不含本轮变异；`git status --porcelain`仅见并发方新增的未跟踪 `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-review-d1-arbitration.md`，不是本评审创建或修改，未触碰。报告文件本身由调用方指定，已按要求追加。
 
 
 # 复审二（`b2048227`）

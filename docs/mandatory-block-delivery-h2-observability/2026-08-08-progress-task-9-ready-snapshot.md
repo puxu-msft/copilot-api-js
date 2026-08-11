@@ -10,7 +10,7 @@ agent-id: main-session-a7c2cc1a
 session-id: a7c2cc1a-1103-4c54-8ae1-e2837bda4112
 source-session: 65cdef0e-4e88-4b62-a3b9-fd7409a63cfe
 source-transcript: /home/xp/.claude/projects/-home-xp-src-copilot-api-js--claude-worktrees-continuation/65cdef0e-4e88-4b62-a3b9-fd7409a63cfe.jsonl
-source-progress: docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-range-a-continuation.md
+source-progress: docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-range-a-continuation.md
 continuity: 须连续；旧会话明确命中 context-window 400，当前会话先读 transcript、核对谱系与旧树状态后接力。
 ---
 
@@ -39,7 +39,7 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 1. ~~跑完整 Task 9 与 backend／architecture 门禁~~ —— 已跑，且随后每轮整改都复跑。**读数会随新增测试而变，所以每个数字都锚到引入它的那个 commit**：`7536`@`30559e07` → `7538`@`dd0bcd2d` → `7542`@`eb2493ad` → `7544`@`eba4f21a`；四次均 `0 fail`、退出码 0、tally 行无完整性标记，`typecheck` 与 `lint:all` 零 error。（`bb1f81f3` 是纯文档提交、不改测试，仍为 `7542`；此处**曾把 7538 错锚给它**，由独立评审按 `git show --stat` 更正。）
    **复跑**：`bun run test:backend`。**怎么判断这次运行的数字可不可信，不在本文件里定义**——权威在 `docs/coding-conventions.md`「并行执行」节（那里写明退出码 0 是必要条件而非充分条件，并列出当前已实现的门与已知缺口）。**本行不复述那条判据**：这个「充分性」主张已经被独立评审推翻四次、每次换一种措辞回流，所以这里只留指针。
-2. ~~对完整 Task 9 候选做双视角独立评审并闭合~~ —— 已闭合。Task 9 自身的两个正交视角见 `docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-{spec,acceptance}.md`；本轮合并态另跑两个视角（`docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md`）与一轮收尾产物评审（`docs/tmp/2026-08-09-wrapup-artifacts-review.md`）。
+2. ~~对完整 Task 9 候选做双视角独立评审并闭合~~ —— 已闭合。Task 9 自身的两个正交视角见 `docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-{spec,acceptance}.md`；本轮合并态另跑两个视角（`docs/tmp/2026-08-09-merge-state-review-{seams,claims}.md`）与一轮收尾产物评审（`docs/tmp/2026-08-09-wrapup-artifacts-review.md`）。
 3. ~~转移活跃写入权~~ —— 即本次。持久结论已折入 `docs/mandatory-block-delivery-h2-observability/progress-ledger.md`；本文件转为历史档案。
 
 ## 在途意图（历史 —— 全部已落地或已作废，**不是待办**）
@@ -88,7 +88,7 @@ continuity: 须连续；旧会话明确命中 context-window 400，当前会话�
 
 ## 独立评审整改（2026-08-08，两视角并行）
 
-评审报告：`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-spec.md`（spec合规／生产图，2 BLOCKER）、`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md`（验收判据双向鉴别力，1 BLOCKER + 3 MAJOR）。两视角**独立撞到同一个首要缺陷**（spec-F1 ≡ acceptance-#7），这提高了该结论的稳健度，不是重复劳动。
+评审报告：`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-spec.md`（spec合规／生产图，2 BLOCKER）、`docs/mandatory-block-delivery-h2-observability/2026-08-08-task-9-review-acceptance.md`（验收判据双向鉴别力，1 BLOCKER + 3 MAJOR）。两视角**独立撞到同一个首要缺陷**（spec-F1 ≡ acceptance-#7），这提高了该结论的稳健度，不是重复劳动。
 
 ### 已闭合
 

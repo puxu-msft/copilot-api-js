@@ -910,5 +910,5 @@ Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，
 
 书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。多轮整改后，实施者第五轮达到 `0 blocker / 0 major`；事实／判据第五轮为 `0 blocker / 1 major`，指出非法递增 GOAWAY 的固定 oracle 与真实 Node runtime capability 冲突。第六轮确认四态 runtime capability 方向成立，但实施者发现 zero-event freeze 会丢 unattributed violation；事实／判据 reviewer 另发现 stream error 可早于 session error freeze，以及 `fixture-clamped` 缺少第二调用 callback provenance，结论分别为 `0 blocker / 1 major` 与 `0 blocker / 2 major`。本文随后把 freeze 改成 event／violation 联合状态，要求 stream／session 共用 pre-freeze one-shot recorder，并以两次调用的不同 opaque token 证明 first／second callback 的有序 provenance。两位原 reviewer 第七轮均以固定提交 `0e524438cfa9d7197484731b9f89fc8c263223cb` 为目标，分别完成实施者可执行性与事实／判据双向核验，结论均为 `0 blocker / 0 major`；书面规格评审闭环已完成，可交用户审核。本文仍保持 `confirmed-not-implemented`：评审放行只证明目标契约可定稿，不表示任何目标态代码已经实施。评审记录见：
 
-- [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
-- [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。
+- [实施者走查](2026-08-06-spec-review-implementer.md)；
+- [事实与判据证伪](2026-08-06-spec-review-falsification.md)。

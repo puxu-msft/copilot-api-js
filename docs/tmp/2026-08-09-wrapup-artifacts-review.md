@@ -6,7 +6,7 @@
 - `docs/todo/deferred-backlog.md` 的本轮 tally、History lifecycle 与 timing 改动。
 - `docs/coding-conventions.md` 的 JUnit tally 约定。
 - `exp/junit-tally-false-green/README.md` 及其 artifact。
-- `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md`。
+- `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md`。
 - 复评轮次 2：整改提交 `7016435e`、`30559e07`，重点检查整改是否引入新缺陷。
 
 ## 轮次 1 结论摘要
@@ -35,7 +35,7 @@
 - **接手方错误动作**：报告作者按新约定看到“无 INCOMPLETE”便会引用这 2 条作为目标发现集合的总量或“全绿”证据，尽管运行时集合含一个 discovery 未授权／未预期文件且命令实际退出 1。
 - **建议处置**：把 tally 的 completeness 状态扩成完整 identity mismatch（missing + unexpected），任一非空都在同一行标 `INCOMPLETE` 或 `IDENTITY MISMATCH`；文档引用条件写成“无 `INCOMPLETE`／identity mismatch 且命令 exit 0”。补 unexpected-only 单测，不能只改文档。代码修复建议 `gpt-souls:implementer`，文档同步建议 `gpt-souls:doc-writer`。
 
-### [MAJOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:3-4` — `closed-at: 7016435e` 指向关闭动作发生前的 commit
+### [MAJOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:3-4` — `closed-at: 7016435e` 指向关闭动作发生前的 commit
 
 - **现象**：frontmatter 声称文件“闭合于 `7016435e`”，但 `7016435e` 只提交实验 artifact；progress 状态关闭、剩余项划销和写入权移交实际都在其子提交 `30559e07`。
 - **证据／命令输出**：`git show 7016435e:<progress-file> | rg '^status:|^closed-at:|剩余项'` 输出仍是 `status: in-progress`、无 `closed-at`、`## 剩余项`；`git show 30559e07:<progress-file>` 才出现“已完成”与错误的 `closed-at: 7016435e`。`git rev-parse 30559e07^` 精确等于 `7016435e`。
@@ -49,7 +49,7 @@
 - **接手方错误动作**：接手方沿 progress 的“报告”链接追溯裁决时，会重新采信已被正文其他位置撤回的错误全称，并可能据此设计阈值或声称覆盖整个退化区间。
 - **建议处置**：评审报告需追加醒目的更正／superseded 段，明确 169-175 的外推已被 47/48 反例推翻；保留端点事实与“live 对完全失效无鉴别力、physical 余量薄”的窄结论。修复方建议 `gpt-souls:doc-writer`。
 
-### [MAJOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:44-80` — 关闭后仍保留当前时态的“在途意图／待跑／未审不得关闭／继续更新”指令
+### [MAJOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:44-80` — 关闭后仍保留当前时态的“在途意图／待跑／未审不得关闭／继续更新”指令
 
 - **现象**：frontmatter 与“剩余项”说文件已停止更新，但紧接着仍有标题 `## 在途意图`，第 50 行写“合并前必须由独立 reviewer 裁决，未审不得提交或关闭 Task 9”，第 52 行命令“继续每个语义 commit 同步本文件”，第 68 行写“完整 backend 与 architecture 门禁待跑，不能据此提前关闭 Task 9”；第 74、80 行也保留“待独立 reviewer 最终裁决／官方门仍未绿”的当前时态。顶部没有把这些后续章节整体标成“历史快照、已被后文取代”。
 - **证据／命令输出**：`git show 30559e07:<progress-file> | rg '继续每个语义 commit|合并前必须由独立reviewer|待跑|不得.*关闭|待独立reviewer'` 精确命中上述行；同一文件第 36-42 行又声称门禁与评审全部闭合。
@@ -114,7 +114,7 @@
 - **接手方错误动作**：artifact 目录若只丢最后一份，接手方会把 6934 当总量；这正是该 README 要防的“没读到却当作零”。
 - **建议处置**：完整模式必须从独立 metadata 读取 expected shard count（例如 runner 原子写 manifest，或解析同批 run.log 的 `N shards`）并断言集合精确等于 `1..N`；没有 expected count 时只能标“可枚举子集”，不得声称完整。配方应同时保留 single/middle/trailing 三种缺失负控。
 
-### [MAJOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:3-4,70-82` — progress 仍有冲突的关闭锚与未被历史边界覆盖的陈旧门禁结论
+### [MAJOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:3-4,70-82` — progress 仍有冲突的关闭锚与未被历史边界覆盖的陈旧门禁结论
 
 - **现象**：`closed-at` 已改为 `30559e07`，但同一 frontmatter 的 `status` 字符串仍写“闭合于 `7016435e`”。“在途意图”已正确标历史，但独立的“本轮红绿证据”章节仍在第 75、76、82 行以当前语气声称官方门未绿、guard 待最终裁决；第 96 行才说“官方门未绿已过期”。
 - **证据／命令输出**：`rg '7016435e|30559e07|closed-at|闭合于'` 同时命中 status 的 701 与字段的 305。`rg '待独立|未绿|待跑|不得.*关闭'` 命中第 70、75、76、82 行；只有第 70 行加了“写于当时／已跑完”，第 75、76、82 没有被“在途意图”标题覆盖。
@@ -168,7 +168,7 @@
 - **接手方错误动作**：后续重构若漏掉 failure 或 skipped 对账，维护者会看到全部测试绿，误以为“三项对账”仍完整；正是这轮试图修复的 tally 假绿会从另一个字段重新出现。
 - **建议处置**：增加两个独立负控：① root `failures=1`、实际无 failure 必须抛；② root `skipped=1`、实际无 skipped 必须抛。分别做单臂 mutation，确保每条只因目标分支缺失而红。保留 matching 正样本防 false-red。代码／测试修复建议 `gpt-souls:implementer`。
 
-### [MINOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:58` — 新增历史边界中的门禁数字无 commit 锚且已落后一轮
+### [MINOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:58` — 新增历史边界中的门禁数字无 commit 锚且已落后一轮
 
 - **现象**：整改新增警告称后续官方门已全绿 `7538 tests`，但未注明该次运行的 commit；同一批整改的前一提交 `eb2493ad` 又新增 4 条测试并在提交信息记录 `7542`。该文件虽已归档，新增警告却用无锚点的完成态数字，读者无法判断 7538 是哪个阶段。
 - **证据／命令输出**：`eb2493ad` commit message 明记 `7542 tests · 7542 pass`；`bb1f81f3` 新增的 progress 警告写 `7538`。`git diff eb2493ad^..eb2493ad` 显示新增 4 条 `test(...)`，解释了数值前进但也证明 7538 不是 `bb1f81f3` 所处 HEAD 的规模。
@@ -206,14 +206,14 @@
 
 ## 事实性发现
 
-### [MAJOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:40` — 又把“退出码与标记”写成验收判据，与权威约定的“必要但不充分”冲突
+### [MAJOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:40` — 又把“退出码与标记”写成验收判据，与权威约定的“必要但不充分”冲突
 
 - **现象**：同一行先正确说数字不是判据，却接着写“判据是退出码与标记”。作为“验收判据”，这会被接手方理解为满足二者即可引用 tally；但 `docs/coding-conventions.md:52` 与 backlog 已明确退出 0 只是必要条件，不是充分条件，且产出方不声明 totals 时仍有已知缺口。
 - **证据／命令输出**：`rg '判据是退出码|必要条件|充分条件'` 同时命中 progress 的“判据是退出码与标记”和 coding conventions/backlog 的“必要条件，不是充分条件”。本轮没有新增能把 exit+markers 升级为充分条件的机制；`parseJUnit` 的 declared-total 门仍在三属性缺失时条件性停用。
 - **接手方错误动作**：接手方会按归档 progress 的“验收判据”引用某次 tally，而忽略权威约定明确保留的条件盲区；这正是前三轮反复证伪的充分性主张换了一种措辞回流。
 - **建议处置**：把该句改为“核验记录的是退出码与完整性标记；二者为必要信号，不构成 tally 完整性的充分证明，边界以 coding conventions 为准”。不要再使用单数“判据”给它封口。修复方建议 `gpt-souls:doc-writer`。
 
-### [MINOR] `docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md:40,58` — `7538@bb1f81f3` 的 commit 锚错误，且漏记本提交的 7544
+### [MINOR] `docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md:40,58` — `7538@bb1f81f3` 的 commit 锚错误，且漏记本提交的 7544
 
 - **现象**：时间线写 `7536@30559e07 → 7538@bb1f81f3 → 7542@eb2493ad`，但 first-parent 顺序是 dd0bcd2d（先新增 2 条）→ eb2493ad（再新增 4 条）→ bb1f81f3（后续纯文档）。因此 7538 对应 dd0bcd2d；到 bb1f81f3 时，eb2493ad 的 4 条早已存在，规模仍是 7542，不可能回到 7538。当前 eba4f21a 又新增 2 条并记录 7544，但“每轮整改都复跑”的表没有这一项。
 - **证据／命令输出**：`git log --first-parent 30559e07^..eba4f21a` 顺序为 `dd0bcd2d → eb2493ad → bb1f81f3 → eba4f21a`。`git show --name-only` 显示 dd0bcd2d 改测试并新增 2 条；eb2493ad 改同测试并新增 4 条；bb1f81f3 只改文档；eba4f21a 再新增 2 条。对应提交信息分别记录 7538、7542、7544。
@@ -454,7 +454,7 @@
 
 ## 全仓范围扫描 disposition
 
-- 扫描范围：`docs/todo/deferred-backlog.md`、整个 `docs/memory/`、`exp/junit-tally-false-green/README.md`、`docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-ready-snapshot.md`、`docs/coding-conventions.md`；另为核验承重注释扫描 `scripts/parallel-test-artifacts.ts` 与 `tests/infra/parallel-test-artifacts.unit.test.ts`。
+- 扫描范围：`docs/todo/deferred-backlog.md`、整个 `docs/memory/`、`exp/junit-tally-false-green/README.md`、`docs/mandatory-block-delivery-h2-observability/2026-08-08-progress-task-9-ready-snapshot.md`、`docs/coding-conventions.md`；另为核验承重注释扫描 `scripts/parallel-test-artifacts.ts` 与 `tests/infra/parallel-test-artifacts.unit.test.ts`。
 - 判据：逐条问 producer／observation point／upstream，重点搜索“独立、交叉验证、第二种原理、完整性 oracle、可靠替代、同源、baseline/runtime/JUnit”。
 - 发现并单列的同源冒充独立：① Bun root totals vs testcase rows；② runner tally vs 同批 JUnit leaf recount；③ baseline／live discovery／runtime 的过强描述；④ JUnit names vs tally；⑤ README 把 baseline coverage 写成 runner oracle。
 - 其余命中 disposition：真实外部 counterpart／官方 SDK／精确数学重算等明显不同上游的 oracle 不属于本轮同源缺陷；“独立评审”描述的是评审参与方而非数据 provenance；普通“同源”用于类比关系而非交叉证明。未发现另一个会影响本轮收口、且未被上述 5 条覆盖的 tally 同源主张。

@@ -17,7 +17,7 @@
 
 ## 唯一的 MINOR，及其处置
 
-**发现**：`docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md:65` 以现在时断言 transcript 位于某绝对路径，而 `test -f` 已为 false。
+**发现**：`docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-evidence-manifest.md:65` 以现在时断言 transcript 位于某绝对路径，而 `test -f` 已为 false。
 
 **主会话复核（实跑，非照收）**：属实，且成因值得写下来——`find /home/xp/.claude/projects -name 'a7c2cc1a-*.jsonl'` 显示它现在在 `-home-xp-src-copilot-api-js/` 下。**transcript 的 project 目录名随会话当时的 cwd 派生，不随 job 派生**：删掉那棵 worktree 后它挪了回去。
 
