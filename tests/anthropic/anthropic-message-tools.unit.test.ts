@@ -83,4 +83,28 @@ describe("preprocessTools", () => {
     expect(getTool(tools, "custom_deferred_a").defer_loading).toBe(true)
     expect(getTool(tools, "custom_deferred_b").defer_loading).toBe(true)
   })
+
+  test("strips client cache_control from deferred tools but keeps it on non-deferred ones", () => {
+    // Upstream rejects a tool carrying both fields: "Tools with defer_loading cannot use prompt caching".
+    // Clients place breakpoints positionally (nanobot marks the last non-MCP tool and the tail tool), so a tool we choose to defer can arrive with one already attached.
+    const result = preprocessTools(
+      makePayload({
+        tools: [
+          { name: "Read", input_schema: { type: "object" }, cache_control: { type: "ephemeral" } },
+          { name: "write_stdin", input_schema: { type: "object" }, cache_control: { type: "ephemeral" } },
+        ],
+      }),
+    )
+
+    const tools = result.tools ?? []
+
+    expect(getTool(tools, "write_stdin").defer_loading).toBe(true)
+    expect(getTool(tools, "write_stdin").cache_control).toBeUndefined()
+
+    // Negative control: a non-deferred tool keeps the client's breakpoint.
+    expect(getTool(tools, "Read").defer_loading).toBeUndefined()
+    expect(getTool(tools, "Read").cache_control).toEqual({ type: "ephemeral" })
+
+    expect(tools.filter((tool) => tool.defer_loading === true && tool.cache_control)).toEqual([])
+  })
 })
