@@ -1114,11 +1114,15 @@ shadow只写request-local比较器；任何客户端、日志、History、指标
 
 > 来源：A 线 P0-1／P0-2。授权：[2026-08-11 统一语义桥权威 ADR](../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
 >
-> **状态（2026-08-11）：P1／P3／P4 已跑，P2／P5 未覆盖。** 结论、证据与「它没有证明什么」见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)，默认 record 的裁决已回填 §6.1。
+> **状态（2026-08-11）：P1／P3／P4／P5(wire 侧) 已跑，P2 已显式豁免，P5 的 carrier 侧待 C7.1。** 结论、证据与「它没有证明什么」见 [`exp/responses-server-tool-continuation/README.md`](../../exp/responses-server-tool-continuation/README.md)，默认 record 的裁决已回填 §6.1。
 >
 > `[hard]` **P4 只成立一半，据此裁定「不收窄形态」。** 长 id 被篡改会以可区分方式失败（`400`），但**短的伪造 id 被静默接受（`200`）**——上游不校验该 id 是否指向真实历史搜索。按下方 P4 条款，此时「接受」不构成续接有效的证据，故保留完整 item 作默认。
 >
-> **仍欠**：P2（complete／incomplete 两种 source item 终态——本轮只产出 completed）、P5（carrier byte-exact echo、stream 与 non-stream——本轮全走 non-stream）。这两项在 C5／C7 动工前需补齐或显式豁免。
+> **P5（wire 侧）**：`web_search_call.id` 在 `output_item.added` 与 `.done` 之间**稳定**，故 carrier 不需要「取哪个事件的 id」这道裁决。⚠️ **这不推翻本仓既有的「GHC 逐事件重新加密 `item.id`」——那条测于 `function_call`，是不同 item 类型，两者不矛盾**；不得据此放宽 function_call 侧纪律。
+>
+> **P2 显式豁免**：完整 item 的回传与 `status` 无关，故 complete／incomplete 之别改变不了当前裁决（两次尝试也未复现出 incomplete 变体）。**但将来若要收窄形态，必须先补 P2。**
+>
+> **P5 的 carrier 侧仍欠**：我方 carrier v2 的 byte-exact 编解码往返尚无实现可测，随 C7.1 一并验。
 
 **为什么需要它。** §2 规定 SDK 只作客户端 oracle，C0 规定「Live GHC 只采 fixture、校准机制解释，不作 merge correctness gate」。这对 reasoning carrier 是够的——它的往返已有既有证据。但 §6.1 新增的两类 server-tool record **回答不了「哪一种形态被真实 Responses 上游接受」**，而这个问题**只有真实上游能回答**：本地 encode↔decode 自洽证明不了接受性，两端同源会一起错。
 

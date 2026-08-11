@@ -373,11 +373,13 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 ### C0.4 —— 真实上游接受性探针（RFC §17，v2 新增）
 
-> **状态（2026-08-11）：P1／P3／P4 已跑并回填 RFC §6.1；P2／P5 未覆盖，仍欠。** 产出见 [`exp/responses-server-tool-continuation/`](../../../exp/responses-server-tool-continuation/README.md)。
+> **状态（2026-08-11）：P1／P3／P4／P5(wire 侧) 已跑，P2 已显式豁免，P5 的 carrier 侧随 C7.1 验。** 产出见 [`exp/responses-server-tool-continuation/`](../../../exp/responses-server-tool-continuation/README.md)。
 >
 > **裁决：不收窄形态，保留完整 item 作默认。** 理由是 P4 只成立一半——长 id 篡改会 `400`，但**短的伪造 id 被静默接受**，故「接受」不构成续接有效的证据（正是本片 Steps 第 4 条预写的作废条件）。`item_reference` 对 `web_search_call` 实测 `404`，不可用。
 >
-> **仍欠的两项**在 C5／C7 动工前需补齐或显式豁免：P2（本轮 turn 1 只产出 `status:"completed"`，未构造 incomplete 变体）、P5（本轮全走 non-stream，carrier byte-exact echo 未测）。
+> **P5(wire)**：`web_search_call.id` 在 added／done 间稳定，carrier 无需裁决「取哪个事件的 id」。**不推翻既有的 function_call 逐事件重加密结论**——不同 item 类型。
+>
+> **P2 豁免理由**：完整 item 的回传与 `status` 无关，故它改变不了当前裁决；**将来若要收窄形态，必须先补 P2。**
 
 > 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**与代码无依赖，可立即并行开跑**；但**必须在 C5／C7 之前收口**——它裁决 RFC §6.1 的两类 server-tool record 取哪一种作默认。
 

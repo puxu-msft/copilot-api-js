@@ -47,11 +47,38 @@ D 的 400 报的是「超长」，而 A 用**等长**的 id 却过了——这�
 2. **`responses-item-reference` 对 `web_search_call` 不可用**（404）。该 record kind 保留在联合里（别的 server tool 将来可能支持），但须标注此实测。
 3. **`web_search_call` 的续接价值是 provenance／顺序，不是可恢复的结果数据。** A／B／E 三者答案完全相同这一点说明：回传它并没有把搜索结果带回上下文——因为该 item 从来就只有 `action` 与 `id`，结果一直在 message 文本里。
 
-## 五、它没有证明什么
+## 五、P5 与 P2 的补测（2026-08-11 第二轮，`stream-id.json`）
+
+首轮把 P2／P5 列为欠账，同日补跑。
+
+### P5：`web_search_call` 的 `id` 在流式下**稳定**
+
+| 事件 | `output_index` | `status` | id |
+|---|---|---|---|
+| `response.output_item.added` | 1 | `in_progress` | 424 字符，`lLdnCxf7U788eEubnOkkI9uV…` |
+| `response.output_item.done` | 1 | `completed` | **同一个 id** |
+
+流式抓到的 id 回传上游得 `200`。
+
+`[hard]` **这不推翻本仓既有的「GHC 逐事件重新加密 `item.id`」——那条是在 `function_call` 上测到的**（其证据涉及 `function_call_arguments.done` 这个 function 专有事件）。两者是**不同 item 类型**，不矛盾。正确的表述是：**该重加密行为不适用于 `web_search_call`**（本轮、本模型、两个事件的观测）。**不得**据此放宽 function_call 侧的既有纪律。
+
+对设计的影响：存进 carrier 的 `web_search_call.id` **不需要**在 added／done 之间做「取哪一个」的裁决——这一格不存在那个陷阱。
+
+### P2：incomplete 变体本轮不可复现，**据下述理由显式豁免**
+
+两次尝试（单次搜索、以及强制三次独立搜索的提示词产出 6 个 `web_search_call`）**全部是 `status:"completed"` 且都带 `action`**。既有 FINDINGS 记录 2026-08-05 在 `gpt-5.6-sol` 上见过 incomplete 变体，但**不能按需复现**。
+
+**豁免理由（不是"测不出来所以算了"）**：本轮裁决是**保留完整 item 作默认**，而完整 item 的回传**与 `status` 无关**——不论 completed 还是 incomplete，存进 carrier 的都是整个 item 原样。因此 P2 **不可能改变当前裁决**。它只在**将来有人想收窄形态**时才重新变得承重：那时必须证明所选的最小形态在两种终态下都成立。**收窄前必须先补 P2。**
+
+---
+
+## 六、它没有证明什么
 
 - **没有**证明「回传 `web_search_call` 毫无作用」。id 可解密，意味着服务端**可能**据它维护我们观测不到的状态；**观测不到效果 ≠ 没有效果**。本探针的观测量只有「模型能否复述版本号」，这对服务端内部状态是盲的。
 - **没有**证明 `{type,id}` 一定劣于完整 item。它只证明了**两者都被接受、而接受本身无判别力**，所以不能据此收窄——这是「证据不足以收窄」，不是「已证明更差」。
-- **没有**覆盖 RFC §17 的 P2 与 P5。**P2**（complete／incomplete 两种 source item 终态）本轮 turn 1 只产出 `status:"completed"` 的项，未构造出 incomplete 变体；**P5**（carrier byte-exact echo、stream 与 non-stream）**完全未测**——本轮全部走 non-stream。
+- **没有**覆盖 RFC §17 的 P5 的 carrier 部分。第二轮测的是**上游 wire 上的 `id` 是否逐事件变化**（结论：`web_search_call` 不变），**不是**我方 carrier v2 的编解码 byte-exact 往返——那个 carrier 还没实现（C7.1），无从测起。
+- **P2 已显式豁免而非补齐**，理由见第五节：完整 item 的回传与 `status` 无关，故 P2 改变不了当前裁决；**收窄形态之前必须先补它**。
+- **P5 的稳定性是两个事件、单次运行、单一模型的观测**。未覆盖多 `web_search_call` 并发时各自 `output_index` 的 id 行为，也未测跨请求或长时间后同一 id 是否仍可解密。
 - **没有**覆盖 `web_search_call` 之外的任何 server tool。`ResponsesServerToolItemType` 目前只列 `web_search_call`，这是当前唯一有证据的类型，不是穷举结论。
 - **没有**排除模型行为的偶然性。每个变体各跑**一次**，`NO_CONTEXT` 是单次观测；模型输出有随机性，若要把「A 与 E 无差异」当强结论，需要多次重复。
 - **没有**验证 id 的时效。未测同一 id 在数分钟／数小时后是否仍可解密；若服务端有过期，长期存进 carrier 的 id 可能在回传时已失效。
