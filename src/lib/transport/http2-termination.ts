@@ -4,6 +4,7 @@ import type {
   GoawaySnapshotSource,
   Http2TerminationCommitPort,
   ObservationAtSnapshot,
+  TransportSessionSnapshot,
   TransportTerminationSnapshot,
 } from "./http2-observation-types"
 
@@ -71,7 +72,9 @@ export function createDefaultGoawaySnapshotSource(): GoawaySnapshotSource {
   }
 }
 
-export function createLocalTerminationCommitPort<Lease>(source: GoawaySnapshotSource<Lease> = createDefaultGoawaySnapshotSource() as GoawaySnapshotSource<Lease>): Http2TerminationCommitPort {
+export function createLocalTerminationCommitPort<Lease>(
+  source: GoawaySnapshotSource<Lease> = createDefaultGoawaySnapshotSource() as GoawaySnapshotSource<Lease>,
+): Http2TerminationCommitPort {
   let committed = false
   return {
     trySetTransportTermination(build) {
@@ -98,6 +101,12 @@ interface RecorderOptions {
   commitPort: Http2TerminationCommitPort
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
   now?: () => number
+  /**
+   * Samples the owning h2 connection AT THE TERMINAL. A getter rather than a value because the
+   * session keeps living (and pinging) while the stream runs — the interesting reading is the one
+   * taken at the moment this stream ended, not at the moment it started.
+   */
+  sessionSnapshot?: () => TransportSessionSnapshot
 }
 
 interface TerminalInput {
@@ -181,6 +190,16 @@ export function createHttp2TerminationRecorder(options: RecorderOptions): Http2T
   let trailers: ObservationAtSnapshot = "not-observed-before-snapshot"
   let physicalClose: ObservationAtSnapshot = "not-observed-before-snapshot"
 
+  const sampleSession = (): TransportSessionSnapshot | null => {
+    if (options.sessionSnapshot === undefined) return null
+    try {
+      const sampled = options.sessionSnapshot()
+      return Object.freeze({ ...sampled, ping: Object.freeze({ ...sampled.ping }) })
+    } catch {
+      return null
+    }
+  }
+
   const commit = (input: TerminalInput): boolean => {
     let committedSnapshot: TransportTerminationSnapshot | undefined
     const committed = options.commitPort.trySetTransportTermination((goaway) => {
@@ -202,6 +221,9 @@ export function createHttp2TerminationRecorder(options: RecorderOptions): Http2T
         trailers,
         physicalClose,
         goaway,
+        // A failing session sampler must not cost us the whole termination record — the stream-level
+        // facts are the load-bearing ones, and `null` honestly says "not sampled" rather than inventing.
+        session: sampleSession(),
       }
       committedSnapshot = freezeSnapshot(snapshot)
       return committedSnapshot
