@@ -23,6 +23,7 @@
  */
 
 import consola from "consola"
+import { createHash } from "node:crypto"
 import http2 from "node:http2"
 import tls from "node:tls"
 
@@ -42,6 +43,7 @@ import {
   state,
 } from "~/lib/state"
 
+import type { SnapshotScalar } from "./http2-observation-types"
 import type { UpstreamFetchInit } from "./upstream-fetch"
 
 import {
@@ -51,8 +53,14 @@ import {
 } from "./crash-safety"
 import {
   //
+  RegisteredGoawayEvidence,
+  SessionGoawayLedger,
+} from "./http2-goaway-ledger"
+import {
+  //
   createHttp2TerminationRecorder,
   createLocalTerminationCommitPort,
+  toBoundedObservationText,
 } from "./http2-termination"
 import { connectProxiedSocket } from "./proxy-connect"
 
@@ -108,6 +116,14 @@ interface H2SessionEntry {
   effectiveKeepAliveMs: number | undefined
   /** idle-reap timer, armed when an ACTIVE session's activeStreamCount hits 0; cleared on the next reservation. */
   idleTimer: NodeJS.Timeout | undefined
+  /**
+   * Per-session GOAWAY record. Every stream on this session leases a view of it, so a dispatch that ends
+   * around a GOAWAY can say which frame it saw rather than reporting an unexplained termination.
+   * The ledger owns its own bounded storage; this entry only owns closing it exactly once.
+   */
+  goawayLedger: SessionGoawayLedger
+  /** `error` and `close` both route to `dispose`, and the ledger owner may only be closed once. */
+  goawayLedgerClosed: boolean
 }
 
 /** Multiple capacity-routed h2 sessions per origin (all resolved + live, routable for new requests). */
@@ -558,12 +574,19 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       effectivePingIntervalMs,
       effectiveKeepAliveMs,
       idleTimer: undefined, // armed later, only when it goes idle (activeStreamCount → 0)
+      goawayLedger: new SessionGoawayLedger(),
+      goawayLedgerClosed: false,
     }
     const dispose = (): void => {
       if (entry.pingTimer) clearInterval(entry.pingTimer)
       clearIdleTimer(entry)
       removeSessionEntry(entry)
       retiringSessions.delete(entry)
+      // Both `error` and `close` route here, and the ledger owner may only be closed once.
+      if (!entry.goawayLedgerClosed) {
+        entry.goawayLedgerClosed = true
+        entry.goawayLedger.closeSessionOwner()
+      }
       wakeOriginSlotWaiter(entry.origin) // a session left the pool → room under the per-origin cap
     }
     const retire = (): void => {
@@ -578,9 +601,40 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       // blocks new requests behind old sessions still draining).
       wakeOriginSlotWaiter(entry.origin)
     }
+    /**
+     * A GOAWAY is the one termination the peer explains, so record the frame BEFORE retiring: `retire()` only stops routing new streams, it says nothing about why.
+     * Recording never affects retirement — a ledger failure must not leave a GOAWAY'd session routable, hence the try/finally.
+     */
+    const recordGoawayThenRetire = (errorCode: number, lastStreamID: number, opaqueData?: Buffer): void => {
+      try {
+        if (entry.goawayLedgerClosed) return // a GOAWAY delivered after error/close has nowhere to land
+        const opaqueDataLength: SnapshotScalar<number> =
+          opaqueData === undefined ? { availability: "not-observed-before-snapshot" } : { availability: "observed", value: opaqueData.byteLength }
+        if (opaqueData === undefined || opaqueData.byteLength === 0) {
+          entry.goawayLedger.appendUnavailable({
+            errorCode,
+            lastStreamID,
+            opaqueDataLength,
+            evidence: { availability: "unavailable-at-source", reason: toBoundedObservationText("peer sent no GOAWAY opaque data", 128) },
+          })
+          return
+        }
+        const bytes = new Uint8Array(opaqueData)
+        entry.goawayLedger.appendObserved({
+          errorCode,
+          lastStreamID,
+          opaqueDataLength,
+          evidence: new RegisteredGoawayEvidence(createHash("sha256").update(bytes).digest("hex"), bytes),
+        })
+      } catch {
+        // Diagnostic-only: a hostile or malformed GOAWAY must never keep the session routable.
+      } finally {
+        retire()
+      }
+    }
     session.on("error", dispose)
     session.on("close", dispose)
-    session.on("goaway", retire)
+    session.on("goaway", recordGoawayThenRetire)
     session.unref()
     addSessionEntry(entry)
     return entry
@@ -1148,7 +1202,10 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     }
 
     const termination = createHttp2TerminationRecorder({
-      commitPort: createLocalTerminationCommitPort(),
+      // With a dispatch handle we can lease the SESSION's GOAWAY record, so this stream's snapshot
+      // reports the frame the session actually received. Without one there is no owner to attribute
+      // a shared session event to, so the snapshot keeps its default not-observed GOAWAY.
+      commitPort: createLocalTerminationCommitPort(init.dispatch === undefined ? undefined : entry.goawayLedger.acquireDispatchLease(init.dispatch)),
       onTermination: init.onTermination,
     })
 

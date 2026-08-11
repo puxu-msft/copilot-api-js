@@ -39,6 +39,7 @@ import {
 } from "~/lib/proxy"
 import { combineAbortSignals } from "~/lib/stream"
 
+import type { DispatchHandle } from "~/lib/context/model-operation-record"
 import type { TransportTerminationSnapshot } from "./http2-observation-types"
 
 import { http2Fetch } from "./http2-client"
@@ -63,6 +64,12 @@ export interface UpstreamFetchInit {
   onStreamClosed?: () => void
   /** Best-effort first consumer-terminal observation for the HTTP/2 path; never called by plain HTTP. */
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
+  /**
+   * Canonical owner of this dispatch, when the caller has one. The h2 path uses it to lease a view of the
+   * pooled session's GOAWAY ledger, so a stream that ends around a GOAWAY reports the frame the SESSION saw.
+   * Absent, the termination snapshot reports GOAWAY as not-observed rather than guessing an owner.
+   */
+  dispatch?: DispatchHandle
 }
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>
