@@ -198,7 +198,7 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 - `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 0，即禁用）：运维显式设正值时，它是单请求硬总时长上限。默认禁用避免仅凭 wall-clock 误杀无上界合法思考。
 - **由 per-request 精确 `setTimeout` 强制**（`manager.create` 武装、`onSettled` 清除、`unref`），到点调用与 reaper 同款 `reapInFlight()`（取消在飞上游）+ `fail()`（记终态）。
 - **为何独立于 stale reaper**：reaper 是**周期扫描**（`staleRequestMaxAge/3` clamp 到 [250ms,60s]），实测会**迟到**（一次迟 198s，age 1398s vs max 1200s）——候选机制：config 热重载改阈值但 scan cadence 冻结、或**进程/WSL2 suspend** 让所有 timer 一起冻结（诊断见 `reaper-diagnostics.ts`，坐实判据 = 墙钟 gap vs 单调 gap）。per-request timer 按 T 精确触发、**绕过**这个迟到。
-- 两个 wall-clock guard 默认都禁用；运维同时显式启用时，`request_deadline`（精确主上限）应小于 `stale_request_max_age`（周期泄漏兜底）。
+- 两个 wall-clock guard 在**本仓 bundled `config.yaml` 里**都设为 0＝禁用（`:246`、`:240`）；**代码默认不同**——`requestDeadline: 0` 但 `staleRequestMaxAge: 600`（`packages/foundation/src/state-defaults.ts:257-258`），所以「默认禁用」这句只对本仓配置成立，别当成代码默认。运维同时显式启用时，`request_deadline`（精确主上限）应小于 `stale_request_max_age`（周期泄漏兜底）。
 - **dry-run 豁免**：capturing manager（`withCapturingManager`）传 `armDeadlineTimers:false`，inspection ctx 不武装 deadline。
 
 相关代码：`src/lib/shutdown.ts`、`src/lib/context/`、`src/lib/observability/reaper-diagnostics.ts`

@@ -6,7 +6,7 @@
 >
 > ⚠️ **两层记法，只有一层是真相**（2026-08-10 对账时发现并修）。批次是否完成，**唯一看标题下的 `**状态：**` 行**；步骤复选框是执行会话的临时草稿，**不是真相层**——Batch 0／1a／2a／2b 都已完成并合入 `master`，而它们的复选框全是未勾。本文件的完成协议（下文「Execution Progress Contract」第 6 步）只要求追加状态行、同步进度文件，从未要求回勾。**别看到 `0/7` 就以为那批没做**，也别为了「看起来整齐」去批量补勾——没有逐步取证的勾选就是编造。
 >
-> **2b 之后的计划对账（2026-08-10）**：Batch 2b 的实际落地使后续批次的部分陈述失效，逐条证据见 [2026-08-10-plan-recon-4a-4b.md](../tmp/2026-08-10-plan-recon-4a-4b.md)（4a／4b 逐 Step 判定）与 [2026-08-10-plan-recon-3a-3b-5-6.md](../tmp/2026-08-10-plan-recon-3a-3b-5-6.md)（3a／3b／5／6 前置复核，22 条需改写、3 处顺序变化）。各受影响批次的标题下都有一条 `**2b 后对账：**` 摘要——**动手前先读那条**。
+> **2b 之后的计划对账（2026-08-10）**：Batch 2b 的实际落地使后续批次的部分陈述失效，逐条证据见 [2026-08-10-plan-recon-4a-4b.md](2026-08-10-plan-recon-4a-4b.md)（4a／4b 逐 Step 判定）与 [2026-08-10-plan-recon-3a-3b-5-6.md](2026-08-10-plan-recon-3a-3b-5-6.md)（3a／3b／5／6 前置复核，22 条需改写、3 处顺序变化）。各受影响批次的标题下都有一条 `**2b 后对账：**` 摘要——**动手前先读那条**。
 
 **Goal:** 把 History semantic/raw 持久化、backfill、maintenance 与最终查询逐批迁入单个专用 Worker；使用有界 operation reservation、Worker crash 重放和 startup/shutdown durability barrier；每个 batch 独立验收后立即合入 `master`。
 
@@ -108,7 +108,7 @@ status: active
 
 ### Task 0 / Batch 0: Protocol and Worker Runtime Skeleton
 
-**状态：已完成（骨架引入于 `d1598297`「add worker runtime skeleton」）。** 状态行由 2026-08-10 的对账补记——本批当时漏了状态行，而复选框未勾，两处都看不出它已完成。证据：`src/lib/history/worker/{protocol,runtime}.ts` 及配套测试均在树上；执行记录见 [2026-08-07-history-worker-progress-impl-1.md](../tmp/2026-08-07-history-worker-progress-impl-1.md)。**注意**：`protocol.ts` 里的 `maintenanceIntervalMs`／`stop-maintenance`、`runtime.ts` 的 `stopMaintenance()` 都来自本批而非 4b（`git blame` 实证），别把它们记成后续批次的产出。
+**状态：已完成（骨架引入于 `d1598297`「add worker runtime skeleton」）。** 状态行由 2026-08-10 的对账补记——本批当时漏了状态行，而复选框未勾，两处都看不出它已完成。证据：`src/lib/history/worker/{protocol,runtime}.ts` 及配套测试均在树上；执行记录见 [2026-08-07-history-worker-progress-impl-1.md](2026-08-07-history-worker-progress-impl-1.md)。**注意**：`protocol.ts` 里的 `maintenanceIntervalMs`／`stop-maintenance`、`runtime.ts` 的 `stopMaintenance()` 都来自本批而非 4b（`git blame` 实证），别把它们记成后续批次的产出。
 
 **Files:**
 - Create: `src/lib/history/worker/protocol.ts`
@@ -467,7 +467,7 @@ Commit: `feat(history): gate model operations on persistence capacity`
 
 ### Task 2a / Batch 2a: Semantic Worker Backend
 
-**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/tmp/2026-08-08-history-worker-progress-impl-2a.md](../tmp/2026-08-08-history-worker-progress-impl-2a.md)。
+**状态：已完成（`59989488`，2026-08-09 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major，期间发现并修复**五处生产缺陷**（journal recovery 静默吞失败违反 §8.1／fatal 不终止 Worker／restart 携旧 rawConfig／backoff 期 shutdown 遗留未结算／可重试启动错误被误判为 fatal——最后一条由一次 flaky 红实测追出）。**边界**：本批只证明未接生产的 semantic Worker backend 能真实持久化并从四个 crash window 收敛；**不证明** terminal subscriber 已切到 Worker，也不改变主线程 legacy writer authority（那是 Batch 2b）。**留给 2b 的硬性前置**：启动重试无截止时间，须由拥有进程启动的一方加 deadline，见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md) 末节（用户 2026-08-09 裁决撤回 runtime 侧上限）。执行记录与 22 条变异对照见 [docs/tmp/2026-08-08-history-worker-progress-impl-2a.md](2026-08-08-history-worker-progress-impl-2a.md)。
 
 **Files:**
 - Create: `src/lib/history/worker/backend.ts`
@@ -522,7 +522,7 @@ Commit: `feat(history): add semantic worker backend`
 
 ### Task 2b / Batch 2b: Semantic Production Cutover
 
-**状态：已完成（`b2444a17`，2026-08-10 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/tmp/2026-08-09-batch2b-review-gpt.md](../tmp/2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](../tmp/2026-08-09-history-worker-progress-impl-2b.md)。
+**状态：已完成（`b2444a17`，2026-08-10 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/tmp/2026-08-09-batch2b-review-gpt.md](2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](2026-08-09-history-worker-progress-impl-2b.md)。
 
 **Files:**
 - Modify: `src/lib/history/state.ts`
@@ -678,7 +678,7 @@ Commit: `refactor(history): move raw capture into worker`
 
 ### Task 4a / Batch 4a: Worker Backfill Backend
 
-**2b 后对账（2026-08-10）—— 逐 Step 判定：已完成 1（目标达成但实现不同）／部分 3／未做 1。** ⚠️ **不要据此认为本批可跳过。** 2b 让 Worker 的 `initialize()` 直接起 `startV3SummaryBackfill(opened)`（`worker/backend.ts:166`）、`stopMaintenance()` 里 stop 并 drain（`:226-234`），**目标达成但实现方式与计划不同**：计划要的是 `start-backfill` 命令与 backfill progress/status 协议，**那套协议至今未实现**。cooperative loop／stop／drain 与 keyset／query-plan 早在 `fa2bfd2d`／`a8a9475c` 就有了，不是 2b 的产出。**计划要求的 `tests/history/worker/backfill-backend.it.test.ts` 不存在**——符号被搬进 Worker ≠ 本批的测试已经写了，这两件事必须分开判。逐 Step 证据见 [2026-08-10-plan-recon-4a-4b.md](../tmp/2026-08-10-plan-recon-4a-4b.md)。
+**2b 后对账（2026-08-10）—— 逐 Step 判定：已完成 1（目标达成但实现不同）／部分 3／未做 1。** ⚠️ **不要据此认为本批可跳过。** 2b 让 Worker 的 `initialize()` 直接起 `startV3SummaryBackfill(opened)`（`worker/backend.ts:166`）、`stopMaintenance()` 里 stop 并 drain（`:226-234`），**目标达成但实现方式与计划不同**：计划要的是 `start-backfill` 命令与 backfill progress/status 协议，**那套协议至今未实现**。cooperative loop／stop／drain 与 keyset／query-plan 早在 `fa2bfd2d`／`a8a9475c` 就有了，不是 2b 的产出。**计划要求的 `tests/history/worker/backfill-backend.it.test.ts` 不存在**——符号被搬进 Worker ≠ 本批的测试已经写了，这两件事必须分开判。逐 Step 证据见 [2026-08-10-plan-recon-4a-4b.md](2026-08-10-plan-recon-4a-4b.md)。
 
 **Files:**
 - Modify: `src/lib/history/worker/{protocol,backend,history-worker}.ts`

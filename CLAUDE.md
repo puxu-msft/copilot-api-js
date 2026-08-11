@@ -24,6 +24,7 @@
 - 关键设计决策 + 理由 → [docs/decisions/](docs/decisions/) ADR（一决策一文件）。
 - 模块契约 / 兼容行为 / 管线 → `docs/spec/*.md` 与 `docs/<topic>.md`（`anthropic-compat` / `streaming` / `tool-use` / `request-pipeline` 等）。
 - 设计 / 实现计划 → `docs/plan/`，**放仓库内、不放 `~/.claude/plans/`**（便于多会话版本控制、共享、审查）。
+- **系列任务（跨多批次／多会话的同一特性）→ `docs/<topic>/` 单目录聚合**（用户 2026-08-11 裁决）。该特性的 spec、plan、kickoff、各批进度文件、评审报告、收尾报告**全部写在这里**，别再散进 `docs/plan/`＋`docs/spec/`＋`docs/tmp/` 三处；**新产出直接写入该目录**，临时落在别处的收尾时移进来。目录内放一份 `README.md` 作索引（常驻文档 / 批次记录 / 对账 / 已知代价），并写明**当前活路径的权威仍在 DESIGN.md**，本目录只记「怎么一步步做成的」。核心三份用规范名 `spec.md`／`plan.md`／`plan-kickoff.md`；按时间成序列的进度与评审保留日期前缀（日期本身是信息）。**现存实例**：[docs/history-persistence-worker/](docs/history-persistence-worker/README.md)。**迁移时注意**：`docs/tmp/` 与 `docs/<topic>/` 同深度，`../` 上跳链接与同目录互引都不受影响，真正会断的只有带旧目录名的链接——移完逐个解析验证，别假定没断。
 - 暂缓项 / 结构性待办 → [docs/todo/deferred-backlog.md](docs/todo/deferred-backlog.md)（含根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么）。
 - 操作性调试知识 → 项目 skill（`.claude/skills/`）；废弃文档 / 完成叙事 → `docs/archive/`。
 
@@ -49,6 +50,17 @@
 - **concurrent-sessions 行级共存。** 本仓库常有并发 agent 会话同时改动，**核心立场：行级共存，绝不整文件退让**（功能不矛盾则两份改动都该落地，绝不以"别人也碰了这文件/怕冲突"把自己该做的推给别会话——退让本身是错）。**isolated worktree 与 shared worktree 两模式并列可行**，区别只在谁做行级仲裁：isolated worktree + 独立分支（放 `./.worktrees/`）各会话 HEAD/index 独立、靠 `git merge` 三方合并**自动合非冲突行**；**shared worktree 是主要高级技巧所在**——同文件不重叠行 + 显式 pathspec commit（`git commit -- <路径>` 取工作区当前内容、免疫 peer 并发 `git add` 的 index TOCTOU race），同文件需 hunk 级只提自己那几行则 `git apply --cached` 过滤 + 无-pathspec commit。→ skill `git-preference:coordinating-a-shared-git-worktree`（shared 树协作）/ `git-preference:isolating-from-a-shared-git-worktree`（隔离 worktree）、[docs/memory/git-commit-pathspec-commits-worktree-not-index.md](docs/memory/git-commit-pathspec-commits-worktree-not-index.md)。
 - **monorepo-scc-解环纪律。** 仓库正按 monorepo workspace 拆分（已抽 `packages/{foundation,token,cli}`；`core` 仍是 19 模块巨型 SCC、过渡态）。两条常驻纪律：① **顺手解环**——碰到某 core 模块时，顺手把它对 `state` 的读迁到窄读接口 / 顺手减一条跨模块环边，别让 SCC 横向长新成员；② **拆包用模板**——剥离新域走 [docs/plan/monorepo-split/plan-token-package.md](docs/plan/monorepo-split/plan-token-package.md) 的「通用 DomainPeel Contract」表 + 执行技巧（记忆 `methodology-domain-peel-execution-techniques`：setStateForTests-shim+snapshot-fold 吸收 N 测试零改动、ambient 端口 floor、peek/get 分层、foundation 裸包名需 tsconfig path、边界守卫全 import 形态），下一步排序见 [docs/todo/deferred-backlog.md](docs/todo/deferred-backlog.md)（telemetry/models 边缘域优先、state 解耦第一）。**机器护栏**：`tests/architecture/package-boundaries.unit.test.ts`（包边界：新包拒 `~/`+core，正样本对照）+ `circular-deps-ratchet.unit.test.ts`（SCC 环快照 ratchet：新增环/新成员即 fail、只减不增；降环后 `bun run scripts/update-circular-deps-baseline.ts` 重冻结）。破坏性搬迁走 spec [docs/spec/2026-07-22-monorepo-workspace-split.md](docs/spec/2026-07-22-monorepo-workspace-split.md)。
 - **no-destructive-workspace-loss。** 唯一判据是**可恢复性**：会丢失 git 救不回的工作（未提交/未暂存改动、未追踪文件）的操作绝不做，后果可恢复（已提交、git 历史在）的被权限允许时正常做；撤销自己刚做的编辑用**重新编辑**而非回退；**绝不以"清理死代码/无消费者"为名擅自删**。→ 同上 skill。
+- **delete-merged-branches（用户 2026-08-11 裁决：`以后也必须这么做`）。** 分支合并回 `master` 之后就是**只剩指针的垃圾**，收尾时**主动删掉、不必逐次询问**——不要攒着，也不要等用户提。
+    **两步，缺一不可**：① 用 `git branch --merged master` 取候选（**显式写 `master`**）；② 对候选逐个 `git branch -d`，**绝不 `-D`**。
+    **为什么第 ① 步必须显式写 `master`**（实测，2026-08-11）：`git branch -d` 判「已合并」的基准是**当前 HEAD，或该分支若设了 upstream 则按 upstream**——**两者都不是 `master`**。所以 `-d` 通过**根本不能证明候选已进 master**：无 upstream 的候选按当前 HEAD 判（在特性树上跑，会把已并入 master 的分支判成未合并而拒删；反过来当前 HEAD 含 master 尚无的提交时会放行），有 upstream 的候选按 upstream 判（同样与 master 无关）。**`git branch --merged master` 才是 master 基准的必要判据**；`-d` 只是在它之后从另一个方向再拦一道。
+    **`-d` 的拒绝就是护栏，被拒时去查原因、不要改用 `-D`**。它拒两类：未合并，以及**被任何 worktree 占用**（实测：`error: cannot delete branch 'x' used by worktree at '<路径>'`）。
+    **可选的预过滤**：想让报告干净、不夹杂预期内的失败，可以先用 `git worktree list --porcelain` 里的 `branch refs/heads/<名>` 行做差集，把被占用的排除掉（detached HEAD 的 worktree 不占用任何分支 ref，不该算进去）。这**只是降噪，不是安全机制**——安全由 `-d` 自己保证。
+    **本仓的现实**：积压着大量别的会话遗留的 worktree，它们钉住了相当一部分已合并分支。当前口径自己算，别引用快照数字：
+    ```
+    git branch --merged master --format='%(refname:short)' | rg -v '^master$' | wc -l
+    ```
+    **那些 worktree 不是你的，别顺手清**——清理别人的树属破坏性操作（见上一条），只报告、不动手。
+    **删分支 ≠ 删 worktree**：删分支只动一个 ref，内容仍在 `master` 里，可恢复；`git worktree remove` 会删掉整个目录、可能带走未提交工作，前提严得多（干净 + HEAD 可达 + 是本会话自己建的）。本仓的 git 护栏会按**命令形态**拦下 `git worktree remove` 与 `git branch -D`，加 `GIT_DISCIPLINE_OK=1` 前缀即放行——**它只是让你停一下，不替你核实所有权、可达性或用户授权**，那几项仍要自己查。
 - **scope-ambiguity-then-ask。** 范围/意图歧义**先用代码+invariant 自解**（答案已被代码钉死就自己定并写推理、别仪式化提问）；确属用户偏好/风险取舍的真分叉才 `AskUserQuestion`，且摆 3-4 个带量化影响的选项而非 yes/no。**方向明确就别停**（执行顺序不是岔路；代码改完→文档同步→提交都直接做，只有矛盾/非此即彼/上下文不足/破坏性不可逆才停）→ user-rule `60` `dont-stop-if-clear`。
 - **no-premature-stop。** 不因 turn 长度/token 额度**或编译中间态**（删了函数但调用方还引用）停顿、设检查点或延后，推进到下一个 typecheck 绿或完成 checkpoint 再停；独立的跨文件 Edit/工具一律**消息内并行**，绝不串行。
 - **dont-ignore-existing-errors。** 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修（放任会掩盖新问题、使回归失去意义）；修前先读实际代码和类型定义确认根因，不猜测。

@@ -12,7 +12,7 @@ continuity: tightly-coupled
 continuity_reason: route admission, terminal publication, shutdown and pending overlay share one reservation lifecycle; splitting before the shared contract is green would force each executor to reconstruct and potentially diverge that lifecycle.
 ---
 
-> **状态：已完成并停止更新。** Batch 1b 已于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；活跃状态写入权已转交正式计划 [`docs/plan/2026-08-07-history-persistence-worker.md`](../plan/2026-08-07-history-persistence-worker.md) 的 Batch 1b 状态行。本文件保留接力、验证与作废路线的历史证据。
+> **状态：已完成并停止更新。** Batch 1b 已于 2026-08-08 fast-forward 合入 `master@d3b4ac77`；活跃状态写入权已转交正式计划 [`docs/plan/2026-08-07-history-persistence-worker.md`](plan.md) 的 Batch 1b 状态行。本文件保留接力、验证与作废路线的历史证据。
 
 ## Context-window 终态接力
 
