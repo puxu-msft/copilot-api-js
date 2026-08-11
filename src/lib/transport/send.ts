@@ -19,6 +19,7 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
+import type { DispatchHandle } from "~/lib/context/model-operation-record"
 import type { TransportTerminationSnapshot } from "~/lib/transport/http2-observation-types"
 import type {
   //
@@ -236,6 +237,8 @@ export interface SendUpstreamHttpParams {
    * wires it to `ctx.recordGenerationDispatchDiagnostic` so History can answer who ended the stream.
    */
   onTermination?: (snapshot: TransportTerminationSnapshot) => void
+  /** Canonical dispatch owner, forwarded to the h2 path so it can lease the session's GOAWAY ledger. */
+  dispatch?: DispatchHandle
 }
 
 /**
@@ -265,6 +268,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
     ...(params.onTrailers && { onTrailers: params.onTrailers }),
     ...(params.onTermination && { onTermination: params.onTermination }),
+    ...(params.dispatch && { dispatch: params.dispatch }),
   })
 
   // Capture HTTP headers for history (before error check — capture even on failure)

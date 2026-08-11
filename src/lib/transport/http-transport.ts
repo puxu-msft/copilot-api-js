@@ -91,6 +91,7 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
         // Attribution is the EXPLICIT dispatch handle, never the ambient current attempt — a hedged request has several dispatches in flight at once.
         ...(dispatch && {
+          dispatch,
           onTermination: (snapshot) => {
             env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
               kind: "transport.h2.termination",

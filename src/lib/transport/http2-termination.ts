@@ -71,7 +71,7 @@ export function createDefaultGoawaySnapshotSource(): GoawaySnapshotSource {
   }
 }
 
-export function createLocalTerminationCommitPort(source: GoawaySnapshotSource = createDefaultGoawaySnapshotSource()): Http2TerminationCommitPort {
+export function createLocalTerminationCommitPort<Lease>(source: GoawaySnapshotSource<Lease> = createDefaultGoawaySnapshotSource() as GoawaySnapshotSource<Lease>): Http2TerminationCommitPort {
   let committed = false
   return {
     trySetTransportTermination(build) {

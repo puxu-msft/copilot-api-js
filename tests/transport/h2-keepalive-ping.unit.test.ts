@@ -91,4 +91,74 @@ describe("scheduleH2KeepalivePing", () => {
     expect(() => interval.tick()).not.toThrow()
     expect(ping).toHaveBeenCalledTimes(2)
   })
+
+  /**
+   * A4-3: the ack used to be a no-op, so a session whose peer had stopped answering looked exactly like a healthy one. These cover the observer's arithmetic; `http2-client.it.test.ts` proves the RTT against a real h2 server, because a fake can report any number it likes.
+   *
+   * Note the ack shape: Node calls the ping callback with `(err, durationMs, payload)`. A fake that called back with no arguments would let a broken implementation pass, so these mirror the real signature.
+   */
+  test("records sent, acked and round-trip time from the real ack signature", () => {
+    const observed: Array<{ error: Error | null; durationMs: number }> = []
+    const ping = mock((cb: (error: Error | null, durationMs: number) => void) => cb(null, 42))
+    const interval = manualInterval()
+    let sent = 0
+    scheduleH2KeepalivePing(fakeSession(ping as unknown as (cb: () => void) => void), 15, interval.schedule, {
+      onSent: () => {
+        sent += 1
+      },
+      onAck: (error, durationMs) => observed.push({ error, durationMs }),
+    })
+
+    interval.tick()
+    interval.tick()
+
+    expect(sent).toBe(2)
+    expect(observed).toEqual([
+      { error: null, durationMs: 42 },
+      { error: null, durationMs: 42 },
+    ])
+  })
+
+  test("an unacked ping leaves sent ahead of acked, which is the whole liveness signal", () => {
+    // The peer never answers: Node simply never invokes the callback. The counters must diverge —
+    // if `onSent` were driven from the ack instead, a dead peer would report a perfectly idle session.
+    const ping = mock(() => {
+      /* no ack ever arrives */
+    })
+    const interval = manualInterval()
+    let sent = 0
+    let acked = 0
+    scheduleH2KeepalivePing(fakeSession(ping as unknown as (cb: () => void) => void), 15, interval.schedule, {
+      onSent: () => {
+        sent += 1
+      },
+      onAck: () => {
+        acked += 1
+      },
+    })
+
+    interval.tick()
+    interval.tick()
+    interval.tick()
+
+    expect(sent).toBe(3)
+    expect(acked).toBe(0)
+  })
+
+  test("an observer that throws cannot reach the session's error path", () => {
+    const ping = mock((cb: (error: Error | null, durationMs: number) => void) => cb(null, 1))
+    const interval = manualInterval()
+    scheduleH2KeepalivePing(fakeSession(ping as unknown as (cb: () => void) => void), 15, interval.schedule, {
+      onSent: () => {
+        /* fine */
+      },
+      onAck: () => {
+        throw new Error("diagnostic sink blew up")
+      },
+    })
+
+    // Diagnostics must never be able to break the keepalive they observe.
+    expect(() => interval.tick()).not.toThrow()
+    expect(ping).toHaveBeenCalledTimes(1)
+  })
 })
