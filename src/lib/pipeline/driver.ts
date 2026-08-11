@@ -1390,12 +1390,15 @@ async function runResponseSink(
     // nothing the client can act on, so it drains as `complete` and the handler's own terminal logic
     // (refusal / unrepairable tool input / max_tokens continuation) runs unchanged.
     //
-    // Deliberately live-only and upstream-transport-only:
+    // Deliberately live-only, upstream-transport-only, and fail-closed on a failed terminal:
     //   - `runResponseBufferedSink` withholds frames until commit, so there `sawMessageStop()` does
     //     NOT imply the client received anything — a throw must stay retryable.
     //   - `downstream-sink` / `codec-render` / `delivery-owner` mean the client's copy may be broken
     //     or incomplete, so they keep minting `stream-error` above.
-    if (source === "upstream-transport" && effectiveOpts.sawMessageStop?.() === true) {
+    //   - `sawMessageStop()` is true for ANY terminal, including a FAILED one (`response.failed` sets
+    //     `sawFailure`, candidate-response-session.ts:128-130). A failed terminal followed by a torn
+    //     transport must not drain as `complete`, so the fail-closed `sawUpstreamError()` vetoes it.
+    if (source === "upstream-transport" && effectiveOpts.sawMessageStop?.() === true && effectiveOpts.sawUpstreamError?.() !== true) {
       consola.warn(`[driver] upstream transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`)
       return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
     }

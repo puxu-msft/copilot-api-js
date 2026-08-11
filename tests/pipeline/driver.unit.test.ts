@@ -1432,6 +1432,26 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
   })
 
+  // Third negative control: `sawMessageStop()` is true for ANY terminal, including a FAILED one
+  // (`response.failed` sets sawFailure). A failed terminal followed by a torn transport must NOT
+  // drain as complete — the fail-closed `sawUpstreamError()` vetoes the gate.
+  test("a FAILED terminal followed by an upstream-transport throw still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* failedTerminalThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: failedTerminalThenThrow(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+      sawUpstreamError: () => true,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
+  })
+
   // Second negative control: the gate is upstream-transport-only. A sink write that rejects means the
   // client's copy may be broken even though the upstream reached its terminal, so it must stay an error.
   test("a downstream-sink failure after the terminal still mints stream-error", async () => {

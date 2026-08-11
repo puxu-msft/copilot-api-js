@@ -400,6 +400,23 @@ export interface RunResponseOpts {
    */
   sawMessageStop?: () => boolean
   /**
+   * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
+   * (H2 — e.g. `overloaded_error`) or a FAILED terminal (`response.failed`)? Read by both sinks:
+   *
+   *   - buffered: such a frame is a clean drain WITHOUT `message_stop`, so `sawMessageStop()` alone
+   *     cannot tell it apart from an RST-truncation. H2 is a terminal upstream decision (NOT a
+   *     transport cut) → the buffered sink COMMITS it (flushes the buffered upstream error frame to
+   *     the client and lets the handler fail via `acc.streamError`), mirroring the live path, instead
+   *     of wastefully retrying it as a truncation.
+   *   - live: it VETOES the post-terminal drain-as-complete gate. `sawMessageStop()` is true for ANY
+   *     terminal including a failed one, so without this veto a `response.failed` followed by a torn
+   *     transport would settle as a success.
+   *
+   * Optional: a caller that does not wire it falls back to the prior "retry every no-message_stop
+   * clean drain" behavior, and leaves the live gate resting on `sawMessageStop()` alone.
+   */
+  sawUpstreamError?: () => boolean
+  /**
    * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
    * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver
    * samples `upstreamSse` (the `[DONE]` sentinel is skipped). Lets a handler keep
@@ -664,16 +681,6 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * driver self-creates an internal `AnchorState`, keeping every existing call site byte-identical.
    */
   anchorState?: AnchorState
-  /**
-   * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
-   * (H2 — e.g. `overloaded_error`)? Such a frame is a clean drain WITHOUT `message_stop`, so
-   * `sawMessageStop()` alone cannot tell it apart from an RST-truncation. H2 is a terminal
-   * upstream decision (NOT a transport cut) → the buffered sink COMMITS it (flushes the buffered
-   * upstream error frame to the client and lets the handler fail via `acc.streamError`), mirroring
-   * the live path, instead of wastefully retrying it as a truncation. Optional: a caller that does
-   * not wire it falls back to the prior "retry every no-message_stop clean drain" behavior.
-   */
-  sawUpstreamError?: () => boolean
   /** A terminal upstream DECISION that carries no `message_stop`: a contentless refusal. Without it
    *  the driver reads such a stream as truncation and retries/continues a turn whose complete
    *  terminus the refusal rewriter already delivered to the client. */
