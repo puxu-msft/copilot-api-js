@@ -276,7 +276,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 |---|---|---|
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
 | A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
-| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | 未开始 |
+| A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **部分完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`。**未做**：把 session 级观测作为 `H2SessionDiagnostic` 记进 dispatch（目前只到 `getH2SessionStatusSnapshot()`）。见下方「A4-3 实施记录」 |
 | A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | 未开始 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
 
@@ -305,6 +305,8 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 2. **【范围归属】GOAWAY 在 A4-2 不可达。** 生产 `runHttp2Fetch` 传 `createLocalTerminationCommitPort()`，其默认源无条件返回空 GOAWAY 快照；真正的 `session.on("goaway", …)` 只做 session retire，未喂 ledger。且快照只有 `opaqueDataLength`／`evidence`，**无原始 `opaqueData`**。**提议**把 GOAWAY ledger 接线归入 A4-3，并在计划里就「是否需要原始 opaqueData」补一句 disposition。**在裁决前，A4-2 的验收不含 GOAWAY。**
 
     **✅ 处置（2026-08-11）：按提议执行——GOAWAY ledger 接线归 A4-3，A4-2 的验收不含 GOAWAY，已照此交付。** 补一条实测事实供 A4-3 用：**session 级 GOAWAY 帧本身在两个 runtime 上都能到达客户端**（探针里 `session.on("goaway")` 拿到了 `code`/`lastStreamID`），所以 A4-3 要做的是把这个已经可得的事件喂给 ledger，不是去解决可观测性问题。「是否需要原始 `opaqueData`」仍**未裁决**，留给 A4-3。
+
+    **↳ 后续（2026-08-11，A4-3 已接线 `923dd4e6`）：** 喂 ledger 已完成。**原始 opaqueData 这条实际上已被解决**——`RegisteredGoawayEvidence` 本就按内容寻址存了完整字节（sha256 digest + `evidenceBytes(digest)` 取回），producer 现在把 GOAWAY 的 opaque data 原样注册进去，快照里除 `opaqueDataLength` 外还带 `evidence.digest`。所以不需要新增字段，**该问题关闭**。
 
 ### ⚠️ 冻结 A4 的 HTTP/2 注入配方有误，必须先改再用（2026-08-11 实测）
 
@@ -345,6 +347,32 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 **验收状态**：`bun run typecheck` 绿；改动文件 `bunx eslint --no-cache` 干净；`bun run test:backend` **7776 pass / 0 fail**（跑了两轮：首轮撞 baseline 那条既有红，修掉后次轮 0 fail；中间一轮 `hooks/loader.unit.test.ts` 因 shard 崩溃假红，单跑 8/8 通过）。**未做**：独立 reviewer／verifier 与 merged-state review —— 按本节验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批一次。
 
 **未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。
+
+### A4-3 实施记录（2026-08-11，部分完成）
+
+**分支** `worktree-a4-3-session-diagnostics`，基于 `aaace65e`。
+
+| commit | 内容 |
+|---|---|
+| `923dd4e6` | GOAWAY ledger 接线：producer（记 errorCode/lastStreamID/opaqueData）+ consumer（按 dispatch 租用），双向 h2 实测 |
+| `919dee0d` | 把 GOAWAY 架构守卫从「匹配处理器名字」改成「绑定实际注册的处理器并要求它触达 `retire()`」 |
+| `6c8427f4` | 真实 PING ACK/RTT 观测，进 `getH2SessionStatusSnapshot()` |
+
+**GOAWAY**：ledger 此前**有完整实现与单测、但零 producer 零 consumer**——`session.on("goaway", retire)` 只把事件当路由信号、丢掉全部参数，而每个 fetch 都用默认源（无条件报 not-observed）。现在 producer 在 retire 前记帧（`try/finally`，ledger 出错绝不让 GOAWAY'd session 继续可路由），consumer 在**有 dispatch handle 时**租用 ledger；**无 handle 时保持 not-observed 默认**，绝不把连接级事件安给恰好在结束的那条流。
+
+⚠️ **顺带修的一个真缺陷**：`createLocalTerminationCommitPort` 名义上接受 `GoawaySnapshotSource`，实际签名被钉死在 `GoawaySnapshotSource<null>`，**真实 lease 根本传不进去**。改成真泛型，而不是在调用点 `as` 掉。
+
+**PING**：Node 的 ping callback 本来就给 `(err, durationMs, payload)`，此前被 no-op 丢掉。现在每个 session 带滚动统计（sent/acked/outstanding/lastRttMs/lastAckEpochMs/lastError），**有界**（计数器 + 最后一次观测，绝不长列表——session 会 ping 到天荒地老）。**cadence 未改、失联也不据此关 session**（那仍是独立决策，不作为「开始观测」的副作用）。`outstanding = sent − acked` 是承重字段：`onSent` 由发送驱动而非 ack 驱动，所以对端不答时计数会发散而不是看着像空闲。
+
+**ACK 的解释边界已写进类型注释**：只证明对端 HTTP/2 endpoint 回了控制帧；**不**证明 DATA 流能推进、flow control 有余量、上游应用健康、或此刻没有 GOAWAY/RST 在飞。
+
+**验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7839 pass / 0 fail**。两批各做变异对照且失败点正确——GOAWAY 改回 `retire` 令 observed 那条在 availability 断言处转红而 no-owner 那条保持绿；PING 改回 no-op ack 精确红在真实往返那条。
+
+⚠️ **一条实测教训**（写在这里因为下一个人会犯同一个错）：把 ping 间隔调快**不是** `setUpstreamTransportConfig({ http2: { pingIntervalMs: 20 } })`——那个 key 是我编的，会被**静默忽略**、退回 15s 默认，表现为「ping 永远不 ack」。真实 key 是 `upstreamH2PingInterval`，**单位是秒**（`getUpstreamH2PingIntervalMs()` 再乘 1000）。
+
+**A4-3 剩余**：把 session 级观测（GOAWAY 事件、PING/RTT、session 身份与生命周期）作为计划里的 `H2SessionDiagnostic` **记进 dispatch 的 diagnostics**——目前它们只到 `getH2SessionStatusSnapshot()`（status 面），History 的 dispatch detail 仍只有 A4-2 的 stream 终止快照。计划要求的「不把每个周期的 PING 复制给所有 sibling、只在 settle 时附 session rolling snapshot」尚未实现。
+
+**未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
 
 ### B.5.3 Phase B 预注册缺口与启动门
 
