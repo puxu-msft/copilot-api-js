@@ -124,6 +124,8 @@ interface H2SessionEntry {
   goawayLedger: SessionGoawayLedger
   /** `error` and `close` both route to `dispose`, and the ledger owner may only be closed once. */
   goawayLedgerClosed: boolean
+  /** Rolling PING liveness for this session; mutated by the keepalive observer, read by the status snapshot. */
+  pingStats: H2SessionPingStats
 }
 
 /** Multiple capacity-routed h2 sessions per origin (all resolved + live, routable for new requests). */
@@ -246,8 +248,50 @@ function awaitH2Handshake(sock: tls.TLSSocket, timeoutMs: number): Promise<void>
   })
 }
 
-/** No-op ack for keepalive PINGs — see {@link scheduleH2KeepalivePing}. */
-const NOOP_PING_ACK = (): void => {}
+/**
+ * Rolling PING liveness for one pooled session. Bounded by construction — counters and a last-observation, never a growing list — because a long-lived session pings forever and nothing here may grow with uptime.
+ *
+ * `outstanding` is the interesting one: it is sent-minus-acked, so a session whose peer has stopped acking shows a climbing count while everything else still looks healthy.
+ *
+ * Read this as connection-endpoint liveness ONLY. An ACK proves the peer's HTTP/2 endpoint answered a control frame. It does NOT prove a DATA stream can make progress, that flow control has room, that the upstream application is healthy, or that a GOAWAY/RST is not already in flight.
+ */
+export interface H2SessionPingStats {
+  sent: number
+  acked: number
+  /** sent − acked. A climbing value is the signal; a single outstanding ping is normal mid-interval. */
+  outstanding: number
+  lastRttMs: number | undefined
+  lastAckEpochMs: number | undefined
+  /** Most recent ack error (Node hands the ping callback an Error when the session dies first). */
+  lastError: string | undefined
+}
+
+function createPingStats(): H2SessionPingStats {
+  return { sent: 0, acked: 0, outstanding: 0, lastRttMs: undefined, lastAckEpochMs: undefined, lastError: undefined }
+}
+
+/** Sink for {@link scheduleH2KeepalivePing}; the session entry owns the stats object it mutates. */
+export interface H2PingObserver {
+  onSent(): void
+  onAck(error: Error | null, durationMs: number): void
+}
+
+function pingObserverFor(stats: H2SessionPingStats, now: () => number = Date.now): H2PingObserver {
+  return {
+    onSent() {
+      stats.sent += 1
+      stats.outstanding = stats.sent - stats.acked
+    },
+    onAck(error, durationMs) {
+      stats.acked += 1
+      stats.outstanding = stats.sent - stats.acked
+      stats.lastAckEpochMs = now()
+      // A failed ack carries no meaningful round trip; leaving the previous RTT would be a lie.
+      stats.lastRttMs = error === null ? durationMs : undefined
+      stats.lastError = error === null ? undefined : error.message
+    },
+  }
+}
 
 /**
  * Periodic HTTP/2 PING keepalive for a pooled upstream session. The application-
@@ -273,11 +317,22 @@ export function scheduleH2KeepalivePing(
   session: Pick<http2.ClientHttp2Session, "ping">,
   intervalMs: number,
   schedule: IntervalScheduler = (callback, delayMs) => setInterval(callback, delayMs),
+  observer?: H2PingObserver,
 ): NodeJS.Timeout | undefined {
   if (intervalMs <= 0) return undefined
   const timer = schedule(() => {
     try {
-      session.ping(NOOP_PING_ACK)
+      // The ack was a no-op until A4-3. Node hands the callback (err, durationMs, payload), so the
+      // round trip is free once someone is listening; observing it does NOT change cadence, and a
+      // missed ack still does not close the session — that teardown remains a separate decision.
+      session.ping((error: Error | null, durationMs: number) => {
+        try {
+          observer?.onAck(error, durationMs)
+        } catch {
+          // Observation is diagnostic-only and must never reach the session's error path.
+        }
+      })
+      observer?.onSent()
     } catch {
       // Session closed/destroyed between the timer firing and this call
       // (ERR_HTTP2_INVALID_SESSION) — the session `close` handler clears this
@@ -563,7 +618,8 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
     // keepalive must keep pinging them until `close` fires (guaranteed to follow,
     // and clears the timer then). Clearing on retire would strand a draining
     // long-thinking stream in exactly the silence this keepalive exists to defeat.
-    const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs)
+    const pingStats = createPingStats()
+    const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs, undefined, pingObserverFor(pingStats))
     const entry: H2SessionEntry = {
       session,
       origin,
@@ -576,6 +632,7 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       idleTimer: undefined, // armed later, only when it goes idle (activeStreamCount → 0)
       goawayLedger: new SessionGoawayLedger(),
       goawayLedgerClosed: false,
+      pingStats,
     }
     const dispose = (): void => {
       if (entry.pingTimer) clearInterval(entry.pingTimer)
@@ -871,6 +928,8 @@ export interface H2SessionStatusRow {
   activeStreamCount: number
   effectivePingIntervalMs: number
   effectiveKeepAliveMs: number | undefined
+  /** Connection-endpoint liveness only — see {@link H2SessionPingStats} for what an ACK does and does not prove. */
+  ping: H2SessionPingStats
 }
 
 function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
@@ -881,6 +940,8 @@ function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
     activeStreamCount: entry.activeStreamCount,
     effectivePingIntervalMs: entry.effectivePingIntervalMs,
     effectiveKeepAliveMs: entry.effectiveKeepAliveMs,
+    // Copied, not aliased: a status row is a snapshot, and the live object keeps mutating under the keepalive timer.
+    ping: { ...entry.pingStats },
   }
 }
 

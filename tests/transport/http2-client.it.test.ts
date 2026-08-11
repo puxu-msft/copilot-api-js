@@ -498,6 +498,35 @@ describe("http2-client", () => {
     expect(snapshots[0].goaway).toMatchObject({ availability: "not-observed-before-snapshot", events: [] })
   })
 
+  /**
+   * A4-3: the keepalive ack was a no-op, so an upstream that had stopped answering control frames was indistinguishable from a healthy one in the status surface.
+   * The unit tests cover the observer's arithmetic against a fake; this one is here because a fake can report any RTT it likes — only a real h2 peer proves the number came from an actual round trip.
+   */
+  test("a real PING round trip lands in the session status snapshot", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Ping fast so the test does not wait on the production interval; cadence is config, not behaviour under test.
+    // The setting is in SECONDS (getUpstreamH2PingIntervalMs multiplies) — an invented ms-shaped key is
+    // silently ignored and leaves the 15s default, which reads as "pings never ack".
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.02 })
+
+    const res = await http2Fetch(`${url}/ping-observed`, {})
+    expect(await res.text()).toBe("ok")
+    await waitUntil(() => (getH2SessionStatusSnapshot()[0]?.ping.acked ?? 0) >= 1)
+
+    const ping = getH2SessionStatusSnapshot()[0].ping
+    expect(ping.sent).toBeGreaterThanOrEqual(1)
+    expect(ping.acked).toBeGreaterThanOrEqual(1)
+    expect(ping.lastError).toBeUndefined()
+    // A genuine round trip against a loopback peer: real, non-negative, and not the fabricated
+    // constant a no-op ack would leave behind (it left nothing at all).
+    expect(typeof ping.lastRttMs).toBe("number")
+    expect(ping.lastRttMs).toBeGreaterThanOrEqual(0)
+    expect(ping.lastAckEpochMs).toBeGreaterThan(0)
+  })
+
   test("reports an immutable first-terminal snapshot before late physical close", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200 })
