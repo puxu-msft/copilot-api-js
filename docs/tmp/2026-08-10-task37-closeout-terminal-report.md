@@ -2,7 +2,7 @@
 
 - **状态**：**定稿**。两道评审门均已过——`review_temp_manifest`（第六轮 positive receipt，双向 diff 为空）与 `review_closeout_final`（两个正交视角，各自复核自己上一轮的发现是否闭合）。最终一轮的账：判据视角 BLOCKER 0 / MAJOR 1 / MINOR 4，接手方视角 BLOCKER 0 / MAJOR 1；两条 MAJOR 与四条 MINOR 均已在本文修掉，逐条记在第 5 节。
 - **交付锚点（不是「当前 master」）**：本轮交付的两个 commit 是 `fe8977c0`（代码）与 `d2f66fa9`（收尾产物）。**master 是一条持续前进的共享引用，本文不把它的某个值写成当前状态**——起草时是 `d2f66fa9`，两轮评审期间被 peer 推进了 59 个以上提交。判断交付是否在线上，用 `git merge-base --is-ancestor d2f66fa9 master`，别比对 SHA 相等。
-- **本会话工作树**：`.claude/worktrees/task37-closeout`（分支 `worktree-task37-closeout`，已并入 master，目录保留）；本报告在 `.claude/worktrees/encapsulated-kindling-forest` 写就（后台隔离护栏不允许直接写共享检出），已随其分支并入 master。
+- **本会话工作树：全部已删除**（2026-08-10 收尾末尾，用户要求）。`task37-closeout`、`encapsulated-kindling-forest`、`placeholder` 三棵及其同名分支在确认「工作区全空 + HEAD 已在 master + 无 `index.lock` + 30 分钟内无文件改动 + 无会话目录附着」后移除；分支用 `git branch -d` 删除，**它对未合并分支会拒绝，所以删成功本身就是「已完全合入」的证明**。此前另有两棵审查用树同样取证后删除。**未触碰** `.claude/worktrees/continuation`（前驱会话被 context-window 终态打断时的冻结树，不属本会话创建）与仓库里另外约 200 棵既有 worktree。
 - **发布状态**：**全部提交都是本地的、未推送**。本仓与 `~/.claude` 仓都没有推送动作；是否发布是用户的决定。
 
 ---
@@ -39,7 +39,7 @@
 | C8 | `deferred-backlog.md` 上我与 master 的改动行级共存 | `git diff d2f66fa9^2 d2f66fa9 -- docs/todo/deferred-backlog.md`（我新增的两条基线维护坑）与 `git show c38baa6a -- docs/todo/deferred-backlog.md`（master 侧那条划除闭合，在 `d2f66fa9` 的树里仍在），合并无冲突 | **新鲜**。草稿里给的是 `git diff master HEAD -- …`，那条**在合并落地后恒返回空**——同一份文档里第二条会随自身合并而失效的配方 |
 | C9 | 共享主树的 peer WIP 未受影响 | 合并前后 `git status --porcelain -uall` 均为同样 10 项（2 改 + 8 未追踪），全部与我的 5 个文件不相交 | **新鲜** |
 | C10 | skill 改动已安装并已提交 | `~/.claude` 仓 `eb3ea6f`；正文见 `skills/positive-control-your-tests/SKILL.md:43`；提交后该仓脏项 14 → 13，只有我那一个离开 | **新鲜** |
-| C11 | 两棵审查用 worktree 已移除 | 移除前四项取证：`status -uall` 全空、HEAD `638f6f3c` 已在 master、无 `index.lock`、6 小时内无文件改动、无对应会话目录 | **新鲜** |
+| C11 | 本会话所建的 5 棵 worktree 与 3 个分支已全部删除 | 每棵删除前四项取证：`status -uall` 全空、HEAD 已在 master、无 `index.lock`、近期无文件改动、无会话目录附着；分支用 `git branch -d`（对未合并分支会拒绝，删成功即已完全合入） | **新鲜** |
 | C12 | 所有提交均未推送 | 本会话未执行任何 `git push`／PR／release 动作 | **新鲜** |
 | C13 | 原语采纳面 = 13 处调用 / 12 个文件 | `rg -c 'anthropicWireFrameType\(|isAnthropicErrorFrame\(|nameAnthropicEventFromWire\(' src/ --glob '!src/lib/anthropic/wire-frame-type.ts'`，于 `d2f66fa9` | **新鲜**；同时据此修正了账本第 22 行原先的 "six … and two …"（=8，偏小且无 selector） |
 
@@ -57,9 +57,9 @@
 | `archive_docs` / `reconcile_live_docs` | backlog 新增 3 条；记忆 `feedback-fix-all-comparison-sites` 追加第二个实例；账本 `.superpowers/sdd/progress.md` 关门并修正 3 条陈旧断言 |
 | `discover_nonfile_candidates` | **六轮才收敛**，见下节 |
 | `review_temp_manifest` | 第六轮拿到 positive receipt：事件源 `…/a7c2cc1a-….jsonl`、范围 12000–15108 行、独立枚举、**两方向 diff 均空** |
-| `clean_temp` | **不删除**。收到 receipt 后删除已被释放——所以这是一个**选择**，不再是失败关闭。理由：skill 允许「每个对象均有 disposition」时交由 harness 回收 job 目录，而冻结的 427 行逐类覆盖满足该前提；删除不可逆，保留不损失任何东西 |
+| `clean_temp` | **不主动删除**（收到 receipt 后删除已被释放，所以这是一个**选择**，不是失败关闭）：skill 允许「每个对象均有 disposition」时交由 harness 回收 job 目录，冻结的 427 行逐类覆盖满足该前提。**但收尾末尾复扫发现 19 个冻结后新增对象**（446 vs 427，两法一致），逐个定性后**归档了一个**：`recompute-classes.py` 是证据清单「合计 427 已对账」那句话的唯一产出者，却只活在会被回收的目录里 → 迁入 `exp/task37-closeout-inventory/`（含 README 与正样本对照）。其余 18 个（13 份 commit message 草稿、2 个冻结 SHA、测试日志与退出码、一个 worktree 巡检脚本）的内容都已有仓内承载者，不归档 |
+| worktree | 全部本会话所建的树与分支已删除（详见头部状态行）；**未触碰** `continuation` 与另外约 200 棵既有 worktree |
 | `resolve_branch` | 隔离树内先合 master（28 个 peer commit，零冲突）→ 共享树 `--ff-only`，共享树只做快进不碰 peer WIP |
-| worktree | 移除 2 棵审查树；`task37-closeout` 保留（分支已并入 master，`worktree-branches-are-for-merging` 已满足）；仓库里另有约 200 棵既有 worktree，**不属本轮清理范围，未触碰** |
 
 ### `discover_nonfile_candidates` 为什么走了六轮
 
