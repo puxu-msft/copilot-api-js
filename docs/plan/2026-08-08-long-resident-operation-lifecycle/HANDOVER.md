@@ -34,6 +34,14 @@
 - **怎么用**：把 `test:backend` 的绿视为**必要非充分**；判断自己是否破坏了东西，以十文件 focused gate 与 Task 4 焦点集为准（它们稳定绿）。红了先看失败文件**是否落在自己的改动面内**，不在就隔离复跑确认。
 - **旁证**：master 上有 peer 维护的 `docs/tmp/2026-08-08-load-sensitive-test-dispositions.md`（及其 `-review`），记录的是同一批用例——这个问题不是本特性独有的。
 
+## 立案证据：那条 operation 的身份（此前没记，补上）
+
+本特性的立案证据是一条**真实的**长驻留 operation，此前只在 spec 里记了症状文本，**没记它是哪条记录**——后来人因此无法复查原始数据。
+
+- **operationId**：`req_1786064856101_137`（`sessionId` `529807d9-28f0-4e56-85c8-03adaf016bb7`，进程 `pid=597291`、`gitSha=ccb645f5`、`version=0.8.4-beta.18`）。
+- **怎么重取**：`GET /history/api/entries/req_1786064856101_137/export`（[API.md](../../API.md)「History REST」，返回服务端 zstd 压缩的 `.json.zst`）。
+- **调查期间导出过一份 manifest**（formatVersion 2，含完整 arena payload/frame 谱系），但它只存在于当时会话的临时目录、**未提交**——里面是用户的真实请求与响应内容，是否长期留存属用户决定，不由本次收尾代劳。若 History 已按保留策略淘汰该记录，该导出即不可再生。
+
 ## 入口指引（按序读）
 
 1. **本文**——先读「已确证的硬事实」与「各 Task 当前状态」；「必须最先做的事」那节已完成，只需扫一眼确认不要重做。
