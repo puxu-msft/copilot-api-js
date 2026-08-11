@@ -409,6 +409,16 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 **A4-4 剩余**：`open → forcing → sealed` 的 dispatch diagnostic sink 状态机、超时后强制 RST_CANCEL 与 forced-session-dispose（含受影响 sibling refs）、`barrier_timeout`／`close_missing` 诊断落进 History。`TeardownBarrier.onTimeout` 已作为这批的挂载点留好、目前只被测试消费。
 
+    **↳ 续（2026-08-11，`0ea9ba5f`）：强制处置已落地。** barrier 超时现在会：① 记 `transport.h2.barrier_timeout` 诊断（severity `warning`，**先记后强制**，强制过程出岔也不影响诊断留存）；② 发 RST_CANCEL；③ 经固定短尾窗（`FORCED_TEARDOWN_TAIL_MS`）后**无论对端答不答都回收槽位**——否则一条永不关闭的流会永久占着槽位，而池慢慢丢槽位这件事，要等到 cap 开始拒收本该放行的请求时才暴露，离成因已经很远。
+
+    交给适配层的能力**只有一个动词**（`H2StreamControl.forceClose`）：池化 session 与 sibling 共享，dispatch 只被允许**放弃自己那条流**，不得关闭或驱逐底下的连接——那条架构守卫仍然成立。
+
+    **这同时让上一批的 exactly-once 闩第一次可达**：`forceClose` 与最终的 `close` 是同一个槽位的两个独立释放者，正是当初建那道闩的理由。
+
+    ⚠️ **变异对照的一次失败，值得记下**：第一版测试**没能抓住**去掉闩。第二次释放挂在 250ms 尾窗上，而断言只在 close 之后 80ms 就跑了——双减尚未发生，于是测试全绿。**那是一条看起来很严谨、实则是装饰品的测试**。把窗口拉到尾窗之后，去掉闩会让槽位计数变成 **-1**，正是它要防的那种静默池损坏。教训：**异步释放路径的测试，断言窗口必须覆盖被测机制的最长延迟**，否则变异不咬而你会以为已经证明了。
+
+    **仍未做**：`open → forcing → sealed` 的 diagnostic sink 状态机（迟到的 close/error 目前靠 detached listener 与 exactly-once no-op 挡住，尚无显式 sealed 状态）、forced-session-dispose（驱逐不可复用 session 并记受影响 sibling refs）、`close_missing` 诊断。
+
 ### B.5.3 Phase B 预注册缺口与启动门
 
 Phase B 的分型、实验矩阵、执行顺序和裁决规则只以正式计划 [Phase B — NGHTTP2_CANCEL 根因实验与缓解裁决](../2026-08-06-history-read-path-and-h2-diagnostics.md#Phase-B--NGHTTP2_CANCEL-根因实验与缓解裁决) 为准。A4 合并态未闭合、没有新可复跑样本、或预注册缺口未关闭时，不启动用于因果裁决的实验，也不调整产品行为。
