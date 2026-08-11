@@ -11,7 +11,7 @@
 | 内容 | 落点 |
 |---|---|
 | Batch 2b 生产改动（Worker 独占 semantic 写连接、主线程只读句柄、启动 deadline、生命周期串行队列 + 事务式 bring-up） | 已在 `master`，合并提交 `b2444a17` |
-| Batch 2b 进度真相源（剩余项、在途意图、已作废路线、四轮评审处置、**变异台账**） | [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](2026-08-09-history-worker-progress-impl-2b.md) |
+| Batch 2b 进度真相源（剩余项、在途意图、已作废路线、四轮评审处置、**变异台账**） | [docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md](2026-08-09-history-worker-progress-impl-2b.md) |
 | 两份独立评审报告 | [2026-08-09-batch2b-review-gpt.md](2026-08-09-batch2b-review-gpt.md)、[2026-08-09-batch2b-review-testing.md](2026-08-09-batch2b-review-testing.md) |
 | 活的架构现状（当前活路径的权威） | [docs/DESIGN.md](../DESIGN.md) 的 `src/lib/history/` 行 |
 | 模块契约（写路径 / drain-before-close / DB 维护 / 迁移） | [docs/history.md](../history.md) |
@@ -20,11 +20,14 @@
 
 ### 本次收尾产生的提交（全部在 `master` 上，均未推送）
 
-**重算它们的命令**（比下表的哈希活得久——本文档所在分支反复 rebase 过，哈希会变）：
+**重算它们的命令**（比下表的哈希活得久——本文档所在分支反复 rebase 过，哈希会变）。这两份文档已于 2026-08-11 从 `docs/tmp/` 迁入 `docs/history-persistence-worker/`，**新旧路径都列上**，否则会漏掉改名之前或之后的那一半历史：
 
 ```
 git log --oneline master -- docs/DESIGN.md docs/history.md docs/lifecycle.md \
-  docs/memory docs/tmp/2026-08-09-history-worker-progress-impl-2b.md docs/tmp/2026-08-10-batch2b-closeout.md
+  docs/memory \
+  docs/tmp/2026-08-09-history-worker-progress-impl-2b.md docs/tmp/2026-08-10-batch2b-closeout.md \
+  docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md \
+  docs/history-persistence-worker/2026-08-10-batch2b-closeout.md
 ```
 
 | 提交 | 内容 |

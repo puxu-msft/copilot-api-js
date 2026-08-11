@@ -2,7 +2,7 @@
 
 > 状态：Batch 0、1a、1b 已完成；Batch 1b 已于 2026-08-08 落地 `master@d3b4ac77`。合入最新 `master@d59a622c` 后，Task 2a 的四字段持久化重试契约已由 `22c8e08b` 同步，原合并态 reviewer 复审判 0 blocker／major。允许按启动前硬门开始 Task 2a。`REVIEWED_PLAN_COMMIT=22c8e08bfd2aac389c85c49b9241e2a3294b8c6f`。该 SHA 是 reviewer 明确判定 0 blocker／major 的当前计划提交；plan blob 与该提交不一致时禁止实施。
 
-请在独立 worktree 中从 Task 2a 继续执行 `docs/plan/2026-08-07-history-persistence-worker.md`，行为权威是 `docs/spec/2026-08-06-history-persistence-worker.md`。Batch 0、1a、1b 的完成事实与证据已冻结在计划状态行及 `docs/tmp/2026-08-08-history-worker-progress-impl-1b.md`，不得重复实施。
+请在独立 worktree 中从 Task 2a 继续执行 `docs/history-persistence-worker/plan.md`，行为权威是 `docs/spec/2026-08-06-history-persistence-worker.md`。Batch 0、1a、1b 的完成事实与证据已冻结在计划状态行及 `docs/history-persistence-worker/2026-08-08-history-worker-progress-impl-1b.md`，不得重复实施。
 
 ## 启动前硬门
 
@@ -11,14 +11,19 @@
 
    ```bash
    REVIEWED_PLAN_COMMIT=<状态行固定值>
+   # plan 于 2026-08-11 从 docs/plan/2026-08-07-history-persistence-worker.md 迁到
+   # docs/history-persistence-worker/plan.md，故两侧各用「那一刻的」路径。
+   # 若 REVIEWED_PLAN_COMMIT 本身在迁移之后，把 PLAN_AT_REVIEW 也改成新路径。
+   PLAN_AT_REVIEW=docs/plan/2026-08-07-history-persistence-worker.md
+   PLAN_NOW=docs/history-persistence-worker/plan.md
    git rev-parse --verify "$REVIEWED_PLAN_COMMIT^{commit}"
    git merge-base --is-ancestor "$REVIEWED_PLAN_COMMIT" master
-   test "$(git show "$REVIEWED_PLAN_COMMIT:docs/plan/2026-08-07-history-persistence-worker.md" | git hash-object --stdin)" = "$(git show master:docs/plan/2026-08-07-history-persistence-worker.md | git hash-object --stdin)"
+   test "$(git show "$REVIEWED_PLAN_COMMIT:$PLAN_AT_REVIEW" | git hash-object --stdin)" = "$(git show "master:$PLAN_NOW" | git hash-object --stdin)"
    ```
 
-   三条都须成功。任一失败即禁止实施。然后用 `git log "$REVIEWED_PLAN_COMMIT"..master -- <paths>` 检查 peer 是否改过 History、config、context、shutdown、build 或 tests，受影响事实必须重验。
+   末尾三条检查（`rev-parse --verify`／`merge-base --is-ancestor`／`test`）都须成功；前面的赋值与注释不是检查项。任一失败即禁止实施。然后用 `git log "$REVIEWED_PLAN_COMMIT"..master -- <paths>` 检查 peer 是否改过 History、config、context、shutdown、build 或 tests，受影响事实必须重验。
 3. 创建独立 worktree，不在共享主树写实现，不停止 4141。
-4. 在第一笔实现前创建并提交 `docs/tmp/2026-08-08-history-worker-progress-impl-2a.md`，frontmatter 的 `slug` 为 `impl-2a`、`base` 取执行会话起始 `master` SHA；每个实现 commit 同步更新该文件。已停止更新的 `impl-1`／`impl-1b`进度文件只作历史证据，不复用写入权。
+4. 在第一笔实现前创建并提交 `docs/history-persistence-worker/2026-08-08-history-worker-progress-impl-2a.md`，frontmatter 的 `slug` 为 `impl-2a`、`base` 取执行会话起始 `master` SHA；每个实现 commit 同步更新该文件。已停止更新的 `impl-1`／`impl-1b`进度文件只作历史证据，不复用写入权。
 5. 先只执行 Task 2a。Task 2a 通过测试、独立 review 和复审后立即 fast-forward 合入 `master`，再从最新 `master` 创建下一 batch worktree。不要攒到多个 batch 一起合。
 6. Task 2a允许未接生产流程的自洽semantic Worker backend先合，但必须真实持久化、覆盖crash replay、已测试、无主线程singleton泄漏，并明确“不证明terminal subscriber已切换到Worker”。
 7. 每个 mutation 在独立 worktree 内用冻结 exact patch 注入与反向恢复；不得与权威测试并发。

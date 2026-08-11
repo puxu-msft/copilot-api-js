@@ -146,8 +146,8 @@
 | `nonfile-candidates-review.md` | 本次收尾的审计稿 | **有**：结论需落仓库 | 见终稿报告与 docs/ 载体 | 保留至结论落盘后 |
 | `nonfile-candidates.md` | 本次收尾的审计稿 | **有**：结论需落仓库 | 见终稿报告与 docs/ 载体 | 保留至结论落盘后 |
 | `pc-guard.ts` | 守卫正则的正样本对照 | 无（正样本已进测试） | `tests/architecture/history-worker-boundaries.unit.test.ts`（5 处 positive control，已核实） | 保留，不删 |
-| `probe-ro-ddl.ts` | 只读 DDL 能力探针 | **有**：结论=只读连接上 IF NOT EXISTS 对已存在对象 no-op、对新对象抛 | `docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:46`（已提交，含「实测非推断」与顺序依赖） | 保留，不删 |
-| `probe-ro.db` | 只读 DDL 能力探针 | **有**：结论=只读连接上 IF NOT EXISTS 对已存在对象 no-op、对新对象抛 | `docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:46`（已提交，含「实测非推断」与顺序依赖） | 保留，不删 |
+| `probe-ro-ddl.ts` | 只读 DDL 能力探针 | **有**：结论=只读连接上 IF NOT EXISTS 对已存在对象 no-op、对新对象抛 | `docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md:46`（已提交，含「实测非推断」与顺序依赖） | 保留，不删 |
+| `probe-ro.db` | 只读 DDL 能力探针 | **有**：结论=只读连接上 IF NOT EXISTS 对已存在对象 no-op、对新对象抛 | `docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md:46`（已提交，含「实测非推断」与顺序依赖） | 保留，不删 |
 | `probe.it.test.ts` | 一次性脚本（codemod / 枚举 / 合并辅助） | 无（产物已提交） | 对应 commit 的 diff | 保留，不删 |
 | `probe.ts` | 一次性脚本（codemod / 枚举 / 合并辅助） | 无（产物已提交） | 对应 commit 的 diff | 保留，不删 |
 | `rebaseline.log` | 测试运行输出（派生数据） | 无（判据是 0 fail，已记进度文档） | `docs/tmp/…progress-impl-2b.md` 的门禁实测节 | 保留，不删 |

@@ -25,7 +25,7 @@
 | I11 | **证伪因果解释／修订标定**：一次 `test:it` 58 fail 被解释成约 52 条测试依赖“不落盘”，据此回退正确修复。复查只有约 16 条真断言失败，其余主要为 Bun SIGILL；重施修复后连续两次 5 fail、无崩溃，错误解释与回退均撤销。 | JSONL 5319、5326、5329、5401、5407、5411、5425、5440、5446、5456。可复用判据：先看 failure population/runtime crash，再至少复跑两次。 |
 | I12 | **标定值**：Worker stall 30ms vs in-process 1053ms；补 liveness 后 10ms vs 532ms，两侧 HTTP 200。 | JSONL 3490、4214、4456。仅是当次 Linux/Bun/负载观测，不是跨机器 SLA。 |
 | I13 | **运行时能力探针**：正确 owner marker + `BEGIN EXCLUSIVE` 令真实 Worker 持续得到 retryable `database is locked`，约 6s deadline 后 exit 1；没有误入 permanent owner failure。 | JSONL 4349、4381、4579。测试输出中的 retryable 分类约束了不同 SQLite 阻塞点。 |
-| I14 | **解析范围修正 + 正控**：guard 子串 `sqlite/read` 误伤合法 `sqlite/read-connection`；收紧到 specifier 末尾后，四个真 V2 specifier 仍被抓，新模块放行。 | JSONL 1320、1348；progress `/home/xp/src/copilot-api-js/docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:76`。 |
+| I14 | **解析范围修正 + 正控**：guard 子串 `sqlite/read` 误伤合法 `sqlite/read-connection`；收紧到 specifier 末尾后，四个真 V2 specifier 仍被抓，新模块放行。 | JSONL 1320、1348；progress `/home/xp/src/copilot-api-js/docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md:76`。 |
 | I15 | **范围校准**：顺序 `bun test tests/history` 为 0 fail；`--parallel` 为 5 fail；`bun run test:it` 稳定 5 fail；LPT `test:backend` 可 0 fail。各 selector／runner 形态不可互相替代。 | JSONL 5292、5446、5468。 |
 | I16 | **继承的否决路线**：不得让主线程与 Worker 同持 semantic 写句柄；不得在 2b 提前切 raw capture。原裁决来自前段会话，当前 transcript 以 handover 输入承接。 | JSONL 20 返回 handover 第 70～73 行；当前 progress `:86-89`。若要求“本会话新产生”，须标继承背景。 |
 | I17 | **错误恢复路线**：声称要 `SendMessage` 恢复 API 中断 reviewer，却调用 `Agent` 派了新 agent；新 agent 无法代发。随后主会话直接 `SendMessage` 原 agent 成功。 | JSONL 2442、2451～2459。 |
@@ -75,7 +75,7 @@
 
 | 作者项 | 亲自打开载体后的裁决 |
 |---|---|
-| A1 | ✓ `/home/xp/src/copilot-api-js/docs/tmp/2026-08-09-history-worker-progress-impl-2b.md:126` 明写第一版“先清引用再 await”被守卫判红，最终用 `finally`。 |
+| A1 | ✓ `/home/xp/src/copilot-api-js/docs/history-persistence-worker/2026-08-09-history-worker-progress-impl-2b.md:126` 明写第一版“先清引用再 await”被守卫判红，最终用 `finally`。 |
 | A2 | **不成立**。`/home/xp/src/copilot-api-js/tests/helpers/history-v3-fixtures.ts:192-203` 只讲最终 helper 的正向设计与 ownership；没有承载“先试 `openDatabase()` 自动发布、完整分片因 live handle 否决”的历史。该路线存在于 transcript 及 merge commit message，但不在作者写的待查 helper docstring。 |
 | A3 | ✓ `/home/xp/src/copilot-api-js/src/lib/history/startup-deadline-config.ts:3-7` 写明 config import 拖入 SCC，故抽零依赖叶子；正文承载了不重新冻结 SCC 的理由。 |
 | A4 | ✓ `/home/xp/src/copilot-api-js/tests/e2e/history-startup-deadline.e2e.test.ts:121-125` 明写 widening 到 `warn` 是 false-red。 |
@@ -136,7 +136,7 @@ I1→progress `:173`；I2→`:156`；I5→`:157`；I7→`:159`；I8→`:160`；I
 ## 第二轮薄区间新发现
 
 1. **A6 不是无来源项，而是上一轮漏检。** 来源闭合见 JSONL 2775～2780；这是对第一轮方向 A 的撤回。
-2. **实际执行过的 mutation J 未进入 I1～I22，也未进入变异台账**：删 `startup-deadline.ts` 成功路径的 `clearTimeout`，`10 pass / 0 fail`，说明 timer 泄漏无人看见。证据在 `/home/xp/src/copilot-api-js/docs/tmp/2026-08-09-batch2b-review-testing.md:108-116`；progress `:140` 只写“删 clearTimeout 仍绿”，没有符号→测试→失败形状的台账粒度。
+2. **实际执行过的 mutation J 未进入 I1～I22，也未进入变异台账**：删 `startup-deadline.ts` 成功路径的 `clearTimeout`，`10 pass / 0 fail`，说明 timer 泄漏无人看见。证据在 `/home/xp/src/copilot-api-js/docs/history-persistence-worker/2026-08-09-batch2b-review-testing.md:108-116`；progress `:140` 只写“删 clearTimeout 仍绿”，没有符号→测试→失败形状的台账粒度。
 3. **实际执行过的 mutation H 未进入 I1～I22，也未进入变异台账**：删 rollback 的 `else readDatabase.close()`，`bringup-lifecycle` 仍 `6 pass / 0 fail`，漏掉本次打开但未发布的 readonly fd/读锁。证据在 review-testing `:120-128`；progress `:140` 同样只是摘要。
 
 ### 第二轮 verdict

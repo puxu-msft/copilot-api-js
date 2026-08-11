@@ -1391,7 +1391,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：① 去掉 `backend` 的默认参数，让调用方**必须**显式说明（默认参数正是这次说谎的机制——它让「没人传」看起来像「传了 legacy」）；② cutover 之后 `"legacy"` 在生产已不可达，考虑整体删除该联合成员，让类型系统直接拒绝这个状态；③ 同时处理上面那条一致性断言的归属。
 - **为何暂缓**：`②` 会牵动既有测试的断言，`③` 是行为决策（抛 vs 报告），都超出「收尾顺手修」的范围，而错误值本身不影响持久化正确性。
 - **触发条件**：下一次动 `/api/status` 的 History 段、或 Batch 6 的 query-RPC cutover（那时 backend 语义还会再变一次），两者取先到者。
-- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/tmp/2026-08-09-batch2b-review-gpt.md`）。
+- **发现方**：Batch 2b 第三轮独立评审 minor 1（`docs/history-persistence-worker/2026-08-09-batch2b-review-gpt.md`）。
 
 ## semantic-write 架构守卫问的是拼写、不是能力（2026-08-09，Batch 2b 独立评审 minor）
 
