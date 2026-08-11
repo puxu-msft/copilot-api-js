@@ -26,6 +26,7 @@
 | spec | [事实与判据证伪](2026-08-06-spec-review-falsification.md) · [实施者走查](2026-08-06-spec-review-implementer.md) |
 | plan（单文件版转录） | [事实与判据证伪](2026-08-07-plan-review-falsification.md) · [实施者走查](2026-08-07-plan-review-implementer.md) |
 | plan（拆分后复核） | [事实与判据证伪](2026-08-07-plan-review-split-falsification.md) · [实施者走查](2026-08-07-plan-review-split-implementer.md) |
+| 本目录这次归并本身 | [归并重组评审](2026-08-11-docs-consolidation-review.md)（0 blocker / 0 major / 0 minor） |
 
 ## 各 Task 执行记录（按时间）
 
