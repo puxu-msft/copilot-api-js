@@ -109,9 +109,78 @@ Anthropic 流式协议的正常收尾序列是 `content_block_stop` → `message
 
 **结论：本批 10 条全部是形态 B，即上游在生成中途被掐断，而且多数掐得很早**（4 条在实质内容开始前就断了）。当前把它 settle 成 FAIL 而非合成终止符补完，对这批样本是正确处置——没有完整内容可保。
 
-需要注意的是形态 A 在协议上依然可能存在，只是本窗口零样本；若将来出现，它会命中**同一条错误信息**，区分只能靠事件序列（有无 `message_delta` / 末块是否已 `content_block_stop`），不能靠错误串本身。
+需要注意的是形态 A 在协议上依然可能存在——**而且本窗口确实有 2 个样本，只是它们不叫 truncation、叫 `NGHTTP2_CANCEL`，见 §8.3**。区分两种形态只能靠事件序列（有无 `message_delta` / 末块是否已 `content_block_stop`），不能靠错误串本身。
 
-## 8. 复算命令
+## 8. 与 `NGHTTP2_CANCEL` 的区别
+
+同窗口另一类失败是 `Stream closed with error code NGHTTP2_CANCEL`（采集时 8 条；窗口在滚动，条数会变）。两类**同样以 `error` 帧收尾、同样零重试**，但成因、SSE 形态与含义都不同。
+
+### 8.1 传输层成因不同
+
+| | `closed without message_stop` | `NGHTTP2_CANCEL` |
+|---|---|---|
+| HTTP/2 层 | 正常 `END_STREAM`，**无错误码** | **`RST_STREAM`，错误码 `CANCEL`** |
+| 我方观测 | 流干净 drain 完，**不抛异常** | **抛异常** |
+| 代码分支 | `!acc.sawMessageStop`（`handler-v4.ts`） | `outcome.kind === "stream-error"` |
+| 恢复入口 | `tryCleanEofRecovery` | `tryResponseRecovery` |
+| 实际是否重试 | 否 | 否 |
+
+两条恢复入口不同，但**撞的是同一道门**（`hasEmittedRealClientContent`，见 §2），所以殊途同归、都是 `attemptCount = 1`。
+
+### 8.2 SSE 事件形态：数量级差异
+
+| 指标 | truncation（10 条） | NGHTTP2（8 条） |
+|---|---|---|
+| 上游事件数 | **2 ～ 25**（中位 ~12） | **940 ～ 3029**（中位 ~1100） |
+| 请求时长 | 5.7 ～ 536 s | 96.9 ～ 284.5 s |
+| 事件密度 | 极稀——大部分时间在静默 | 密集——一直在吐字 |
+| 收到 `message_delta` | **0 / 10** | **2 / 8** |
+| `stop_reason` | 全为 `None` | 2 条为 `tool_use`，6 条 `None` |
+| `output_tokens` | 1 ～ 20（`message_start` 的初始快照） | 2 条为 5870 / 6153，6 条仍是初始快照 |
+| `tool_use` JSON 可解析 | **0 / 7**，其中 4 条**字面 0 字符** | 2 条 **OK**；6 条残缺但累积 **6489 ～ 21063 字符** |
+
+**一句话概括**：truncation 是「**刚开口就断**」，NGHTTP2 是「**说了很久之后才断**」。前者多数连第一个 delta 都没有；后者即便断了，残缺的 tool 参数也已积到几千到两万字符。
+
+客户端末帧两类都是 `error` + `synthetic: error-shaping-canonical`，只是 message 不同：
+
+```
+Upstream stream truncated before completion (no message_stop)
+Stream closed with error code NGHTTP2_CANCEL
+```
+
+### 8.3 ⚠️ 顺带查出的真问题：2/8 的 NGHTTP2 是「已经成功了却判成失败」
+
+`req_1786437123426_330` 与 `req_1786447974367_2607` 这两条，上游**把消息完整发完了**：
+
+```
+content_block_stop → message_delta(stop_reason=tool_use, copilot_usage) → message_stop
+```
+
+三帧全部转发给了客户端，`tool_use` 的 JSON 可正常解析，`output_tokens` 分别是 6153 / 5870。然后连接才被 RST。我方的处置是：
+
+1. 在 `message_stop` **之后 49 ms / 67 ms** 又给客户端追加了一个 `error` 帧——Anthropic SSE 契约里 `message_stop` 是终止符，终止符之后再发 `error` 属于**越界**（对照记忆条目 `reference-exactly-one-terminal-is-not-exactly-one-complete-terminus`）；
+2. 整条记录判 `state = failed`、`responseSuccess = false`，尽管这一轮**实际成功了**。
+
+客户端轨实证（`req_1786447974367_2607`）：
+
+| offsetMs | type | synthetic |
+|---|---|---|
+| 99333 | `content_block_stop` | — |
+| 99356 | `message_delta` | — |
+| 99381 | `message_stop` | — |
+| **99448** | **`error`** | **`error-shaping-canonical`** |
+
+**根因**：`handler-v4.ts` 的 `outcome.kind === "stream-error"` 分支**不检查 `acc.sawMessageStop`** 就写 error 帧并 `ctx.fail`。该分支的注释预设的场景是「在第一个 `content_block_start` 之前就 throw」，没有覆盖「`message_stop` 之后才 throw」。已核对运行中的 `d4819cb6` 与当前 HEAD **两版都是如此**（旧版该分支体内不含 `sawMessageStop`）。
+
+**这正是 §7 说的形态 A**——「内容已传完、只是连接没好好关」确实存在，只不过它以 `NGHTTP2_CANCEL` 的名义出现，不以 truncation 的名义。§7 的结论不变：truncation 那 10 条仍全是形态 B。
+
+**影响**：① 虚高的失败率与错误的 `responseSuccess` 统计；② 向客户端发出越界的终止后帧（Claude Code 大概率已在 `message_stop` 处收尾而忽略它，但这未实测）。**未修**——改它属于行为变更，需要用户裁决。
+
+### 8.4 附带观察：GHC 在内容结束后还会挂住流几十秒
+
+这两条完整消息里，最后一个 `content_block_stop` 与 `message_delta` 之间隔了 **21 s / 44 s**（78384 → 99343、90861 → 134808）。`message_delta` 里带 `copilot_usage` 计费明细，推测 GHC 在此期间结算。这段静默期我方看不到任何字节，正好落在 keepalive 与 idle-timeout 的博弈区间里。
+
+## 9. 复算命令
 
 ```bash
 bun - <<'TS'
