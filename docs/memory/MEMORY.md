@@ -133,7 +133,6 @@
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md)
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中；[先核实功能没被 peer 落地或删除](feedback-verify-deferred-task-not-already-landed-before-designing.md) 第一条命令=`git log <merge-base>..master -- <路径>`
 - [按自洽批次迭代交付不做 all-in-once](feedback-layered-iterative-delivery-not-all-at-once.md) — 每批可独立运行验证回滚
-- [快做快合，放弃 SDD/TDD](feedback-ship-fast-drop-sdd-and-tdd.md) — 用户 2026-08-11 裁决；测试只覆盖主路径+已报错路径，评审不再是合并前阻塞门
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 「打开 gated feature 绕过」也禁列
 - [恢复是唯一出路而非风险取舍](feedback-recovery-is-only-path-not-risk-tradeoff.md) — 沉没账与重试无关
 - [结构重构提交前跑架构守卫/全 backend](methodology-run-architecture-guards-before-structural-refactor-commit.md) — 守卫不在直接目录
