@@ -19,7 +19,7 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
-  remapAnthropicBlockIndex,
+  remapFrameToWireIndex,
 } from "~/lib/anthropic/keepalive-anchor"
 
 import type { AnthropicIndexedBuilders } from "./capability"
@@ -30,13 +30,10 @@ export function createAnthropicIndexedBuilders(): AnthropicIndexedBuilders {
     buildAnchorDelta: (wireIndex) => anchorDeltaFrame(wireIndex),
     buildAnchorStop: (wireIndex) => anchorStopFrame(wireIndex),
 
-    remapToWireIndex(frame, wireIndex, upstreamIndex) {
-      // An identity mapping returns the ORIGINAL object rather than a re-serialized equal one, which
-      // keeps `===` meaningful for callers that compare frames. A block count is NOT equivalent to
-      // mapping identity: continuation and recovery legs restart upstream indices even when no
-      // synthetic anchor ever opened, so the two indices are compared directly.
-      if (wireIndex === upstreamIndex) return frame
-      return remapAnthropicBlockIndex(frame, wireIndex - upstreamIndex)
-    },
+    // The decision lives in `keepalive-anchor.ts` so the remap primitive stays private to that
+    // module. Calling it from here opened a SECOND production remap site, which
+    // `tests/architecture/anchor-remap-single-authority.unit.test.ts` exists to prevent — and it
+    // caught exactly that when this delegation was raw index arithmetic instead.
+    remapToWireIndex: (frame, wireIndex, upstreamIndex) => remapFrameToWireIndex(frame, wireIndex, upstreamIndex),
   }
 }
