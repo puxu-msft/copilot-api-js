@@ -819,7 +819,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据*
 | **T1.3** | **判别正控**：故意把 factory 返回值退化成共同大接口，负样本必须因「unused `@ts-expect-error`」或显式 compile-failure harness **转红**。再写 union profile 正负样本：未收窄的 `FormatDeliveryProfile` 不能取得 indexed port；先 `profile.indexedBlockLifecycle === "anthropic"` 收窄再调 generic factory，所得 owner 的 indexed command 必须 compile-green，`none` 分支仍 compile-red。 | 保留 §3.5 的**反例锁定**：factory 先接 union profile、再检查嵌套 `owner.profile.indexedBlockLifecycle` 的样例**必须保留为 compile-red characterization**（该路径已被 TypeScript 5.9.3 PoC 证否）。**不得用 `as AnthropicGenerationCommandPort` 作正确样本。** |
 | **T1.4** | **本 task 原为「classifier 三态 unit」，按用户 2026-08-10 裁决 [trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md) 收窄为两态**——中间那一态（已登记为 owner-governed／terminal／indexed-block 的 effect 误走 generic → `CommandEffectMismatchError`）是 classifier 校验并拒绝 intent×effect mismatch 的核心机制，本轮不做，恢复入口见该 ADR。unit：①structured payload parse failure 在 external write 前拒绝（基础 payload 合法性检查，与信任调用方 intent 与否无关）；③payload 可解析、effect 未登记或未知 → **按 richest-data-flow 默认允许发送**，`actualEffect=unknown`，原始 type／frame detail 进 trace／History。**先写成「未登记 effect 也拒绝」跑一遍确认它会红**——默认拒绝是最容易写错的方向。 | 两态转绿。**未知 effect 不是已知 generic 的证明，也不是默认拒绝理由；intent 与 actual effect 不一致时不在此处 fail loud，诚实边界见 design.md §9.2／§11.1。** |
 | **T1.5** | command input／result types、`ValidatedDeliveryEnvelope`、`command × profile` compatibility registry 的 unit：断言 envelope 至少保留 §2.2 冻结的性质集合（原始 frame、`command`＋per-operation 唯一 `commandId`、format profile、expected／actual effect、owner-minted provenance、target kind、authorization 引用的 wire index／leg kind／owner state version、candidate／dispatch identity、observation time、C9 committed、compound phase）。 | 转绿。**这些是最小性质集合，不预先规定扁平字段／嵌套对象／opaque token**——具体形状由 T3.1 沿真实 caller 调查后定。 |
-| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。<br>🔴 **前置停门：§11 #6 未裁则本 task 不可开工。** M1 的 `OwnerTerminalDecision`（`delivery/owner-failure.ts:11`）已经有一套三态，**本 task 一旦把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，形状就定死了**——之后 T2.7／T3.5／T4.10 全建在它上面。**这是 #6 最早咬人的地方，不是 Commit 4。** |
+| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。<br>✅ **前置停门已解：§11 #6 已裁 2026-08-11（候选 ④）。** M1 的 `OwnerTerminalDecision`（`delivery/owner-failure.ts:11`）已经有一套三态，**本 task 一旦把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，形状就定死了**——之后 T2.7／T3.5／T4.10 全建在它上面。**这是 #6 最早咬人的地方，不是 Commit 4。** |
 | **T1.7** | 属性存在性快照工具（§0.4 第 2 条）在 Commit 0→1 之间跑一次。**先手工加一个 optional 方法确认它会红。** | 快照相等，rc=0。 |
 
 ### factory／锚点表
@@ -841,8 +841,8 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据*
 |---|---|---|
 | R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
 | R-2 | C1 `辅助门`（T1.4 落盘的两态 unit；classifier 拒绝 mismatch 一态本轮不做，见 T1.4 注） | T1.4 落盘的测试路径 |
-| — | **§11 #5 的必经触发点** | **未裁则本 commit 不得开工**——候选②要改的正是 C1 的内容（把 T2.3 前移进来）。裁后同步 RFC／矩阵／plan 三处 |
-| — | **§11 #6 的必经触发点** | **未裁则本 commit 不得开工**（不只是 T1.6）——T1.6 冻结类型、T2.7 实现状态机、T3.5 产出映射，**取代／合并类候选到 C4 才裁就要重写 C1～C3**。把**四个**候选交主会话／用户 |
+| — | ~~§11 #5 的必经触发点~~ | ✅ **已消解 2026-08-11**——论域随 Commit 0 与门矩阵推迟而消失，不再是开工前置 |
+| — | ~~§11 #6 的必经触发点~~ | ✅ **已裁 2026-08-11：候选 ④**（①②③ 经 `ownerFailureOutcome` 调用点实测证否）。不再是开工前置 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
@@ -1334,8 +1334,8 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #2 Q1 telemetry 联合查询 | ⏳ **未裁** | **Commit 5 全节不可开工** |
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
 | #4 entry 拓扑 | ✅ **已裁 2026-08-04/05**（Commit -1 先合 master得 A；P 后执行树显式从 `ENTRY_SHA=A` 建） | — |
-| #5 R-5 的 C1／C2 归属 | ⏳ **未裁** | **Commit 1 kickoff 之前**——候选②要改的正是 C1 的内容 |
-| #6 两个正交轴的职责边界 | ⏳ **未裁**（**本轮重框**：不是「同一件事的两种命名」） | **Commit 1 kickoff 之前**——T1.6 一写就冻结形状；C4 停门第 4 项是兜底 |
+| #5 R-5 的 C1／C2 归属 | ✅ **已消解 2026-08-11**（随 Commit 0 与 R-x 门矩阵推迟而失去论域） | — |
+| #6 两个正交轴的职责边界 | ✅ **已裁 2026-08-11：候选 ④**（①②③ 经代码实测证否） | — |
 
 ### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
 
@@ -1386,25 +1386,38 @@ M1 已 merge 进 master（`8125f123`），**「两棵树」不再存在**。用�
 
 ⚠️ **裁决前本节的候选 1 量化影响写着「merge 会引入需要解决的语义冲突」，实测是错的**：`git merge-tree --write-tree` rc=0、冲突列表为空，master 自 merge-base 起**未触及 feature 改过的任何一个文件**。**这条错误成本差点把裁决推向另一边**——记在这里当反例：**量化影响栏里的每个成本都要有可复跑命令，没实测过的不要写成事实**（`anchor-numbers-to-commits`）。
 
-### #5 R-5 的 C1／C2 归属 —— ⏳ **未裁（本轮撤回自裁）**
+### #5 R-5 的 C1／C2 归属 —— ✅ **已消解 2026-08-11（论域随 Commit 0 推迟而消失）**
 
-⚠️ **本 plan 上一版在正文里断言「这不是错配」并按 C1 记账，同时在本节称「待裁」——那是实质自裁。** 本轮撤回该断言，**在裁决前不得声称任何一方成立**。
+**这条问的是「R-5 的辅助门段记在 C1 还是 C2」，而辅助门段与 R-x 门矩阵正是用户 2026-08-11 裁决全面推迟的那套验证设施。** 门不跑，就没有「该门在哪个 commit 生效」可争——三个候选都是在同一套记账体系内部换位置。
 
-**事实**（双方都可查）：
+**因此本条不再是 C1 的开工前置。** cardinality assertion 按**功能归属**实现：它读的是 owner private registries 的完整 population，所以它跟着 registries 走（原 T2.3 的位置），不跟着门表走。`traceability.md` 的 R-5 行随门矩阵一并进入推迟态，不在本轮同步。
 
-- **矩阵** `traceability.md:35` 把 R-5 的辅助门段记为 **C1**；矩阵 §0 把「归属 commit」定义为**该门生效的 commit**。
-- **本 plan** 把 cardinality assertion 的实现排在 **Commit 2**（T2.3），依据是 RFC §7.5 的 Commit 2 目标清单**逐字含「cardinality assertion」**，而 §7.4 的 Commit 1 清单**没有**。
-- 因此按矩阵的定义，**C1 终态并不存在该辅助门**——「Commit 1 与 Commit 2 行为等价」不能让一个尚未实现的门追溯生效。
+若日后从推迟项里把这条门捞回主线，届时按「该门实际生效的那个 commit」重新记账即可——那时实现已经落地，归属是可观测事实，不再需要预先裁决。
 
-**候选**：①矩阵改成 C2（与 RFC §7.5 一致，本 plan 认为证据最强，但**不自行改**）；②plan 把 T2.3 前移到 Commit 1（与 RFC §7.5 的目标清单冲突）；③RFC §7.4／§7.5 补一句说明该 assertion 跨两个准备 commit。
+⚠️ **保留原分析供日后取回时参考**：矩阵 `traceability.md:35` 记 C1，而 RFC §7.5 的 Commit 2 目标清单逐字含「cardinality assertion」、§7.4 没有；按矩阵自己「归属 = 该门生效的 commit」的定义，证据指向 C2。
 
-**触发点**：**Commit 1 kickoff 之前——未裁则 C1 不得开工。**
+### #6 两个**正交轴**的职责边界 —— ✅ **已裁 2026-08-11：候选 ④（保留正交职责 + 具名映射桥）**
 
-⚠️ **上一轮把它挂在 Commit 2 门表是「可达但过晚」**：候选②是「把 T2.3 前移到 Commit 1」，而执行者走到 Commit 2 的门时 **C1 已经作为 semantic commit 提交并通过了它自己的 invariant**。那时才裁只剩三条路——改写已落盘的 C1、重排历史、或接受 C1 终态缺门，**plan 三条都没授权**。**触发点必须早于「该裁决还能无成本执行」的那一刻**，不是「流程一定会看到它」。
+**裁决依据是代码实测，不是文档自述。** 复核命令与结果（`$TREE` = 本执行树，测于本裁决时）：
 
-机械校验帮不上忙：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 **它不判**，所以只能靠人工触发点。Commit 2 的门表**保留一行，但降为「复核裁决已被贯彻」**，不再承担首次裁决。
+```
+rg -n 'ownerFailureOutcome\(' -A 1 src/lib/pipeline/driver.ts | rg -o '"[a-z-]+"' | sort | uniq -c
+```
 
-### #6 两个**正交轴**的职责边界（**本轮重框；上一版把它们误称为「同一件事」**）
+得 `begin-leg` ×5、`close-anchor-before-real` ×1、`codec-render` ×1 —— **7 个调用点没有一个是 terminal**。据此：
+
+- **候选① 被证否**：`TerminalEmissionResult` 取代 `OwnerTerminalDecision` 会让这 7 个非-terminal 失败站点失去 caller action。
+- **候选③ 被证否**：两轴论域不相交（7 个非-terminal 站点 vs 仅 terminate），合成一个三态覆盖不了。
+- **候选② 被证否**：`begin-leg` 失败没有 terminal frame 可言，**投影的像不存在**，「Decision 是内部分类器、Result 是它的对外投影」这个关系本身不成立。
+
+**④ 是唯一在自身分析下存活的候选**，且证否它三个同僚的是可复跑的事实而非偏好。按 `00-kernel` 的 `what-decided-is-decided`，这不是待裁分叉，是一个没人写下来的既定结论。
+
+**落地形状**：`OwnerTerminalDecision` **改名为 `OwnerCommandFailureDisposition`**（现名让读者持续误以为它只管 terminal——本文档上一版自己就误框过一次），职责不变；`TerminalEmissionResult` 只承载 terminate 的 effect／result；**只在「terminate 自身失败」这一格架一条具名映射桥**。按 `快做快合`，配套测试收敛为两条：桥的 exhaustive mapping，以及「同一失败既走 disposition 又走 result 时 settle 恰好一次」的顺序断言——后者对应一个真实风险（撞 Commit 4 的 first-terminal-command-wins），不是假想分支。
+
+**未采纳 `architect-advisor` 先出重框提案**：重框本身已由本文档上一版完成并写进上表，四个候选的论域与代价都在纸面上；剩下的只是核对事实，而事实我已用上面那条命令取到。再派一轮只会重复它。
+
+#### 原分析（保留为裁决依据，勿据此重新开裁）
+
 
 ⚠️ **上一版说这两者「处理的是同一件事、词汇高度重叠但不同构」——那个框法不成立**，据它做的裁决会丢东西。实测：
 
