@@ -1496,3 +1496,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **若做需改什么**：① 让 `isNativeHistorySearchAvailable()` 同时比对产物 mtime 与 `native/history-search/{src,Cargo.toml,Cargo.lock}` 的最新 mtime，过期则**当作不可用而 skip 并打印一行「产物过期，跑 `bun run build:history-search`」**——保持「绝不红」的原意；② 或在 `test:backend` 前置一个廉价的过期检查（不构建、只告警）。两者都要正样本对照：故意 touch 一个 Rust 源文件，确认判据翻转。
 - **立即可用的绕过**：`bun run build:history-search`（需 Rust toolchain）。
 - **发现方**：三档信号契约合并后的合并态复验（主会话，2026-08-10）。
+
+## generation emission 的第三类机制（运行时授权与拒绝）本轮不做（2026-08-10 用户裁决）
+
+- **根因 / 现状**：`docs/rfc/2026-08-03-generation-emission-command-algebra/` 的 command port 里混着三类性质不同的机制：原子性与并发、类型层收窄、运行时授权。第三类防的是「调用方拿着新 command、却声明了与实际 effect 不符的 intent」。
+- **为何暂缓**：用户原则是信任调用方、内容错时自然报错、不为未出现的问题预设防护，与 ADR `2026-07-05-internal-tool-security-posture` 同源。技术上也成立：D1/D3/D4 那类 state 与 wire 分裂的修复靠 Commit 6 真删旧 write 路径（population 归零）加新 command 的原子性，**不靠运行时拦截**；而 RFC §11.1 自己承认 classifier 证不了正确、且可能与 producer 共享谓词而共因判绿。
+- **本轮不做的三项**：① classifier 校验 intent × effect × authority 并拒绝 mismatch；② D2——provenance 由 owner 从 active lease 铸造，取代 caller 声明的 `kind`；③ command identity 作为**授权凭据**（作为诊断标识随遥测保留）。
+- **理想架构 / 若做需改什么**：三项各自独立可加，都不要求重做第一类的 command 形状。classifier 可作为 owner 内的一层后置校验引入；D2 只需把 `WireEnvelopeFactory.anchor` 的 caller 参数换成 owner 对自己 lease 的查询。
+- **触发条件（值得做）**：出现**真实的** intent/effect mismatch 缺陷——不是设想的。设想不构成触发条件，这正是本次裁决的内容。
+- **完整理由与诚实边界**：ADR [2026-08-10-trust-the-caller-over-emission-authorization](../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。
