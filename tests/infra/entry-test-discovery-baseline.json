@@ -577,6 +577,7 @@
     "tests/pipeline/router-golden.it.test.ts",
     "tests/pipeline/semantic-content-gate.it.test.ts",
     "tests/pipeline/semantic-content-gate.unit.test.ts",
+    "tests/pipeline/semantic/config-snapshot-carry.it.test.ts",
     "tests/pipeline/semantic/config-snapshot.unit.test.ts",
     "tests/pipeline/semantic/ledger-declare.unit.test.ts",
     "tests/pipeline/semantic/ledger-property.unit.test.ts",
