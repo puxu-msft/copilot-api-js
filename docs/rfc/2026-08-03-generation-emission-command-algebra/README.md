@@ -16,6 +16,9 @@
 | Commit 0 | 🛑 **不做**（已裁决推迟） | — |
 | **Commit 1 —— capability types 与 profile registry** | ✅ `2df9c570` | `src/lib/pipeline/delivery/capability.ts`；`tests/pipeline/delivery/capability-narrowing.unit.test.ts` |
 | **Commit 2 —— owner state、serializer 与 coordination primitives** | ✅ `ff948954` + `7d288f9a` | `delivery/{authorization,owner-serializer,owner-lifecycle,heartbeat-controller,raw-emitter}.ts`；两份 `tests/pipeline/delivery/owner-*.unit.test.ts` |
+| **Commit 3 —— indexed builders**（T3.1 的生产部分） | ✅ `93a6b7ac` + `4339d9d4` | `delivery/anthropic-indexed-builders.ts`；`keepalive-anchor.ts` 新增 `remapFrameToWireIndex` |
+| Commit 3 的 T3.2 / T3.6 / T3.7 | 🛑 **不做**（证据设施，随 Commit 0 推迟） | — |
+| Commit 3 的 T3.4（producer-to-command helpers） | ⏭ **移到 Commit 4** | 形状只能沿真实 caller 定，见下 |
 
 **验收状态**（重算命令：`bun run test:backend`、`bash exp/inter-block-anchor-allocator/byte-equivalence.sh`）：两个 commit 都 typecheck 绿、lint 绿、后端档 **0 fail**、O-6 PASS（零 wire 变化，符合「不接入 production roots」）。
 
@@ -31,17 +34,19 @@
 
 ## 未完成（下一步从这里接）
 
-**Commit 3 —— producer builders、LegHandle 数据流与 publish harness 准备**（cutover-plan §「Commit 3」）。要实现：各 profile 的 pure builders（用真实 vendor bytes 校准）、producer-to-command 转换 helper、candidate binding 里的 opaque LegHandle 承载、10-root cutover harness——**helpers 仍不被 production roots 调用**。
+**Commit 4 —— 原子发布全部 generation authority**（cutover-plan §「Commit 4」）。**唯一可观察切换点，不许拆。**
 
-接手时注意三条：
+接手时注意：
 
 1. **计划正文是 TDD 形状（「先写什么失败测试 → 预期怎么红」），按本项目 2026-08-11 起的规则不照做**：先让产品行为跑起来，之后只补主路径与已报错路径的测试。已写的那条测试仍须有鉴别力（正样本对照不在淘汰之列）。
-2. **builders 先用合成 fixture 跑通，再换真实上游字节确认仍绿**——合成 fixture 单独绿不构成 wire 正确性证据。
-3. **Commit 2 的模块可直接复用**：`authorization`（授权注册表）、`owner-serializer`（唯一序列化点 + `runInternal`）、`owner-lifecycle`（terminal 状态机与 #6 的映射桥）、`heartbeat-controller`（`runBatch`）、`raw-emitter`（只吃 `ValidatedDeliveryEnvelope`）。取舍理由见上一节，别按直觉改。
+2. **T3.4 的 producer-to-command helpers 在这里写，不在 Commit 3**。它的形状只能沿真实 caller 定（计划自己的「前置调查」也这么说），提前造一个没有调用方的 helper 层，正是 Commit 3 花前半段删掉的那类东西。
+3. **计划里的 `file:line` 锚点普遍已漂**。实测：五个 `beginLeg` site 计划写 `:885/1014/1102/1521/1579`，现在是 `:1111/1317/1415/1875/1944`。**kind 仍是字面量写死的**（3× primary、1× recovery、1× continuation），所以计划那条「不是 60 格笛卡尔积」的论断成立——但**每个行号都要重新定位**，别照抄。
+4. **Commit 2/3 的模块直接复用**：`authorization`、`owner-serializer`、`owner-lifecycle`、`heartbeat-controller`、`raw-emitter`、`anthropic-indexed-builders`。
+5. **不要在 `delivery/` 里直接调 `remapAnthropicBlockIndex`**——那会开第二个 remap 站点，`tests/architecture/anchor-remap-single-authority.unit.test.ts` 会当场判红（本轮实测撞过一次）。要 remap 就走 `keepalive-anchor.ts` 的 `remapFrameToWireIndex`。
 
-**Commit 4 有一项欠账**：Commit 0 的 T0.6 原本是「绿 = 旧缺陷仍在」的 characterization，Commit 4 之后要反转成正确性断言。既然 Commit 0 不做，**Commit 4 里直接写正确性断言**——stop 与 active anchor index 同字节时，wire 关闭与 lease 清除必须在同一 command 内完成。这是本次推迟里唯一需要补测试的项。
+**本轮欠账（Commit 4 内要补的唯一一条测试）**：Commit 0 的 T0.6 原本是「绿 = 旧缺陷仍在」的 characterization，Commit 4 之后要反转成正确性断言。既然 Commit 0 不做，**直接写正确性断言**——stop 与 active anchor index 同字节时，wire 关闭与 lease 清除必须在同一 command 内完成。
 
-**仍未裁的开放问题**：只剩 **#2 Q1（telemetry 联合查询 A/B/C）**，绑着 #3。它**只阻塞 Commit 5**，不阻塞 Commit 2–4。
+**仍未裁的开放问题**：只剩 **#2 Q1（telemetry 联合查询 A/B/C）**，绑着 #3。它**只阻塞 Commit 5**，不阻塞 Commit 4。
 
 ## 本轮顺手修掉的、与 cutover 无关的真缺陷
 
