@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：P0 Web Search／carrier gates、P1–P3。Web Search 是首个 production family；完成后不得保留旧 `webSearchCallToText` 双轨。
 
 **Goal:** 将 Web Search 的 request declaration／choice、whole／stream presentation、continuation、reverse echo 和 Claude Code 外层行为原子迁入 semantic bridge。

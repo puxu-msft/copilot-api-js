@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：P0 carrier／affinity／timing 裁决，P1–P4。与 P6/P7 共改 profile／renderers，严格串行。
 
 **Goal:** 原子迁移双向 reasoning request／whole／stream／reverse echo，支持多个 reasoning item、encrypted-only、权威 `.done` opaque state、v1兼容和 affinity-aware v2 continuation。

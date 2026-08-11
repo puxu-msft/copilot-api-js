@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：P0–P7全部landed。此phase不新增semantic scope，只收口、证伪与同步。
 
 **Goal:** 对合并态做全 population、双协议客户端、History、mutation和文档对账，关闭旧债项并产出可执行验收记录。

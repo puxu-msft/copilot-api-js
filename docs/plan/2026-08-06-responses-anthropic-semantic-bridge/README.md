@@ -1,10 +1,36 @@
 # Responses ↔ Anthropic Semantic Bridge Implementation Plan
 
-> **状态**：草稿，待独立评审
+> **状态**：已定稿（7 轮跨模型对抗评审收口，0 blocker / 0 major）。**但这是并列备选设计记录，不是当前执行线。**
 >
-> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09）
+> `[hard]` **接手者先读这一段再动手。** 本仓库对「Responses ↔ Anthropic 语义桥」这一个特性存在**两条互不引用的工作线**，**当前正在执行的是另一条**：
 >
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`（推荐）or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> | | 本计划（A 线） | **执行中（B 线）** |
+> |---|---|---|
+> | 权威 | [`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`](../../spec/2026-08-06-responses-anthropic-semantic-bridge.md) | [`docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md) |
+> | 计划 | 本目录（P0–P8） | [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11） |
+> | 进度 | **未实施** | C0.1／C0.2／C0.3 已交付并评审收口，C1.1 起改生产代码 |
+>
+> **两条线在三处互斥，不能同时落地**（用户 2026-08-11 裁决保留两份并列，风险已知）：
+>
+> 1. **迁移粒度**：本计划按 family 用 `migratedKinds` 增量接管；B 线要求整方向单 commit 原子 cutover、明确禁止双轨（B RFC「C9／C10」节）。
+> 2. **core owner**：本计划的共享核心是 `src/lib/semantic-bridge/`；B 线是 `src/lib/pipeline/semantic/`。两者都自称唯一 owner。
+> 3. **continuation schema**：本计划的 `ContinuationRecord` 含 `responses-item-reference`／`responses-output-item`；B 线 `CarrierV2Envelope.kind` 只有 `claude-signature | responses-encrypted`。
+>
+> **要执行语义桥，去 B 线**；本目录的价值是设计备选与第 3 点那个缺口的出处（见下「B 线未覆盖的缺口」）。
+>
+> **核验基线**：`837fe522b3c1d5b892c093fd35d78b974826d71f`（2026-08-09）。**基线之后主线已大幅前进**，实施前按 [kickoff.md](kickoff.md) 的分阶段路径收敛复核重锚。
+>
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`（推荐）or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **但先确认你要执行的确实是 A 线**——默认应去 B 线。
+
+## B 线未覆盖的缺口（本计划的独有承重内容）
+
+用户对本特性提过一条硬不变量：Anthropic Messages 只是**载体格式**；源自 Responses 上游的 opaque continuation state 在会话继续时**必须能无损回传**兼容的 Responses 上游——**展示可降级，续接状态不可丢**。
+
+B 线**覆盖了 reasoning 侧**（`encrypted_content`／signature 经 carrier v2 往返，且按 protocol／provider／resolved model 三维匹配决定 preserve 还是 strip opaque），但**未覆盖 server-tool 侧**：`web_search_call` 等的 opaque id 与权威完整 item 没有进入 continuation carrier——B 的 `CarrierV2Envelope.kind` 联合只有两类 reasoning record，**表达不了**这两类记录；其 server-tool 契约只规定展示面的 native／function／带 correlation ID 的 text 降级。
+
+本计划对应的要求见 [plan-4-web-search.md](plan-4-web-search.md) 与规格「Web Search」节：展示降级**不得删除** Responses opaque id 或权威 source item，并由 Anthropic→Responses request echo 取得上游接受。
+
+**已登记 [`docs/todo/deferred-backlog.md`](../../todo/deferred-backlog.md)，提请修订 B 线 RFC 的 carrier schema。**
 
 **Goal:** 实现 OpenAI Responses ↔ Anthropic Messages 的请求、非流式响应和流式响应双向语义桥，使已知结构实际处理、展示降级与续接状态分离、未知结构显式失败，并让 whole／stream 共用一份语义决策。
 

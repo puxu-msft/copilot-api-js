@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：P5。与 P7 严格串行。
 
 **Goal:** 原子迁移 function call／output、tool_use／tool_result、custom declaration／forced choice 与 stream arguments 三源裁决，保持 call identity、block顺序与完整 tool input。

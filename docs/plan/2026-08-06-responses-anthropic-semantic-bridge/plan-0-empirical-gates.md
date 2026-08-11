@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：权威规格；可与 P1 并行。任何涉及真实 GHC 的步骤使用 `live-ghc-e2e-verification`，非 4141 端口。
 
 **Goal:** 在承重实现前冻结 Web Search continuation 最小形态、carrier channel、affinity、stream timing、structured-output／`context_management` capability matrix。

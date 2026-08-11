@@ -2,6 +2,8 @@
 
 > **状态**：未实施
 >
+> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+>
 > **前置**：P1 types／diagnostics／compatibility error；P0 capability matrix 的已裁决行。未裁决 capability 必须 degraded／rejected。
 
 **Goal:** 用一个 request engine 驱动两张 request 方向表，保证 source turn／item 顺序、tools＋choice 同源、top-level capability 单一 owner、continuation reconstruction 与 request diagnostics 恰好冻结一次。
