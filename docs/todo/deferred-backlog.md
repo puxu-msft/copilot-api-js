@@ -2,6 +2,15 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `createDownstreamDeliverySession` 是一个闭包里 20 个自由可变变量（2026-08-11，**正确性挂在「Commit 6 真的删掉它」上**）
+
+- **现状**：`src/lib/pipeline/delivery/session.ts` 的 `createDownstreamDeliverySession` 728 行、闭包内 **20 个 `let`**（口径：`rg -c '^  let ' src/lib/pipeline/delivery/session.ts`），横跨四个不相干关注点——生命周期（`state`／`finishReason`／`wireTorn`／`finalized`）、wire 观测账本（`messageEnvelope`／`openBlocks`／`pendingOpenBlocks`／`lastWriteAtMonotonic`／`lastContentDeltaAtMonotonic`／`semanticBlockCount`／`terminalWritten`／`writeCount`／`hasEmittedRealClientContent`）、心跳（`timer`／`heartbeatSuspended`／`heartbeatStopped`／`scaffoldAttempted`／`contentScaffoldAttempted`）、generation 身份（`winnerCandidateId`／`winnerSource`）。
+- **为什么这不只是难看**：generation emission command algebra 的中心不变量是**授权状态不得从观测状态推导**。在这个闭包里，授权数据（lease／mapping／index frontier）若并排成为第 21～23 个 `let`，没有任何东西阻止某个 command 读错那一边——design §4.3 点名的缺陷（`pulseOpenBlock` 从 post-wire ledger 选目标而非从授权注册表选）正是这个形状。
+- **本轮的处置与它的前提**：Commit 2 把新 owner 的授权注册表、serializer、terminal 状态机、心跳控制器建成**独立模块**（`delivery/{authorization,owner-serializer,owner-lifecycle,heartbeat-controller}.ts`），按关注点分对象，**不动这个旧闭包**——它按 RFC 计划在 **Commit 6 整体删除**，重构一份即将删掉的代码是白做。
+- **为何登记而不是现在修**：**这个判断完全挂在「Commit 6 真的会执行」上。** 若那一步被推迟或砍掉，这 20 个 `let` 就变成永久债，而 Commit 2 的做法不覆盖它。
+- **若做需改什么**：按上面四个关注点把闭包拆成四个对象（生命周期状态机 / 只读 wire ledger / 心跳控制器 / generation 身份），心跳与 ledger 已有对应的新模块可直接复用。**动手前先确认 Commit 6 的删除是否仍在计划内**——在计划内就别做，等删。进度见 [docs/rfc/2026-08-03-generation-emission-command-algebra/README.md](../rfc/2026-08-03-generation-emission-command-algebra/README.md)。
+
+
 ## history-search 子系统在 master 上稳定红（2026-08-11，**非本会话引入，已取证**）
 
 - **现状**：`test:backend` 里稳定 **14 fail**，全部落在两个文件——`tests/history/search/daemon.it.test.ts`（单跑 10 pass / **12 fail**）与 `tests/history/search/search-rest-cutover.it.test.ts`（单跑 **2 fail**）。两者都进 `it` 档、不进 `test:fast`，所以只在跑全后端时暴露。失败面是同一层：`listSearch` 的过滤与 `total` 语义（空过滤值被当成真过滤、`invalidQuery` 判定、命中总数不符），以及 daemon 的 freshness attestation；`search-rest-cutover` 的两条走的是真实 HTTP → UDS → sidecar → Tantivy 端到端链路。
