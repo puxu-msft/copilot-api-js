@@ -59,7 +59,15 @@
 | 候选/分派数量 | 各 1，无 hedge |
 | 时间 | 创建 `1786064856101`，全部 settle 于 `1786065339692`（**483 秒内全部落定**） |
 
-**这张表为什么是立案事实**：dispatch → egress → candidate → terminal **四级全部在 483 秒内 settled**，逻辑终态明确是 `failed`——**然而这条 operation 仍留在 tracked-operation 集合里，被关机摘要按 4.9 小时的驻留时长打印出来**。所以缺陷不在「它没结束」，而在**「它结束了，却没有人把它从驻留集合里放掉」**，且摘要直接打印 `request.state` 这个原始字段、不做任何 lifecycle 归一。这正是本特性把 lifecycle 拆成四类独立事实（logical terminal / operation scope / delivery lifecycle / canonical finalization）的由来——**`failed` 不等于 quiesced**。
+**这张表为什么是立案事实**：dispatch → egress → candidate → terminal **四级全部在 483 秒内 settled**，逻辑终态明确是 `failed`——**然而关机摘要把它打印成 `(failed, 17620s)`**。
+
+⚠️ **别把它读成「没人释放它」（这是本文档 2026-08-11 更正掉的一句话）。** 保留是**有意为之**且是本特性自己 Tasks 1–4 建立的：`src/lib/context/manager.ts:427` 的 `releaseTrackedOperationIfTerminal` 在 `blocker !== "none"` 时**故意 no-op**，让 ctx 留着可见而不是悄悄消失（`OperationBlocker` 取值见 `src/lib/context/operation-lifecycle.ts:17`：`request-running` / `operation-body` / `delivery-finalization` / `canonical-finalization` / `none`）。而上面那张表**证明不了** `blocker === "none"`——它来自 History 侧的观测记录，根本不携带 ctx 的 blocker。**所以这条 incident 不构成「释放缺陷」的证据。**
+
+**它构成证据的是「摘要在撒谎」这一类**（与 master 的三档信号契约同向，而非对立），两处具体的：
+1. **打印的是逻辑态、不是阻塞原因**——`shutdown.ts:270` 直接输出 `request.state`，运维看到 `failed` 却不知道是四个 blocker 里的哪一个在拖住关机。同一函数的 lightweight 分支已经改打 `kind` 而非 `state`，**先例就在旁边一行**。
+2. **打印的 age 是「创建至今」，不是「拖住关机多久」**——`age = now - request.startTime`。`17620s` 说的是这个请求 4.9 小时前发起，**不是**它堵了关机 4.9 小时。运维最需要的那个量，摘要一个字都没说。
+
+这正是本特性把 lifecycle 拆成四类独立事实（logical terminal / operation scope / delivery lifecycle / canonical finalization）的由来——**`failed` 不等于 quiesced**。
 
 **给 Task 6/7 写测试时直接用这张表**：构造一条 `terminal.outcome = "failed"`、所有 candidate/dispatch 均已 settled 的 operation，断言它**不再**出现在关机摘要的驻留清单里（或至少不以原始 `request.state` + 累计 age 的形式出现）。**不需要那 542 KB 原件**——它的正文是上游响应内容，与本缺陷无关。
 
