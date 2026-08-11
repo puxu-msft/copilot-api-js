@@ -7,7 +7,7 @@
 - **从 master 起步，新开隔离 worktree**（放 `.worktrees/`）。**不要再用 `.worktree/fix-long-resident-operations`——那个分支已被合并取代。** 接手第一件事是 `git log --oneline -1` 取当前 HEAD，不要采信本文写死的值。每条 Bash 调用自带绝对路径根。**不要 push。**
 - **文档与代码都已在 master**：Tasks 1–4 + B1 的实现于 2026-08-09 合入主线（最终 fast-forward 到 `0e0768ee`），spec / plan / 本目录 / `docs/tmp/` 证据也都在。所以 master 上既读得到计划、也读得到实现。
 - 代码改动派 implementer 到隔离 worktree；评审一律派 subagent，不在主会话自审。
-- 派 implementer 前先读 skill `session-closeout` 的 §6b（进度文件协议）。本项目的进度文件是 `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`。
+- 派 implementer 前先读 **user-level skill `writing-handover-docs`** 的进度文件协议（**注意：旧名 `session-closeout` 的项目 skill 已于 2026-08-08 并入 `closing-a-development-session` + `writing-handover-docs` 并删除，按旧名找不到**）。本项目的进度文件落点是 `docs/tmp/<date>-<topic>-progress-<slug>.md`；本特性已有一份：`docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`。
 
 ## 启动前的一道 gate
 
