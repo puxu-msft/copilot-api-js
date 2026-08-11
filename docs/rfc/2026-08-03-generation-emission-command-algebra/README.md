@@ -36,6 +36,8 @@
 
 **Commit 4 —— 原子发布全部 generation authority**（cutover-plan §「Commit 4」）。**唯一可观察切换点，不许拆。**
 
+🔴 **动手前必读 [commit-4-preflight.md](commit-4-preflight.md)**（T4.0a／T4.0b 的证据槽，行号测于 `1d6906fb` 且逐条复验过）。它给出 8 个构造点 + 2 个接线点的**当前** `file:line`，并点出**计划没有单列施工 task、但必须同 commit 折叠掉的三件事**：`deliveryBySink` 反查注册表（有 production 消费者）、Anthropic 的三 sink 链、WS 绕过 sink 的平行 close 路径。**按计划条款字面执行会在实施到一半时撞上它们。**
+
 接手时注意：
 
 1. **计划正文是 TDD 形状（「先写什么失败测试 → 预期怎么红」），按本项目 2026-08-11 起的规则不照做**：先让产品行为跑起来，之后只补主路径与已报错路径的测试。已写的那条测试仍须有鉴别力（正样本对照不在淘汰之列）。
