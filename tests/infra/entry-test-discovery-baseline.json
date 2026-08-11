@@ -500,6 +500,8 @@
     "tests/pipeline/delivery-session.unit.test.ts",
     "tests/pipeline/delivery-terminal-race.unit.test.ts",
     "tests/pipeline/delivery/capability-narrowing.unit.test.ts",
+    "tests/pipeline/delivery/owner-authorization.unit.test.ts",
+    "tests/pipeline/delivery/owner-lifecycle.unit.test.ts",
     "tests/pipeline/dispatch-scoped-response-capture.unit.test.ts",
     "tests/pipeline/driver-backoff-cancel.unit.test.ts",
     "tests/pipeline/driver-leg-fence.it.test.ts",
