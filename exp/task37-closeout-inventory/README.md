@@ -2,7 +2,7 @@
 
 ## 它回答什么问题
 
-`docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md` 的分类表声称「合计 427，与冻结清单成员数相等」。这个脚本就是那句话的**产出者**：它读被提交的冻结清单 `docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md`，重算分类计数，并校验清单头部声明的 `# members` 与实际成员行数一致。
+`docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md` 的分类表声称「合计 427，与冻结清单成员数相等」。这个脚本就是那句话的**产出者**：它读被提交的冻结清单 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md`，重算分类计数，并校验清单头部声明的 `# members` 与实际成员行数一致。
 
 归档它的理由很具体：**它原本只存在于 job 的临时目录里**，而那个目录会随 job 过期被回收——一条已经交付出去的证据断言，唯一的产出者却活在会蒸发的地方。
 
@@ -36,7 +36,7 @@ header `# members`: 427  ==  listed member lines: 427  -> OK
 ```bash
 python3 exp/task37-closeout-inventory/reconcile-inventory.py
 # 或显式指定清单
-python3 exp/task37-closeout-inventory/reconcile-inventory.py docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+python3 exp/task37-closeout-inventory/reconcile-inventory.py docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 ```
 
 ## 它踩过的三个坑（都在脚本注释里，这里只列索引）

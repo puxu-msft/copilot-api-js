@@ -1385,7 +1385,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：评审实测 N=2000：**3167ms → 5452ms**。**注意触发条件不是罕见情形**——marker 缺席正是「升级后首次启动、strict scrub 尚未跑完」的常态窗口，也是任一受保护 canonical UPDATE 之后的状态。
 - **理想架构 / 若做需改什么**：与本轮未闭合的 #5（写路径退化无人守）**同一套收口**——把判据从 wall-clock 换成**确定性工作量计数**（本次请求执行的 SQL 语句数 / 扫描行数），断言「第 1 次与第 N 次之比 < 常数」；这类判据不受 CPU 争用影响、无 false-red，且能同时守住读侧这条全表遍历与写侧的每次提交扫描。读侧本身的修法是让 visitor 在攒够 capacity 后返回 `false` 提前终止（游标语义需与 `compareSummaryNewestFirst` 的排序一致，不能简单截断）。
 - **为何暂缓**：它不是回退 BLOCKER 修复的理由（正确性优先于常数），且真正值钱的是那套确定性计数判据本身，应与 #5 一起作为一个独立改动落地，不塞进 Task 9 的修复批次。**触发条件（值得做）**：① 着手 #5 的判据重建时（同一套机制，一次做完）；② 出现「升级后首次打开 History 明显变慢」的用户可观察症状；③ 历史规模显著增长。
-- **发现方**：Task 9 独立验收评审（`docs/tmp/2026-08-08-task9-review-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
+- **发现方**：Task 9 独立验收评审（`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md`）在复评 BLOCKER 修复时的邻域实测。
 
 ## `parallel-test.ts` 汇总 tally 至今给出 7 个互不相同的数（2026-08-08，Task 9 验收复评期间累积）→ **载体已换 2026-08-09（`e24de3a1`），根因仍未定位**
 
@@ -1407,7 +1407,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：`tests/routes/hooks.http.test.ts` 的 `POST /reload > loads a valid hook module and returns ok:true with exports/version` 在 `bun run test:backend`（16 shards）下偶发失败；**单跑 6 pass / 0 fail**。与 History V3 / 迁移 / 判据改动**零交集**（复评独立核实）。
 - **理想架构 / 若做需改什么**：把缓存目录与文件名按 **pid 隔离**（或挪进 `tests/helpers/sandbox-paths.ts` 已建立的 per-process XDG 沙箱），`loadSeq` 同样按进程唯一化。修好后应有守卫：同一 commit 下并发跑 N 次该文件不出现 flake。
 - **为何暂缓**：与 Task 9 因果链无关，属测试基建缺陷而非产品缺陷；**门本身仍可信**（失败是真失败、退出码正确）。**触发条件（值得做）**：① 该 flake 频率上升到影响交付判断；② 有人再碰 hooks loader 的缓存逻辑；③ 统一收拾并发档位污染时（与上面「`test:backend` 并发档位低频污染」条目同族，本条是其中一个已定位的具体成因）。
-- **发现方**：Task 9 独立验收评审的收口复评（`docs/tmp/2026-08-08-task9-review-acceptance.md` R2-4）。
+- **发现方**：Task 9 独立验收评审的收口复评（`docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md` R2-4）。
 
 ## `initHistory()` 重入只协调 summary backfill，未协调 terminal persistence lifecycle（2026-08-09，合并态评审定位；**master 既有，非合并引入**）
 
@@ -1473,7 +1473,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为（既有，非本轮引入）**：Anthropic buffered 路径上，上游 `event: error` 若在某个内容块**已开启、尚未 `content_block_stop`** 时到达，`grammar.ts` 的 `acceptTerminal` 把它连同其他终态一律判为 `terminal-with-open-unit` protocol error，`response-terminal` outcome 根本不发出。而 `isUpstreamFailure` 只认 `terminal-failure` 与 `adapter-exception`，于是 `sawUpstreamError` 不触发，buffered 路径把缺失的 `message_stop` 读成传输截断，**对一个上游已经做出的终态决策重试 4 次**。spec `docs/spec/2026-07-11-block-level-buffered-retry.md:152` 明说这种帧必须提交并失败、永不重试。
 - **已被实测否掉的直接修法（别再走一遍）**：让 `acceptTerminal` 对 `terminal.semantic === "failed"` 发出终态而非协议错误。**重试确实停了，但代价更大**——客户端收到 `content_block_start` + delta 而**没有 `content_block_stop`**（半块泄漏到线上），并拿到**两个终态**（上游 error + 合成 truncation error）。A/B 实测（分支开：1 次上游调用、线上出现 `content_block_delta("mid-block")`；撤回态：4 次调用、该 delta 出现 0 次）确认**泄漏由该分支引入，不是既有**。已撤回，`acceptTerminal` 与改前逐字节等价。
 - **根因（比表面深一层）**：`sawUpstreamError()` 变真会让 buffered 路径的**终态提交排空**把整个缓冲区刷出去，而缓冲区里含未闭合块的帧。grammar 的 `discardOpen()` 只清自己的累积——**`discard-open-unit` outcome 在 `src/` 里零消费者**，它够不到 driver 的缓冲区。所以「grammar 内部丢弃了」不等于「不会送达客户端」，这两件事在 compatibility 期是脱节的。
-- **理想架构 / 若做需改什么**：终态排空必须知道**最后一个 commit 边界在哪**，只刷到那里为止、丢弃其后的帧。这需要 block 级感知，正是冻结计划 `docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 的 **Task 4 owner cutover**（`consume(outcome, adapter)` 让 owner 直接消费 grammar outcome）要建立的能力。⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；只修 `failed` 会在同一位置再犯一次。
+- **理想架构 / 若做需改什么**：终态排空必须知道**最后一个 commit 边界在哪**，只刷到那里为止、丢弃其后的帧。这需要 block 级感知，正是冻结计划 `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 的 **Task 4 owner cutover**（`consume(outcome, adapter)` 让 owner 直接消费 grammar outcome）要建立的能力。⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；只修 `failed` 会在同一位置再犯一次。
 - **为何暂缓**：正确修法落在 Task 4 的能力范围内，在 compatibility 期打补丁已被实测证明会引入更严重的协议违规（半块泄漏破坏客户端解析状态，而 block-level 交付是本项目公理）。**本轮连续三层「每修一层冒出新一层」本身就是架构信号。**
 - **判据已就位**：`tests/pipeline/i9-followup-midblock-error.http.test.ts` 断言的是**正确目标**（不重试 + 不泄漏半块），已按仓库既有惯用法 `describe.skip` + `[GATED — requires Task 4 owner cutover: ...]` 前缀，并登记进 `tests/infra/entry-test-discovery-baseline.json` 的 `allowed_skipped`。做 Task 4 的人去掉 `.skip` 即可验收。**改进建议（未采纳，留证据）**：独立评审实测本仓 bun 1.3.14 下 `test.failing` 会在用例转绿时判红并提示 `Remove .failing`，即**自解除**，优于永远等人想起来的 `describe.skip`；未采纳是因为它在 JUnit / discovery 基线口径下的表现**未验证**，且本仓无先例。
 - **触发条件（值得做）**：① 执行 Task 4；② 有人报告 Anthropic 流在上游过载时被重复请求；③ 顺手改 `acceptTerminal` 或 buffered 终态排空时。

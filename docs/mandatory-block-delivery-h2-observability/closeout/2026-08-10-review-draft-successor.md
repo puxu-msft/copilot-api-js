@@ -1,6 +1,6 @@
 # Task 37 收尾终报草稿 —— 接手方第一人称走查评审
 
-- **评审对象**：`/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md`
+- **评审对象**：`/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md`
 - **评审视角**：假装我明天接手、完全没见过这轮工作。对报告让我做的每一个动作，实地去仓库查那个承载者是否存在、长什么样。
 - **每条发现都带「接手方会因此做出什么错误动作」栏**；没有这一栏的不计为发现。
 
@@ -48,15 +48,15 @@ NOT-IN-MASTER                       # 本报告所在的提交不在 master
 $ git ls-tree -r --name-only master | grep '2026-08-10-task37'
 （无输出，exit 1）                   # master 树里根本没有这份终报
 
-$ git show master:.superpowers/sdd/progress.md | sed -n '22p' | grep -o 'six accumulator feeds and two translators'
+$ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | sed -n '22p' | grep -o 'six accumulator feeds and two translators'
 six accumulator feeds and two translators   # 账本的错数字**原样还在 master 里**
 
-$ git show master:.superpowers/sdd/progress.md | grep -c '13 call sites across 12 files'
+$ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | grep -c '13 call sites across 12 files'
 0                                    # 修正后的措辞在 master 里不存在
 
 $ git show --name-status 53efd301
-M	.superpowers/sdd/progress.md
-A	docs/tmp/2026-08-10-task37-closeout-terminal-report.md
+M	docs/mandatory-block-delivery-h2-observability/progress-ledger.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md
 ```
 
 即：`worktree-task37-closeout` 确实 ff 合进了 master（C4 成立，master = `d2f66fa9`），**但报告自己和账本修正是在那之后、在另一棵树 `encapsulated-kindling-forest` 上提交的 `53efd301`，这个提交至今没有合回 master**。报告把「合并已完成」写在第 5 行，把「本报告在另一棵树写就」写成一句括号内的环境说明（理由是「后台隔离护栏不允许直接写共享检出」），**从未说明这一支的合并状态**。
@@ -71,7 +71,7 @@ A	docs/tmp/2026-08-10-task37-closeout-terminal-report.md
 
 ```bash
 git merge-base --is-ancestor 53efd301 master && echo merged || echo NOT-merged
-git show master:.superpowers/sdd/progress.md | grep -c '13 call sites across 12 files'   # 期望 1
+git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | grep -c '13 call sites across 12 files'   # 期望 1
 ```
 
 顺带：C4 的措辞「收尾产物分支已 ff 合入 master」应限定为「**代码交付与 2026-08-09 那批收尾产物**已合入」，因为「收尾产物」在读者眼里天然包含终报本身。
@@ -178,9 +178,9 @@ $ git merge-base b5acce8f 71dcfb91
 
 $ git diff --name-status 6d212286 b5acce8f
 M	docs/memory/feedback-fix-all-comparison-sites.md
-A	docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
-A	docs/tmp/2026-08-09-task37-closeout-review.md
-A	docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 M	docs/todo/deferred-backlog.md
 ```
 
@@ -215,7 +215,7 @@ git diff --name-status "$BASE" b5acce8f    # 期望：恰好 5 行，全部 docs
 
 | 接手 Task 4 立刻要用的东西 | 实际位置（我 grep 出来的，不是报告给的） |
 |---|---|
-| Task 4 的计划正文 | `docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（`## Task 4：把现有 DownstreamDeliverySession 升级为 BlockDeliveryOwner`），同目录另有 `KICKOFF.md` |
+| Task 4 的计划正文 | `docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（`## Task 4：把现有 DownstreamDeliverySession 升级为 BlockDeliveryOwner`），同目录另有 `KICKOFF.md` |
 | 同一 commit 的硬约束 | 同文件 `:67`「Task 4 切换 driver 直接消费 grammar outcomes 的同一 commit 才删除 compatibility projection；禁止出现『旧 projection 已删、新 owner 尚未接管』的中间提交」 |
 | gated 探针（去掉 `.skip` 即为验收） | `tests/pipeline/i9-followup-midblock-error.http.test.ts:64` |
 | 那条最贵的警告 | `docs/todo/deferred-backlog.md:1417`（master 为 :1451 起的条目）：「⚠️ **做 Task 4 时必须把 `incomplete` 与 `failed` 并列处理**——`adapters/responses.ts:17,:77-78` 显示 `incomplete` 同样是上游的终态决定；**只修 `failed` 会在同一位置再犯一次**」 |
@@ -226,7 +226,7 @@ git diff --name-status "$BASE" b5acce8f    # 期望：恰好 5 行，全部 docs
 1. **接手方只修 `failed`，不修 `incomplete`，在同一个位置把这个 bug 再犯一次。** 这是本轮花了三层试错才买到的结论，写在 backlog 里，而报告——Task 4 owner 最可能读到的那份文档——把它压缩成了「已登记 backlog」五个字。接手方要撞对这条，必须先想到去翻 1400 行的 backlog 并找对是哪一条。**报告没给行号、没给条目标题、没给文件路径。**
 2. **接手方重走那条已被实测证否的修法。** 第 4 节只说「正确修法要等 Task 4 的 owner cutover」，没说「让 `acceptTerminal` 对 `semantic === "failed"` 发终态」这条路已经**实现过、A/B 测过、撤回过**。第 1 节第 24 行提到「一次被撤回的修复」，但它与第 4 节第 1 条之间没有互相引用，读者不一定把两处对上号。代价：重做半天，再自己发现半块泄漏。
 3. **接手方不知道验收判据已经写好了。** 探针存在且断言的就是正确目标，「去掉 `.skip` 即可验收」这句写在 backlog 第 1419 行，不在报告里。不知道的人会**从零再写一遍验收测试**，而且大概率写得比现成那条弱（现成那条同时断言「不重试」与「不泄漏半块」两个方向）。
-4. **反方向的浪费**：接手方会先去找「Task 4 到底有没有计划文档」。有——`docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/`，四份 plan + KICKOFF + 两份 review。报告通篇没出现过这个目录。
+4. **反方向的浪费**：接手方会先去找「Task 4 到底有没有计划文档」。有——`docs/mandatory-block-delivery-h2-observability/`，四份 plan + KICKOFF + 两份 review。报告通篇没出现过这个目录。
 
 **修复建议**：在第 4 节第 1 条下面加一个「Task 4 owner 起步清单」小表，把上面五行原样搬进去（路径 + 行号 + 一句话作用）。**这不是锦上添花**：报告自己把「解除阻塞」当成本轮的核心交付，那么「被解除阻塞的那个人拿到什么」就是这份交付的验收面。现在这一面是空的。
 
@@ -251,7 +251,7 @@ $ printenv CLAUDE_JOB_DIR
 $ ls -la /home/xp/.claude/jobs/a7c2cc1a/tmp/testfast-merged.log
 -rw-r--r-- 1 xp xp 252 Aug 10 09:16 …/testfast-merged.log      # 当下存在，252 字节
 
-$ grep -c 'CLAUDE_JOB_DIR' docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
+$ grep -c 'CLAUDE_JOB_DIR' docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
 0                                                               # 证据清单里没有这条日志的登记
 ```
 
@@ -281,9 +281,9 @@ $ grep -c 'CLAUDE_JOB_DIR' docs/tmp/2026-08-09-task37-closeout-evidence-manifest
 
 ---
 
-### B8 [MINOR] `docs/tmp/2026-08-09-task37-closeout-review.md` 在 master 里（28 KB），报告通篇未提
+### B8 [MINOR] `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md` 在 master 里（28 KB），报告通篇未提
 
-C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的 `docs/tmp/2026-08-09-task37-closeout-review.md`（`git ls-tree -r --name-only master | grep task37` 可见，28377 字节），它是**收尾产物本身**的评审。报告没有引用它。
+C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md`（`git ls-tree -r --name-only master | grep task37` 可见，28377 字节），它是**收尾产物本身**的评审。报告没有引用它。
 
 **接手方会因此做出什么错误动作**：接手方若要判断「这轮收尾产物被谁审过、审出什么」，会以为只有第 1 节说的那四个 agent／六轮（那是**代码接缝**的评审），从而**重新派一轮收尾产物评审**——而那一轮已经跑过并落盘。反方向的浪费。
 
@@ -295,9 +295,9 @@ C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的
 
 | 报告里的引用 | 核验结果 |
 |---|---|
-| `.superpowers/sdd/progress.md` 第 22 行 = Task 37 条目 | ✅ 行号精确（`grep -n "Task 37 (Task 1b"` → 22） |
+| `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 第 22 行 = Task 37 条目 | ✅ 行号精确（`grep -n "Task 37 (Task 1b"` → 22） |
 | 同上 第 21/23 行 = Task 3 / Task 4 | ✅ 行号精确（21 = Task 3，23 = Task 4，且 23 行确写 `**unblocked**`） |
-| 六份 `docs/tmp/2026-08-09-task37-*.md` 评审报告 | ✅ 六份全部在 master 树内 |
+| 六份 `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-*.md` 评审报告 | ✅ 六份全部在 master 树内 |
 | `src/lib/anthropic/wire-frame-type.ts` | ✅ 在 master 树内 |
 | C3 `git merge-base --is-ancestor fe8977c0 master` | ✅ 退出 0；`fe8977c0` = `Merge branch 'master' into worktree-encapsulated-kindling-forest` |
 | C4 `master = d2f66fa9` | ✅ `git rev-parse master` 完全一致 |
@@ -332,25 +332,25 @@ C1 的证据栏列了六份评审报告，但 master 树里还有一份同期的
 四项承载者逐个实地核验：
 
 ```
-$ git cat-file -e master:docs/tmp/2026-08-10-task37-closeout-terminal-report.md
+$ git cat-file -e master:docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md
 IN-MASTER                                          # 终报本体已在 master
 
 $ git ls-tree -r --name-only master | grep 'draft-review'
-docs/tmp/2026-08-10-task37-closeout-draft-review-claims.md
-docs/tmp/2026-08-10-task37-closeout-draft-review-successor.md
+docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-review-draft-claims.md
+docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-review-draft-successor.md
                                                    # 两份草稿评审均已在 master
 
-$ git show master:.superpowers/sdd/progress.md | grep -c '13 call sites across 12 files'
+$ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | grep -c '13 call sites across 12 files'
 1                                                  # 账本已带可重算口径的修正措辞
 
-$ git show master:.superpowers/sdd/progress.md | grep -c 'six accumulator feeds and two translators'
+$ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md | grep -c 'six accumulator feeds and two translators'
 1                                                  # ← 这一次命中是引文，不是残留
 ```
 
 **关于那一次裸关键词命中，我按派活提示做了上下文取证，不靠转述采信**：
 
 ```
-$ git show master:.superpowers/sdd/progress.md \
+$ git show master:docs/mandatory-block-delivery-h2-observability/progress-ledger.md \
     | grep -o 'The earlier wording said "six accumulator feeds and two translators", which is under-counted on either selector'
 The earlier wording said "six accumulator feeds and two translators", which is under-counted on either selector
 ```
@@ -366,9 +366,9 @@ The earlier wording said "six accumulator feeds and two translators", which is u
 ```
 $ git diff --name-status d2f66fa9^2 d2f66fa9
 M	docs/memory/feedback-fix-all-comparison-sites.md
-A	docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
-A	docs/tmp/2026-08-09-task37-closeout-review.md
-A	docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 M	docs/todo/deferred-backlog.md
 
 $ git diff --name-only d2f66fa9^2 d2f66fa9 | wc -l

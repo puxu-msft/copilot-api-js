@@ -10,7 +10,7 @@
 | 写作时 master | 已由并发会话推进至 `6d212286`（此后 11 个 peer 提交，属正常前进，不触发已验收证据复验） |
 | 交付时门禁 | `16 shards · 7726 tests · 7726 pass · 0 fail · 11 skipped`，exit 0，零 crashed shard（测于 `fe8977c0`，树与 master 快进后逐字节相同） |
 | job 临时根 | `/home/xp/.claude/jobs/a7c2cc1a/tmp` |
-| 冻结成员清单 | `docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md`（排序路径全表，头部带枚举时刻与方法） |
+| 冻结成员清单 | `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md`（排序路径全表，头部带枚举时刻与方法） |
 | 成员数 | **427**，两法一致：`os.walk`（含指向目录的符号链接）与 `find "$R" \( -type f -o -type l \)` 同为 427 |
 
 ⚠️ **本清单的第一版写的是 424，那个数是错的，值得记下来它怎么错的。** 三处：
@@ -26,13 +26,13 @@
 
 | 类 | 数量 | 长期价值 | 替代证据 / 接收方 | 处置 |
 | --- | --- | --- | --- | --- |
-| 命令输出 / 门禁日志（`.txt` `.log`） | 237 | 无。被引用的数字均已逐条抄进提交信息与评审报告 | 提交信息 `3a6439ea`／`b8ab9dbb`／`9325ea4d`／`fefb0951`／`e19351e4`／`a72a8e83` 的 Gate 段；`docs/tmp/2026-08-09-task37-seam-review-dispositions.md` | 保留至 job 过期（不主动删） |
+| 命令输出 / 门禁日志（`.txt` `.log`） | 237 | 无。被引用的数字均已逐条抄进提交信息与评审报告 | 提交信息 `3a6439ea`／`b8ab9dbb`／`9325ea4d`／`fefb0951`／`e19351e4`／`a72a8e83` 的 Gate 段；`docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-dispositions.md` | 保留至 job 过期（不主动删） |
 | JUnit / 结构化产物（`.xml` `.json`） | 62 | 无。skip 多重集核对结论已落盘 | 本文件 N2／N3 行 + `tests/infra/entry-test-discovery-baseline.json` | 同上 |
 | 临时 TS 探针（`.ts`） | 53 | **部分有**：本轮两个分类探针已提交进仓库 | `exp/task37-anthropic-error-boundary/{probe-classify,probe-roundtrip}.ts` + README | 已持久化，副本保留至过期 |
 | 一次性编辑 / 整改脚本（`.py`） | 52 | 无。每个都是对某仓库文件做一次文本编辑，结果已提交 | 对应 commit 即结果 | 同上 |
 | 变异 / 临时 patch | 10 | 无。每个变异的「符号 → 判据 → 失败形态」均已记录 | dispositions 的变异正控表 + `fefb0951`／`a72a8e83` 提交信息 | 同上 |
 | 探针 / 分析脚本（`.py`） | 7 | **部分有**，见下「唯一产出方」节 | 见该节 | 同上 |
-| 报告草稿（`.md`） | 2 | 无。已蒸馏进正式报告 | `docs/tmp/2026-08-09-task37-seam-review-*.md` | 同上 |
+| 报告草稿（`.md`） | 2 | 无。已蒸馏进正式报告 | `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-*.md` | 同上 |
 | 其他 | 2 | 无 | —— | 同上 |
 | 符号链接（2 条，均指向 `node_modules`） | 2 | 无 | —— | 同上；**不删**，删链接对目标无影响但无收益。⚠️ **2026-08-10 更正**：此行原写「其一指向 `.claude/worktrees/placeholder/node_modules`（本 job 早期 Task 9 阶段的树，仍存在）」——收尾末尾按用户要求删除了本会话建的三棵 worktree，**该链接现已悬空**（`find <job tmp> -type l ! -exec test -e {} \; -print` 返回 1 条）。无功能影响（job 目录待回收），但那是一条被我自己的清理动作证伪的已交付状态断言，照实记在这里 |
 
@@ -68,7 +68,7 @@
 
 理由，以及它是怎么被发现该缩的：我先按「覆盖整个 session」做，独立评审连做三轮反向对账，漏项数是 **6 → 5 → 17+**，且第三轮明写「剩余**至少**包括」——**发散而非收敛**。这不是努力不够，是范围错了。skill 自己写着候选须「drawn only from enumerable events of this session — not filtered from 'everything I know', **which degenerates into a full audit**」；在一个横跨两阶段、15108 行的 job 上按每一次订正／校准／变异／探针的粒度枚举，它**已经退化成全量审计**——第三轮列出的 17 组里包含大量 Task 9 阶段的 fixture 假设、阈值重标定与逐个正控。
 
-**关键事实：Task 9 阶段在本 job 内已经单独收过尾。** 它的产物是 `docs/tmp/2026-08-08-task9-review-{spec,acceptance}.md`、`docs/tmp/2026-08-08-mandatory-block-delivery-h2-progress-task9-*.md`、当时增补的 `docs/todo/deferred-backlog.md` 条目与 `docs/memory/` 记忆。评审第三轮列出的多项**已经有载体**——例如它写的「`initHistory()` terminal-settlement 归因被证伪 → 真实 disposition 是 master 既有缺陷并进 backlog」，那条 backlog 早已存在。**它们缺的是本表里的行，不是仓库里的载体**，而本 stage 的目的是「后继者会不会因为证据不可见而重做」，不是「本表是否穷尽」。
+**关键事实：Task 9 阶段在本 job 内已经单独收过尾。** 它的产物是 `docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-{spec,acceptance}.md`、`docs/mandatory-block-delivery-h2-observability/progress/2026-08-08-task-9-*.md`、当时增补的 `docs/todo/deferred-backlog.md` 条目与 `docs/memory/` 记忆。评审第三轮列出的多项**已经有载体**——例如它写的「`initHistory()` terminal-settlement 归因被证伪 → 真实 disposition 是 master 既有缺陷并进 backlog」，那条 backlog 早已存在。**它们缺的是本表里的行，不是仓库里的载体**，而本 stage 的目的是「后继者会不会因为证据不可见而重做」，不是「本表是否穷尽」。
 
 **因此**：本表的冻结范围是 **Task 37 阶段（JSONL 12000–15108）**。Task 9 阶段的候选归属它自己那次收尾，本表不追溯重建；若发现该批产物确有遗漏，应作为一条独立的补录任务，而不是塞进本表。**这个缩窄本身是可反驳的**——评审在 RR4 里给过「缩窄并解释」与「按全 session 补行」两个选项，我先选了后者、失败后改选前者，理由如上。
 
@@ -86,8 +86,8 @@
 | **N8** | 1 已否决路线 + 2 已证伪 | **D5 整条路线被撤回**：让 `acceptTerminal` 对 `failed` 终态发出终态而非协议错误，重试确实停了，**但引入半块泄漏 + 双终态**。这是「路线」级候选，N7 只记了它其中一条错误因果，替代不了它 | JSONL 13720–14077 | backlog 那条 A／B（分支开：1 次上游调用 + `content_block_delta("mid-block")` 上线；撤回态：4 次调用、该 delta 0 次） | `docs/todo/deferred-backlog.md`「已被实测否掉的直接修法」 |
 | **N9** | 3 无失败信号的判据错误 | **把控制点参数化到一个结构上无鉴别力的形状**（「已提交块 + error」——块已提交后重试闸门本就关闭，`upstreamCalls` 恒为 1），结果是**两格绿而非一格更强的判据**。我在同一轮里刚写下这个形状判别不了任何 error 分类机制，随后又把新控制点放了进去。**可执行判据**：给一条判据加参数之前，先问「这个形状在**任一**参数取值下能不能被目标变异打红」；答不出就先做变异对照，别先加参数 | JSONL 13668／14741 | 移除 adapter 的 event 行回落 → 该测试两格仍绿；移到「无前置内容」形状后才红 | 本表（自足）+ **建议**加入 skill `catching-false-green-tests`，已向用户提出、待裁决 |
 | **N10** | 6 运行时探针 | **真实入口探针实测客户端收到 `["message_start","error","error"]`**（两个终态），这是 D6 的直接证据、也是把判据从 `toContain` 改成数条数的理由 | JSONL 14441 | 见 `tests/pipeline/i9-h2-buffered-probe.http.test.ts` 的 `event: error` 计数断言 | `fefb0951` 提交信息 + 该测试 |
-| **N18** | 2 已证伪 + 1 已否决路线 | **D1「Task 4 提前落地」是归属误判**（由未卷入的裁决者裁定撤销）；**且同一评审给的 D2 修法方向是反的**——它建议删掉 handler 的外层谓词，那会把语义偏差固化 | JSONL 12663（Task 37） | 归属：查 Task 4 四项交付物是否存在 + 被引基础设施的引入日期 vs 计划日期。修法方向：比较被删谓词与替代投影的**边界集合**是否相等 | `docs/tmp/2026-08-09-task37-d1-arbitration.md` + dispositions |
-| **N19** | 3 修正的作用域错误 | **我唤醒视角 A 时把自己对 D1 的结论告诉了它，污染其独立性**——它随后判 I8 时不能算独立第三票。我在给裁决者的材料里主动披露了这一点 | JSONL 13194 | 复审派活消息：凡在 prompt 里写入自己的结论，该 agent 对该命题的判定即不独立；判据是「它的结论能不能追溯到我的输入」 | 本表（自足）+ `docs/tmp/2026-08-09-task37-d1-arbitration.md` 的污染披露段 |
+| **N18** | 2 已证伪 + 1 已否决路线 | **D1「Task 4 提前落地」是归属误判**（由未卷入的裁决者裁定撤销）；**且同一评审给的 D2 修法方向是反的**——它建议删掉 handler 的外层谓词，那会把语义偏差固化 | JSONL 12663（Task 37） | 归属：查 Task 4 四项交付物是否存在 + 被引基础设施的引入日期 vs 计划日期。修法方向：比较被删谓词与替代投影的**边界集合**是否相等 | `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-d1-arbitration.md` + dispositions |
+| **N19** | 3 修正的作用域错误 | **我唤醒视角 A 时把自己对 D1 的结论告诉了它，污染其独立性**——它随后判 I8 时不能算独立第三票。我在给裁决者的材料里主动披露了这一点 | JSONL 13194 | 复审派活消息：凡在 prompt 里写入自己的结论，该 agent 对该命题的判定即不独立；判据是「它的结论能不能追溯到我的输入」 | 本表（自足）+ `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-d1-arbitration.md` 的污染披露段 |
 | **N20** | 2 已证伪的因果 | **代码注释声称「tracked in docs/todo/deferred-backlog.md」而该条目根本不存在**——假的追踪指针比不写更坏，它会终止后续追查。由独立评审 `rg` 无命中发现 | JSONL 13826 | 写下任何「已记录在 X」的指针后，立刻 `rg` 该 X 验证命中；空命中即假指针 | `docs/todo/deferred-backlog.md`（条目已补建）+ `grammar.ts` 注释 |
 | **N21** | 5 已执行的变异正控 | **accumulator-feed 正控**：移除共享原语 `anthropicWireFrameType` 的 event 行回落 → 两条 H2 探针在**条数与原因两个维度**同时变红（`overloaded_error` 被 `upstream stream truncated` 取代） | JSONL 14623／14633 | 见 `fefb0951` 提交信息的 mutation control 段 | `fefb0951` 提交信息 |
 | **N22** | 6 运行时／外部能力探针 | **Rust／native 工具链可用性探针**：`cargo --version` 得 1.97.1，据此判定可在隔离树内自建 history-search native 产物、从而完成「陈旧产物 vs 新构建」的正样本对照 | JSONL 12346 | `cargo --version`；产物构建走 `bun run build:history-search` | `docs/todo/deferred-backlog.md` 的陈旧 native 产物条目 |

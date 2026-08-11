@@ -123,9 +123,9 @@ git -C /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-fores
 
 ```text
 M	docs/memory/feedback-fix-all-comparison-sites.md
-A	docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
-A	docs/tmp/2026-08-09-task37-closeout-review.md
-A	docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 M	docs/todo/deferred-backlog.md
 ```
 
@@ -145,9 +145,9 @@ M	docs/lifecycle.md
 M	docs/memory/feedback-fix-all-comparison-sites.md
 A	docs/tmp/2026-08-08-entry-preflight-run1-failures.md
 A	docs/tmp/2026-08-09-rules-62-63-64-split-ledger.md
-A	docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
-A	docs/tmp/2026-08-09-task37-closeout-review.md
-A	docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
+A	docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 A	docs/tmp/2026-08-10-shutdown-keepalive-503-closeout-manifest.md
 A	docs/tmp/2026-08-10-shutdown-keepalive-503-terminal-report.md
 ```
@@ -159,7 +159,7 @@ A	docs/tmp/2026-08-10-shutdown-keepalive-503-terminal-report.md
 命令：
 
 ```sh
-nl -ba /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/.superpowers/sdd/progress.md | rg '^\s*(21|22|23|24)\s'
+nl -ba /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/progress-ledger.md | rg '^\s*(21|22|23|24)\s'
 ```
 
 输出关键行：
@@ -291,7 +291,7 @@ git -C /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-fores
 ```sh
 python3 - <<'PY'
 from pathlib import Path
-p=Path('/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md')
+p=Path('/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md')
 lines=p.read_text().splitlines()
 members=[x for x in lines if x and not x.startswith('#')]
 print('header_members=', next(x for x in lines if x.startswith('# members:')))
@@ -311,7 +311,7 @@ unique_member_lines= 427
 命令：
 
 ```sh
-rg -n '最终 receipt|双向 diff|BLOCKER 0／MAJOR 0' /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-09-task37-closeout-review.md
+rg -n '最终 receipt|双向 diff|BLOCKER 0／MAJOR 0' /home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
 ```
 
 输出关键行：
@@ -642,20 +642,20 @@ eb3ea6f skills(positive-control): close the other end of the "don't snapshot the
 
 ## 当前有效事实性发现
 
-[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:105-107` — C5 复验配方使用 `fe8977c0..master | head`，实际混入其他交付并截断，无法证明本轮净效果只有 5 个文档文件、零代码；应改为冻结 merge parent `71dcfb91..d2f66fa9` 的完整 diff，并显式检查路径集合。
+[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:105-107` — C5 复验配方使用 `fe8977c0..master | head`，实际混入其他交付并截断，无法证明本轮净效果只有 5 个文档文件、零代码；应改为冻结 merge parent `71dcfb91..d2f66fa9` 的完整 diff，并显式检查路径集合。
 
-[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:3-4,33-35` — `master=d2f66fa9` 与 closeout 分支等于 master 已陈旧；当前 master 已前进至少 51 commits。历史合入事实成立，但必须写成带时间／commit 的历史快照，当前 ref 另行重算。
+[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:3-4,33-35` — `master=d2f66fa9` 与 closeout 分支等于 master 已陈旧；当前 master 已前进至少 51 commits。历史合入事实成立，但必须写成带时间／commit 的历史快照，当前 ref 另行重算。
 
-[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:78` — 两份 verification log 被写成未完成欠账，实际均已有 Task 37 / session `a7c2cc1a` 条目且已提交。这是 false-red；应改成已完成并引用日志行。
+[MAJOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:78` — 两份 verification log 被写成未完成欠账，实际均已有 Task 37 / session `a7c2cc1a` 条目且已提交。这是 false-red；应改成已完成并引用日志行。
 
-[MINOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:38` — C8 的 `git diff master HEAD` 使用移动 ref，当前已输出大量后续 master 差异，不再验证合并时共存；事实本身在 `d2f66fa9` 为真，应冻结两端 commit。
+[MINOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:38` — C8 的 `git diff master HEAD` 使用移动 ref，当前已输出大量后续 master 差异，不再验证合并时共存；事实本身在 `d2f66fa9` 为真，应冻结两端 commit。
 
-[MINOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:31-32` — `file:line` 依赖未声明的行号口径；以 `nl -ba`，Task 37 是 22 行、Task 4 是 23 行，引用内容总体支持命题，但建议统一写实际文件行号工具，避免 Read 的零基编号造成漂移误判。
+[MINOR] `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:31-32` — `file:line` 依赖未声明的行号口径；以 `nl -ba`，Task 37 是 22 行、Task 4 是 23 行，引用内容总体支持命题，但建议统一写实际文件行号工具，避免 Read 的零基编号造成漂移误判。
 
 ## 结构怪味扫描
 
-- `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:33-43,100-114` — 怪味类型：历史快照与移动 ref 混用；处置：本轮修。理由：同一条命题在写作时成立、复验时换了对象。
-- `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:78` — 怪味类型：待办状态与其真实载体双源漂移；处置：本轮修。理由：日志已经落地，报告仍保留条件式欠账。
+- `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:33-43,100-114` — 怪味类型：历史快照与移动 ref 混用；处置：本轮修。理由：同一条命题在写作时成立、复验时换了对象。
+- `/home/xp/src/copilot-api-js/.claude/worktrees/encapsulated-kindling-forest/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:78` — 怪味类型：待办状态与其真实载体双源漂移；处置：本轮修。理由：日志已经落地，报告仍保留条件式欠账。
 - 第三方方案：本任务是 Git 谱系与文档事实核验，Git／`rg`／现有测试已是成熟工具，不存在值得引入的额外第三方方案。
 
 
@@ -684,9 +684,9 @@ git -C /home/xp/src/copilot-api-js diff --name-only d2f66fa9^2 d2f66fa9 | grep -
 
 ```text
 M docs/memory/feedback-fix-all-comparison-sites.md
-A docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md
-A docs/tmp/2026-08-09-task37-closeout-review.md
-A docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md
+A docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md
+A docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-review-manifest.md
+A docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
 M docs/todo/deferred-backlog.md
 LINE_COUNT=5
 NON_DOC_COUNT=0
@@ -701,7 +701,7 @@ NON_DOC_COUNT=0
 ```sh
 git -C /home/xp/src/copilot-api-js merge-base --is-ancestor d2f66fa9 master; echo rc=$?
 git -C /home/xp/src/copilot-api-js rev-parse master
-git -C /home/xp/src/copilot-api-js log -1 --format=%H -- docs/tmp/2026-08-10-task37-closeout-terminal-report.md
+git -C /home/xp/src/copilot-api-js log -1 --format=%H -- docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md
 ```
 
 输出：
@@ -783,22 +783,22 @@ e525ba1 docs(closeout): field records from the Task 37 closeout, including two f
 
 ## 事实性发现
 
-[MAJOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:1,3` — 除调用方已知的第 5 行外，标题仍写“草稿·待最终评审”，状态仍写“尚未过 `review_closeout_final`”；本轮报告一旦交付，这两处就立即成为第二组自指陈旧断言，使终态报告继续宣称最终门未闭合 — 当前 `git show master:... | nl -ba` 仍能逐字看到这两句 — 与修第 5 行同批改成终态标题及“final review 已通过”，并把本轮 verdict／报告路径作为证据。
+[MAJOR] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:1,3` — 除调用方已知的第 5 行外，标题仍写“草稿·待最终评审”，状态仍写“尚未过 `review_closeout_final`”；本轮报告一旦交付，这两处就立即成为第二组自指陈旧断言，使终态报告继续宣称最终门未闭合 — 当前 `git show master:... | nl -ba` 仍能逐字看到这两句 — 与修第 5 行同批改成终态标题及“final review 已通过”，并把本轮 verdict／报告路径作为证据。
 
-[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:35` — C4 把 `d2f66fa9` 称作“合并提交”容易误称 fast-forward 动作的性质；`git show -s d2f66fa9` 表明它是分支先合 master 产生的 merge commit，随后 master 只是 fast-forward 到该 tip — 改成“快进后的 tip 为 `d2f66fa9`”或“整合结果 commit”为宜；祖先判定本身正确。
+[MINOR] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:35` — C4 把 `d2f66fa9` 称作“合并提交”容易误称 fast-forward 动作的性质；`git show -s d2f66fa9` 表明它是分支先合 master 产生的 merge commit，随后 master 只是 fast-forward 到该 tip — 改成“快进后的 tip 为 `d2f66fa9`”或“整合结果 commit”为宜；祖先判定本身正确。
 
-[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:81` — 整改新增的“最贵警告”引用 `docs/todo/deferred-backlog.md:1417` 已漂移；`nl -ba` 的 1417 行为空，实际警告在 1456 行。相邻 `adapters/responses.ts:17,:77-78` 中第 17 行只是 `deliveryMode`，真正支持 `incomplete` 终态的是 77–78 行 — 交付前按最终文件重取行号。
+[MINOR] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:81` — 整改新增的“最贵警告”引用 `docs/todo/deferred-backlog.md:1417` 已漂移；`nl -ba` 的 1417 行为空，实际警告在 1456 行。相邻 `adapters/responses.ts:17,:77-78` 中第 17 行只是 `deliveryMode`，真正支持 `incomplete` 终态的是 77–78 行 — 交付前按最终文件重取行号。
 
-[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:125` — A2 “本报告合入 master 后就是 A2 的唯一载体”是错误的全称断言；`rg` 还命中 `/home/xp/src/copilot-api-js/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md:87`（完整 N9 形态、判据、变异与建议）及 `...task37-seam-review-dispositions.md:136-144` — 应收窄为“没有 verification-log 这一类未来收尾必经的承载者”，不能写“唯一载体”。
+[MINOR] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:125` — A2 “本报告合入 master 后就是 A2 的唯一载体”是错误的全称断言；`rg` 还命中 `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md:87`（完整 N9 形态、判据、变异与建议）及 `...task37-seam-review-dispositions.md:136-144` — 应收窄为“没有 verification-log 这一类未来收尾必经的承载者”，不能写“唯一载体”。
 
-[MINOR] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:121` — A4 把 `every-number-carries-scope` 说成未覆盖“引用的数字”，但权威条款 `/home/xp/.claude/rules/agents/60-evidence-and-criteria.md:39-44` 已以“任何写进交付物的数字”及“每个数字”覆盖来源无关的全部数字，引用并不构成契约缺口 — 可保留为实战例证或措辞澄清建议，但别声称现有规则漏管。
+[MINOR] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:121` — A4 把 `every-number-carries-scope` 说成未覆盖“引用的数字”，但权威条款 `/home/xp/.claude/rules/agents/60-evidence-and-criteria.md:39-44` 已以“任何写进交付物的数字”及“每个数字”覆盖来源无关的全部数字，引用并不构成契约缺口 — 可保留为实战例证或措辞澄清建议，但别声称现有规则漏管。
 
 ## 主观建议
 
-[建议] `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:129-152` — 第 7 节命令依赖读者位于仓库根，虽然本轮按绝对根绑定后全部通过，但独立复制单条配方时仍可能跑错树 — 预期影响是降低接手方误跑其他 worktree 的概率 — 把仓库命令统一写成 `git -C /home/xp/src/copilot-api-js ...`，测试配方显式 `cd` 并打印／核对 HEAD；不影响本轮 verdict。
+[建议] `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:129-152` — 第 7 节命令依赖读者位于仓库根，虽然本轮按绝对根绑定后全部通过，但独立复制单条配方时仍可能跑错树 — 预期影响是降低接手方误跑其他 worktree 的概率 — 把仓库命令统一写成 `git -C /home/xp/src/copilot-api-js ...`，测试配方显式 `cd` 并打印／核对 HEAD；不影响本轮 verdict。
 
 ## 结构怪味扫描
 
-- `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:1-5,89-91,125` — 怪味类型：同一文档同时承载“合入前流程说明”与“合入后终态”，形成自失效状态句；处置：本轮修标题／状态／第 5 行，历史过程改为过去时。
-- `/home/xp/src/copilot-api-js/docs/tmp/2026-08-10-task37-closeout-terminal-report.md:116-125` — 怪味类型：资产“是否存在”“是否有 durable carrier”“未来流程是否必读”三个谓词混为一列；处置：本轮修 A2/A4 的事实强度，不必重构整表。
+- `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:1-5,89-91,125` — 怪味类型：同一文档同时承载“合入前流程说明”与“合入后终态”，形成自失效状态句；处置：本轮修标题／状态／第 5 行，历史过程改为过去时。
+- `/home/xp/src/copilot-api-js/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-10-terminal-report.md:116-125` — 怪味类型：资产“是否存在”“是否有 durable carrier”“未来流程是否必读”三个谓词混为一列；处置：本轮修 A2/A4 的事实强度，不必重构整表。
 - 第三方方案：本轮是 Git 谱系与文档事实核验，Git、`rg`、`nl` 与现有测试已足够，不存在需引入的第三方方案。

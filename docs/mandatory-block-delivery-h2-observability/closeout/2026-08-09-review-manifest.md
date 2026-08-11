@@ -3,7 +3,7 @@
 ## 评审范围与当前证据
 
 - 产物一：`/home/xp/.claude/skills/positive-control-your-tests/SKILL.md` 的 `Restoring the mutation without destroying real work`。
-- 产物二：`/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md`。
+- 产物二：`/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md`。
 - 已执行：逐行读取两份产物；用 `find`、`fd -H -I`、Python 独立复算 `/home/xp/.claude/jobs/a7c2cc1a/tmp`；检查目标 transcript 路径；检查 worktree 状态。
 
 ## 事实性发现
@@ -51,7 +51,7 @@
 - 编号：RR2
 - 对象：产物二
 - 严重级别：INFO
-- 证据：`/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md:61` 已将 N1 改为“失败关闭、不是静默失效”，并逐项对上退出 128、`&&` 停链、成功标记未打印、mutation 仍需手工撤销；与产物一一致。
+- 证据：`/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md:61` 已将 N1 改为“失败关闭、不是静默失效”，并逐项对上退出 128、`&&` 停链、成功标记未打印、mutation 仍需手工撤销；与产物一一致。
 - 下一个读者会因此做出什么错误动作：无；R3 已闭合。
 - 建议处置：无需再改。
 
@@ -60,7 +60,7 @@
 - 编号：RR3
 - 对象：产物二
 - 严重级别：MAJOR
-- 证据：R1 的“冻结集合”与分类表正文形状已改善，commit `27823f14` 也确实包含 `.md` inventory，`git cat-file -e HEAD:docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md` 通过；但正文 `manifest.md:39` 声称 `recompute-classes.py` 机械对账为 OK，而该脚本 `/home/xp/.claude/jobs/a7c2cc1a/tmp/recompute-classes.py:13` 仍硬编码已被改名删除的 `...tmp-inventory.txt`。我实跑脚本得到 `FileNotFoundError`，所以这条可复现证据当前是红的。当前 job 枚举已经增至 429，后者本身不推翻 427 快照，但再次证明必须以冻结 `.md` 为输入。
+- 证据：R1 的“冻结集合”与分类表正文形状已改善，commit `27823f14` 也确实包含 `.md` inventory，`git cat-file -e HEAD:docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md` 通过；但正文 `manifest.md:39` 声称 `recompute-classes.py` 机械对账为 OK，而该脚本 `/home/xp/.claude/jobs/a7c2cc1a/tmp/recompute-classes.py:13` 仍硬编码已被改名删除的 `...tmp-inventory.txt`。我实跑脚本得到 `FileNotFoundError`，所以这条可复现证据当前是红的。当前 job 枚举已经增至 429，后者本身不推翻 427 快照，但再次证明必须以冻结 `.md` 为输入。
 - 下一个读者会因此做出什么错误动作：按清单给出的机械复算证据执行，却得到文件不存在；随后要么误判分类表没被验证，要么手工改命令绕过并自我裁决。
 - 建议处置：把脚本输入改为已提交的 `.md` 清单后实跑，记录输出；同时让脚本校验头部 `# members` 与实际成员行一致，而不只是 `sum(c)==len(members)` 这个同源恒等式。该修复会改变临时对象及 manifest 证据，须再复评。修复方建议由 `gpt-souls:doc-writer` 处理。
 
@@ -110,8 +110,8 @@
 
 ## 结构怪味扫描
 
-- `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md:14-39`：证据与复算器脱节，属于“文档声称机械可复现、脚本仍指旧载体”的双源漂移；本轮修，理由见 RR3。
-- `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md:55-67`：候选集未声明事件边界，属于“集合量词无 scope”；本轮修，理由见 RR4。
+- `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md:14-39`：证据与复算器脱节，属于“文档声称机械可复现、脚本仍指旧载体”的双源漂移；本轮修，理由见 RR3。
+- `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md:55-67`：候选集未声明事件边界，属于“集合量词无 scope”；本轮修，理由见 RR4。
 - 第三方替代：本任务是文字分类与事件回顾，不存在值得引入的成熟第三方库；标准 JSONL 解析、`rg`、`find` 已足够，问题不在工具缺失而在 selector／scope。
 
 ## 计数订正
@@ -190,5 +190,5 @@
 ### 最终裁定
 
 - 产物一 `/home/xp/.claude/skills/positive-control-your-tests/SKILL.md:42-44`：维持 RR1，**INFO／闭合**。事故事实、失败关闭、无例外正令与条件化 peer 风险均准确；无需在步骤 2 重复。
-- 产物二 `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md`：**BLOCKER 0／MAJOR 0，可进入下一阶段**。计数、冻结集合、分类复算、N1 失败关闭、N4 依据、不删除处置及缩窄后的 non-file 双向对账均已闭合。
+- 产物二 `/home/xp/src/copilot-api-js/.claude/worktrees/task37-closeout/docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md`：**BLOCKER 0／MAJOR 0，可进入下一阶段**。计数、冻结集合、分类复算、N1 失败关闭、N4 依据、不删除处置及缩窄后的 non-file 双向对账均已闭合。
 - 一处非阻断的终态措辞提醒：manifest 第 104 行仍写 skill 改动“仍在复评中，未定稿”；本 receipt 发出后该句成为历史状态。若修改该句，按 manifest 自身纪律会形成新版本并需复核；更稳妥的做法是在终态报告中说明本 review 已放行，而不为改一句状态重新改写已审 manifest。

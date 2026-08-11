@@ -205,7 +205,7 @@ Canonical record／journal 保留 dispatch event sequence 与 digest；CAS 只�
 
 > 目标提交：`0e524438cfa9d7197484731b9f89fc8c263223cb`（上一被审 `2f706e7d4891e5018c8b7c6ab3f57a12f29a5a1f`）
 >
-> 证据：已以 `git rev-parse 0e524438` 解析完整 SHA，并读取本报告第六轮。因隔离树保留历史 unresolved index merge，未 checkout；以 `git show <target>:docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md` 与 `git diff 2f706e7d..0e524438 -- docs/spec/...` 审阅目标版本。未修改 spec。
+> 证据：已以 `git rev-parse 0e524438` 解析完整 SHA，并读取本报告第六轮。因隔离树保留历史 unresolved index merge，未 checkout；以 `git show <target>:docs/mandatory-block-delivery-h2-observability/spec.md` 与 `git diff 2f706e7d..0e524438 -- docs/spec/...` 审阅目标版本。未修改 spec。
 
 ### G1 · 关闭：freeze 三态与 ordinary zero-event
 

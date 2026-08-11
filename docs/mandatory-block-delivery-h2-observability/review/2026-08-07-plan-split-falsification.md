@@ -1,6 +1,6 @@
 # Mandatory Block Delivery 拆分计划评审——事实与判据证伪
 
-> 评审范围：`docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/` 的 README、四份 phase plan、KICKOFF 与两份单文件评审转录。
+> 评审范围：`docs/mandatory-block-delivery-h2-observability/` 的 README、四份 phase plan、KICKOFF 与两份单文件评审转录。
 >
 > 对照：获批源 `/home/xp/.claude/plans/sparkling-juggling-whistle.md` 与冻结 spec `0e524438cfa9d7197484731b9f89fc8c263223cb`。
 >

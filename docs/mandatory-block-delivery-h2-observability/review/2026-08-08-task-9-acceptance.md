@@ -313,7 +313,7 @@ Expected: true   Received: false
 
 ### 只读与副作用声明
 
-- 本评审**未修改**被评审对象的任何源码或测试；工作树内只新建了本报告 `docs/tmp/2026-08-08-task9-review-acceptance.md`。
+- 本评审**未修改**被评审对象的任何源码或测试；工作树内只新建了本报告 `docs/mandatory-block-delivery-h2-observability/review/2026-08-08-task-9-acceptance.md`。
 - 所有变异注入与探针都在 `/tmp/t9`（tar 副本，`node_modules` 符号链接到主树）内进行，每次注入后均反向还原并 `diff -q` 校验。
 - 在工作树内运行过两次官方测试门禁（只读执行，测试自身用 DI 临时目录沙箱）。**期间观察到同伴的未提交改动**（`M src/lib/history/v3/store.ts`、`M tests/history/v3/transport-evidence.it.test.ts`），未触碰。
 

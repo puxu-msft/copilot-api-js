@@ -2,7 +2,7 @@
 
 > 状态：拆分后复核 `0 blocker / 0 major`，可定稿。
 >
-> 评审对象：`docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/`；获批源：`/home/xp/.claude/plans/sparkling-juggling-whistle.md`。
+> 评审对象：`docs/mandatory-block-delivery-h2-observability/`；获批源：`/home/xp/.claude/plans/sparkling-juggling-whistle.md`。
 
 ## 范围与证据
 

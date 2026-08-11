@@ -29,7 +29,7 @@
 
 | # | 断言 | 证据 | 取值方式 |
 |---|---|---|---|
-| C1 | Task 37 合并态复审门已关闭，0 blocker | `.superpowers/sdd/progress.md` 第 22 行；评审报告 `docs/tmp/2026-08-09-task37-seam-review-{claims,drift,invariants,dispositions}.md`、`docs/tmp/2026-08-09-task37-{d1-arbitration,grammar-terminal-review}.md` | 复用（2026-08-09 闭合时的证据） |
+| C1 | Task 37 合并态复审门已关闭，0 blocker | `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 第 22 行；评审报告 `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-seam-{claims,drift,invariants,dispositions}.md`、`docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-{d1-arbitration,grammar-terminal}.md` | 复用（2026-08-09 闭合时的证据） |
 | C2 | Task 4 已解除阻塞 | 同上，账本第 21/23 行 | 复用 |
 | C3 | 代码交付 `fe8977c0` 已在 master 内 | `git merge-base --is-ancestor fe8977c0 master` → 0 | **新鲜**（2026-08-10 实跑） |
 | C4 | 收尾产物已进入 master，整合结果 commit 为 `d2f66fa9` | `git merge-base --is-ancestor d2f66fa9 master` → 0。**两侧的操作不是一回事**：`d2f66fa9` 本身是「把 master 合进我的分支」的**合并提交**（父序 `b5acce8f` / `71dcfb91`），共享树那一侧做的则是 `git merge --ff-only`、**只快进不产生新提交**——这样共享树永远不碰 peer 的 WIP | **新鲜** |
@@ -52,9 +52,9 @@
 | 阶段 | 处置 |
 |---|---|
 | `freeze_truth` | 冻结 `git status`／HEAD／分支清单 |
-| `inventory_job_tmp` | 冻结逐路径清单 **427 行**，落 `docs/tmp/2026-08-09-task37-closeout-tmp-inventory.md`（原用 `.txt`，被 gitignore 挡住，改名 `.md` 并以 `git cat-file -e` 复验入库） |
-| `persist_evidence` / `verify_persisted_evidence` | 证据清单 `docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md` |
-| `archive_docs` / `reconcile_live_docs` | backlog 新增 3 条；记忆 `feedback-fix-all-comparison-sites` 追加第二个实例；账本 `.superpowers/sdd/progress.md` 关门并修正 3 条陈旧断言 |
+| `inventory_job_tmp` | 冻结逐路径清单 **427 行**，落 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md`（原用 `.txt`，被 gitignore 挡住，改名 `.md` 并以 `git cat-file -e` 复验入库） |
+| `persist_evidence` / `verify_persisted_evidence` | 证据清单 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md` |
+| `archive_docs` / `reconcile_live_docs` | backlog 新增 3 条；记忆 `feedback-fix-all-comparison-sites` 追加第二个实例；账本 `docs/mandatory-block-delivery-h2-observability/progress-ledger.md` 关门并修正 3 条陈旧断言 |
 | `discover_nonfile_candidates` | **六轮才收敛**，见下节 |
 | `review_temp_manifest` | 第六轮拿到 positive receipt：事件源 `…/a7c2cc1a-….jsonl`、范围 12000–15108 行、独立枚举、**两方向 diff 均空** |
 | `clean_temp` | **不主动删除**（收到 receipt 后删除已被释放，所以这是一个**选择**，不是失败关闭）：skill 允许「每个对象均有 disposition」时交由 harness 回收 job 目录，冻结的 427 行逐类覆盖满足该前提。**但收尾末尾复扫发现 19 个冻结后新增对象**（446 vs 427，两法一致），逐个定性后**归档了一个**：`recompute-classes.py` 是证据清单「合计 427 已对账」那句话的唯一产出者，却只活在会被回收的目录里 → 迁入 `exp/task37-closeout-inventory/`（含 README 与正样本对照）。其余 18 个（13 份 commit message 草稿、2 个冻结 SHA、测试日志与退出码、一个 worktree 巡检脚本）的内容都已有仓内承载者，不归档 |
@@ -75,11 +75,11 @@
 
 - **H2 块中途终态**仍是缺陷：正确修法要等 Task 4 的 owner cutover。已登记 backlog，探针以 gated skip 断言期望行为。
 - **接手 Task 4 的入口**（报告草稿只说了「已解除阻塞」而没给路径，评审判为 MAJOR，补齐如下）：
-    - 计划正文：`docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（「把现有 `DownstreamDeliverySession` 升级为 `BlockDeliveryOwner`」）。
+    - 计划正文：`docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md:72`（「把现有 `DownstreamDeliverySession` 升级为 `BlockDeliveryOwner`」）。
     - **同 commit 硬约束**：同文件 `:67`——切换 driver 直接消费 grammar outcome 的**那一个** commit 里才能删 compatibility projection，不允许出现「旧 projection 已删、新 owner 尚未接管」的中间提交。
     - **已写好的验收探针**：`tests/pipeline/i9-followup-midblock-error.http.test.ts:64`，现为 `describe.skip`，skip 理由里写着解除条件。**别重写一个更弱的**——它断言的就是 Task 4 要建立的能力。
     - ⚠️ **最贵的一条警告**，在 backlog 条目 **`## 上游终态错误发生在块中途时，仍被当截断重试四次；直接修会泄漏半块`** 里（**故意不给行号**：`docs/todo/deferred-backlog.md` 是高频并发追加的文件，草稿里写的 `:1417` 在两轮评审期间就被 peer 推到了 1456，漂了 39 行；用 `rg -n '^## 上游终态错误发生在块中途时' docs/todo/deferred-backlog.md` 定位）。内容是：做 Task 4 时必须把 `incomplete` 与 `failed` **并列**处理——`src/lib/pipeline/delivery/adapters/responses.ts:76-78` 的 `case "response.incomplete"` → `semantic = "incomplete"` 显示它同样是上游的终态决定；**只修 `failed` 会在同一位置再犯一次**。（backlog 原文还引了同文件 `:17`，那一处**不支持**该论断，是它自己的笔误，别跟着找。）
-    - **别重走的路**：本轮已试过「让 grammar 在块中途发出 failed 终态」，实测泄漏半块 + 多一个终止符，已撤回（见第 1 节与 `docs/tmp/2026-08-09-task37-grammar-terminal-review.md`）。
+    - **别重走的路**：本轮已试过「让 grammar 在块中途发出 failed 终态」，实测泄漏半块 + 多一个终止符，已撤回（见第 1 节与 `docs/mandatory-block-delivery-h2-observability/review/2026-08-09-task-37-grammar-terminal.md`）。
 - **backlog 新增 3 条**。其中一条是 entry-evidence 基线的**手工维护**条目，它自己带两个子项（`allowed_skipped` 须按 `skipSortKey` 逐字节全序、一个 `describe.skip` 套件产出两条 skip identity）——**是「3 条里的 1 条含 2 个子项」，不是「3 条里有 2 条是它们」**。
 - **`tests/history/search/` 的 14 条失败**是环境性的：gitignored 的 native 产物过期（构建于 2026-08-06，源码新 5 个提交）。正控：重新构建 → 28 pass / 0 fail。已登记，不是代码缺陷。
 - **`verification-log.md` 欠账已还**（起草时尚未写，草稿评审期间补上，故两份评审报告对此说法不一）：`~/.claude` `e525ba1` —— `skills/closing-a-development-session/verification-log.md` 七条、`skills/proving-where-a-command-ran/verification-log.md` 两条。含两条对我自己的证伪：收尾触发链没自己响（是用户点名的）、以及「引用权威的数字不继承它的正确性」。后者还给 provenance 那份带去第一张 V2 反对票——gate 模板被仓库护栏整条拒收，被迫拆成多次调用后 `&&` 短路与证据打印不再同处一个 shell。
@@ -88,7 +88,7 @@
 
 ### 本轮收尾产生的、已在 master 上的产物
 
-`docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md`（证据清单）、`…-tmp-inventory.md`（427 行冻结清单）、`…-closeout-review.md`（**收尾产物自身的评审记录，已跑完、0 blocker / 0 major，不要重派**）。本报告与其两份草稿评审（`…-draft-review-claims.md`、`…-draft-review-successor.md`）随最后一次合并进入 master。
+`docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md`（证据清单）、`…-tmp-inventory.md`（427 行冻结清单）、`…-closeout-review.md`（**收尾产物自身的评审记录，已跑完、0 blocker / 0 major，不要重派**）。本报告与其两份草稿评审（`…-draft-review-claims.md`、`…-draft-review-successor.md`）随最后一次合并进入 master。
 
 ---
 
@@ -126,7 +126,7 @@ A2/A3 都是**指令类文本**，按 `instruction-text-must-be-reviewed` 安装
 
 **A4 撤回，理由值得写下来**：我原本提议给 `every-number-carries-scope` 补一句「引用来的数字也要重算」。评审去读了规则原文——它的 `[hard]` 门写的是「**任何写进交付物的数字**必须①带口径②经不同原理交叉验证」，引用来的数字当然也是写进交付物的。**缺口不存在，规则一直在那儿，是我没照做。** 这个区分很重要：往一条已经覆盖了该情形的规则上再加一句，不会让人更照做，只会让规则更长——`best-practices-over-omission` 提醒过，删改规则文本都不是中性动作。
 
-**承载者核实**（第一版这里写错了，留作实例）：我先写下「A2 的唯一载体是本报告」，评审指出证据清单也记着它——去核，`docs/tmp/2026-08-09-task37-closeout-evidence-manifest.md` 第 87 行的 N9 条目正是这条教训，且已在 master。A3 的形态另记在 `~/.claude/skills/closing-a-development-session/verification-log.md`（`e525ba1`）。**两条都不止一个载体**；我那句「唯一载体」是没核就写的绝对断言，与本轮反复在抓的形态同类。
+**承载者核实**（第一版这里写错了，留作实例）：我先写下「A2 的唯一载体是本报告」，评审指出证据清单也记着它——去核，`docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md` 第 87 行的 N9 条目正是这条教训，且已在 master。A3 的形态另记在 `~/.claude/skills/closing-a-development-session/verification-log.md`（`e525ba1`）。**两条都不止一个载体**；我那句「唯一载体」是没核就写的绝对断言，与本轮反复在抓的形态同类。
 
 ---
 

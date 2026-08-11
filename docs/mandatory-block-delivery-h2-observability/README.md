@@ -2,14 +2,14 @@
 
 > 状态：`approved-not-implemented`
 >
-> 权威规格：[`docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md`](../../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)
+> 权威规格：[`docs/mandatory-block-delivery-h2-observability/spec.md`](../../spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md)
 >
 > 本目录只定义实施方法；规格是 what/why 单一事实源，当前 live 架构仍以 [`docs/DESIGN.md`](../../DESIGN.md) 为准。
 
 
 ## Context
 
-近期 Responses 上游多次在 tool arguments 中途自然耗尽，缺少 `response.function_call_arguments.done`、`response.output_item.done` 和 response terminal；现有翻译层正确 fail closed，但部分生产路径已经逐 delta 写给客户端，随后才补 synthetic error。已冻结规格 `docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md` 要求所有真实内容至少按完整 block／item 交付，无可靠中间边界的协议按 response terminal 原子交付；同时在不触碰 HTTP/2 DATA callback 的前提下记录 dispatch-scoped first-terminal、ordered GOAWAY、trailers 和 History V3 evidence。
+近期 Responses 上游多次在 tool arguments 中途自然耗尽，缺少 `response.function_call_arguments.done`、`response.output_item.done` 和 response terminal；现有翻译层正确 fail closed，但部分生产路径已经逐 delta 写给客户端，随后才补 synthetic error。已冻结规格 `docs/mandatory-block-delivery-h2-observability/spec.md` 要求所有真实内容至少按完整 block／item 交付，无可靠中间边界的协议按 response terminal 原子交付；同时在不触碰 HTTP/2 DATA callback 的前提下记录 dispatch-scoped first-terminal、ordered GOAWAY、trailers 和 History V3 evidence。
 
 技术规格由两个正交 reviewer 对固定提交 `0e524438cfa9d7197484731b9f89fc8c263223cb` 给出 `0 blocker / 0 major`，闭环记录在 `955408a5b85cb3ce14bf4e8dc1ff3a81226f30a8`，当前状态仍为 `confirmed-not-implemented`。本计划只描述实施；实施完成前不修改 `docs/DESIGN.md` 的 live 状态。
 
@@ -32,7 +32,7 @@
 - 性能只报告 A/A、A/B paired delta 与单侧 bootstrap 95% CI，不设固定门，不声称“零性能回归”。
 - 生产 attribution 只记事实；测试 fixture intent 不得写入 production snapshot。Bun clean EOF／RST 保持 `indeterminate`，专项调查仍留 backlog。
 - 不启动或终止 4141 主服务器；需要服务器验证时使用非 4141 端口并按精确 PID 清理自己启动的实例。
-- 每个语义任务单独 conventional commit，显式 pathspec；不 push。凡任务会产出多于一个语义 commit、或单 commit 但历时长／需试错，派活前为该实施者建立独立 progress 文件 `docs/tmp/2026-08-07-mandatory-block-delivery-h2-progress-t<task>.md`；一 agent 一文件，每个实现 commit 同步更新。一次成型的单 commit 任务不强制建 progress 文件。
+- 每个语义任务单独 conventional commit，显式 pathspec；不 push。凡任务会产出多于一个语义 commit、或单 commit 但历时长／需试错，派活前为该实施者建立独立 progress 文件 `docs/mandatory-block-delivery-h2-observability/progress/<date>-task-<n>.md`；一 agent 一文件，每个实现 commit 同步更新。一次成型的单 commit 任务不强制建 progress 文件。
 - 完整实现后才更新 `DESIGN.md`／`API.md`／coding conventions／config 文档；所有生产路径与 History migration 完成前不得写成 live。
 
 ## 文件与责任边界

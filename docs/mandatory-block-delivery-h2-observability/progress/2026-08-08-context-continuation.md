@@ -4,7 +4,7 @@ status: in-progress
 base: 993a64a93c137c15eb12f7aea8ec0806cbb46769
 branch: worktree-continuation
 worktree: /home/xp/src/copilot-api-js/.claude/worktrees/continuation
-plan: docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/README.md
+plan: docs/mandatory-block-delivery-h2-observability/README.md
 source-session: 64e52e2f-eb0b-485a-9332-0e3d32adc328
 source-transcript: /home/xp/.claude/projects/-home-xp-src-copilot-api-js/64e52e2f-eb0b-485a-9332-0e3d32adc328.jsonl
 continuity: 须连续；旧会话明确命中两次 context-window 400，已按 PID 与 session marker 核对后停止。

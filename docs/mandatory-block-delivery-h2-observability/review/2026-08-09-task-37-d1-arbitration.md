@@ -11,7 +11,7 @@
 
 ### E1：冻结计划对 Task 3／Task 4 的边界
 
-`git show 638f6f3c898f7562fc086bfb2c5f1f4b04a5b5ad:docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 显示：Task 4 的定义性交付包括在既有 session 内增加 candidate-local staging／outcome consumption（第 87 行）、把 `runResponseBufferedSink` 改为通过 owner 消费 grammar outcomes（第 88 行）、删除 owner 外真实写出 helper（第 89 行）、增加 `consume(outcome, adapter)` 与 `runSyntheticResponse`（第 83 行、第 90 行）。同一计划明确把 serializer、wire state、allocation port、terminal fence 称为 Task 4 要“复用”的既有组件（第 87 行）。因此，仅发现 allocation port 或既有 session 已接入生产路径，不能单独证明 Task 4 已开始；必须观察到 Task 4 所定义的 migration delta。
+`git show 638f6f3c898f7562fc086bfb2c5f1f4b04a5b5ad:docs/mandatory-block-delivery-h2-observability/plan-1-sse-and-delivery-foundation.md` 显示：Task 4 的定义性交付包括在既有 session 内增加 candidate-local staging／outcome consumption（第 87 行）、把 `runResponseBufferedSink` 改为通过 owner 消费 grammar outcomes（第 88 行）、删除 owner 外真实写出 helper（第 89 行）、增加 `consume(outcome, adapter)` 与 `runSyntheticResponse`（第 83 行、第 90 行）。同一计划明确把 serializer、wire state、allocation port、terminal fence 称为 Task 4 要“复用”的既有组件（第 87 行）。因此，仅发现 allocation port 或既有 session 已接入生产路径，不能单独证明 Task 4 已开始；必须观察到 Task 4 所定义的 migration delta。
 
 ### E2：双方引用的生产接线确实存在，但其形状仍是旧写路径
 
