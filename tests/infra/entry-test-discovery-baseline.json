@@ -573,6 +573,7 @@
     "tests/pipeline/semantic-content-gate.it.test.ts",
     "tests/pipeline/semantic-content-gate.unit.test.ts",
     "tests/pipeline/semantic/ledger-declare.unit.test.ts",
+    "tests/pipeline/semantic/ledger-property.unit.test.ts",
     "tests/pipeline/semantic/ledger-terminal.unit.test.ts",
     "tests/pipeline/server-error-retry-strategy.unit.test.ts",
     "tests/pipeline/server-tool-rejection-retry.unit.test.ts",
