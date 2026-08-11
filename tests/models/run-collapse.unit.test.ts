@@ -51,13 +51,17 @@ describe("run-collapse keeps the count exact", () => {
     ["a run too short to collapse", `${"x".repeat(100)} tail`],
     ["newline and tab runs", `${"\t".repeat(20 * 1024)}\n${"\n".repeat(20 * 1024)}`],
     ["a multi-byte character run", `你好世界${"　".repeat(8000)}再见`],
-  ])("%s", (_name, text) => {
-    expect(collapsed(text)).toBe(raw(text))
-  // The oracle is the slow path BY CONSTRUCTION: proving equality means encoding the
-  // pathological input for real, which is the 3.5s-per-60KB cost this change exists to
-  // avoid. A generous timeout here is not flake tolerance — the assertion is exact
-  // equality, and it either holds or it does not.
-  }, 120_000)
+  ])(
+    "%s",
+    (_name, text) => {
+      expect(collapsed(text)).toBe(raw(text))
+      // The oracle is the slow path BY CONSTRUCTION: proving equality means encoding the
+      // pathological input for real, which is the 3.5s-per-60KB cost this change exists to
+      // avoid. A generous timeout here is not flake tolerance — the assertion is exact
+      // equality, and it either holds or it does not.
+    },
+    120_000,
+  )
 })
 
 describe("run-collapse removes the quadratic cost", () => {

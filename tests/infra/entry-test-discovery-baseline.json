@@ -390,6 +390,7 @@
     "tests/models/models-capabilities.unit.test.ts",
     "tests/models/models-client.it.test.ts",
     "tests/models/openai-models-extended.http.test.ts",
+    "tests/models/run-collapse.unit.test.ts",
     "tests/models/supported-endpoints.unit.test.ts",
     "tests/models/timeout-resolver.unit.test.ts",
     "tests/observability/active-request-wire.unit.test.ts",

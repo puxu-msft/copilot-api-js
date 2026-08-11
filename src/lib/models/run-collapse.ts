@@ -62,16 +62,16 @@ export interface CharRun {
  */
 export function collapseLongRuns(
   text: string,
-  collapse: (run: CharRun) => { tokens: number, chars: number },
+  collapse: (run: CharRun) => { tokens: number; chars: number },
   minRun: number = MIN_COLLAPSIBLE_RUN,
-): { remainder: string, removedTokens: number } {
+): { remainder: string; removedTokens: number } {
   const kept: Array<string> = []
   let removedTokens = 0
   let segmentStart = 0
   let i = 0
 
   while (i < text.length) {
-    const char = text[i] as string
+    const char = text[i]
     let end = i + 1
     while (end < text.length && text[end] === char) end++
     const length = end - i
@@ -79,9 +79,8 @@ export function collapseLongRuns(
     if (length >= minRun) {
       const { tokens, chars } = collapse({ char, length })
       if (chars > 0) {
-        kept.push(text.slice(segmentStart, i))
         // Everything not accounted for arithmetically stays as real text: both margins plus whatever the whole-token rounding left over.
-        kept.push(char.repeat(length - chars))
+        kept.push(text.slice(segmentStart, i), char.repeat(length - chars))
         removedTokens += tokens
         segmentStart = end
       }
@@ -104,7 +103,7 @@ export function collapseLongRuns(
  * Returns 0 tokens when the run is not long enough to have a collapsible
  * interior once both margins are reserved.
  */
-export function collapsibleTokens(length: number, bytesPerToken: number): { tokens: number, chars: number } {
+export function collapsibleTokens(length: number, bytesPerToken: number): { tokens: number; chars: number } {
   if (!(bytesPerToken > 0)) throw new Error(`bytesPerToken must be positive, got ${bytesPerToken}`)
   const interior = length - RUN_BOUNDARY_MARGIN * 2
   if (interior <= 0) return { tokens: 0, chars: 0 }
