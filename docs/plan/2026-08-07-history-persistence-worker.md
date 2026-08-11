@@ -3,6 +3,10 @@
 > **评审状态门：** 以配套 kickoff 的 `REVIEWED_PLAN_COMMIT` 为唯一机器可判真相源。该值为空或 plan blob 与该提交不一致时禁止实施；不在本文件写自引用 commit SHA。
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox syntax for tracking.
+>
+> ⚠️ **两层记法，只有一层是真相**（2026-08-10 对账时发现并修）。批次是否完成，**唯一看标题下的 `**状态：**` 行**；步骤复选框是执行会话的临时草稿，**不是真相层**——Batch 0／1a／2a／2b 都已完成并合入 `master`，而它们的复选框全是未勾。本文件的完成协议（下文「Execution Progress Contract」第 6 步）只要求追加状态行、同步进度文件，从未要求回勾。**别看到 `0/7` 就以为那批没做**，也别为了「看起来整齐」去批量补勾——没有逐步取证的勾选就是编造。
+>
+> **2b 之后的计划对账（2026-08-10）**：Batch 2b 的实际落地使后续批次的部分陈述失效，逐条证据见 [2026-08-10-plan-recon-4a-4b.md](../tmp/2026-08-10-plan-recon-4a-4b.md)（4a／4b 逐 Step 判定）与 [2026-08-10-plan-recon-3a-3b-5-6.md](../tmp/2026-08-10-plan-recon-3a-3b-5-6.md)（3a／3b／5／6 前置复核，22 条需改写、3 处顺序变化）。各受影响批次的标题下都有一条 `**2b 后对账：**` 摘要——**动手前先读那条**。
 
 **Goal:** 把 History semantic/raw 持久化、backfill、maintenance 与最终查询逐批迁入单个专用 Worker；使用有界 operation reservation、Worker crash 重放和 startup/shutdown durability barrier；每个 batch 独立验收后立即合入 `master`。
 
@@ -103,6 +107,8 @@ status: active
 ---
 
 ### Task 0 / Batch 0: Protocol and Worker Runtime Skeleton
+
+**状态：已完成（骨架引入于 `d1598297`「add worker runtime skeleton」）。** 状态行由 2026-08-10 的对账补记——本批当时漏了状态行，而复选框未勾，两处都看不出它已完成。证据：`src/lib/history/worker/{protocol,runtime}.ts` 及配套测试均在树上；执行记录见 [2026-08-07-history-worker-progress-impl-1.md](../tmp/2026-08-07-history-worker-progress-impl-1.md)。**注意**：`protocol.ts` 里的 `maintenanceIntervalMs`／`stop-maintenance`、`runtime.ts` 的 `stopMaintenance()` 都来自本批而非 4b（`git blame` 实证），别把它们记成后续批次的产出。
 
 **Files:**
 - Create: `src/lib/history/worker/protocol.ts`
@@ -291,6 +297,8 @@ git diff --check
 Commit: `feat(history): add worker runtime skeleton`
 
 ### Task 1a / Batch 1a: Admission Controller Primitive
+
+**状态：已完成（primitive 引入于 `23eb79d0`「add persistence admission controller」）。** 同样由 2026-08-10 对账补记状态行。证据：`src/lib/history/worker/admission.ts` 与 `tests/history/worker/admission*.test.ts` 均在树上。**注意**：本批已交付 `pause()`／`waitForQuiescence()`／`resume()` 并有专测（`admission.ts:37-47,182-203`、`tests/history/worker/admission.unit.test.ts:296-338`）——**Task 3b 不要再把「增加 pause/resume」当作待实现步骤**。
 
 **Files:**
 - Create: `src/lib/history/worker/admission.ts`
@@ -514,7 +522,7 @@ Commit: `feat(history): add semantic worker backend`
 
 ### Task 2b / Batch 2b: Semantic Production Cutover
 
-**状态：已完成（2026-08-09/10，待 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/tmp/2026-08-09-batch2b-review-gpt.md](../tmp/2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](../tmp/2026-08-09-history-worker-progress-impl-2b.md)。
+**状态：已完成（`b2444a17`，2026-08-10 fast-forward 合入 `master`）。** 三轮独立评审收口至 0 blocker／0 major（[docs/tmp/2026-08-09-batch2b-review-gpt.md](../tmp/2026-08-09-batch2b-review-gpt.md)），期间发现并修复**六处生产缺陷**：三个生命周期出口 stop 而未 release（一次性 runtime 变成不可恢复态）、`initHistory` 跨 `await` 无互斥（并发调用的落败方释放获胜方的 writer）、`start()` 成功之后的失败滞留一个任何 teardown 都看不见的 Worker、rollback 的 cleanup 失败遮蔽原始错误并保留 runtime、配置值超过 timer 上限把长 deadline 反转成约 1ms、以及 deadline 之前的普通失败被打上「deadline 已报告」的假日志。**边界**：本批把 semantic **写**连接独占给 Worker，主线程改持独立只读句柄；**query RPC 仍未接线**（归 Batch 6），所以读走的是主线程自己的只读句柄而非 RPC。**已知代价**：`POST /api/entries/:id/{pin,unpin}` 在 2b→6 窗口期返回 503（用户 2026-08-09 裁决，恢复契约逐条记在 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)）。**2a 留下的硬性前置已闭合**：启动 deadline 落在拥有进程启动的一方（`startup-deadline.ts` + CLI），并有真进程 oracle。**验收**：`test:backend` 0 fail、`build:backend` exit 0、typecheck 绿；线程隔离实测真 Worker 主线程停顿 30ms／liveness 10ms，同一注入经 in-process 后端则 1050ms／532ms。执行记录与变异对照见 [docs/tmp/2026-08-09-history-worker-progress-impl-2b.md](../tmp/2026-08-09-history-worker-progress-impl-2b.md)。
 
 **Files:**
 - Modify: `src/lib/history/state.ts`
@@ -563,6 +571,8 @@ Commit: `refactor(history): route terminal persistence through worker`
 
 ### Task 3a / Batch 3a: Raw Command Accumulator
 
+**2b 后对账（2026-08-10）：** ① **不是从零新增**——`protocol.ts:14-40` 已有 `RawCaptureCommand`／`RawOperationAttachment` 与 terminal publication 的 `rawAttachment` 字段，`terminal-publication.ts:10-29` 的 `createRawOperationAttachmentOwner()` 已提供一次性 `transfer()`（二次调用抛错），只是**固定返回空 command 数组**；`request.ts` 与 `lightweight-model-operation.ts` 也已各自建 owner 并在 terminal 时 transfer。本批实际要做的是**让它累积 command**，并保住现有一次性契约。② **计划写的 `rawAttachment.seal()` 这个 API 在代码里不存在**，实际名是 `RawOperationAttachmentOwner.transfer()`。③ 「Legacy sink 明确忽略 attachment」**已失效**——`LegacyHistoryTerminalSink` 已被 2b 删除且有架构守卫禁止复活；改成「Worker semantic backend 在 3b 前忽略 attachment」。④ 「旧 raw writer 仍是唯一 raw DB authority」**仍成立**，不得让 Worker 写 raw artifact。⑤ `raw-command.ts` 与两份 3a 测试**确实都还不存在**。
+
 **Files:**
 - Create: `src/lib/history/worker/raw-command.ts`
 - Modify: `src/lib/history/worker/protocol.ts`
@@ -607,6 +617,8 @@ bunx eslint src/lib/history/worker/raw-command.ts src/lib/context/request.ts
 Commit: `feat(history): add raw capture command envelope`
 
 ### Task 3b / Batch 3b: Raw Capture Production Cutover
+
+**2b 后对账（2026-08-10）：** ① **删掉「增加 `pause(reason)`／`resume()`」这一步**——1a 已交付且有专测；本批要做的是 handoff coordinator 对 `pause()`＋`waitForQuiescence()` 的**正确接线**。② **新增一条 2b 引入的硬约束**：`initHistory`／disable／`shutdownHistory` 的所有共享生命周期转换现在都必须走 `serializeHistoryLifecycle()` 这一条队列（`state.ts:115-136,298-303`）。异步 quiesce handoff 与 config publication **必须同队列串行**，不得在现有 `onHistoryRawCaptureChange` 回调里另起一条未串行的生命周期——那正是 2b 修掉的缺陷形态。③ runtime 的 revision transport 已存在（`runtime.ts:207-231,344-382`），本批要实现的是 **backend 真实的 raw generation open/validate** 与 state 侧 descriptor publication／barrier，不是从零做 revision machinery。④ 旧 manager 的 `quiesceRawCapture()`／`drainLeases()` **仍然要做**——当前只有同步 `shutdownRawCapture()`，没有可等待的 barrier。⑤ 本批「不证明 backfill/maintenance 已迁出主线程」**已过时**：那部分 2b 已提前做掉（见 4b 对账）。
 
 **Files:**
 - Modify: `src/lib/history/worker/backend.ts`
@@ -666,6 +678,8 @@ Commit: `refactor(history): move raw capture into worker`
 
 ### Task 4a / Batch 4a: Worker Backfill Backend
 
+**2b 后对账（2026-08-10）—— 逐 Step 判定：已完成 1（目标达成但实现不同）／部分 3／未做 1。** ⚠️ **不要据此认为本批可跳过。** 2b 让 Worker 的 `initialize()` 直接起 `startV3SummaryBackfill(opened)`（`worker/backend.ts:166`）、`stopMaintenance()` 里 stop 并 drain（`:226-234`），**目标达成但实现方式与计划不同**：计划要的是 `start-backfill` 命令与 backfill progress/status 协议，**那套协议至今未实现**。cooperative loop／stop／drain 与 keyset／query-plan 早在 `fa2bfd2d`／`a8a9475c` 就有了，不是 2b 的产出。**计划要求的 `tests/history/worker/backfill-backend.it.test.ts` 不存在**——符号被搬进 Worker ≠ 本批的测试已经写了，这两件事必须分开判。逐 Step 证据见 [2026-08-10-plan-recon-4a-4b.md](../tmp/2026-08-10-plan-recon-4a-4b.md)。
+
 **Files:**
 - Modify: `src/lib/history/worker/{protocol,backend,history-worker}.ts`
 - Modify: `src/lib/history/v3/{store,summary-store}.ts`
@@ -702,6 +716,8 @@ bun run typecheck
 Commit: `feat(history): add worker backfill backend`
 
 ### Task 4b / Batch 4b: Maintenance Production Cutover
+
+**2b 后对账（2026-08-10）—— 逐 Step 判定：已完成 1（目标达成但实现不同）／部分 5／未做 0。** 生产 ownership 确已迁走：Worker `initialize()` 起 timer（`worker/backend.ts:167`），`state.ts:270-277` 的本地 start 清空、stop 改发 Worker RPC，`v3/maintenance.ts:55-78` 改为显式接收 Worker-owned handle。**但本批远未完成，剩下的都是真缺口**：① `stop-maintenance` 的 handler **未等待异步 drain 就回 ACK**（`worker/backend.ts:365-372`）——协作停因此不可靠；② `update-config` 不重新应用 maintenance interval；③ `packages/cli/src/start.ts:590` 仍在调 `startHistoryBackfills()`，而该函数**现在是 no-op**（死调用）；④ 计划要求的 5 符号 architecture call guard 只补了 2 个（`tests/architecture/history-worker-boundaries.unit.test.ts:307-336`）；⑤ `tests/history/worker/maintenance-cutover.it.test.ts` **不存在**。**注意**：`protocol.ts` 的 `maintenanceIntervalMs`／`stop-maintenance` 与 `runtime.ts` 的 `stopMaintenance()` 来自 **Batch 0**（`git blame` 实证），不是本批也不是 2b 的产出。
 
 **Files:**
 - Modify: `src/lib/history/worker/{protocol,backend,runtime}.ts`
@@ -745,6 +761,8 @@ bun run test:backend
 Commit: `refactor(history): move maintenance into worker`
 
 ### Task 5 / Batch 5: Startup and Shutdown Lifecycle Closure
+
+**2b 后对账（2026-08-10）：** ① **Step 5.1／5.2 已被 2b 整段吃掉，不要重做**——Worker ready→readonly 顺序与 rollback 事务在 `state.ts:168-215`，CLI 已在 `startServer()` 前 await `initHistoryWithinStartupDeadline()` 且失败 `process.exit(1)`（`packages/cli/src/start.ts:388-395,543-554`），进程级 deadline oracle 在 `tests/e2e/history-startup-deadline.e2e.test.ts`。本批应把它们当**前置**并复用其测试。② **Step 5.3 的 shutdown 顺序需要重新裁决**：计划写「stop maintenance 在 subscriber drain 之后」，而当前 Phase 1 就先发 stop message（`shutdown.ts:409-413`），且 `stopHistoryBackgroundWork()` 用 `void …stopMaintenance()` **不 await**（`state.ts:270-277`）。本批必须把 stop-maintenance 纳入可等待 barrier，并按冻结的 lifecycle 契约明确最终顺序——**别照旧文盲改**。③ Step 5.4 收窄：普通 crash／fatal 分流机制 2a/2b 已实现并有测试，本批只验证它与真实 shutdown barrier 的**集成**。④ Step 5.5 **仍全部要做**：`composeHistoryPersistenceStatus()` 只投影了 admission 字段＋`backend`／`ready`／`pendingEnvelopes`（`worker/status.ts:12-31`），`oldestUnackedMs` 全仓无命中。⑤ 三份计划测试均不存在。
 
 **Files:**
 - Modify: `src/lib/history/worker/{runtime,registry}.ts`
@@ -798,6 +816,8 @@ Commit: `feat(history): close worker lifecycle barriers`
 
 ### Task 6a / Batch 6a: Query RPC Backend
 
+**2b 后对账（2026-08-10）：** ① **顺序变化**——6a 原本隐含依赖 4b 的 maintenance/backfill cutover，而 2b 已提前拿走 production ownership，**这条依赖不再成立**；6a 仍应排在 6b／6c 之前，但若独立执行，需先确认 Task 5 尚缺的 shutdown barrier 是硬依赖还是可并行。② query RPC **确实还没做**（`protocol.ts:125-165` 只有 initialize/persist/update-config/stop-maintenance/drain/shutdown），2b 没有提前实现。③ **文件清单的粒度已变**：计划写「把 `{queries,sessions,stats}.ts` 重构成参数化 primitive」，而 2b 已把它们的默认 DB 来源改成 `getHistoryReadDatabase()`，部分 V3 primitive 也已可显式传 DB；本批应**复用已参数化的部分**，只拆仍闭包到主线程 overlay／read registry 的那些。④ equivalence 的基线要改写：「旧 direct facade」现在是**独立只读句柄**，不是共享写连接。⑤ **6a 合入后 pin/unpin 仍不会恢复**——恢复是 6c 的事，见该批对账。
+
 **Files:**
 - Modify: `src/lib/history/worker/{protocol,backend,runtime}.ts`
 - Refactor: `src/lib/history/{queries,sessions,stats}.ts` to parameterized DB/query primitives
@@ -843,6 +863,8 @@ Commit: `feat(history): add worker query RPC backend`
 
 ### Task 6b / Batch 6b: Responses Fallback Async History Prefetch
 
+**2b 后对账（2026-08-10）：** ① Step 6b.3 的「把 `rebuildConversationMessages` 拆出既有纯 core」**已经完成**（`routes/responses/conversation-rebuild.ts:30-69` 已是同步 fetch + 纯 `rebuildMessagesFromEntries()`），别重复做；实际待办是把**同步 fetch wrapper 移出 translate path**，新增 immutable snapshot 字段并让 `ResponsesFallbackScratch.ensure()` 消费它（当前 `request-state.ts:72-80` 还没有该字段）。② pipeline seam 未被 2b 改动，6b.1／6b.2 **仍成立**。③ **对 6a 的硬依赖不变**：主线程虽已有只读句柄，但**不得**因此退回同步 SQLite——2b 反而让这条禁令更明确。④ 文件清单里后三份测试是 **Modify 而非 Create**，只有 `tests/responses/fallback-history-prefetch.it.test.ts` 是新建。
+
 **Files:**
 - Modify: `src/routes/responses/handler-v4.ts`
 - Modify: `src/routes/responses/ws.ts`
@@ -886,6 +908,8 @@ bun run test:backend
 Commit: `refactor(responses): prefetch fallback history asynchronously`
 
 ### Task 6c / Batch 6c: Read Cutover and Exclusive SQLite Ownership
+
+**2b 后对账（2026-08-10）——本批受 2b 影响最大，文件清单必须补：** ① **`Delete: src/lib/history/sqlite/read-connection.ts`** 原清单没列，而 2b 装它时就写明「installed in Batch 2b and deleted in Batch 6c」；还要清掉 `sqlite/connection.ts:332-352` 里为测试发布／撤销该 registry 的配套逻辑，**只删 state 的 import 不够**。② **`Modify: src/lib/history/entries.ts`** —— 删 2b 的临时 `HistoryPinUnavailableError`；`routes/history/handler.ts:246-269` 的 503 catch 一并摘除。**恢复 pin/unpin 要写成显式验收**：200 + 真持久化 + 未知 id 走 404，且 `rg -n 'HistoryPinUnavailableError' src/` 为空（契约逐条在 [deferred-backlog.md](../todo/deferred-backlog.md)）。③ **不能把现有 `read-consumer-guard` 当作已满足**——它当前把 `sqlite/read-connection` 列为 2b 的合法例外，本批必须**反转这条放行**并枚举 2b 之后所有 read registry consumer。④ **别把「删除主线程 readonly connection」做成「删除 readonly opener」**：`openDatabaseReadonly()` 删不得，search sidecar 仍要用它（`search/daemon.ts:113,386`），guard 要按进程/入口区分。⑤ Step 6c.3 点名的同步消费者（logs／debug／hook toolkit／status count／Responses rebuild）**全部仍在**，2b 只换了它们背后的默认句柄。
 
 **Files:**
 - Modify: `src/lib/history/{queries,sessions,stats,state}.ts`
