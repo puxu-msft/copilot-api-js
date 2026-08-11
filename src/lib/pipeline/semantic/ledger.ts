@@ -9,11 +9,7 @@
  * produced a `completed` event. Here a transition is either legal or rejected — an emitter never
  * gets to fill in a missing child or skip one.
  *
- * Scope of this slice (C1.1): declaration and delta accumulation, including the authoritative
- * `.done` values that supersede deltas. The three-level terminal machinery (`finish-part`,
- * `finish-item`, `finish-response`) lands in C1.2 and currently rejects with
- * {@link LEDGER_ERROR_CODES.notImplementedYet}. Guards that can only fire once a terminal exists are
- * already written here; C1.2's cases are what exercise them.
+ * Three levels settle independently — part, item, response — and a level never settles the level below it on its owner's behalf. `finish-item` with an open part is rejected outright rather than tidied up, because "the parent finished, so the child must have" is exactly the inference that produced the flattened reasoning items.
  */
 
 import type {
@@ -52,8 +48,13 @@ export const LEDGER_ERROR_CODES = {
   partAlreadyTerminal: "part-already-terminal",
   responseAlreadyTerminal: "response-already-terminal",
   unknownUpdateType: "unknown-update-type",
-  /** Removed by C1.2, which implements the terminal transitions. */
-  notImplementedYet: "not-implemented-yet",
+  openChildPart: "open-child-part",
+  itemNotTerminal: "item-not-terminal",
+  dropMustBeDiscarded: "drop-must-be-discarded",
+  partialPartUnderCompleteItem: "partial-part-under-complete-item",
+  missingAuthoritativeValue: "missing-authoritative-value",
+  missingReasoningMetadata: "missing-reasoning-metadata",
+  incompleteItemUnderCompletedResponse: "incomplete-item-under-completed-response",
 } as const
 
 export type LedgerErrorCode = (typeof LEDGER_ERROR_CODES)[keyof typeof LEDGER_ERROR_CODES]
@@ -99,15 +100,24 @@ type MutableItem = Omit<PerOutputItemState, "argumentDeltas" | "outputDeltas" | 
 export interface SemanticLedger {
   /** Apply one transition, or throw {@link LedgerInvariantError} and leave state untouched. */
   apply: (update: LedgerUpdate) => void
-  /** The current state. C1.3 makes this a structurally-shared immutable snapshot. */
+  /** A detached copy of the current state. Mutating the ledger afterwards does not change a snapshot already handed out. */
   snapshot: () => LedgerSnapshot
+  /**
+   * A ledger seeded with this one's current state and isolated from it afterwards.
+   *
+   * Fallback and hedge candidates each need their own continuation of the same history: RFC §4 forbids sharing a mutable ledger across them, because a losing candidate would otherwise write into the winner's state.
+   */
+  fork: () => SemanticLedger
 }
 
-export function createSemanticLedger(): SemanticLedger {
-  const items = new Map<PerOutputItemState["key"], MutableItem>()
+type LedgerSeed = { items: Map<PerOutputItemState["key"], MutableItem>; responseTerminal?: LedgerSnapshot["responseTerminal"] }
+
+export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
+  const items = seed?.items ?? new Map<PerOutputItemState["key"], MutableItem>()
   /** Part keys are unique per response, not per item, so `append-part-text` carries only the part key. */
   const partOwner = new Map<PartState["key"], PerOutputItemState["key"]>()
-  let responseTerminal: LedgerSnapshot["responseTerminal"]
+  for (const item of items.values()) for (const partKey of item.parts.keys()) partOwner.set(partKey, item.key)
+  let responseTerminal: LedgerSnapshot["responseTerminal"] = seed?.responseTerminal
 
   const requireItem = (key: PerOutputItemState["key"]): MutableItem => {
     const item = items.get(key)
@@ -203,6 +213,109 @@ export function createSemanticLedger(): SemanticLedger {
     return item
   }
 
+  /**
+   * `finish-item` never settles a child on the item's behalf. That is the whole defect this ledger exists to stop: an emitter that assumed "the item is done, so its nested parts must be done" is how a reasoning item with a still-open second summary part got emitted as if it had one.
+   */
+  const requireAllPartsTerminal = (item: MutableItem): void => {
+    for (const part of item.parts.values()) {
+      if (!part.terminal) {
+        throw new LedgerInvariantError(LEDGER_ERROR_CODES.openChildPart, `item ${item.key} cannot terminate while part ${part.key} is still open`)
+      }
+    }
+  }
+
+  /** A part that carries no authoritative text contributes nothing derivable — a settled item may not be built out of delta fragments. */
+  const hasDerivableText = (item: MutableItem): boolean => {
+    for (const part of item.parts.values()) {
+      if (part.terminal?.kind !== "discarded" && part.authoritativeText !== undefined) return true
+    }
+    return false
+  }
+
+  /** The kind-specific authority gate for a `complete` item: every kind names the value it may not be complete without. */
+  const requireAuthoritativeValues = (item: MutableItem): void => {
+    if (CALL_KINDS.has(item.kind)) {
+      if (item.authoritativeArguments === undefined) {
+        throw new LedgerInvariantError(
+          LEDGER_ERROR_CODES.missingAuthoritativeValue,
+          `${item.kind} item ${item.key} cannot complete without authoritative arguments`,
+        )
+      }
+      return
+    }
+    if (RESULT_KINDS.has(item.kind)) {
+      if (item.authoritativeOutput === undefined) {
+        throw new LedgerInvariantError(
+          LEDGER_ERROR_CODES.missingAuthoritativeValue,
+          `${item.kind} item ${item.key} cannot complete without authoritative output`,
+        )
+      }
+      return
+    }
+    if (item.kind === "reasoning") {
+      if (item.reasoningVisibleKind === undefined) {
+        throw new LedgerInvariantError(LEDGER_ERROR_CODES.missingReasoningMetadata, `reasoning item ${item.key} cannot complete without a visible kind`)
+      }
+      // `omitted` and `redacted` are complete statements in themselves; only a summary owes text, and it owes it through its parts rather than a second writable field.
+      if (item.reasoningVisibleKind === "summary" && !hasDerivableText(item)) {
+        throw new LedgerInvariantError(
+          LEDGER_ERROR_CODES.missingAuthoritativeValue,
+          `reasoning item ${item.key} claims a summary but no part carries authoritative text`,
+        )
+      }
+      return
+    }
+    if ((item.kind === "text" || item.kind === "degraded-text") && !hasDerivableText(item)) {
+      throw new LedgerInvariantError(
+        LEDGER_ERROR_CODES.missingAuthoritativeValue,
+        `${item.kind} item ${item.key} cannot complete without a part carrying authoritative text`,
+      )
+    }
+  }
+
+  const finishItem = (update: Extract<LedgerUpdate, { type: "finish-item" }>): void => {
+    const item = requireOpenItem(update.key)
+    requireAllPartsTerminal(item)
+
+    // A `drop` exists to record that something could not be carried across; calling it complete would defeat the record.
+    if (item.kind === "drop" && update.terminal.kind !== "discarded") {
+      throw new LedgerInvariantError(LEDGER_ERROR_CODES.dropMustBeDiscarded, `drop item ${update.key} may only be discarded, not ${update.terminal.kind}`)
+    }
+
+    if (update.terminal.kind === "complete") {
+      for (const part of item.parts.values()) {
+        if (part.terminal?.kind === "partial") {
+          throw new LedgerInvariantError(
+            LEDGER_ERROR_CODES.partialPartUnderCompleteItem,
+            `item ${update.key} cannot be complete while part ${part.key} is partial`,
+          )
+        }
+      }
+      requireAuthoritativeValues(item)
+    }
+
+    item.terminal = update.terminal
+  }
+
+  const finishResponse = (terminal: NonNullable<LedgerSnapshot["responseTerminal"]>): void => {
+    for (const item of items.values()) {
+      if (!item.terminal) {
+        throw new LedgerInvariantError(LEDGER_ERROR_CODES.itemNotTerminal, `response cannot terminate while item ${item.key} is still open`)
+      }
+      requireAllPartsTerminal(item)
+
+      // Only `completed` demands that everything actually succeeded. The non-success terminals are reached precisely when things did not, so a partial item is the expected shape there.
+      if (terminal.kind === "completed" && item.terminal.kind !== "complete" && item.terminal.kind !== "discarded") {
+        throw new LedgerInvariantError(
+          LEDGER_ERROR_CODES.incompleteItemUnderCompletedResponse,
+          `response cannot be completed while item ${item.key} is ${item.terminal.kind}`,
+        )
+      }
+    }
+
+    responseTerminal = terminal
+  }
+
   const apply = (update: LedgerUpdate): void => {
     if (responseTerminal) {
       throw new LedgerInvariantError(LEDGER_ERROR_CODES.responseAlreadyTerminal, `response is already ${responseTerminal.kind}; ${update.type} rejected`)
@@ -266,10 +379,21 @@ export function createSemanticLedger(): SemanticLedger {
         return
       }
 
-      case "finish-part":
-      case "finish-item":
+      case "finish-part": {
+        const { part } = requireOpenPart(update.key)
+        if (update.text !== undefined) part.authoritativeText = update.text
+        part.terminal = update.terminal
+        return
+      }
+
+      case "finish-item": {
+        finishItem(update)
+        return
+      }
+
       case "finish-response": {
-        throw new LedgerInvariantError(LEDGER_ERROR_CODES.notImplementedYet, `${update.type} lands in C1.2`)
+        finishResponse(update.terminal)
+        return
       }
 
       // Unreachable for a well-typed caller, but updates originate in wire decoders, so an unknown `type` at runtime means a decoder emitted something this ledger has never agreed to. Failing closed here is what stops it from being silently ignored.
@@ -279,8 +403,23 @@ export function createSemanticLedger(): SemanticLedger {
     }
   }
 
+  /** Deep enough that nothing a caller holds can be changed by a later `apply`: the maps and the delta arrays are rebuilt, and every value below them is immutable by contract. */
+  const copyItems = (): Map<PerOutputItemState["key"], MutableItem> =>
+    new Map(
+      [...items].map(([key, item]) => [
+        key,
+        {
+          ...item,
+          argumentDeltas: [...item.argumentDeltas],
+          outputDeltas: [...item.outputDeltas],
+          parts: new Map([...item.parts].map(([partKey, part]) => [partKey, { ...part, textDeltas: [...part.textDeltas] }])),
+        },
+      ]),
+    )
+
   return {
     apply,
-    snapshot: () => ({ items, ...(responseTerminal ? { responseTerminal } : {}) }),
+    snapshot: () => ({ items: copyItems(), ...(responseTerminal ? { responseTerminal } : {}) }),
+    fork: () => createSemanticLedger({ items: copyItems(), ...(responseTerminal ? { responseTerminal } : {}) }),
   }
 }
