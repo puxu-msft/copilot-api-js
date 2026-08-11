@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 950c7328-ce3e-4272-93d9-4ed523568974
-  modified: 2026-07-20T18:20:47.629Z
+  modified: 2026-08-11T07:44:24.428Z
 ---
 
 `git commit -F msg -- <pathspec>` **提交命名路径的工作区当前内容、无视 index**（等价于先 `git add` 再提交）。故它绕过 `git apply --cached` 精心过滤进 index 的 hunk，把同文件里 peer 的在飞改动整文件扫进 commit。**staged diff 干净 ≠ pathspec commit 干净**（数据源不同）。
@@ -20,4 +20,10 @@ metadata:
 
 扩展 [[sed-touched-files-bundle-inflight-work]]（`git add <file>` 扫入在飞工作，本条讲 commit 更隐蔽）；user-level skill `git-preference:coordinating-a-shared-git-worktree` 的 Quick reference 未强调"pathspec 取工作区非 index"这层。
 
-**改名侧的姊妹坑（`git mv` + pathspec commit 只列新路径→漏提删除，2026-07-20 亲历）**：`git mv a.test.ts a.unit.test.ts` 把「删 a + 加 a.unit」记成**两个独立 index 条目**。若 `git commit -- a.unit.test.ts`（只列新路径），**只提交新增侧、旧路径的删除留在 index 未提交**——worktree 正确（旧文件已没），但 git HEAD 树里旧文件还在（`git status` 显示悬挂的 `D`）。扫盘型守卫（`Bun.Glob` 扫 worktree）会假绿看不出。**How:** 批量改名后 pathspec commit 要**同时列新旧两个路径**（`git commit -- a.unit.test.ts a.test.ts`），或用目录级 pathspec（`git commit -- tests/foo/`）覆盖删+加两侧；收尾 `git status --short` 确认无悬挂 `D`。踩坑：测试孤儿收编批量 `git mv` 后只列新路径，9 个根级文件的删除悬挂未提交，靠 `git status` 才发现、补一个 `chore: commit pending deletions` 提交。
+**改名侧的姊妹坑（`git mv` + pathspec commit 只列新路径→漏提删除，2026-07-20 亲历）**：`git mv a.test.ts a.unit.test.ts` 把「删 a + 加 a.unit」记成**两个独立 index 条目**。若 `git commit -- a.unit.test.ts`（只列新路径），**只提交新增侧、旧路径的删除留在 index 未提交**——worktree 正确（旧文件已没），但 git HEAD 树里旧文件还在（`git status` 显示悬挂的 `D`）。扫盘型守卫（`Bun.Glob` 扫 worktree）会假绿看不出。**How:** 批量改名后 pathspec commit 要**同时列新旧两个路径**（`git commit -- a.unit.test.ts a.test.ts`）；收尾 `git status --short` 确认无悬挂 `D`。踩坑：测试孤儿收编批量 `git mv` 后只列新路径，9 个根级文件的删除悬挂未提交，靠 `git status` 才发现、补一个 `chore: commit pending deletions` 提交。
+
+**⚠️ 上一条**曾建议「或用目录级 pathspec（`git commit -- tests/foo/`）覆盖删+加两侧」——**该建议已撤回，2026-08-11 因照它做而踩雷**。**目录级 pathspec 在字面上满足「显式 pathspec」，却不满足它的目的**：`git commit -- docs/tmp/` 会把该目录下**所有** peer 未提交的改动一并扫进我的 commit。实测：为提交 4 份 `git mv` 而写 `git commit -- docs/history-persistence-worker/ docs/tmp/`，结果 19 个重命名之外**多带走 4 份 peer 在飞文件（+83 行）**；提交回显 `23 files changed` 而我预期 19，那个差值就是唯一信号。
+
+**判据（机械）**：pathspec 里**只允许出现文件路径，不允许出现目录**。改名要覆盖删+加两侧就把新旧路径都逐个列出，别图省事写目录。**下刀前先 `git status --porcelain -- <pathspec>` 看清将被带走的集合**；提交后核对回显的 `N files changed` 是否等于预期，不等就 `git show --numstat` 查多出来的是谁的。
+
+**已经扫入之后怎么办**：先看 `git log --oneline -1` ——若 HEAD 仍是我那笔且无人叠加，按上面的 `reset --soft` 三步还原；**若 peer 已在其上合并或提交，就不要动历史**（rewrite 会连带摧毁 peer 的合并，比误提交严重得多）。此时内容并未丢失、只是提前进了我的 commit，**如实报告归属混入即可**——同 `git log -S` 那条的处置精神：归属串了不是数据丢失。

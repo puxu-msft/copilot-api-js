@@ -120,7 +120,7 @@
 - [共享主线前进不是失败信号](feedback-moving-shared-head-is-not-failure.md) — 无关 peer commit 不触发重复全量复验
 - [单一权威来源允许语境完整复述](feedback-one-authority-allows-contextual-restatement.md) — 权威≠只能出现一次；真单写入源仍唯一
 - [计划的红绿 mutation 预测可能错](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — 执行期真跑验证
-- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享树最终提交一律 pathspec；[共享树绝不 amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) 会静默改写 peer commit
+- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享树最终提交一律 pathspec，且**pathspec 里只许写文件、绝不写目录**（目录级看着「显式」却会扫走该目录下 peer 的在飞改动；`N files changed` 与预期不符即信号）；[共享树绝不 amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) 会静默改写 peer commit
 - [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[别合进 peer 多提交重构中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md)
 - [谁合并谁退让但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存；边界：「两份都保」只对两侧纯新增成立，看 diff3 `|||||||` 段；[空 pathspec stash 会误 pop 别人 WIP](git-stash-push-empty-pathspec-pops-peer-wip.md)
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — `~/.claude/projects/<path>/*.jsonl`
