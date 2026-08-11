@@ -774,6 +774,8 @@ CC 2.1.207 tool-search / 延迟加载流：tools 带 `defer_loading:true`（`app
 
 ### F27（LOW-MED）— tool-search 关时不剥 CC 的 `defer_loading:true`，孤儿标志入 GHC
 
+> **已修复（2026-08-11，commit `d11cec13`）**。修复面**比本条原判更宽**：落点是 `processToolPipeline` 的**整个 else 分支**，不是本条设想的 `!toolSearchEnabled` 条件。原因见下方「理想方向」段的修正——本条漏掉了 tool-search **开**时的同款失效。
+
 **判断（读码，已确认）**：`processToolPipeline` 的 else 分支（[message-tools.ts:198-199](../../src/lib/anthropic/message-tools.ts#L198)）`nonDeferred.push(normalized)`——`normalized`（=`ensureInputSchema(tool)`）**仍带 CC 原始 `defer_loading:true`**，未剥。且 `BUILTIN_STRIP_TOOL_FIELDS=["eager_input_streaming"]`（397）**不含** `defer_loading`。
 
 **后果**：当项目 tool-search **关**（`state.toolSearchEnabled` off **或** GHC 模型不支持 tool-search）**而 CC 发了 `defer_loading:true` 工具**时——项目**不加**搜索 stub/`advanced-tool-use` beta，却把 `defer_loading:true` **原样转发 GHC**：
@@ -782,9 +784,13 @@ CC 2.1.207 tool-search / 延迟加载流：tools 带 `defer_loading:true`（`app
 
 **理想方向（不在本轮做）**：`processToolPipeline` 在 tool-search **不生效**时（`!toolSearchEnabled`）**主动剥** tools 的 `defer_loading`（强制全 non-deferred），让 GHC 收到干净工具、省掉必然的 1 往返恢复。对称化「开则加 / 关则去」。这是明确的正确修复（不需 GHC 探针；GHC 无 tool-search 时 defer 标志本就无意义）。**待确认**：`state.toolSearchEnabled` 默认值 + GHC 哪些模型支持 tool-search（定这条 gap 的触发频率）。
 
+**实施期修正（2026-08-11，commit `d11cec13`）**：上段的落点判错了——按 `!toolSearchEnabled` 设条件会漏掉**第二种**同款失效。tool-search **开**、但该工具被 `NON_DEFERRED_TOOL_NAMES` / `state.nonDeferredTools` / history 保护而走 else 分支时，客户端的 `defer_loading:true` 同样原样带出，上游照defer不误——**恰好废掉刚施加的那道保护**。正确的层是「**走到 else 分支这件事本身就是『本工具不延迟』的裁决**」，故在分支内无条件剥字段，而非在条件上打补丁。删键而非写 `false`：缺省即非延迟，删键让线上形状与从未带过该字段的工具一致。粘性恢复不受影响——`applyStickyUndeferredTools` 跑在 pipeline 之后，且只改 `defer_loading === true` 的工具。**待确认项已答**：`state.toolSearchEnabled` 默认 `true`（[packages/foundation/src/state-defaults.ts:165](../../packages/foundation/src/state-defaults.ts#L165)——注意本文档别处引的 `src/lib/state.ts:1432` 坐标已随 state 迁入 `packages/foundation/` 而失效），故第一种形态只在显式关闭主开关或模型不支持 tool-search 时触发，第二种形态在默认配置下就会发生。
+
 ### 本轮结论
 
 本项目 deferred-tool 编排**整体稳**（GHC-能力驱动的重决策 + 尊重 client opt-out + history 保护 + 反应式恢复）。唯一 gap 是**非对称**：tool-search 关时不剥 CC 的孤儿 `defer_loading:true` → 每次必然 1 往返反应式恢复（F27，低-中）。修复明确（`!toolSearchEnabled` 时剥 defer_loading），不需探针。
+
+> **后续更正（2026-08-11）**：本段末句给的落点（`!toolSearchEnabled` 时剥）**不要照做**——它漏了 tool-search 开时的同款失效。实际修复见 F27 节的「实施期修正」（commit `d11cec13`）：剥的动作放在 else 分支内，不挂在开关条件上。「唯一 gap」这句也只对**当轮所见**成立。
 
 ---
 
@@ -882,7 +888,7 @@ CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无
 
 ### 本轮结论
 
-`NON_DEFERRED_TOOL_NAMES` 仅护 Copilot 客户端核心工具，**CC 核心工具无静态非延迟保护**（F30，中，条件性）——tool-search 默认 ON 时新 CC 会话早期批量「not found」恢复往返。与 F27（defer 非对称）、F28（stub 陈旧）构成 **deferred-tool 子系统的三条 CC 偏差**，共性=**项目的 CC 工具名单/对称性不完整**，宜一并修 + e2e 验证。
+`NON_DEFERRED_TOOL_NAMES` 仅护 Copilot 客户端核心工具，**CC 核心工具无静态非延迟保护**（F30，中，条件性）——tool-search 默认 ON 时新 CC 会话早期批量「not found」恢复往返。与 F27（defer 非对称）、F28（stub 陈旧）构成 **deferred-tool 子系统的三条 CC 偏差**，共性=**项目的 CC 工具名单/对称性不完整**，宜一并修 + e2e 验证。（**F27 已于 2026-08-11 单独修复，commit `d11cec13`**——不必再纳入「一并修」。）
 
 ---
 
