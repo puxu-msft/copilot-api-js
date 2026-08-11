@@ -216,9 +216,9 @@ C2.3 应当**沿用并扩展这个既有模式**（在它记录交付的地方�
 C0.1 ─┬─ C0.2 ─ C0.3 ─┐
       └───────────────┤
                       ▼
-              C1.1 → C1.2 → C1.3
-                             │
-                             ▼
+              C1.1 → C1.2 → C1.3 → C1.4       ← C1.4 = 双平面 disposition（RFC §4.1，v2 新增）
+                                    │
+                                    ▼
               C2.1 → C2.2 → C2.3
                              │
                              ▼
@@ -240,9 +240,16 @@ C0.1 ─┬─ C0.2 ─ C0.3 ─┐
                      C10 (R→A 原子 cutover)
                       ▼
               C11.1 → C11.2
+
+C0.4 (真实上游接受性探针，RFC §17) ──前置门──▶ C5.1/5.2 与 C7.1/7.2
 ```
 
-**串行硬约束**：C1→C2→C3 严格串行（后者消费前者的类型契约）。**C3.4 是 C4–C7 全部四组的共同前置** —— `json-value-validator` 被 C6.1（structured output）与 C7.1（carrier canonical JSON）**共同**消费，RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」，两处必须是**同一份**实现。C8.0 必须在 C8.1/C8.2 之前（emitter 消费的 ledger 得先有人喂）。C8.3 必须在单一集成态吸收 C4–C7 全部语义。C9→C10 串行，以便每次 cutover 独立证明可达性并可单方向回滚。
+**v2 新增的两片（授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)）**：
+
+- **C1.4 双平面 disposition** —— 落 RFC §4.1。**必须在 C2 之前**：它给 `SemanticItem` 加必填字段，C2 及之后都消费该类型契约，越晚改动面越大。C1.1–C1.3 已落地，此刻正是最便宜的时刻。
+- **C0.4 真实上游接受性探针** —— 落 RFC §17。**与代码无依赖，可立即并行开跑**，但**必须在 C5／C7 之前收口**：它裁决 §6.1 的两类 server-tool record 取哪一种作默认。
+
+**串行硬约束**：C1→C2→C3 严格串行（后者消费前者的类型契约），**C1.4 并入这条链，是 C2.1 的直接前置**。**C3.4 是 C4–C7 全部四组的共同前置** —— `json-value-validator` 被 C6.1（structured output）与 C7.1（carrier canonical JSON）**共同**消费，RFC §6.1 与 §8.1 都要求「先自建递归 validator 再进 `safe-stable-stringify`」，两处必须是**同一份**实现。C8.0 必须在 C8.1/C8.2 之前（emitter 消费的 ledger 得先有人喂）。C8.3 必须在单一集成态吸收 C4–C7 全部语义。C9→C10 串行，以便每次 cutover 独立证明可达性并可单方向回滚。**C0.4 是 C5 与 C7 的前置门**，但不阻塞 C1–C4。
 
 **并行边界**：C4–C7 四组彼此独立，可分派不同 implementer；但它们**共改** `src/lib/pipeline/semantic/` 下的 mapper 与 policy 模块 → 需协调合并顺序，建议按 C7 → C5 → C6 → C4 依次合并（**四组都在 C3.4 之后起分支**，此时 validator 已在基线里，不存在「C7 要用 C6 尚未创建的文件」的倒置）。C8.0a 与 C8.0b、C8.1 与 C8.2 均格式独立可并行。
 
@@ -358,6 +365,37 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 
 ---
 
+### C0.4 —— 真实上游接受性探针（RFC §17，v2 新增）
+
+> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**与代码无依赖，可立即并行开跑**；但**必须在 C5／C7 之前收口**——它裁决 RFC §6.1 的两类 server-tool record 取哪一种作默认。
+
+**Goal**：用**真实 Responses 上游**回答「哪一种 server-tool reference 形态被接受」。这个问题只有真实上游能答：本地 encode↔decode 自洽证明不了接受性，两端同源会一起错。
+
+**为什么它不与 C0「Live GHC 只采 fixture」冲突**：那条约束的是**不把 live GHC 当 merge correctness gate**，本片同样不做 merge gate——它是**一次性取证**，产出写进 `exp/` 与 RFC §6.1 的默认选择。RFC §15 暂缓 context-management carrier 的理由正是「缺跨 provider 接受性证据」，本片是对 server-tool carrier 施加**同一道门槛**，不是豁免它。
+
+**现有证据边界（不得夸大）**：既有探针已证明**完整 `web_search_call` 可被 Responses 端点接受**；**尚未**证明任何更小形态足够。本片任务是**收窄形态**，不是从零证明可行性。
+
+**Files**
+- Create `exp/responses-server-tool-continuation/README.md`
+- Create `exp/responses-server-tool-continuation/probe-*.ts`
+
+**Steps**（对应 RFC §17.1 的 P1–P5）
+1. **P1 形态矩阵**：完整 item／`{type,id}`／`item_reference`／裸 id 四种各发一次真实请求，记录接受或拒绝**及上游错误体原文**。
+2. **P2 终态**：至少覆盖 complete 与 incomplete 两种 source item 终态。
+3. **P3 模型**：至少覆盖同模型、别名、异模型三种 target identity。
+4. **P4 正负控**：`[hard]` **负控不可省**——正控为完整 item 回喂成功；负控为篡改 id 后上游必须以**可区分方式**失败。若上游对篡改 id 也静默接受，说明它根本没在校验，那么「接受」不构成续接有效的证据，**本片结论作废、必须回报**。
+5. **P5 byte-exact**：经真实 SDK／客户端 echo 一轮后 opaque 必须 byte-exact 恢复，覆盖 stream 与 non-stream。
+
+**项目纪律**：`[hard]` **不碰、不重启、不停止用户 4141 主服务器**；探针起独立非 4141 端口与独立 History，按**精确 PID** 清理，绝不 `pkill`／`killall`。
+
+**Commit invariant**：零生产代码改动；只新增 `exp/` 产物。
+
+**Verify**：`exp/responses-server-tool-continuation/README.md` **必须含「它没有证明什么」一节**（本仓 `exp/` 惯例）。结论回填 RFC §6.1 的默认 record 选择与 §17 的状态，**在同一个 commit 内**完成回填，避免结论与文档脱节。
+
+**注意**：本片产出的是**证据**，不是判断。若四种形态全部被接受，仍需按 wire 体积与保真度择优并记录理由；若只有完整 item 被接受，RFC §6.1 的保守默认 `responses-output-item` 即为终选。
+
+---
+
 ### C1.1 —— ledger 类型契约与 declare/delta reducer
 
 **Goal**：落 RFC §4 的 `ItemKey`/`PartKey`/`SegmentId`/`SemanticItem`/`PartState`/`PerOutputItemState`/`LedgerUpdate`，实现 declare 与 delta 累积。**不接 wire、不写 sink。**
@@ -438,6 +476,40 @@ RFC §11 的 C0 清单里有一部分**在旧码上根本无从表达**——例
 **Mutation**（两条）
 - 让 fork 共享可变 Map → 隔离性用例变红；
 - 让 part **text** 的 `.done` 不覆盖 delta 拼接值 → 三类载体那条 property 变红（证明它真的覆盖了 arguments 之外的载体）。
+
+---
+
+### C1.4 —— 双平面 item disposition（RFC §4.1，v2 新增）
+
+> 授权：[统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。**必须早于 C2.1** —— 它给 `SemanticItem` 加必填字段，C2 之后全都消费该契约，越晚改动面越大。
+
+**Goal**：落 RFC §4.1 的 `PresentationDisposition` × `ContinuationDisposition`，使**每个 `SemanticItem` 臂**都被编译器强制回答续接问题。这修的是**结构性根因**——v1 没有任何一处强迫实现者回答「这个 item 的续接怎么办」，server-tool 续接因此能被漏掉而不报错。
+
+**Files**
+- Modify `src/lib/pipeline/semantic/types.ts`
+- Modify `src/lib/pipeline/semantic/ledger.ts`
+- Modify `tests/pipeline/semantic/ledger-property.unit.test.ts`
+- Create `tests/architecture/semantic-item-disposition.unit.test.ts`
+
+**Interfaces**
+- Produces：`PresentationDisposition`、`ContinuationDisposition`、`ItemDisposition`；`SemanticItem` 每臂新增**必填** `disposition: ItemDisposition`。
+- `ContinuationRecord` 本片只定义**形状占位联合**（对齐 RFC §6.1 的四个 kind）；其编解码与 provenance 校验由 C7.1／C7.2 落地，**本片不实现 carrier**。
+
+**Steps**
+1. 加三个类型；`ContinuationDisposition` 四个 kind 齐全（`none`／`native`／`carrier`／`rejected`）。
+2. 给 `SemanticItem` 四臂加必填 `disposition`。**先跑一次 `bun run typecheck` 取真实破坏面，不要预估**——编译错误集合就是本片的工作清单（ADR 已把该破坏面标为「未实测、仅由类型形状推断」）。
+3. reducer 在 item 终结时填充 disposition。`kind: "drop"` 的 item，其 `continuation` 只能是 `none` 或 `rejected`。
+4. reasoning 既有 `visible`／`opaque` **保持不变**，但同样填 `disposition`；加一条断言：`opaque` 存在时 `continuation.kind` 不得为 `none`（两者不得互相矛盾）。
+5. 架构守卫：断言 `SemanticItem` 每个臂都含 `disposition`，且四个 `ContinuationDisposition` kind 各有正样本——防止新增臂用 `none` 敷衍过关。
+
+**Commit invariant**：仍无生产调用者（C1 全程不改 production writer）；本片**不**引入任何 carrier 编解码。
+
+**Verify**：`bun run typecheck` + `bun test tests/pipeline/semantic/ tests/architecture/semantic-item-disposition.unit.test.ts`。
+
+**Mutation**（三条，逐条核对失败来自目标机制）
+- 让 reducer 在 `presentation.kind === "degraded"` 时自动把 `continuation` 填成 `rejected` → **§4.1 那条 `[hard]` 不变量的用例必须变红**（这是本片最承重的一条：展示降级不授权续接丢失）；
+- 给 `SemanticItem` 新增一个不带 `disposition` 的臂 → **必须编译失败**（类型负样本，证明闸门真的拦得住新增臂）；
+- 让 `drop` item 的 `continuation` 填成 `carrier` → 守卫变红。
 
 ---
 
