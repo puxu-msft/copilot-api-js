@@ -40,7 +40,7 @@ import type {
 import type { HistoryReservation } from "~/lib/history/worker/admission"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
-import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
+import type { OwnerCommandFailureDisposition } from "~/lib/pipeline/delivery/owner-failure"
 import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -479,7 +479,7 @@ async function settleCommittedRecoveryFailure(input: {
   })
 }
 
-function ownerTerminalDecisionError(decision: OwnerTerminalDecision): Error {
+function ownerTerminalDecisionError(decision: OwnerCommandFailureDisposition): Error {
   switch (decision.kind) {
     case "client-aborted": {
       return new Error(`[delivery] recovery anchor close reached client-gone (partialDelivery=${decision.partialDelivery})`)
@@ -503,7 +503,7 @@ async function settleWireTornRecoveryFailure(input: {
   readonly model: string
   readonly ctx: RequestEnvelope["ctx"] | undefined
   readonly recordForwarded: () => void
-  readonly closeAnchor: () => Promise<OwnerTerminalDecision | undefined>
+  readonly closeAnchor: () => Promise<OwnerCommandFailureDisposition | undefined>
   readonly writeTerminal?: () => Promise<void>
 }): Promise<void> {
   const { publicationError, model, ctx, recordForwarded, closeAnchor, writeTerminal } = input
@@ -1504,7 +1504,7 @@ async function closeAnchorViaOwner(
   anchorHooks: AnchorHooks | undefined,
   ctx: RequestEnvelope["ctx"] | undefined,
   mode: "before-real" | "terminal",
-): Promise<OwnerTerminalDecision | undefined> {
+): Promise<OwnerCommandFailureDisposition | undefined> {
   if (!anchorHooks || !allocationPort.wireState) return undefined
   const port = allocationPort
   const operation: OwnerOperation = mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real"
