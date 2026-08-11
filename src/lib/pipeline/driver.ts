@@ -699,9 +699,14 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
         // The coordinator-provided env may already carry accepted reactive/buffered-recovery changes, so the sibling starts from the CURRENT attempt rather than `fork`'s generation-start snapshot — never rewind body/prepareHints to generation start. Only the opaque candidate scope comes from the fork.
+        // `body` is CLONED, not shared. The pre-mutability version handed every candidate the same body object and that was safe because nothing wrote a body in place — every rewrite replaced it wholesale through `with()`. With mutable scopes a nested in-place write on one candidate would reach its sibling's wire, which is exactly the cross-candidate contamination `CandidateScope` exists to prevent.
         return forkEnvelope(env, {
           candidate: fork.candidate,
-          attempt: { body: env.attempt.body, targetEndpoint: env.attempt.targetEndpoint, prepareHints: structuredClone(env.attempt.prepareHints) },
+          attempt: {
+            body: structuredClone(env.attempt.body),
+            targetEndpoint: env.attempt.targetEndpoint,
+            prepareHints: structuredClone(env.attempt.prepareHints),
+          },
         })
       },
       recording,
