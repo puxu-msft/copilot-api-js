@@ -21,6 +21,25 @@ import type { Model } from "~/lib/models/client"
 import { state } from "~/lib/state"
 
 /**
+ * The matching rule itself, over a caller-supplied rule list.
+ *
+ * Split out because there are now two callers with different sources of truth and the same matching
+ * semantics: {@link resolveTranslationFeatures} reads the live `state.modelTranslation`, while the
+ * semantic bridge's policy resolver reads a request's frozen `TranslationConfigSnapshot` (RFC §6 —
+ * a hot reload must not change the policy of a request already in flight). Two copies of "exact
+ * `model@format`, first match wins" would drift the moment either side grew a wildcard.
+ */
+export function findTranslationRule<TRule extends { match: string }>(
+  rules: ReadonlyArray<TRule> | undefined,
+  model: string,
+  format: ModelTranslationIngress,
+): TRule | undefined {
+  if (!rules || rules.length === 0) return undefined
+  const target = `${model}@${format}`
+  return rules.find((rule) => rule.match === target)
+}
+
+/**
  * Resolve the declared translation features for a `(ingress, model@format)` pair.
  *
  * `match` is evaluated against the FINAL routed target — `model` and `format` here are the
@@ -40,12 +59,7 @@ export function resolveTranslationFeatures(
   model: string,
   format: ModelTranslationIngress,
 ): ReadonlyArray<ModelTranslationFeature> {
-  const rules = state.modelTranslation[ingress]
-  if (!rules || rules.length === 0) return []
-
-  const target = `${model}@${format}`
-  const matched = rules.find((rule) => rule.match === target)
-  return matched?.features ?? []
+  return findTranslationRule(state.modelTranslation[ingress], model, format)?.features ?? []
 }
 
 /**
