@@ -62,7 +62,7 @@
 
 文件清单结构上看不见的知识。**每行标 provisional，处置与文件行同权。**
 
-**事件源与范围（第一版没写，是 RR4 判 MAJOR 的直接原因）**：本 job 的 transcript 实际位于 `/home/xp/.claude/projects/-home-xp-src-copilot-api-js--claude-worktrees-task37-closeout/a7c2cc1a-1103-4c54-8ae1-e2837bda4112.jsonl`。⚠️ **transcript 路径随会话所在 worktree 变化**——第一版我给评审的是 worktree 前缀之前的旧路径，那个文件不存在，评审自己定位到了真路径。
+**事件源与范围（第一版没写，是 RR4 判 MAJOR 的直接原因）**：本 job 的 transcript 是 `a7c2cc1a-1103-4c54-8ae1-e2837bda4112.jsonl`。⚠️ **别把它的绝对路径当固定值引用——它随会话当时所在的 worktree 变化，而不是随 job 变化。** 这条已经踩过两次、方向相反：① 做 receipt 时我给评审的是 worktree 前缀**之前**的旧路径，文件不存在，评审自己定位到真路径 `…/projects/-home-xp-src-copilot-api-js--claude-worktrees-task37-closeout/`；② 收尾末尾删掉那棵 worktree 后，它**又挪回**了 `…/projects/-home-xp-src-copilot-api-js/`，于是①里那个被写进本文的路径反过来失效了（2026-08-10 清理增量评审实测 `test -f` 为 false）。**用文件名去找，别用路径**：`find /home/xp/.claude/projects -name 'a7c2cc1a-*.jsonl'`。
 
 **枚举范围收窄为 JSONL 第 12000–15108 行（Task 37 阶段），这是一次有理由的缩窄，不是放弃。**
 
