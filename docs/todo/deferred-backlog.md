@@ -20,6 +20,10 @@
 - **为何本会话不修**：属 history-search 子系统，与 Anthropic↔Responses 语义桥无关，夹带进 C2.1 会让这个 commit 的失败面无法归因。**发现方**：C2.1 首次跑 `test:backend`（2026-08-11）。
 - **若做需改什么**：先判定方向——是 native 侧（Rust `listSearch` 的过滤与 total 语义）回归，还是 TS 侧断言过时。**别默认后者**：这些断言写的是「空过滤值不得放宽真过滤」这类不变量，改断言去迁就实现会永久废掉它（→ user-rule `red-tests-may-be-guarding-something`）。取证起点是 `git log -- native/history-search/ src/lib/history/search-native*`，看红是否与某次 native 改动同期。
 
+## ✅ 已解决：四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11 发现，2026-08-11 修复）
+
+- **解决**：`69bea997` 把 `RequestEnvelope` 拆成 request/candidate/attempt 三个生命期作用域并改为可变，四份 `makeEnvelope` 合并成 `src/lib/pipeline/envelope.ts` 里的一份（参数化 lazy-view 工厂）。作用域按对象身份携带，新增字段无需改任何 codec，「漏抄一个字段静默消失」这一形态从结构上消失。本条原「理想架构」提到的那条文本守卫已删除，替换为 `tests/pipeline/semantic/config-snapshot.unit.test.ts` 里守新不变量的版本——四个 codec 都 import 共享 `makeEnvelope` 且不自建 builder。**保留下方原始条目正文作为根因存档。**
+
 ## 四个 codec 各自维护一份逐字节相同的 `makeEnvelope`（2026-08-11）
 
 - **现状**：`src/lib/codec/{anthropic,openai-cc,openai-responses,gemini}/codec.ts` 各有一份 `EnvelopeInit` 与 `makeEnvelope`，**除 lazy-view 工厂名外逐字节相同**（`createAnthropicLazyView` / `createCcLazyView` / `createResponsesLazyView` / `createGeminiLazyView`）。`with()` 的重建体也是四份相同的手写字段透传。
@@ -1307,6 +1311,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 又有人往非空 slot 直接 inject，或 `shutdown()` 开始会抛（例如 Worker 关闭超时）；② 因别的原因要动这个 registry 时顺手补齐；③ 有第二个域（telemetry / archive / 连接池）要照这个形状写 owner reset 时——那时它就从「一个实例的小瑕疵」变成「被复制的模板」，按 `fix-at-the-shared-base-not-where-you-noticed` 应先修好模板。
 - **2026-08-09 补充（Batch 2b 实测）**：本 registry 的实例是**一次性**的（`start()` 后 `shutdown()` 即终态），因此「已停止但仍留在 registry」是唯一不可恢复的状态——下一次消费者拿到它、start 它、被告知 `has been shut down`。Batch 2b 因此把**三个**生命周期出口（`shutdownHistory`、`initHistory(false)`、`initHistory` 的重装分支）统一改成 **release（停止 + 清引用）而非只 stop**，见 `src/lib/history/state.ts`。**这条一次性语义应当写进 skill `owned-singleton-lifecycle` 的正文**：现有 skill 讲的是「谁拥有、怎么 compare-and-clear」，没讲「被顶掉的实例可能永远不能复活，因此 stop 与 clear 必须同时发生、且要在每一个出口都发生」。实证代价：分三轮才修对，中间两轮分别是 282 与 49 条全档失败，每轮都只修了眼前那条路径。改 skill 属指令类文本，需走评审，故登记于此。
 - **发现方**：`owned-singleton-lifecycle` skill 独立评审 major 4、5（`docs/tmp/2026-08-08-batch34-test-isolation-and-singleton-review.md`），主会话逐行复核确认（行号亦由该评审纠正）。
+
+## ✅ 已解决：`CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09 发现，2026-08-11 修复）
+
+- **解决**：按本条倾向的方案①**删除**——`69bea997` 移除了 `CandidateStateFork.responseState` 与 `supplies.createResponseState`。触发条件②命中（因 envelope 三作用域重塑要动 `candidate-state.ts` 与 `with()` 契约，顺手了结）。方案②（接通）不再适用：`with()` 已不存在，且响应侧状态的正确归属经复核就是 `CandidateResponseSession`（由 coordinator 经 `candidate.processor` 持有），它必须保持唯一可变身份，而 envelope 是逐 candidate 分叉的——两种语义不兼容，不该进 envelope。**保留下方原始条目正文作为根因存档。**
 
 ## `CandidateState.responseState` 是声明了但零生产消费者的死槽（2026-08-09，语义桥计划第三轮评审的邻域发现）
 
