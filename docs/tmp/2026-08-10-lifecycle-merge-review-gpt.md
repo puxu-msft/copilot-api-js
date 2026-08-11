@@ -69,3 +69,12 @@
 - **总体 verdict**：修复 1 条 major 后可进入下一阶段。
 - **blocker 数量**：0。
 - **计数**：blocker 0，major 1。
+
+
+## 复核更正（当前 master `0361c2024fecc502966e002bdd10bda32081f429`）
+
+### C6 major — 撤回
+
+- 原发现误将历史版本中已完成的“先合并 master”步骤读作当前指令；当前 `HANDOVER.md:8` 已明确文档与代码均在 master、最终落于 `0e0768ee`，`:54-56` 标题和正文明确“已完成、不要重做”。
+- 当前 `KICKOFF.md:14` 同样明确原 Gate 1 已于 2026-08-09 完成、不得重做；下一道 gate 是读 master 的 lossless shutdown 文档（`:16`），不是再次合并。
+- `0286b3e5` 将曾经容易被纯文本误读的删除线标题改为显式完成态；当前 HEAD 包含该修复。故 C6 不再构成 major，先前报告的最终 verdict／major 计数以本更正为准：blocker 0，major 0，可以收口。
