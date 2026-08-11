@@ -67,6 +67,8 @@ export const LEDGER_ERROR_CODES = {
   missingAuthoritativeValue: "missing-authoritative-value",
   missingReasoningMetadata: "missing-reasoning-metadata",
   incompleteItemUnderCompletedResponse: "incomplete-item-under-completed-response",
+  dropCannotCarryContinuation: "drop-cannot-carry-continuation",
+  opaqueStateNeedsContinuation: "opaque-state-needs-continuation",
 } as const
 
 export type LedgerErrorCode = (typeof LEDGER_ERROR_CODES)[keyof typeof LEDGER_ERROR_CODES]
@@ -319,7 +321,23 @@ export function createSemanticLedger(seed?: LedgerSeed): SemanticLedger {
       requireAuthoritativeValues(item)
     }
 
-    return putItem({ ...item, terminal: update.terminal })
+    // RFC §4.1. The reducer stores the two planes and checks only what is decidable from the item itself — deciding *which* continuation applies needs the target protocol, the resolved target identity and the pair policy, none of which live here. A reducer that guessed would have to guess wrong in one direction or the other: blanket `rejected` breaks the hard invariant that a degraded presentation does not authorise dropping continuation state, and blanket `none` silently loses the Responses server-tool state this contract exists to preserve. So the mapper supplies it and this only rejects the combinations that are wrong for any target.
+    const { continuation } = update.disposition
+
+    // A discarded item was not carried across at all; claiming it round-trips would be a lie the emitter would then act on.
+    if (item.kind === "drop" && continuation.kind !== "none" && continuation.kind !== "rejected") {
+      throw new LedgerInvariantError(
+        LEDGER_ERROR_CODES.dropCannotCarryContinuation,
+        `drop item ${update.key} cannot claim continuation ${continuation.kind}; only none or rejected`,
+      )
+    }
+
+    // `none` means "judged to hold no cross-turn state". An item that accumulated opaque bytes demonstrably does hold some, so `none` there is the defaulting this contract exists to catch.
+    if (item.opaque && continuation.kind === "none") {
+      throw new LedgerInvariantError(LEDGER_ERROR_CODES.opaqueStateNeedsContinuation, `item ${update.key} carries opaque state, so continuation cannot be none`)
+    }
+
+    return putItem({ ...item, terminal: update.terminal, disposition: update.disposition })
   }
 
   const finishResponse = (terminal: ResponseTerminal): void => {
