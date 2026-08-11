@@ -298,16 +298,17 @@ describe("http2-client", () => {
     expect(await res.json()).toEqual({ ae: "identity" })
   })
 
-  // NOTE: mid-stream truncation detection is NOT unit-testable under Bun.
-  // Bun's node:http2 client delivers `response → data → end → close` (rstCode=0)
-  // for ANY mid-stream termination — clean server RST_STREAM AND full
-  // connection drop alike (verified, exp/upstream-models-hang/) — i.e. a
-  // synthetic clean `end`. The adapter's `error` / `close-before-end` backstops
-  // still fire under Node (the compat runtime) and on any genuine `req` error,
-  // but under Bun a truncated upstream body reads as complete. The app-layer
-  // backstop is the missing terminal SSE event (message_stop / [DONE]) detected
-  // downstream. This is strictly better than the undici path it replaces, which
-  // HANGS forever under Bun on these hosts rather than truncating.
+  // NOTE (corrected 2026-08-11 — the previous version of this note was wrong, and wrong in the direction that discourages testing).
+  //
+  // It used to say: mid-stream truncation is NOT unit-testable under Bun, because Bun's node:http2 delivers `response → data → end → close` (rstCode=0) for ANY mid-stream termination, so a clean server RST_STREAM and a full connection drop are indistinguishable from a normal end; and that the `error` / `close-before-end` backstops fire only under Node.
+  // It cited `exp/upstream-models-hang/`, which does not exist in this repo and never did, so it could not be checked against its own evidence.
+  //
+  // Measured, both runtimes, with a TCP frame decoder and a frame injector (exp/h2-termination-observability/, reproducible):
+  //   1. A genuine peer RST_STREAM(CANCEL) IS observable under Bun: Bun raises `error(ERR_HTTP2_STREAM_ERROR, "…NGHTTP2_CANCEL")` with `rstCode=8`. It is NODE that folds a peer CANCEL into a clean `end` with no error — the opposite of what the old note claimed.
+  //   2. The old observation was real but came from a miswritten scenario. A server-side `stream.close(NGHTTP2_CANCEL)` puts NO RST_STREAM on the wire at all while the writable side is open: it sends `DATA[END_STREAM]`. So the client was right to report a clean end — the peer really did end cleanly. `stream.destroy()` emits RST(0) and `destroy(err)` emits RST(2); no server-side spelling emits CANCEL mid-body, which is why the experiment injects the frame directly.
+  //
+  // Still true, and the reason this suite has no truncation test: an abrupt TCP drop with no frame at all IS delivered as a synthetic clean `end` on both runtimes, carrying `rstCode=8` — indistinguishable from a real peer CANCEL under Node, though separable under Bun by the presence of the stream error. So `rstCode === 8` alone must never be read as "the peer cancelled".
+  // The app-layer backstop remains the missing terminal SSE event (message_stop / [DONE]) detected downstream, and this is still strictly better than the undici path it replaces, which HANGS forever under Bun on these hosts rather than truncating.
 
   test("a pre-aborted signal rejects without opening a stream", async () => {
     handler = (stream) => {

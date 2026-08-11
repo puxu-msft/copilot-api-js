@@ -58,6 +58,8 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     options?: TransportDispatchOptions,
   ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
     const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
+    // A4-1 made this handle the canonical owner of the dispatch. It stays optional here only because legacy/compat callers may still send without an options bag; when absent we record nothing rather than falling back to ambient attribution, which would blame the wrong dispatch under hedging.
+    const dispatch = options?.dispatch
     const headers = Object.fromEntries(wire.headers.entries())
     const body = wire.body as { model?: unknown; tools?: unknown }
     // Transport-local capture: sendUpstreamHttp fills `.response` (via
@@ -86,6 +88,19 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
         // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
         // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
         onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
+        // Who ended this stream? The transport computes the answer to decide how to finish; before this sink existed it computed it and threw it away, so History could not tell a local abort from any other termination.
+        // Attribution is the EXPLICIT dispatch handle, never the ambient current attempt — a hedged request has several dispatches in flight at once.
+        ...(dispatch && {
+          onTermination: (snapshot) => {
+            env.ctx.recordGenerationDispatchDiagnostic(dispatch, {
+              kind: "transport.h2.termination",
+              // Purely observational: the stream already ended, and how it ended is not by itself a failure — a local cancel is often the correct outcome of a hedge race.
+              severity: "info",
+              // The whole snapshot, not a projection: it is already bounded and frozen at the source, and a second hand-maintained schema here would drift from it.
+              data: snapshot,
+            })
+          },
+        }),
       })
     } catch (error) {
       lifecycle.complete()

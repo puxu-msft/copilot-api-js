@@ -19,6 +19,7 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
+import type { TransportTerminationSnapshot } from "~/lib/transport/http2-observation-types"
 import type {
   //
   ParsedSseFrame,
@@ -229,6 +230,12 @@ export interface SendUpstreamHttpParams {
   dispatchSignal?: AbortSignal
   /** Best-effort HTTP/2 response-trailers sink (h2 path only); the driver wires it to `ctx.setOutboundResponseTrailers`. */
   onTrailers?: (trailers: Record<string, string>) => void
+  /**
+   * Best-effort HTTP/2 stream-termination sink (h2 path only). The transport already computes this
+   * snapshot to decide how the stream ended; without a sink it is computed and dropped. The adapter
+   * wires it to `ctx.recordGenerationDispatchDiagnostic` so History can answer who ended the stream.
+   */
+  onTermination?: (snapshot: TransportTerminationSnapshot) => void
 }
 
 /**
@@ -257,6 +264,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
     signal: fetchSignal,
     responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(modelId),
     ...(params.onTrailers && { onTrailers: params.onTrailers }),
+    ...(params.onTermination && { onTermination: params.onTermination }),
   })
 
   // Capture HTTP headers for history (before error check — capture even on failure)
