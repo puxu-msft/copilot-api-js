@@ -1,8 +1,16 @@
 # Responses ↔ Anthropic Semantic Bridge Implementation Plan
 
-> **状态**：已定稿（7 轮跨模型对抗评审收口，0 blocker / 0 major）。**但这是并列备选设计记录，不是当前执行线。**
+> `[hard]` **状态：已被取代（2026-08-11）。本计划不执行。**
 >
-> `[hard]` **接手者先读这一段再动手。** 本仓库对「Responses ↔ Anthropic 语义桥」这一个特性存在**两条互不引用的工作线**，**当前正在执行的是另一条**：
+> 用户 2026-08-11 裁决**合并 A+B、构造长期最优版本**。合并后语义桥的唯一权威是 [`docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted **v2**），唯一执行计划是 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)。取舍理由见 [2026-08-11 统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。
+>
+> **本计划的承重内容已并入执行线，不是被丢弃**——双平面契约进 RFC §4.1、server-tool carrier record 进 §6.1、Web Search 续接义务进 §7、P0 上游接受性探针进 §17。未采纳的是 `BridgeDecision` 返回值形状、窄 IR 与 `migratedKinds` 逐 family 迁移（理由见 ADR）。
+>
+> 本目录**保留为设计记录**（用户裁决两份并列保留），其 P0–P8 的架构与迁移章节**与执行线互斥**，照本目录实施会与正在跑的代码冲突。
+>
+> 历史状态：曾于 7 轮跨模型对抗评审收口（0 blocker / 0 major），从未实施。
+>
+> 下表保留为两条线的差异记录（**「执行中」一列已由上述合并取代，仅供理解分叉成因**）：
 >
 > | | 本计划（A 线） | **执行中（B 线）** |
 > |---|---|---|
@@ -10,7 +18,7 @@
 > | 计划 | 本目录（P0–P8） | [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11） |
 > | 进度 | **未实施** | C0.1／C0.2／C0.3 已交付并评审收口，C1.1 起改生产代码 |
 >
-> **两条线在三处互斥，不能同时落地**（用户 2026-08-11 裁决保留两份并列，风险已知）：
+> **两条线在三处互斥，不能同时落地**（合并前的分析结论，已由 ADR 逐项裁决）：
 >
 > 1. **迁移粒度**：本计划按 family 用 `migratedKinds` 增量接管；B 线要求整方向单 commit 原子 cutover、明确禁止双轨（B RFC「C9／C10」节）。
 > 2. **core owner**：本计划的共享核心是 `src/lib/semantic-bridge/`；B 线是 `src/lib/pipeline/semantic/`。两者都自称唯一 owner。

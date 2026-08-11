@@ -2,7 +2,7 @@
 
 > **状态**：未实施
 >
-> `[hard]` **并列备选，非当前执行线。** 语义桥当前由 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)（32 片 C0–C11，C0 已交付）执行；两条线在**迁移粒度／core owner／continuation schema** 三处互斥，不能同时落地。动手前先读 [README.md](README.md) 顶部的对照表确认你要执行的是哪一条。
+> `[hard]` **已被取代（2026-08-11），本计划不执行。** 用户裁决合并 A+B，语义桥的唯一权威是 [`docs/rfc/2026-08-08-anthropic-responses-semantic-bridge.md`](../../rfc/2026-08-08-anthropic-responses-semantic-bridge.md)（Accepted v2），唯一执行计划是 [`docs/plan/2026-08-08-semantic-bridge/plan.md`](../2026-08-08-semantic-bridge/plan.md)；取舍理由见 [统一语义桥权威 ADR](../../decisions/2026-08-11-unified-semantic-bridge-authority.md)。本文承重内容已并入 RFC v2（§4.1 双平面／§6.1 server-tool carrier／§7 续接义务／§17 探针门），保留为设计记录；其架构与迁移章节与执行线互斥，照本文实施会与正在跑的代码冲突。
 >
 > **前置**：P5。与 P7 严格串行。
 
