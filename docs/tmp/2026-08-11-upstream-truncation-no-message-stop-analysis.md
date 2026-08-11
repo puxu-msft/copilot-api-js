@@ -174,7 +174,11 @@ content_block_stop → message_delta(stop_reason=tool_use, copilot_usage) → me
 
 **这正是 §7 说的形态 A**——「内容已传完、只是连接没好好关」确实存在，只不过它以 `NGHTTP2_CANCEL` 的名义出现，不以 truncation 的名义。§7 的结论不变：truncation 那 10 条仍全是形态 B。
 
-**影响**：① 虚高的失败率与错误的 `responseSuccess` 统计；② 向客户端发出越界的终止后帧（Claude Code 大概率已在 `message_stop` 处收尾而忽略它，但这未实测）。**未修**——改它属于行为变更，需要用户裁决。
+**影响**：① 虚高的失败率与错误的 `responseSuccess` 统计；② 向客户端发出越界的终止后帧（Claude Code 大概率已在 `message_stop` 处收尾而忽略它，但这未实测）。
+
+**已修（2026-08-11，本分支 `6ad26651` / `8762e55c` / `ade97696`）**：修在共用基座 `driver.ts` 的 `runResponseSink`（`streamErrorOutcome` 唯一铸造点的上游），抽出 `isPostTerminalTeardown(source, opts)` 谓词——失败源是 `upstream-transport`、`sawMessageStop()` 为真、且 `sawUpstreamError()` 不为真时，drain 成 `complete`。unhedged 与 hedge 赢家两条 live 循环共用该谓词。
+
+**修复的覆盖边界（重要，别读成「全 vendor 已覆盖」）**：只有 adapter 对终止帧本身铸 `response-terminal` 的腿才受益——**Anthropic direct、Gemini、Responses HTTP/WS**。**chat-completions、Anthropic translate 腿、buffered-retreat 腿仍会追加第二个终止符**（它们的终局只在自然 drain 由 `publishFinish` 确立，抛错路径到不了）。这三条腿的行为与修复前一致，属覆盖面不足而非回归，已记入 `docs/todo/deferred-backlog.md`。
 
 ### 8.4 附带观察：GHC 在内容结束后还会挂住流几十秒
 
