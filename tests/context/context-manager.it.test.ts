@@ -6,8 +6,6 @@
 
 import {
   //
-  afterEach,
-  beforeEach,
   describe,
   expect,
   test,
@@ -17,14 +15,6 @@ import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContextManager } from "~/lib/context/manager"
 import { createBus } from "~/lib/observability"
-import {
-  //
-  state,
-  setStateForTests,
-} from "~/lib/state"
-
-import { waitUntil } from "../helpers/wait-until"
-
 /**
  * Build a manager wired to a fresh per-test bus + recording subscriber, so
  * tests can assert on the `request.*` bus stream (the single event channel
@@ -129,62 +119,13 @@ describe("createRequestContextManager", () => {
   })
 })
 
-// ─── Stale Request Reaper ───
+// ─── Request-level cancel primitive ───
 
-describe("stale request reaper", () => {
-  let origMaxAge: number
-
-  beforeEach(() => {
-    origMaxAge = state.staleRequestMaxAge
-  })
-
-  afterEach(() => {
-    setStateForTests({ staleRequestMaxAge: origMaxAge })
-  })
-
-  test("startReaper is idempotent (multiple calls don't crash)", () => {
-    const manager = createRequestContextManager()
-    manager.startReaper()
-    manager.startReaper() // second call — should be no-op
-    manager.stopReaper()
-  })
-
-  test("stopReaper is safe when reaper was never started", () => {
-    const manager = createRequestContextManager()
-    manager.stopReaper() // should not throw
-  })
-
-  test("_runReaperOnce force-fails contexts exceeding maxAge", async () => {
-    setStateForTests({ staleRequestMaxAge: 0.05 })
-
-    const { manager, events } = makeManager()
-
-    const ctx = manager.create({ endpoint: "anthropic-messages" })
-    ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: {} })
-    ctx.beginAttempt({})
-
-    expect(manager.activeCount).toBe(1)
-    expect(ctx.settled).toBe(false)
-    // Before reaping, the lifecycle signal is live (in-flight upstream not cancelled).
-    expect(ctx.lifecycleSignal.aborted).toBe(false)
-
-    await waitUntil(() => ctx.durationMs > 50, {
-      label: "context to exceed stale request max age",
-    })
-
-    manager._runReaperOnce()
-
-    expect(manager.activeCount).toBe(0)
-    expect(ctx.settled).toBe(true)
-    const failEvents = events.filter((e) => e.kind === "request.failed")
-    expect(failEvents).toHaveLength(1)
-    // ④ — the reaper now has TEETH: reapInFlight() aborted the lifecycle signal, so the
-    // transport's folded reaperSignal cancels the in-flight upstream fetch / stream (not a
-    // merely-decorative force-fail). state is `failed` (NOT `aborted` — server-initiated).
-    expect(ctx.lifecycleSignal.aborted).toBe(true)
-    expect(ctx.state).toBe("failed")
-  })
-
+// The periodic stale reaper was removed on 2026-08-11 (its kill was a coarser duplicate of
+// `timeouts.client_request_deadline`), and its scan tests went with it. `reapInFlight()` did NOT:
+// it is still the request-level cancel primitive, now driven by shutdown's operator-abandoned
+// drain, so its idempotence and its effect on the lifecycle signal stay guarded here.
+describe("reapInFlight", () => {
   test("reapInFlight() aborts the lifecycle signal (idempotent, independent of fail)", () => {
     const { manager } = makeManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
@@ -193,53 +134,6 @@ describe("stale request reaper", () => {
     expect(ctx.lifecycleSignal.aborted).toBe(true)
     ctx.reapInFlight() // idempotent — second call is a no-op
     expect(ctx.lifecycleSignal.aborted).toBe(true)
-  })
-
-  test("_runReaperOnce does not fail contexts within maxAge", () => {
-    setStateForTests({ staleRequestMaxAge: 600 })
-
-    const manager = createRequestContextManager()
-    const ctx = manager.create({ endpoint: "anthropic-messages" })
-    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
-    ctx.beginAttempt({})
-
-    manager._runReaperOnce()
-
-    expect(manager.activeCount).toBe(1) // should not be reaped
-  })
-
-  test("_runReaperOnce skips when staleRequestMaxAge is 0 (disabled)", () => {
-    setStateForTests({ staleRequestMaxAge: 0 })
-
-    const manager = createRequestContextManager()
-    const ctx = manager.create({ endpoint: "anthropic-messages" })
-    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
-    ctx.beginAttempt({})
-
-    manager._runReaperOnce()
-
-    expect(manager.activeCount).toBe(1) // should not be reaped
-  })
-
-  test("_runReaperOnce handles already-completed context gracefully", async () => {
-    setStateForTests({ staleRequestMaxAge: 0.01 })
-
-    const manager = createRequestContextManager()
-    const ctx = manager.create({ endpoint: "anthropic-messages" })
-    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: {} })
-    ctx.beginAttempt({})
-
-    // Complete normally — removes from activeContexts
-    ctx.complete({
-      success: true,
-      model: "m",
-      usage: { input_tokens: 1, output_tokens: 1 },
-      content: "ok",
-    })
-
-    // Reaper should not find it in activeContexts
-    manager._runReaperOnce()
-    expect(manager.activeCount).toBe(0)
   })
 })
 

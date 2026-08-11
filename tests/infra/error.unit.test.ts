@@ -887,12 +887,12 @@ describe("forwardError", () => {
     expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
   })
 
-  test("hard request-deadline cancel → 504 naming the deadline, not the header timeout", () => {
+  test("hard client-request-deadline cancel → 504 naming the deadline, not the header timeout", () => {
     const { ctx, getLastJson } = createMockContextWithSignal(false)
-    forwardError(ctx, cancellationAbortError("request-deadline", "request_deadline"))
+    forwardError(ctx, cancellationAbortError("client-request-deadline", "client_request_deadline"))
     const { data, status } = getLastJson()
     expect(status).toBe(504)
-    expect(JSON.stringify(data)).toContain("request_deadline")
+    expect(JSON.stringify(data)).toContain("client_request_deadline")
     expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
   })
 

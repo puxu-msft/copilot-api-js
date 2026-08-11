@@ -15,7 +15,7 @@ reactive retry 策略**已经是模块化单元**（每个 `createXxxStrategy()`
 4. **无逐策略 config 开关**：[RetryConfigSchema](../../src/lib/config/schema.ts#L844) 只有 `max_reactive_retries`（全局 cap）。16 策略全 or 无、不能单独禁用。
 5. **无统一注册集可观测**：driver `recordAttemptFailure({nextStrategy})`（[context/types.ts:739](../../src/lib/context/types.ts#L739)）已记「哪个触发」，但无「声明了哪些策略 / per-strategy fire 计数」的视图。
 
-**driver 消费现状**（[driver.ts:538](../../src/lib/pipeline/driver.ts#L538)，`createSemanticRetryPolicy`）：每请求 resolve 一次策略数组（在 CandidateStateFactory fork `env.requestState` 后，closures 绑 candidate supplies）→ `.find(canHandle)` **首命中** → `handle(error,env)` → budget 双闸（`action.learning ? learningRetries++>=maxLearningRetries : normalRetries++>=maxRetries`）→ `onResolved` post-success。**顺序决定谁认领重叠错误。**
+**driver 消费现状**（[driver.ts:538](../../src/lib/pipeline/driver.ts#L538)，`createSemanticRetryPolicy`）：每请求 resolve 一次策略数组（在 CandidateStateFactory fork 该 candidate 的作用域后（原文写作 `env.requestState`；该载体已于 2026-08-11 拆成 `env.request` + `env.candidate`，此处指后者），closures 绑 candidate supplies）→ `.find(canHandle)` **首命中** → `handle(error,env)` → budget 双闸（`action.learning ? learningRetries++>=maxLearningRetries : normalRetries++>=maxRetries`）→ `onResolved` post-success。**顺序决定谁认领重叠错误。**
 
 ## 2. 目标（用户已定，4 全选 + 内部 registry）
 

@@ -164,7 +164,7 @@ describe("shouldAttemptPreContentRecovery", () => {
 
   for (const abortKind of [
     "header-timeout",
-    "request-deadline",
+    "client-request-deadline",
     "reaper-cancel",
     "request-cancel",
     "dispatch-cancel",

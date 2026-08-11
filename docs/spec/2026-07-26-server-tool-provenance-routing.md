@@ -287,6 +287,7 @@ v2 前稿只拿 `ctx.originalRequest.tools`（客户端意图）判。独立评�
 
 **三个连带收益**：
 - **不需要新载体**：两份记录本就活到 sink，不必往 `ctx` / `requestState` / `prepareHints` 上挂新字段（三者各有致命问题，见 §11-9）。
+  > **⚠️ 前提已变（2026-08-11，实施前须重新推导）**：`RequestEnvelope` 已改为三作用域且可变——原 `requestState` 拆成 `request`（请求级纯值，按引用共享）与 `candidate`（逐候选重建的不透明可变持有者），`with()` 已删、改 `writeAttempt` 就地写。**§11-9 里针对 `requestState` 的那条论证同时失效两处**：它引用的 `snapshotStableState` 已随重构删除（现为逐候选 `cloneValue`），且「`with()` 在 retry 时从不 patch 它」这句所依赖的 copy-on-write 已不存在。**本条结论未被自动推翻**（「per-attempt 事实塞进 per-request 载体是语义倒挂」对新的 `request` 作用域仍成立），但支撑它的论据须按新形状重新取证后才能据以实施。当前形状见 `src/lib/pipeline/envelope.ts` 与 [DESIGN.md](../DESIGN.md)。
 - **不可能 stale**：wire 与 response 同属**一次 dispatch**。响应处理只发生在获胜 attempt 上（`createProcessor` 在 `scheduler.run()` 成功返回后才调用），`createState(env)` 每 candidate 只跑一次（[response-processor.ts:65-71](../../src/lib/pipeline/stream/response-processor.ts#L65)，注释原文 "isolated from every sibling candidate"）。
 - **同名歧义必须在 S3 消灭，而不是靠求交「收敛」**（第七轮复评 R7-M1 推翻了前稿的说法）：[message-tools.ts:178-205](../../src/lib/anthropic/message-tools.ts#L178) 先无条件 push 我方 `tool_search_tool_regex` 声明，再**无 dedupe** 地追加客户端 tools。若客户端也声明了同 `name`：
   - wire 上出现**两条同形声明**，而响应里的根块**只携带 `name`、没有 declaration identity** —— 从信息上就**无法**判断这次 invocation 是由哪一条触发的。前稿写「求交天然给出安全答案：客户端声明优先」是**错的**：它可能来自我方注入的那条，判成 `CLIENT_DECLARED` 原样转发就**违反决策 1**。

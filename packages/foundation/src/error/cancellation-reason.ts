@@ -24,18 +24,25 @@ const CANCELLATION_CAUSE = Symbol("cancellationCause")
 
 /**
  * Who cancelled an in-flight request.
- * - `stale-reaper`: the stale-context reaper force-failed an over-age request.
- * - `request-deadline`: the per-request hard deadline (`request_deadline`) fired.
- *   Semantically a TIMEOUT, not a generic cancellation — boundaries map it to 504.
+ * - `stale-reaper`: a request-level force-fail through `reapInFlight()` (today: shutdown's
+ *   operator-abandoned drain).
+ * - `client-request-deadline`: the whole-request hard deadline (`timeouts.client_request_deadline`)
+ *   fired. Semantically a TIMEOUT, not a generic cancellation — boundaries map it to 504.
+ * - `upstream-request-deadline`: ONE upstream attempt outlived `timeouts.upstream_request_deadline`.
+ *   Also a timeout, but attempt-scoped: the retry/hedge budget is untouched, so this only reaches a
+ *   client when it was the last attempt available.
  * - `request-cancel`: any other explicit `ctx.cancel(reason)`; the reason text is
  *   the error message.
  * - `dispatch-cancel`: a candidate/dispatch-local teardown (hedge loser, forced
  *   disposal) — internal, never the client's doing.
  */
-export type CancellationCause = "stale-reaper" | "request-deadline" | "request-cancel" | "dispatch-cancel"
+export type CancellationCause = "stale-reaper" | "client-request-deadline" | "upstream-request-deadline" | "request-cancel" | "dispatch-cancel"
 
-/** The `ctx.cancel()` reason string the hard request deadline uses; mapped to `request-deadline`. */
-export const REQUEST_DEADLINE_CANCEL_REASON = "request_deadline"
+/** The `ctx.cancel()` reason string the whole-request hard deadline uses; mapped to `client-request-deadline`. */
+export const CLIENT_REQUEST_DEADLINE_CANCEL_REASON = "client_request_deadline"
+
+/** The dispatch-cancel reason string the per-attempt deadline uses; mapped to `upstream-request-deadline`. */
+export const UPSTREAM_REQUEST_DEADLINE_CANCEL_REASON = "upstream_request_deadline"
 
 /** Tag an existing error with a cancellation cause and return it (for inline use at throw sites). */
 export function tagCancellationCause<E extends Error>(err: E, cause: CancellationCause): E {

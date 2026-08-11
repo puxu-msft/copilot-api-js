@@ -25,6 +25,7 @@ import { setUpstreamTransportConfig } from "~/lib/state"
 import {
   //
   closeHttp2Sessions,
+  evictSessionForTests,
   getH2SessionStatusSnapshot,
   http2Fetch,
   setConnectTimeoutForTests,
@@ -633,6 +634,78 @@ describe("http2-client", () => {
     expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(0)
 
     await res.body?.cancel().catch(() => {})
+  })
+
+  /**
+   * A4-4: when RST_CANCEL does not get the stream closed either, the connection carrying it cannot be handed to the next request — so it is destroyed. Siblings die with it, and that cost is reported rather than hidden, because "we killed a connection and took N other requests down" is the operator-visible consequence.
+   */
+  test("a stream that ignores RST_CANCEL gets its session evicted, and the sibling cost is reported", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+      // Never ends, and never answers the RST: the unclosable stream this path exists for.
+    }
+    let control: import("~/lib/transport/upstream-fetch").H2StreamControl | undefined
+
+    const res = await http2Fetch(`${url}/unclosable`, { onStreamOpened: (c) => (control = c) })
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+    const sessionId = getH2SessionStatusSnapshot()[0].sessionId
+
+    const outcome = await control!.forceClose()
+
+    // Under Bun the client's own req.close() resolves the stream locally, so this asserts the SHAPE of
+    // the outcome rather than pinning which branch a given runtime takes — both are legitimate, and a
+    // test that demanded eviction here would be asserting a runtime quirk, not our contract.
+    if (outcome.streamClosed) {
+      expect(outcome.sessionEvicted).toBeNull()
+    } else {
+      expect(outcome.sessionEvicted).toMatchObject({ sessionId })
+      expect(outcome.sessionEvicted!.affectedStreams).toBeGreaterThanOrEqual(0)
+      // Evicted means gone from the pool: leaving it routable is exactly the leak this prevents.
+      expect(getH2SessionStatusSnapshot().some((row) => row.sessionId === sessionId)).toBe(false)
+    }
+    // Either way the slot must not stay held.
+    await waitUntil(() => (getH2SessionStatusSnapshot()[0]?.activeStreamCount ?? 0) === 0)
+
+    await res.body?.cancel().catch(() => {})
+  })
+
+  /**
+   * The eviction bookkeeping, driven directly against a REAL pooled session.
+   *
+   * It is tested here rather than through `forceClose` because that branch is unreachable from a loopback test: the client's own `req.close()` resolves the stream locally, so the public path always takes "closed in time" (measured — asserting `streamClosed === false` there fails with `true`). Testing the destructive bookkeeping directly is honest; routing the assertion through a path that never arrives would not be.
+   */
+  test("evicting an unclosable stream's session removes it from the pool and reports the sibling cost", async () => {
+    handler = (stream) => {
+      stream.on("error", () => {})
+      stream.respond({ ":status": 200 })
+      stream.write("hold")
+    }
+
+    // The per-session stream cap defaults to 1, which would put these on two separate connections and
+    // leave the eviction with no sibling to account for — the exact thing under test.
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 4 })
+
+    // Two streams on ONE pooled session, so the eviction has a genuine sibling to account for.
+    const first = await http2Fetch(`${url}/evict-a`, {})
+    const second = await http2Fetch(`${url}/evict-b`, {})
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].activeStreamCount).toBe(2)
+    const sessionId = rows[0].sessionId
+
+    const evicted = evictSessionForTests(sessionId)
+
+    expect(evicted).toMatchObject({ sessionId })
+    // Both streams were live, and the connection dying takes both down — the cost the operator needs.
+    expect(evicted.affectedStreams).toBe(2)
+    // Gone from the pool entirely: leaving a connection with an unkillable stream routable is exactly
+    // the leak this exists to stop, and a "retiring" entry would still be reclaimable.
+    expect(getH2SessionStatusSnapshot().some((row) => row.sessionId === sessionId)).toBe(false)
+
+    await first.body?.cancel().catch(() => {})
+    await second.body?.cancel().catch(() => {})
   })
 
   test("reports an immutable first-terminal snapshot before late physical close", async () => {

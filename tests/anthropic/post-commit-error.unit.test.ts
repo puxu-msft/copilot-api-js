@@ -144,8 +144,8 @@ describe("classifyPostCommitAbort — evidence first, signal reason second, hone
     // possible at all — a boolean has already discarded the only thing that could answer.
     const untaggedFromTransport = new Error("The operation was aborted.")
     untaggedFromTransport.name = "AbortError"
-    expect(classifyPostCommitAbort(false, lifecycle(cancellationAbortError("request-deadline", "request_deadline")), untaggedFromTransport)).toBe(
-      "request-deadline",
+    expect(classifyPostCommitAbort(false, lifecycle(cancellationAbortError("client-request-deadline", "client_request_deadline")), untaggedFromTransport)).toBe(
+      "client-request-deadline",
     )
     expect(classifyPostCommitAbort(false, lifecycle(cancellationAbortError("stale-reaper", "reaped")), untaggedFromTransport)).toBe("reaper-cancel")
   })
@@ -166,8 +166,8 @@ describe("classifyPostCommitAbort — provenance beats signal state", () => {
   test("the hard deadline is NOT reported as a reaper cancel — the regression this fixes", () => {
     // Both fire the SAME lifecycle signal, so signal state alone answers "reaper" for both;
     // only the tagged reason can tell them apart.
-    const deadline = cancellationAbortError("request-deadline", "request_deadline")
-    expect(classifyPostCommitAbort(false, reaperFired, deadline)).toBe("request-deadline")
+    const deadline = cancellationAbortError("client-request-deadline", "client_request_deadline")
+    expect(classifyPostCommitAbort(false, reaperFired, deadline)).toBe("client-request-deadline")
     expect(classifyPostCommitAbort(false, reaperFired, cancellationAbortError("stale-reaper", "reaped"))).toBe("reaper-cancel")
   })
 
@@ -189,7 +189,7 @@ describe("classifyPostCommitAbort — provenance beats signal state", () => {
 describe("postCommitAbortFrame", () => {
   test("each kind names its own cause on the wire — no shared fiction", () => {
     expect(parse(postCommitAbortFrame("header-timeout")).error?.message).toBe("Upstream timed out before sending response headers")
-    expect(parse(postCommitAbortFrame("request-deadline")).error?.message).toContain("hard deadline")
+    expect(parse(postCommitAbortFrame("client-request-deadline")).error?.message).toContain("hard deadline")
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
     expect(parse(postCommitAbortFrame("dispatch-cancel")).error?.message).toContain("dispatch cancelled")
     expect(parse(postCommitAbortFrame("unknown-abort")).error?.message).not.toContain("timed out before sending response headers")
@@ -201,12 +201,12 @@ describe("postCommitAbortFrame", () => {
     // answer decided by whether upstream response headers had arrived, which is not a fact
     // about what ended the request. Asserting against the shared table (rather than repeating
     // the literals) is what makes a future local hardcode impossible to sneak back in.
-    const kinds = ["header-timeout", "request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
+    const kinds = ["header-timeout", "client-request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
     for (const kind of kinds) {
       expect(parse(postCommitAbortFrame(kind)).error?.type).toBe(streamErrorKindToAnthropicErrorType(kind))
     }
     // And spot-check the grouping itself, so a table that goes uniformly wrong is still caught.
-    expect(parse(postCommitAbortFrame("request-deadline")).error?.type).toBe("timeout_error")
+    expect(parse(postCommitAbortFrame("client-request-deadline")).error?.type).toBe("timeout_error")
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.type).toBe("timeout_error")
     expect(parse(postCommitAbortFrame("unknown-abort")).error?.type).toBe("api_error")
   })

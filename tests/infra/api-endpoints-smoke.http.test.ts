@@ -96,12 +96,17 @@ describe("API endpoints smoke (migrated from e2e-ui/api-endpoints.pw.ts)", () =>
     expect(body).toHaveProperty("useUpstreamCountTokens")
     expect(body).toHaveProperty("responseHeaderTimeout")
     expect(body).toHaveProperty("streamIdleTimeout")
-    expect(body).not.toHaveProperty("shutdownGracefulWait")
-    expect(body).not.toHaveProperty("shutdownAbortWait")
+    // Inverted 2026-08-11: these two were asserted ABSENT by the 2026-08-07 removal of shutdown's
+    // own bounds. The user reinstated them (ADR `2026-08-11-shutdown-owns-bounded-waits-again`),
+    // so the guard now pins their presence — an accidental drop from the state projection stays red.
+    expect(body).toHaveProperty("shutdownGracefulWait")
+    expect(body).toHaveProperty("shutdownAbortWait")
 
     expect(typeof body.useUpstreamCountTokens).toBe("boolean")
     expect(typeof body.responseHeaderTimeout).toBe("number")
     expect(typeof body.streamIdleTimeout).toBe("number")
+    expect(typeof body.shutdownGracefulWait).toBe("number")
+    expect(typeof body.shutdownAbortWait).toBe("number")
   })
 
   test("GET /api/tokens returns 200 with github/copilot structure", async () => {

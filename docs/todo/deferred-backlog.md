@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 语义桥 `PairTranslationPolicy.serverTools` 的类型从未定义（2026-08-11，C2.2 执行时发现）
+
+- **根因 / 现状**：RFC §6 的 `PairTranslationPolicy` 列了 `serverTools: ServerToolCapabilities`，但 **`ServerToolCapabilities` 全仓只出现这一次**——就是该类型块里的这个引用本身，没有任何定义（复算：`rg -rn 'ServerToolCapabilities' --glob '*.ts' --glob '*.md' .`）。属**定义滞后**，不是 aspirational 引用：这个字段确有消费者预期（§7 的 server-tool 四格）。
+- **当前行为**：C2.2 落地的 `src/lib/pipeline/semantic/policy-resolver.ts` **显式不实现该字段**，并在类型注释里写明原因。resolver 返回的 policy 因此比 RFC §6 少一个字段。
+- **为何暂缓**：该字段的语义归 **§7／C5**（server-tool 四格）。在 C2.2 里发明它的形状等于**在错误的切片里冻结一份公共契约**——C5 真正要用它时几乎必然得改，而那时它已经进了 History 投影与 policy 快照。按 `broken-reference-supply-vs-delete`，此处选择「不补也不删引用」，而是把缺口显式化并交给拥有其语义的那一片。
+- **理想架构 / 若做需改什么**：C5.1／C5.2 定义 `ServerToolCapabilities`（至少要能表达 §7 四格各自的 native／function／text 降级能力），然后回到 `policy-resolver.ts` 补字段、补 §6.2 的默认值语义（未命中 rule 时 server-tool 能力取什么），并同步 RFC §6 让类型块与实现一致。
+- **触发条件**：C5 动工时**必须**先处置本条——它是那一片的输入。**发现方**：C2.2 实现期（2026-08-11），照 RFC §6 逐字落 `PairTranslationPolicy` 时发现该类型不可解析。
+
 ## `createDownstreamDeliverySession` 是一个闭包里 20 个自由可变变量（2026-08-11，**正确性挂在「Commit 6 真的删掉它」上**）
 
 - **现状**：`src/lib/pipeline/delivery/session.ts` 的 `createDownstreamDeliverySession` 728 行、闭包内 **20 个 `let`**（口径：`rg -c '^  let ' src/lib/pipeline/delivery/session.ts`），横跨四个不相干关注点——生命周期（`state`／`finishReason`／`wireTorn`／`finalized`）、wire 观测账本（`messageEnvelope`／`openBlocks`／`pendingOpenBlocks`／`lastWriteAtMonotonic`／`lastContentDeltaAtMonotonic`／`semanticBlockCount`／`terminalWritten`／`writeCount`／`hasEmittedRealClientContent`）、心跳（`timer`／`heartbeatSuspended`／`heartbeatStopped`／`scaffoldAttempted`／`contentScaffoldAttempted`）、generation 身份（`winnerCandidateId`／`winnerSource`）。
@@ -1296,9 +1304,9 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 ## `pipelineInfo.responseHeaderTimeoutMs` 声明了但从无生产写点（2026-08-08，客户端连接 skill 事实订正的邻域发现）
 
 - **根因 / 现状**：`src/lib/history/types.ts:233` 声明了 `responseHeaderTimeoutMs`，`ctx.setStreamTimeouts()` 的签名（`src/lib/context/types.ts:538`、`src/lib/context/request.ts:1304`）也收这个 patch 键，但**六处生产调用点全都只传 `streamIdleTimeoutMs`**：`src/routes/messages/handler-v4.ts:811,1155`、`src/routes/chat-completions/handler-v4.ts:250`、`src/routes/responses/handler-v4.ts:204`、`src/routes/responses/ws.ts:347`、`src/routes/gemini/handler-v4.ts:221`。唯一写过它的是单测 `tests/context/request-context.unit.test.ts:1225`。
-- **当前行为**：功能无缺陷——这是纯诊断字段，缺失不影响请求处理。代价落在**事后归因**：一条 header-timeout 事故的 entry 里没有任何结构化的阈值快照，而 `stale_request_max_age` / `request_deadline` 反倒能从终端 error 文案里取回嵌入秒数（`src/lib/context/manager.ts:329,440` → `_index.derived.failureReason`，`src/lib/history/v3/projection.ts:437`）。于是**四个 wall-clock terminator 里，最像超时的那一个反而最没有证据**，最容易被凭记忆的默认值补上——正是 2026-07-28 那次「609ms 请求被报成 900s header 超时」的同族陷阱。
+- **当前行为**：功能无缺陷——这是纯诊断字段，缺失不影响请求处理。代价落在**事后归因**：一条 header-timeout 事故的 entry 里没有任何结构化的阈值快照，而 `client_request_deadline` 反倒能从终端 error 文案里取回嵌入秒数（`src/lib/context/manager.ts` 的 deadline timer → `_index.derived.failureReason`，`src/lib/history/v3/projection.ts:437`）。于是**四个 wall-clock terminator 里，最像超时的那一个反而最没有证据**，最容易被凭记忆的默认值补上——正是 2026-07-28 那次「609ms 请求被报成 900s header 超时」的同族陷阱。
 - **理想架构 / 若做需改什么**：在已经调 `resolveStreamIdleTimeoutMs(...)` 的同六处，一并传 `responseHeaderTimeoutMs: resolveResponseHeaderTimeoutMs(resolvedName)`（该 resolver 已存在，见 `src/lib/transport/send.ts:222`、`src/lib/anthropic/client.ts:164` 等调用点）。`setStreamTimeouts` 本就是 merge 语义（单测 `:1222` 守着「两次调用累加」），无需改契约、无需 schema 变更。**注意 per-model override 与 `0`=禁用两种情形都要能忠实落盘**，否则字段存在却撒谎，比缺失更糟。
-- **为何暂缓**：本轮任务是订正 skill 的陈旧事实，不是补产品接线；且这条要做就该**四个 terminator 一起走结构化字段**（现在 stale/deadline 靠解析错误文案取值，是同一个缺陷的另一面），那是一次独立的可观测性改动，值得自己的判据与 mutation 对照。skill `debugging-claude-client-connection` 已按**当前真实接线**写明取证表（哪一格有值、哪一格必须判「未决」），归因不会因此走错。
+- **为何暂缓**：本轮任务是订正 skill 的陈旧事实，不是补产品接线；且这条要做就该**四个 terminator 一起走结构化字段**（现在两档 deadline 靠解析错误文案取值，是同一个缺陷的另一面；2026-08-11 起 terminator 的集合是 `response_header` / `stream_idle` / `upstream_request_deadline` / `client_request_deadline`，`stale_request_max_age` 已随 stale reaper 一并删除，而新增的 `upstream_request_deadline` 同样只有文案没有结构化字段），那是一次独立的可观测性改动，值得自己的判据与 mutation 对照。skill `debugging-claude-client-connection` 已按**当前真实接线**写明取证表（哪一格有值、哪一格必须判「未决」），归因不会因此走错。
 - **触发条件（值得做）**：① 又出现一次 header-timeout 归因争议；② 因别的原因要动 `pipelineInfo` 或 `setStreamTimeouts` 时顺手补全；③ 有人打算把 `failureReason` 文案解析写成正式 oracle 时——那说明结构化字段的缺口已经在制造成本。
 - **发现方**：`debugging-claude-client-connection` skill 事实订正的独立评审（复评轮 major 1，`docs/tmp/2026-08-08-batch1-client-connection-skill-review.md`），主会话逐个调用点复核确认。
 
@@ -1529,13 +1537,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **触发条件（值得做）**：① 执行 Task 4；② 有人报告 Anthropic 流在上游过载时被重复请求；③ 顺手改 `acceptTerminal` 或 buffered 终态排空时。
 - **发现方**：Task 37 接缝复审第二、三轮（`gpt-souls:reviewer` 定位形态，主会话实现并撤回，`reviewer` 独立复核撤回与归属判定）。
 
-## 可配的 shutdown drain 放弃预算（默认 0＝无界）尚未实现（2026-08-10，三档信号契约落地时显式留下）
+## ~~可配的 shutdown drain 放弃预算（默认 0＝无界）尚未实现~~ —— **已实现（2026-08-11），但默认值与本条设想相反**
 
-- **根因 / 现状**：用户 2026-08-10 裁决三档信号契约时，同时裁决保留一个**可配、默认 0（＝无界）**的自动放弃预算——到点时执行与第二档信号相同的动作（中止残余 in-flight + 照常 finalize）。三档信号本身已落地（ADR [三档 shutdown 信号契约](../decisions/2026-08-10-three-tier-shutdown-signal-contract.md)），**这个预算旋钮没有**。
-- **为何暂缓**：默认值是 0，语义即「关闭」，所以缺它**不改变任何现有行为**——操作者按第二次 Ctrl+C 已经能得到全部能力。本轮优先交付核心档位与其守护。**这不是静默削减**：按 `no-silently-cut-but-defer` 在此登记并已在交付报告中向用户点名。
-- **若做需改什么**：① 新增 config 键（注意 `config.schema.json` 只由 `.describe()` 生成、改 TSDoc 是 no-op）；② `packages/foundation/src/state.ts` + `state-defaults.ts` 加字段；③ `gracefulShutdown` 的 drain 循环里挂一个到点触发 `abandonDrain` 的定时器（`unref`），并在 finalize 前清除；④ 测试须覆盖「0＝永不触发」这一默认路径，否则等于没测默认行为。
-- **⚠️ 命名与论证的注意事项**：`shutdown.graceful_wait` / `abort_wait` 是被 spec `2026-08-07-lossless-graceful-shutdown-drain` **明确删除**的，理由是「保留这些字段会错误暗示 shutdown 仍拥有请求终止 deadline」。新键必须在命名与文档上讲清它是**操作者预设的放弃点**（等价于「替我按第二次」），而不是 shutdown 自己的时限，否则就是把被否决的东西改个名字放回来。
-- **发现方**：三档信号契约实现（主会话，2026-08-10）。
+- **状态**：已实现。`shutdown.graceful_wait` / `shutdown.abort_wait` 落地，裁决见 ADR [shutdown 重新拥有自己的墙钟界](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)。
+- **⚠️ 与本条原设想的偏离，必须点名**：本条写的是「**可配、默认 0（＝无界）**，所以缺它不改变任何现有行为」。用户 2026-08-11 裁决的是 **`graceful_wait: 600` / `abort_wait: 60` 写入 bundled 默认**——**默认开启**，方向与本条相反。所以这不是「按计划补上了一个空操作旋钮」，而是一次**默认行为变更**：任何未显式覆盖的实例，关机等待现在最多 660 秒。
+- **本条当初的警告是怎么处理的**：原文警告「`graceful_wait`/`abort_wait` 是被 spec 明确删除的，新键必须讲清它是操作者预设的放弃点、而不是 shutdown 自己的时限，否则就是把被否决的东西改个名字放回来」。**这个警告没有被满足，而是被用户的新裁决取代了**——现在它就是 shutdown 自己的时限，ADR 也是这么写的。取代它的论证不是「换个名字」，而是**到点后的动作变了**：2026-08-07 有害的是进程级 `AbortSignal`（杀请求、丢记录），现在到点执行的是无损放弃排空（`reapInFlight` + `fail`，走完 finalize，全部落盘），归因码 `graceful-wait-elapsed` 与操作者路径的 `operator-abandoned-drain` 刻意区分。被删掉的 `shutdownAbortController` / `getShutdownSignal()` **没有复活**。
+- **仍然成立的代价（不因已实现而消失）**：`graceful_wait` 到点会终止一条仍在合法产出的长请求——记录留住了，**结果没有**。`abort_wait` 到点则是真的丢数据（按设计不 flush），它只在 barrier 本身卡住时触发。两条都写在 ADR 的「代价与边界」节。
+- **实现落点**：config `shutdown` 段（`src/lib/config/schema.ts`）→ `state.shutdownGracefulWait` / `shutdownAbortWait` → `src/lib/shutdown.ts` 的 `armShutdownWaits` / `armAbortWait`。守卫在 `tests/shutdown/shutdown.unit.test.ts`「shutdown's own wall-clock bounds」与 `tests/config/never-false-kill-legit-thinking.unit.test.ts`。
 
 ## history 读写分离：主程序只 append 写，读/搜索/聚合全部外移 sidecar（2026-08-10，用户裁决的后续方向）
 
@@ -1550,7 +1558,8 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## `reapInFlight()` 把取消成因写死成 `stale-reaper`，第二档信号的客户端因此看到 504「stale-request reaper」（2026-08-10，三档信号契约评审发现）
 
-- **根因 / 现状**：`src/lib/context/request.ts:1125` 的 `reapInFlight()` **无参数**，内部写死 `cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")`。消费者 `src/lib/error/forward.ts:573` 据此把 `stale-reaper` 与 `request-deadline` 一起归入「我方时钟到点」，产出 **504** 且文案为 `Request cancelled by our own clock (stale-request reaper ${state.staleRequestMaxAge}s)`。
+- **根因 / 现状**：`src/lib/context/request.ts` 的 `reapInFlight()` **无参数**，内部写死 `cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")`。消费者 `src/lib/error/forward.ts` 据此把 `stale-reaper` 与两档 deadline 一起归入「我方时钟到点」，产出 **504**。
+- **2026-08-11 部分修复**：周期式 stale reaper 已删除，`forward.ts` 的 `OUR_CLOCK_LABELS` 把 `stale-reaper` 的文案改成了「operator-abandoned drain」，所以下面那条「自相矛盾的读数」症状已经不复存在（`state.staleRequestMaxAge` 本身也没了）。**根因仍在**：`reapInFlight()` 打的 `CancellationCause` 标签依然是 `stale-reaper`，而今天驱动它的唯一生产路径是 shutdown 的 operator-abandoned drain——名实不符只是从「文案」退到了「标签」，客户端拿到的 provenance 仍不是真成因。修法不变：给 `reapInFlight(cause)` 加参数、由调用方在产生点打标签。
 - **为什么这是缺陷而不只是文案瑕疵**：终态有**两条独立的 provenance 通道**——`fail()` 的 `attribution` 与取消信号的 `CancellationCause`。三档信号契约把前者修对了（`shutdown`／`operator-abandoned-drain`），**后者仍在撒谎**：操作者放弃 drain 与「请求超时」是完全不同的事件，而客户端和日志只看得到后者。直接违反 user-rule `abort-provenance-tag-at-source-not-guess-at-boundary`（成因应在产生点打标签）。**并且本仓 `config.yaml:240` 把 `stale_request_max_age` 设成 0**（代码默认是 600，见 `packages/foundation/src/state-defaults.ts:257`——别把项目配置当成代码默认，本条初稿就记错过），所以在这台实例上实际文案会是「stale-request reaper 0s」——一个自相矛盾的读数：宣称某个时钟到点了，而那个时钟根本没开。
 - **本轮 commit message 的更正**：`feat(shutdown): make the second termination signal abandon the drain, not the process` 里写的「终态永远不会被读成 timeout」**只对了一半**——`fail()` 的 attribution 对了，取消通道没有。以本条为准。
 - **为何暂缓**：修它要动 `reapInFlight` 的签名（加 cause 参数）、`CancellationCause` 联合类型加成员、`forward.ts` 的分流表加分支，并逐个核对既有 4 个 cause 的消费者；改动面明显超出「让第二档信号不杀进程」这一轮，混进来会让本轮的因果链变糊。**这不是静默削减**：按 `no-silently-cut-but-defer` 登记于此并已向用户点名。
@@ -1587,3 +1596,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **为何暂缓**：①会改四种 client protocol 共用的 grammar 语义；②要把一个 downstream ledger 接进 driver 的 catch，需确认 evaluate 模式（帧进 collector 而非客户端）下该 ledger 的含义。两者都超出「修一个 catch 分支」的范围。retreat 那条则在另一个函数、另一套不变量里。
 - **若做需改什么**：选定判据后，四条腿各补一条与现有 it 级接线证明同形的用例（完整消息 → 上游 body 抛错 → 断言末帧是该格式的终止符且无 `error`）。
 - **发现方**：`reviewer` 对 `8762e55c` 的对抗评审（2026-08-11）第 1/3 条；主会话已逐条复核证据成立。
+
+## suspend / clock-drift 判别器随 stale reaper 一起失去了宿主，`recordReaperTick` 现在零生产调用点（2026-08-11，两档 deadline 重整时发现）
+
+- **根因 / 现状**：`src/lib/observability/reaper-diagnostics.ts` 的 tick 采集（`recordReaperTick` / `getReaperDiagnostics` / 64 槽 ring）原先由周期式 stale reaper 的每次扫描驱动。该 reaper 本轮被删除（它测的量与 `timeouts.client_request_deadline` 相同、动作也相同，只是走扫描、最坏晚约 1.33 倍），于是这套采集**没有任何生产调用点了**，只剩自己的单测在驱动。同模块的 `recordConfigReloadTimeoutDiff` 不受影响，仍在 `src/lib/config/config.ts` 的热重载路径上。
+- **当前行为**：功能无缺陷——它本来就是纯观测。真正的代价是**丢了一个判别器**：`suspectSuspend`（墙钟 gap 远超单调钟 gap ⇒ 进程/WSL2 suspend，两 gap 一致 ⇒ 事件循环阻塞）是本仓**唯一**能把「整机冻结」与「事件循环被卡住」区分开的手段。全仓没有第二个。
+- **需要说清楚的一件事**：它在删除之前就**已经不跑了**——bundled `config.yaml` 把 `stale_request_max_age` 设成 0，而 `startReaper()` 在阈值 ≤ 0 时直接 return，所以生产进程里这个 interval 从未启动过。所以本轮删除**没有造成能力回退**，只是把「这个判别器实际上是死的」这件事从隐性变成显性。
+- **为何暂缓**：给它随便找个宿主（比如无条件起一个 60s interval）会新增一个永远运行、而**没有任何读者**的定时器——`getReaperDiagnostics()` 至今没有生产消费者，没有 `/api/status` 字段、没有诊断端点。那是把「无用的死代码」换成「无用的活开销」，方向不对。要做就该连读者一起做。
+- **理想架构 / 若做需改什么**：① 先给它一个真读者（`/api/status` 或 diagnostic 端点暴露 `getReaperDiagnostics()`）；② 再决定 tick 的宿主——可以是一个独立的、名字诚实的 suspend probe（固定 cadence，与任何 deadline 无关），也可以挂在既有的某个周期任务上（`history/v3/maintenance` 的 tick 是现成的候选，省一个 timer）；③ 顺带把模块与 API 从 `reaper-*` 改名成它实际在做的事——reaper 已经不存在了，这批名字现在全是名实不符。
+- **触发条件（值得做）**：① 又遇到一次「timer 集体迟到 / 请求龄读数异常」而分不清是 suspend 还是事件循环阻塞；② 有人要做进程健康度面板，需要 event-loop delay 之外的挂起证据；③ 任何人下次动这个模块时顺手连读者一起补。
+- **发现方**：两档 deadline 重整（本轮）删 reaper 时的调用点盘查——`git grep startReaper` 当时还漏看了 `packages/` 下的生产调用点，第二次全仓 grep 才发现 `packages/cli/src/start.ts` 里有一个。

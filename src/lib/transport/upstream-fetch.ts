@@ -46,22 +46,35 @@ import type { TransportTerminationSnapshot } from "./http2-observation-types"
 import { http2Fetch } from "./http2-client"
 import { createResponseHeaderDeadline } from "./response-header-deadline"
 
+/** What a forced teardown actually achieved, so the caller can record it rather than guess. */
+export interface ForcedTeardownOutcome {
+  /** True if the stream closed within the tail window after RST_CANCEL. */
+  streamClosed: boolean
+  /**
+   * Set when the stream never closed and its session had to be destroyed to stop it leaking.
+   *
+   * `affectedStreams` counts the OTHER in-flight streams that the eviction took down with it — a shared connection cannot be destroyed for one dispatch without consequences for its siblings, and that cost belongs in the record.
+   */
+  sessionEvicted: { sessionId: string; affectedStreams: number } | null
+}
+
 /**
  * What a caller may do to an h2 stream it does not own.
  *
- * Deliberately one verb. The pooled session is shared with sibling streams, so a dispatch is allowed to give up on ITS stream and nothing more — it may not close, evict or otherwise touch the connection underneath.
+ * Deliberately one verb. The pooled session is shared with sibling streams, so a dispatch is allowed to give up on ITS stream and nothing more — it may not close, evict or otherwise touch the connection underneath on a whim. Eviction happens only as the last step of a forced teardown that the stream itself refused, and the outcome reports it.
  */
 export interface H2StreamControl {
   /**
-   * Give up on this stream: RST_CANCEL it, then reclaim its pool slot even if the peer never answers.
+   * Give up on this stream: RST_CANCEL it, wait a short fixed tail, then reclaim its pool slot even if the peer never answers.
    *
    * Reclaiming without a confirmed close is the point. A stream that refuses to close would otherwise hold its slot forever, and a pool that slowly loses slots to unclosable streams stops admitting work long before anything looks broken. The slot release is idempotent, so the late `close` (if it ever arrives) is a no-op rather than a second decrement.
    */
-  forceClose: () => void
+  forceClose: () => Promise<ForcedTeardownOutcome>
 }
 
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
-export interface UpstreamFetchInit {  method?: string
+export interface UpstreamFetchInit {
+  method?: string
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignal | undefined

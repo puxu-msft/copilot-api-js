@@ -65,7 +65,7 @@ S1a parse（同步 native，四格式都产出客户端原生 body）
 1. **`translateInbound` 必须在 retry loop 外**（一次性）——否则 buffered re-exchange 会重复触发 `processOpenAIMessages`、重复注入 system prompt。测试直接断言调用次数 == 1（PoC 已证机制）。
 2. **model resolution 时序保持**：现 gemini route 在 await 注入前先 resolve model 并 `preResolved` 固化；S1a 须保留等价时序，否则 `applyConfigToState()` 后配置变化可能改 model lookup。
 3. **history 双轨**：S1a 后 `client.inbound` 见客户端原生、`clientRequest` 原样轨记 native（parse 自然捕获，不再靠 gemini 专用 `originalBodyForHistory` 补偿）；S1b 后 effective/wire 轨记 CC/target-leg body。
-4. **client.inbound 防御性 body snapshot = defense-in-depth**（spec §3.5，评审已核实）：真 codec 已 `structuredClone` orig.payload、`clientRequest` 结构性安全；snapshot 防未来非-clone codec + 落实不可变返回。测试直测「hook 收到的 body 与下游 parsed 引用独立」，非拿 clientRequest 当 oracle。
+4. ~~**client.inbound 防御性 body snapshot = defense-in-depth**~~（**2026-08-11 被用户裁决推翻，见 spec §3.5 的取代注记**）：snapshot 与不可变返回契约都已移除，hook 现在拿到的是 live env。此举安全的**理由不在 snapshot 而在本条自己写下的前半句**——四个 codec 的 `parse` 各自 `structuredClone` 出 `orig.payload`，客户端原样轨结构性独立于 hook 行为（2026-08-11 复验仍成立）。原第 4 条余下半句「snapshot 防未来非-clone codec + 落实不可变返回。测试直测『hook 收到的 body 与下游 parsed 引用独立』」同样作废——现行测试断言的正好相反：hook 收到的就是 parse 那个 body（`tests/pipeline/hooks/client-inbound.unit.test.ts`）。
 5. **hook cardinality 写进 API 类型 + 文档**：一次请求 / 每 attempt / 每 frame，防作者误用（有状态 hook 在 exchange 会被调 L1×L2 次）。
 
 ## 4. 各 route 的 async 入站处理下沉（四格式，非 gemini-only）

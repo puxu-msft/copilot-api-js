@@ -1,5 +1,9 @@
 # 03-spec — Envelope / Stage / Driver / 自动采样
 
+> **⚠️ §1 `RequestEnvelope` 的形状已于 2026-08-11 被取代，不要按本节实现。** 本节描述的是**扁平字段 + `with()` 复制更新 + 不可变约定**；现行 envelope 是**三作用域且可变**——`request`（请求级纯值）/ `candidate`（逐候选重建的不透明可变持有者）/ `attempt`（下次派发的输入），`with()` 已删除，改由 `writeAttempt(env, patch)` **就地写并返回同一个 env**。
+>
+> 本节其余内容（阶段签名、driver 编排、observability 自动采样契约）未受影响。**envelope 形状的当前真相源**：`src/lib/pipeline/envelope.ts` 与 [DESIGN.md](../../DESIGN.md)「活的架构现状」。本文按当时状态保留，作为 v4 设计记录。
+
 骨架层规格。这是 v4 的中枢——定义流转容器、阶段签名、driver 编排、以及 observability 自动采样契约。
 
 ---

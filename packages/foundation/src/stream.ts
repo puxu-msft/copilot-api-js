@@ -71,15 +71,27 @@ export class StreamDispatchCancelError extends Error {
 }
 
 /**
- * The per-request HARD DEADLINE (`request_deadline`) fired mid-stream. It shares
- * `ctx.lifecycleSignal` with the stale reaper, so before the cancellation cause was
+ * The whole-request HARD DEADLINE (`timeouts.client_request_deadline`) fired mid-stream. It shares
+ * `ctx.lifecycleSignal` with the other request-level cancels, so before the cancellation cause was
  * carried ON the abort reason this was indistinguishable from a reaper cancel and
  * got reported to the client as one. It is a TIMEOUT, not an age-based reap.
  */
-export class StreamRequestDeadlineError extends Error {
+export class StreamClientRequestDeadlineError extends Error {
   constructor(reason?: string) {
     super(reason ?? "Request exceeded its hard deadline")
-    this.name = "StreamRequestDeadlineError"
+    this.name = "StreamClientRequestDeadlineError"
+  }
+}
+
+/**
+ * ONE upstream attempt outlived `timeouts.upstream_request_deadline`. Attempt-scoped: it only
+ * reaches a client when no retry/hedge candidate was left, which is why it is a distinct kind
+ * from the whole-request deadline rather than folded into it.
+ */
+export class StreamUpstreamRequestDeadlineError extends Error {
+  constructor(reason?: string) {
+    super(reason ?? "Upstream attempt exceeded its hard deadline")
+    this.name = "StreamUpstreamRequestDeadlineError"
   }
 }
 
@@ -115,7 +127,8 @@ export type StreamErrorKind =
   | "idle-timeout"
   | "client-abort"
   | "reaper-cancel"
-  | "request-deadline"
+  | "client-request-deadline"
+  | "upstream-request-deadline"
   | "request-cancel"
   | "dispatch-cancel"
   | "unknown-cancel"
@@ -133,7 +146,8 @@ export const STREAM_ERROR_KIND_MESSAGES: Record<StreamErrorKind, string> = {
   "idle-timeout": "Stream idle timeout",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
-  "request-deadline": "Request exceeded its hard deadline",
+  "client-request-deadline": "Request exceeded its hard deadline",
+  "upstream-request-deadline": "Upstream attempt exceeded its hard deadline",
   "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
   "unknown-cancel": "Request aborted without a recorded cause",
@@ -156,7 +170,8 @@ export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamIdleTimeoutError) return "idle-timeout"
   if (error instanceof StreamClientAbortError) return "client-abort"
   if (error instanceof StreamReaperCancelError) return "reaper-cancel"
-  if (error instanceof StreamRequestDeadlineError) return "request-deadline"
+  if (error instanceof StreamClientRequestDeadlineError) return "client-request-deadline"
+  if (error instanceof StreamUpstreamRequestDeadlineError) return "upstream-request-deadline"
   if (error instanceof StreamRequestCancelError) return "request-cancel"
   if (error instanceof StreamDispatchCancelError) return "dispatch-cancel"
   if (error instanceof StreamUnknownCancelError) return "unknown-cancel"
@@ -189,8 +204,11 @@ function requestLifecycleStreamError(reason: unknown): Error {
     case "stale-reaper": {
       return new StreamReaperCancelError()
     }
-    case "request-deadline": {
-      return new StreamRequestDeadlineError(message)
+    case "client-request-deadline": {
+      return new StreamClientRequestDeadlineError(message)
+    }
+    case "upstream-request-deadline": {
+      return new StreamUpstreamRequestDeadlineError(message)
     }
     case "request-cancel": {
       return new StreamRequestCancelError(message)

@@ -1886,11 +1886,16 @@ export async function runResponseBufferedSink(
       }
 
       // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).
-      // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
-      // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
-      // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
-      // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
-      const retryable = (failure ? classifyStreamError(failure.error) === "other" : true) && !committedAny
+      // Retry a transport-close throw (`"other"`), an attempt-scoped upstream deadline, or a
+      // truncation (no throw) — never a shutdown / idle-timeout / whole-request-deadline throw.
+      // `upstream-request-deadline` belongs on the retryable side precisely because it is OUR
+      // decision to stop THIS attempt so another may start; treating it like the other cancellation
+      // kinds would collapse it into a shorter `client_request_deadline` and make the knob pointless.
+      // `!committedAny` closes the retry window once a block was committed live (P0): a committed
+      // prefix is on the wire, so re-exchanging would double-send it. On the terminal-only path
+      // `committedAny` is always false → the gate is unchanged (R1).
+      const failureKind = failure ? classifyStreamError(failure.error) : undefined
+      const retryable = (failureKind === undefined || failureKind === "other" || failureKind === "upstream-request-deadline") && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the

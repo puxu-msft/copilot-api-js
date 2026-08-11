@@ -45,7 +45,7 @@ import {
   StreamIdleTimeoutError,
   StreamReaperCancelError,
   StreamRequestCancelError,
-  StreamRequestDeadlineError,
+  StreamClientRequestDeadlineError,
   StreamUnknownCancelError,
 } from "~/lib/stream"
 
@@ -169,7 +169,7 @@ describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamEr
   // as a generic `api_error` on the live path while the codec's private copy said otherwise.
   test.each([
     [new StreamIdleTimeoutError(300_000), "idle-timeout"],
-    [new StreamRequestDeadlineError(), "request-deadline"],
+    [new StreamClientRequestDeadlineError(), "client-request-deadline"],
     [new StreamReaperCancelError(), "reaper-cancel"],
   ])("our own clock running out → timeout_error (%s)", (err) => {
     expect(classifyStreamErrorType(err)).toBe("timeout_error")
@@ -192,7 +192,7 @@ describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamEr
       [new StreamIdleTimeoutError(1000), "idle-timeout"],
       [new StreamClientAbortError(), "client-abort"],
       [new StreamReaperCancelError(), "reaper-cancel"],
-      [new StreamRequestDeadlineError(), "request-deadline"],
+      [new StreamClientRequestDeadlineError(), "client-request-deadline"],
       [new StreamRequestCancelError(), "request-cancel"],
       [new StreamDispatchCancelError(), "dispatch-cancel"],
       [new StreamUnknownCancelError(), "unknown-cancel"],

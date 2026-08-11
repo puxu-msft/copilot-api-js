@@ -34,7 +34,7 @@ import { HTTPError } from "~/lib/error"
 import {
   //
   cancellationAbortError,
-  REQUEST_DEADLINE_CANCEL_REASON,
+  CLIENT_REQUEST_DEADLINE_CANCEL_REASON,
 } from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import {
@@ -1148,7 +1148,7 @@ export function createRequestContext(opts: {
       // fetch signal (transport → driver → client boundary) sees only the thrown error, and a
       // bare abort there is indistinguishable from a header timeout. The hard deadline is a
       // TIMEOUT, so it gets its own cause rather than the generic cancel one.
-      lifecycleAbort.abort(cancellationAbortError(reason === REQUEST_DEADLINE_CANCEL_REASON ? "request-deadline" : "request-cancel", reason))
+      lifecycleAbort.abort(cancellationAbortError(reason === CLIENT_REQUEST_DEADLINE_CANCEL_REASON ? "client-request-deadline" : "request-cancel", reason))
     },
     trackOperationBody(p) {
       operationScope.trackOperationBody(p)

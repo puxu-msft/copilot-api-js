@@ -58,8 +58,8 @@ describe("wall-clock bounded-wait override warning", () => {
   test.each([
     ["response_header", "TTFB"],
     ["stream_idle", "mid-stream silence"],
-    ["stale_request_max_age", "active upstream lifetime"],
-    ["request_deadline", "client request lifetime"],
+    ["upstream_request_deadline", "one upstream attempt"],
+    ["client_request_deadline", "whole client request"],
   ])("positive %s warns that legitimate unbounded thinking may be terminated", async (key, label) => {
     await writeConfig(`timeouts:\n  ${key}: 300\n`)
     const spy = spyOn(consola, "warn")
@@ -97,7 +97,7 @@ describe("wall-clock bounded-wait override warning", () => {
   })
 
   test("all four disabled defaults emit no bounded-wait warning", async () => {
-    await writeConfig("timeouts:\n  response_header: 0\n  stream_idle: 0\n  stale_request_max_age: 0\n  request_deadline: 0\n")
+    await writeConfig("timeouts:\n  response_header: 0\n  stream_idle: 0\n  upstream_request_deadline: 0\n  client_request_deadline: 0\n")
     const spy = spyOn(consola, "warn")
     try {
       await applyConfigToState()

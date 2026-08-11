@@ -14,7 +14,7 @@
 
 2026-08-07 的 incident 同时出现三个受影响请求。用户日志与运行实例 History API 两种证据均显示：三个请求在同一秒以 `Server is shutting down` 失败；请求此前仍在接收上游 delta。运行实例的 `config.yaml` 将 `shutdown.graceful_wait` 配为 300 秒，incident 进程所运行的 `4c9c7aea` 版本会在该等待结束后执行 `shutdownAbortController.abort()`。这些证据证明错误来自现行自动 Step 3，而非客户端断开、stale reaper、请求 deadline 或 Step 1 提前拆除 h2 池。
 
-固定增加 `graceful_wait` 只能推迟复发。模型耗时和请求规模没有可由 shutdown 正确预估的统一上界；请求自身已有 `timeouts.request_deadline`、上游 header timeout、stream idle timeout 和客户端取消等终止机制。
+固定增加 `graceful_wait` 只能推迟复发。模型耗时和请求规模没有可由 shutdown 正确预估的统一上界；请求自身已有 `timeouts.client_request_deadline`、`timeouts.upstream_request_deadline`、上游 header timeout、stream idle timeout 和客户端取消等终止机制。
 
 ## 2. 冻结契约
 
@@ -25,7 +25,7 @@
 1. 同步认领 lifecycle，使紧邻的第二信号必定被识别为 post-claim 信号并进入分档路径（2026-08-07 冻结时该路径只有强退一档；分档见文首修订说明）。
 2. 将状态置为 `stopping`，随后进入 `draining`。
 3. 立即关闭 HTTP listener，并由 middleware 拒绝信号后进入的新请求。
-4. 停止只属于后台维护的 producer，例如 stale reaper、History maintenance 和 Telemetry rollup。
+4. 停止只属于后台维护的 producer，例如 History maintenance 和 Telemetry rollup。
 5. 等待信号前已接纳的 operation registry 清零，不设置 shutdown 自有 deadline，也不发送进程级 shutdown abort。
 
 ### 2.2 已接纳请求
@@ -49,11 +49,15 @@
 
 - 正常协议完成或上游错误；
 - 客户端取消；
-- `timeouts.request_deadline`；
-- response-header、stream-idle 等上游 timeout；
-- stale reaper 在正常 serving 期间的泄漏兜底。
+- `timeouts.client_request_deadline`（整个客户端请求，跨重试不重置）；
+- `timeouts.upstream_request_deadline`（单次上游尝试，烧完只中止该次尝试）；
+- response-header、stream-idle 等上游 timeout。
 
-shutdown 不再拥有请求终止 deadline。首信号之后停止 stale reaper，但每个 context 已武装的精确 request deadline 继续生效。
+首信号之后，每个 context 已武装的精确 deadline 与每次尝试的 attempt deadline 继续生效——shutdown 不触碰它们。
+
+> **2026-08-11 推翻**：本节原句「shutdown 不再拥有请求终止 deadline」已不成立。shutdown 重新拥有 `shutdown.graceful_wait`（bundled 600s）与 `shutdown.abort_wait`（bundled 60s），裁决与「为什么这不是回到 2026-08-07」的完整论证见 ADR [2026-08-11-shutdown-owns-bounded-waits-again](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)。要点：**当初有害的是到点后的动作**（进程级 abort、丢记录），而不是「有界」本身；新的到点动作是无损放弃排空，走完 finalize。
+
+> **2026-08-11 更新**：本节原先还列有「stale reaper 在正常 serving 期间的泄漏兜底」，且首信号一步写作「停止 stale reaper」。该 reaper 已删除——它测的量与 `client_request_deadline` 相同、动作也相同，只是走周期扫描、最坏晚约 1.33 倍，故由精确 timer 完全取代。旧配置键 `timeouts.stale_request_max_age` 由 compat 层迁移到 `timeouts.client_request_deadline`。`reapInFlight()` 未退役，仍是第二信号 `abandonDrain` 使用的请求级取消原语。
 
 ### 2.4 第二信号
 
@@ -137,7 +141,7 @@ generation 与 lightweight 两个 in-flight registry 均清零后，shutdown 按
 测试必须同时证明两类错误状态会失败：
 
 - 若在首信号后调用 process-global abort、`rejectQueued()`、token `dispose()`、WS `stopNew()` 或 transport close，相关回归测试必须变红。
-- 若删除请求自身 `request_deadline` 的终止能力，deadline 测试必须变红；无损 shutdown 不等于允许请求泄漏。
+- 若删除请求自身 `client_request_deadline` 的终止能力，deadline 测试必须变红；无损 shutdown 不等于允许请求泄漏。
 
 ### 6.3 验证范围
 

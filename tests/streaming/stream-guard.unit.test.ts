@@ -21,7 +21,7 @@ import {
   StreamIdleTimeoutError,
   StreamReaperCancelError,
   StreamRequestCancelError,
-  StreamRequestDeadlineError,
+  StreamClientRequestDeadlineError,
   StreamUnknownCancelError,
   classifyStreamError,
   guardSseIterable,
@@ -161,15 +161,15 @@ describe("guardSseIterable — abort-source distinction", () => {
 
     await iter.next()
     const secondPromise = iter.next()
-    lifecycle.abort(cancellationAbortError("request-deadline", "request_deadline"))
+    lifecycle.abort(cancellationAbortError("client-request-deadline", "client_request_deadline"))
 
     const error = await secondPromise.then(
       () => undefined,
       (e: unknown) => e,
     )
-    expect(error).toBeInstanceOf(StreamRequestDeadlineError)
+    expect(error).toBeInstanceOf(StreamClientRequestDeadlineError)
     expect(error).not.toBeInstanceOf(StreamReaperCancelError)
-    expect(classifyStreamError(error)).toBe("request-deadline")
+    expect(classifyStreamError(error)).toBe("client-request-deadline")
   })
 
   test("an explicit ctx.cancel is its own kind; an UNTAGGED lifecycle abort is an honest unknown, NOT a fabricated reaper", async () => {

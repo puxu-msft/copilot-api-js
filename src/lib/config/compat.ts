@@ -358,7 +358,25 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // top-level timeouts → timeouts section (three rules accumulate into one section)
   renameLeaf("stream_idle_timeout", "timeouts.stream_idle"),
   renameLeaf("fetch_timeout", "timeouts.response_header"),
-  renameLeaf("stale_request_max_age", "timeouts.stale_request_max_age"),
+  renameLeaf("stale_request_max_age", "timeouts.client_request_deadline", {
+    message:
+      "stale_request_max_age is renamed to timeouts.client_request_deadline (same start point, same force-fail, now enforced by a precise per-request timer instead of a periodic scan); update your config.yaml",
+  }),
+  // timeouts.stale_request_max_age → timeouts.client_request_deadline (2026-08-11). The stale
+  // reaper measured the SAME quantity as the deadline — age since context creation — and applied
+  // the SAME action (reapInFlight + fail), only via a scan that fired up to ~1.33× late. Removing
+  // it drops one whole-process interval and one duplicated killer; the deadline keeps the job.
+  renameLeaf("timeouts.stale_request_max_age", "timeouts.client_request_deadline", {
+    message:
+      "timeouts.stale_request_max_age is renamed to timeouts.client_request_deadline (the stale reaper is gone; the precise per-request timer enforces the same cap); update your config.yaml",
+  }),
+  // timeouts.request_deadline → timeouts.client_request_deadline: pure spelling change, no
+  // semantic shift. The new name says WHICH deadline it is, now that `upstream_request_deadline`
+  // exists as the per-attempt sibling.
+  renameLeaf("timeouts.request_deadline", "timeouts.client_request_deadline", {
+    message:
+      "timeouts.request_deadline is renamed to timeouts.client_request_deadline (it caps the whole client request; the new timeouts.upstream_request_deadline caps one upstream attempt); update your config.yaml",
+  }),
   // max_retries was never truncation-specific — hoist to the shared retry budget section.
   renameLeaf("auto_truncate.max_retries", "retry.max_reactive_retries"),
   // stream_keepalive_mode "content_delta" → "empty_text": the keepalive reset is now

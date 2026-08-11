@@ -116,7 +116,7 @@ describe("upstreamFetch — test bridge", () => {
 
   test("disarming the header deadline does not disarm the request lifecycle signal", async () => {
     const lifecycle = new AbortController()
-    const reason = new DOMException("request_deadline", "AbortError")
+    const reason = new DOMException("client_request_deadline", "AbortError")
     setUpstreamFetchForTests((_url, init) => {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {

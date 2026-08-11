@@ -13,8 +13,10 @@ const commonApp = {
   args: "start",
   wait_ready: true, // 等 process.send('ready')（notifyReady 的 pm2 腿）
   listen_timeout: 30000,
-  // pm2 只能配置有限 hard timeout，而 bundled request_deadline=0。该上限无法
-  // 严格保证无损排空；生产换代应先确认旧槽 activeRequests=0，再执行 delete。
+  // 进程自己的界是 bundled shutdown.graceful_wait=600 + abort_wait=60 = 660s（abort_wait
+  // 从 graceful_wait 到点才计）。kill_timeout 必须大于这个和，否则会在无损 flush 中途强杀。
+  // 保留 1300s 是刻意留大余量：它现在是「进程自己没退成」的兜底，而不是主要的界。
+  // 生产换代仍应先确认旧槽 activeRequests=0，再执行 delete。
   kill_timeout: 1300000,
   // clean handoff exit(0) 是期望的停止，不得被 PM2 autorestart 拉起旧槽。
   stop_exit_codes: [0],

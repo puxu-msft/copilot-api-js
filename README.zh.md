@@ -216,7 +216,7 @@ gemini -p "hello"
 - `rate_limiter.*` — 重试间隔、请求间隔、恢复超时、连续成功阈值。**需要重启。**
 - `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — 完整的 system prompt 修改管道（line 或 regex 替换，可选 `model` 过滤）。
 - `history.raw_capture.*` — 可选独立 raw CAS；默认关闭，可热重载 store generation。
-- `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — 网络相关旋钮。
+- `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `client_request_deadline` / `upstream_request_deadline` — 网络相关旋钮。
 - `proxy` — 出站代理 URL。**需要重启。**
 
 热重载语义为 *retain-on-absence*：缺失的 key 保留上次的值；显式给出的空值（`disabled_models: []`、`model_overrides: {}`）才会清空字段。

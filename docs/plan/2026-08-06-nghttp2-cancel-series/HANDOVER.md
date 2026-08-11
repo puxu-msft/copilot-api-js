@@ -277,7 +277,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 | A4-1 | explicit dispatch ownership：`TransportDispatchOptions.dispatch` 必填 + options bag 必填、`recordGenerationDispatchDiagnostic(dispatch, …)` | **已合并**（实现提交 `c9a115a5`，合并态 `7f7a0730`） |
 | A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
 | A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **已完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`、session 身份 + settle 时采样 `f566f734`。见下方「A4-3 实施记录」 |
-| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | **部分完成**（2026-08-11）：exactly-once slot `3173d29d`、teardown barrier `61731d34`。**未做**：`open → forcing → sealed` sink 状态机、强制 RST_CANCEL / forced-session-dispose、`barrier_timeout`／`close_missing` 诊断。见下方「A4-4 实施记录」 |
+| A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | **已完成**（2026-08-11）：exactly-once slot `3173d29d`、teardown barrier `61731d34`、强制处置 `0ea9ba5f`、sink 状态机 + forced-session-dispose `49f52073`。见下方「A4-4 实施记录」 |
 | A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
 
 **怎么重取这张表的状态**（三条都要跑，缺一会误判）：
@@ -329,7 +329,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 ### A4-2 实施记录（2026-08-11）
 
-**分支** `worktree-a4-h2-diagnostics`，基于 `f2a44579`。**已提交、未合并、未推送。**
+**分支** `worktree-a4-h2-diagnostics`（已合并进本地 `master` 并删除），基于 `f2a44579`。**未推送。** 判定当前是否仍在主线：`git merge-base --is-ancestor 61acc9f0 master && echo landed`。
 
 | commit | 内容 |
 |---|---|
@@ -346,9 +346,9 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 **验收状态**：`bun run typecheck` 绿；改动文件 `bunx eslint --no-cache` 干净；`bun run test:backend` **7776 pass / 0 fail**（跑了两轮：首轮撞 baseline 那条既有红，修掉后次轮 0 fail；中间一轮 `hooks/loader.unit.test.ts` 因 shard 崩溃假红，单跑 8/8 通过）。**未做**：独立 reviewer／verifier 与 merged-state review —— 按本节验收边界，那三道在 **A4 最终 commit** 上闭合，不是每批一次。
 
-**未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。
+**未做、仍属 A4-3 及以后**：session ring／真实 PING ACK/RTT（`http2-client.ts` 的 `NOOP_PING_ACK` 本批未动）、GOAWAY ledger 接线、teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 本批未改——诊断只进 dispatch detail，未新增对外字段。（**这是 A4-2 交付当时的快照**；其中除 `EntrySummary.transportFailure` 外**均已于 2026-08-11 完成**，且「未新增对外字段」一句对 A4-3 已被证否——见上面那条更正。）
 
-### A4-3 实施记录（2026-08-11，部分完成）
+### A4-3 实施记录（2026-08-11，已完成）
 
 **分支** `worktree-a4-3-session-diagnostics`，基于 `aaace65e`。
 
@@ -386,9 +386,9 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 
 `docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
 
-**未做、仍属 A4-4 及以后**：teardown barrier 与 `open → forcing → sealed`、exactly-once `releaseStreamSlot()`、`EntrySummary.transportFailure`。`docs/API.md` 未改——诊断只进 dispatch detail 与 status，未新增对外字段。
+**未做、仍属 A4-5**：`EntrySummary.transportFailure`。（写这句时 teardown barrier、`open → forcing → sealed`、exactly-once `releaseStreamSlot()` 三项尚未开始，**现均已于 2026-08-11 完成**，见下方实施记录。）⚠️ **本节其后关于「`docs/API.md` 未改、未新增对外字段」的说法对 A4-3 已被证否**，见上面那条更正。
 
-### A4-4 实施记录（2026-08-11，部分完成）
+### A4-4 实施记录（2026-08-11，已完成）
 
 **分支** `worktree-a4-4-stream-slot`。
 
@@ -418,6 +418,21 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
     ⚠️ **变异对照的一次失败，值得记下**：第一版测试**没能抓住**去掉闩。第二次释放挂在 250ms 尾窗上，而断言只在 close 之后 80ms 就跑了——双减尚未发生，于是测试全绿。**那是一条看起来很严谨、实则是装饰品的测试**。把窗口拉到尾窗之后，去掉闩会让槽位计数变成 **-1**，正是它要防的那种静默池损坏。教训：**异步释放路径的测试，断言窗口必须覆盖被测机制的最长延迟**，否则变异不咬而你会以为已经证明了。
 
     **仍未做**：`open → forcing → sealed` 的 diagnostic sink 状态机（迟到的 close/error 目前靠 detached listener 与 exactly-once no-op 挡住，尚无显式 sealed 状态）、forced-session-dispose（驱逐不可复用 session 并记受影响 sibling refs）、`close_missing` 诊断。
+
+    **↳ 收口（2026-08-11，`49f52073`）：A4-4 全部完成。**
+
+    **sink 状态机** `src/lib/transport/dispatch-diagnostic-sink.ts`：`open` 任何 producer 可写；`beginForcing()` **原子地**独占作者身份并噤声其余 producer；`seal()` 后**连 owner 自己也不能再写**。第二个 forcer 拿到 `null` 且一个字都写不出——两个并发拆除不可能交织出两份叙述。5 条单测**全部断言在「实际被记录的诊断」上而非 sink 自报的 state 字段**：一个自称 `sealed` 却仍放行写入的实现会满足状态断言而彻底失去意义。
+
+    **owner 叙述全序**：`barrier_timeout` → RST_CANCEL 无效则 `close_missing` → 连接被销毁则 `forced_session_dispose`（**带 `affectedStreams` 兄弟数**）。销毁一条共享连接会连带打掉别的在飞请求，那是运维可见的真实代价，记下来而不是藏起来。
+
+    ⚠️ **两处测试逼我改正、而非假设的地方：**
+
+    1. **eviction 分支在回环测试里不可达。** 客户端自己的 `req.close()` 在 Bun 下会就地关流，所以走公开路径永远落在「按时关闭」那一支（实测：在那里断言 `streamClosed === false` 会以 `true` 失败）。与其让一条集成测试**看起来**覆盖了它其实从未到达的破坏性代码，不如**直接对真实池化 session 驱动那段记账**——用两条真流构造出真正的 sibling，经 `evictSessionForTests` 调用。
+    2. **`removeSessionEntry` 看着冗余，实则不是。** 单独跳过它测试仍绿（`destroy()` 会经 session 自己的 close 路径把 entry 摘掉）；**两者都跳才红**。它留下的理由是：对一个**已经 destroyed 的 session**，`destroy()` 是静默 no-op、不发任何事件，此时这行显式摘除是唯一能把死连接挡在可路由池外的东西。实测结论写在那行代码旁边，省得下一个人重新推导。
+
+    **顺带触发的两道守卫**（都是它们该做的事）：新增 `evictSessionForTests` 命中 `resetters-complete` 的 `*ForTests` 登记要求，已按「action hook、只动 h2 池、由已登记的 `closeHttp2Sessions` 兜底」写明豁免；新增测试文件令 discovery baseline 位移，已机械补齐。
+
+    **验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7904 pass / 0 fail**。
 
 ### B.5.3 Phase B 预注册缺口与启动门
 

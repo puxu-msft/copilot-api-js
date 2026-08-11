@@ -905,7 +905,13 @@ export const HistoryConfigSchema = z
      * JS timer ceiling (2^31-1 ms): a larger delay does not wait longer, it
      * wraps to ~1ms and would make every healthy start report a deadline.
      */
-    startup_deadline_ms: z.number().int().min(0).max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms").nullable().optional(),
+    startup_deadline_ms: z
+      .number()
+      .int()
+      .min(0)
+      .max(2_147_483_647, "history.startup_deadline_ms must be 0 (wait forever) or at most 2147483647 ms")
+      .nullable()
+      .optional(),
     raw_capture: nullableSection(
       z
         .object({
@@ -1066,6 +1072,38 @@ export const GenerationConfigSchema = z
 const StreamIdleOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
 const ResponseHeaderOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
 
+/**
+ * Shutdown's OWN wall-clock bounds, reinstated 2026-08-11 by user ruling.
+ *
+ * These are deliberately NOT a return to the 2026-08-07 incident's behaviour. What that incident
+ * proved harmful was the ACTION on expiry — a process-global `AbortSignal` that killed live
+ * operations with `Server is shutting down` and lost their records. `graceful_wait` here expires
+ * into the LOSSLESS drain-abandonment tier instead: in-flight operations are terminated through
+ * the same request-level primitives an operator's second Ctrl+C uses (`reapInFlight()` + `fail()`,
+ * attributed `shutdown`/`operator-abandoned-drain`), and the shutdown then walks the whole
+ * finalize path so History, Telemetry and Diagnostics still flush.
+ *
+ * Ordering invariant: the total bound a supervisor must outlast is `graceful_wait + abort_wait`,
+ * because `abort_wait` only starts counting once `graceful_wait` has expired. `contrib/systemd`'s
+ * `TimeoutStopSec` and pm2's `kill_timeout` must both exceed that sum.
+ */
+export const ShutdownConfigSchema = z
+  .object({
+    /**
+     * Seconds to wait for accepted operations to reach their own terminal before automatically
+     * abandoning the drain (seconds; 0 = wait forever, which was the behaviour between 2026-08-07
+     * and 2026-08-11). Expiry is equivalent to the operator pressing the second Ctrl+C: lossless.
+     */
+    graceful_wait: nullableNonnegativeInt(),
+    /**
+     * Seconds to wait AFTER the drain has been abandoned before hard-exiting (seconds; 0 = wait
+     * forever). This is the escape from the persistence barriers themselves, equivalent to the
+     * third signal, so it exits WITHOUT flushing. Only starts counting once `graceful_wait` fires.
+     */
+    abort_wait: nullableNonnegativeInt(),
+  })
+  .strict()
+
 export const TimeoutsConfigSchema = z
   .object({
     /** Max seconds between SSE events (0 = no timeout). Was top-level `stream_idle_timeout`. */
@@ -1090,14 +1128,21 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled; bundled default 0). */
-    stale_request_max_age: nullableNonnegativeInt(),
     /**
-     * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
-     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled and
-     * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
+     * Hard total-duration deadline (seconds) for one CLIENT request, enforced by a precise
+     * per-request timer. Measured from admission and NOT reset by retries or hedged candidates, so
+     * it bounds the whole client-visible operation. 0 = disabled and is the bundled default so
+     * legitimate unbounded thinking is never terminated by elapsed time.
      */
-    request_deadline: nullableNonnegativeInt(),
+    client_request_deadline: nullableNonnegativeInt(),
+    /**
+     * Hard total-duration deadline (seconds) for ONE upstream attempt, enforced by a per-dispatch
+     * timer. Restarts every attempt, so firing it aborts only that attempt and leaves the retry /
+     * hedge budget intact. Complements `response_header` (pre-header only) and `stream_idle` (gap
+     * between frames only), neither of which bounds an attempt that trickles bytes forever.
+     * 0 = disabled and is the bundled default.
+     */
+    upstream_request_deadline: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -1467,6 +1512,7 @@ export const ConfigSchema = z
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    shutdown: nullableSection(ShutdownConfigSchema),
     upstream_transport: nullableSection(UpstreamTransportConfigSchema),
     server: nullableSection(ServerConfigSchema),
     telemetry: nullableSection(TelemetryConfigSchema),

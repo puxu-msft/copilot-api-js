@@ -98,8 +98,11 @@ function classifySinglePreContentRecoveryFailure(input: PreContentRecoveryFailur
     case "reaper-cancel": {
       return { kind: "abort", abortKind: "reaper-cancel" }
     }
-    case "request-deadline": {
-      return { kind: "abort", abortKind: "request-deadline" }
+    case "client-request-deadline": {
+      return { kind: "abort", abortKind: "client-request-deadline" }
+    }
+    case "upstream-request-deadline": {
+      return { kind: "abort", abortKind: "upstream-request-deadline" }
     }
     case "request-cancel": {
       return { kind: "abort", abortKind: "request-cancel" }
@@ -177,7 +180,8 @@ export function shouldAttemptPreContentRecovery(input: PreContentRecoveryGateInp
       switch (input.failure.abortKind) {
         case "client-abort":
         case "header-timeout":
-        case "request-deadline":
+        case "client-request-deadline":
+        case "upstream-request-deadline":
         case "reaper-cancel":
         case "request-cancel":
         case "dispatch-cancel":
