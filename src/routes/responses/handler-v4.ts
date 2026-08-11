@@ -160,7 +160,7 @@ async function handleResponsesV4Admitted(c: Context, historyReservation: History
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every openai-responses cell is migrated: direct `/responses` + `/chat` fallback + reverse
     // `@messages`). The reverse leg's sanitize rewrite + Anthropic stack + the R1 corner (direct/fallback
-    // auto-truncate OFF, maxRetries 1) are assembled by OUTBOUND_LEGS + RETRY_SEMANTICS from env.requestState.
+    // auto-truncate OFF, maxRetries 1) are assembled by OUTBOUND_LEGS + RETRY_SEMANTICS from the envelope's request/candidate scopes.
     maxRetries: 1,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })

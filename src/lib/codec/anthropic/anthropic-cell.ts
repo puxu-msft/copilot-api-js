@@ -60,7 +60,7 @@ function isReverse(env: RequestEnvelope): boolean {
   return env.request.clientFormat !== "anthropic"
 }
 
-/** The reverse leg's shared per-request mapper holder (parse put it on requestState; both sanitize + resanitize read it). */
+/** The reverse leg's shared per-request mapper holder (parse put it on the candidate scope; both sanitize + resanitize read it). */
 function reverseMapperHolder(env: RequestEnvelope): ReverseAnthropicMapperHolder {
   return (env.candidate.reverseMapperHolder as ReverseAnthropicMapperHolder | undefined) ?? throwMissing("reverseMapperHolder")
 }

@@ -152,7 +152,7 @@ export interface DriverDeps {
    * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
    * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
    * CellAssembly ({@link resolveExchangeStrategies}); this slot is only read for a mock/legacy codec that
-   * does not populate `env.requestState` (driver orchestration unit tests).
+   * does not set `env.request.legSupplyReady` (driver orchestration unit tests).
    */
   strategies?: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
@@ -602,7 +602,7 @@ async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: 
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
-  // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
+  // runRequest); a mock/legacy codec without the leg supply falls back to deps.codec / deps.requestRewrites.
   const routedEnv = writeAttempt(ingested, { targetEndpoint })
   const routed = outboundTranslateOut(deps, routedEnv)
   stages.translate = { targetEndpoint: routed.attempt.targetEndpoint, body: snapshotBody(routed.attempt.body) }
@@ -739,7 +739,7 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
   let learningRetries = 0
   let candidateStrategies: ReadonlyArray<RetryStrategy> | undefined
   return async ({ env, error }) => {
-    // Resolve only after CandidateStateFactory forked env.requestState. Strategy closures (notably
+    // Resolve only after CandidateStateFactory forked this candidate's `env.candidate`. Strategy closures (notably
     // beta-probe and reverse resanitize) must bind this candidate's supplies, never generation-shared ones.
     const strategy = (candidateStrategies ??= resolveExchangeStrategies(deps, env)).find((candidate) => candidate.canHandle(error))
     if (!strategy) {

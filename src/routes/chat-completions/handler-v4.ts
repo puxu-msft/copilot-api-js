@@ -197,7 +197,7 @@ async function handleChatCompletionV4Admitted(c: Context, historyReservation: Hi
     // (C5 — every CC-client cell is migrated: openai-cc direct/via-responses + the reverse `@messages` cell).
     // The handler no longer supplies them; the reverse leg's sanitize rewrite + Anthropic strategy stack are
     // assembled by `OUTBOUND_LEGS[/v1/messages]` from the shared beta probe + mapper holder the codec threads
-    // onto `env.requestState` (constructed above).
+    // onto `env.candidate` (constructed above).
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })

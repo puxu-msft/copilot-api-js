@@ -6,7 +6,7 @@
  *     the Responses-shaped `env.body` (direct identity; the fallback's Responses→CC happens in prepareWire,
  *     so the strategy still sees the Responses body — matching the legacy `buildOpenAiResponsesStrategiesForEnv`).
  *   - `openai-cc` DIRECT + `gemini` FORWARD (incl. via-responses) → `buildOpenAiCcStrategies` against the
- *     CC-shaped body: openai-cc/gemini use `requestState.truncateBaseline` (the parse-captured CC baseline).
+ *     CC-shaped body: openai-cc/gemini use `request.truncateBaseline` (the parse-captured CC baseline).
  *   - `anthropic` FORWARD `@cc` → `buildOpenAiCcStrategies` against `env.body` (the hub-translated CC body).
  *   - `anthropic` FORWARD `@responses` (RFC 2026-07-14-anthropic-responses-direct-bridge §3 DIRECT bridge) →
  *     `buildOpenAiResponsesStrategies` against `env.body` — the hub's `translateOut` produces a
