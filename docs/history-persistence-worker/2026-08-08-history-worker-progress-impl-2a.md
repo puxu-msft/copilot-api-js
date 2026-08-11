@@ -8,7 +8,7 @@ agent_id: main-session
 status: done
 ---
 
-> **状态：已完成（`59989488`，2026-08-09 合入 `master`）。本文件已停更，只作历史证据。** 三轮独立评审收口至 0 blocker／0 major。**后续会话别把它当活的真相源**：Batch 2a 的当前状态以 [plan 的 Batch 2a 状态行](../plan/2026-08-07-history-persistence-worker.md) 为准，留给 2b 的前置以 [deferred-backlog](../todo/deferred-backlog.md) 末节为准。
+> **状态：已完成（`59989488`，2026-08-09 合入 `master`）。本文件已停更，只作历史证据。** 三轮独立评审收口至 0 blocker／0 major。**后续会话别把它当活的真相源**：Batch 2a 的当前状态以 [plan 的 Batch 2a 状态行](plan.md) 为准，留给 2b 的前置以 [deferred-backlog](../todo/deferred-backlog.md) 末节为准。
 
 ## 启动前硬门（本会话实跑）
 

@@ -24,6 +24,7 @@
 - 关键设计决策 + 理由 → [docs/decisions/](docs/decisions/) ADR（一决策一文件）。
 - 模块契约 / 兼容行为 / 管线 → `docs/spec/*.md` 与 `docs/<topic>.md`（`anthropic-compat` / `streaming` / `tool-use` / `request-pipeline` 等）。
 - 设计 / 实现计划 → `docs/plan/`，**放仓库内、不放 `~/.claude/plans/`**（便于多会话版本控制、共享、审查）。
+- **系列任务（跨多批次／多会话的同一特性）→ `docs/<topic>/` 单目录聚合**（用户 2026-08-11 裁决）。该特性的 spec、plan、kickoff、各批进度文件、评审报告、收尾报告**全部写在这里**，别再散进 `docs/plan/`＋`docs/spec/`＋`docs/tmp/` 三处；**新产出直接写入该目录**，临时落在别处的收尾时移进来。目录内放一份 `README.md` 作索引（常驻文档 / 批次记录 / 对账 / 已知代价），并写明**当前活路径的权威仍在 DESIGN.md**，本目录只记「怎么一步步做成的」。核心三份用规范名 `spec.md`／`plan.md`／`plan-kickoff.md`；按时间成序列的进度与评审保留日期前缀（日期本身是信息）。**现存实例**：[docs/history-persistence-worker/](docs/history-persistence-worker/README.md)。**迁移时注意**：`docs/tmp/` 与 `docs/<topic>/` 同深度，`../` 上跳链接与同目录互引都不受影响，真正会断的只有带旧目录名的链接——移完逐个解析验证，别假定没断。
 - 暂缓项 / 结构性待办 → [docs/todo/deferred-backlog.md](docs/todo/deferred-backlog.md)（含根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么）。
 - 操作性调试知识 → 项目 skill（`.claude/skills/`）；废弃文档 / 完成叙事 → `docs/archive/`。
 
@@ -51,7 +52,7 @@
 - **no-destructive-workspace-loss。** 唯一判据是**可恢复性**：会丢失 git 救不回的工作（未提交/未暂存改动、未追踪文件）的操作绝不做，后果可恢复（已提交、git 历史在）的被权限允许时正常做；撤销自己刚做的编辑用**重新编辑**而非回退；**绝不以"清理死代码/无消费者"为名擅自删**。→ 同上 skill。
 - **delete-merged-branches（用户 2026-08-11 裁决：`以后也必须这么做`）。** 分支合并回 `master` 之后就是**只剩指针的垃圾**，收尾时**主动删掉、不必逐次询问**——不要攒着，也不要等用户提。
     **两步，缺一不可**：① 用 `git branch --merged master` 取候选（**显式写 `master`**）；② 对候选逐个 `git branch -d`，**绝不 `-D`**。
-    **为什么第 ① 步必须显式写 `master`**（实测，2026-08-11）：`git branch -d` 判「已合并」是**对着当前 HEAD 或该分支的 upstream，不是对着 `master`**。在特性 worktree 里跑，它会把「已并入 master 但不在我这条特性分支里」的分支判成未合并而拒删；反过来，若当前 HEAD 含有 master 尚无的提交，它会放行一个**其实没进 master** 的分支。`--merged master` 把候选集钉死在正确的基准上，`-d` 再对着 HEAD 复核一次，两道判据方向不同、互为兜底。
+    **为什么第 ① 步必须显式写 `master`**（实测，2026-08-11）：`git branch -d` 判「已合并」的基准是**当前 HEAD，或该分支若设了 upstream 则按 upstream**——**两者都不是 `master`**。所以 `-d` 通过**根本不能证明候选已进 master**：无 upstream 的候选按当前 HEAD 判（在特性树上跑，会把已并入 master 的分支判成未合并而拒删；反过来当前 HEAD 含 master 尚无的提交时会放行），有 upstream 的候选按 upstream 判（同样与 master 无关）。**`git branch --merged master` 才是 master 基准的必要判据**；`-d` 只是在它之后从另一个方向再拦一道。
     **`-d` 的拒绝就是护栏，被拒时去查原因、不要改用 `-D`**。它拒两类：未合并，以及**被任何 worktree 占用**（实测：`error: cannot delete branch 'x' used by worktree at '<路径>'`）。
     **可选的预过滤**：想让报告干净、不夹杂预期内的失败，可以先用 `git worktree list --porcelain` 里的 `branch refs/heads/<名>` 行做差集，把被占用的排除掉（detached HEAD 的 worktree 不占用任何分支 ref，不该算进去）。这**只是降噪，不是安全机制**——安全由 `-d` 自己保证。
     **本仓的现实**：积压着大量别的会话遗留的 worktree，它们钉住了相当一部分已合并分支。当前口径自己算，别引用快照数字：
