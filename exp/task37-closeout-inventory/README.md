@@ -2,7 +2,7 @@
 
 ## 它回答什么问题
 
-`docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-evidence-manifest.md` 的分类表声称「合计 427，与冻结清单成员数相等」。这个脚本就是那句话的**产出者**：它读被提交的冻结清单 `docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md`，重算分类计数，并校验清单头部声明的 `# members` 与实际成员行数一致。
+`docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-evidence-manifest.md` 的分类表声称「合计 427，与冻结清单成员数相等」。这个脚本就是那句话的**产出者**：它读被提交的冻结清单 `docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-job-tmp-inventory.md`，重算分类计数，并校验清单头部声明的 `# members` 与实际成员行数一致。
 
 归档它的理由很具体：**它原本只存在于 job 的临时目录里**，而那个目录会随 job 过期被回收——一条已经交付出去的证据断言，唯一的产出者却活在会蒸发的地方。
 
@@ -36,11 +36,14 @@ header `# members`: 427  ==  listed member lines: 427  -> OK
 ```bash
 python3 exp/task37-closeout-inventory/reconcile-inventory.py
 # 或显式指定清单
-python3 exp/task37-closeout-inventory/reconcile-inventory.py docs/mandatory-block-delivery-h2-observability/closeout/2026-08-09-job-tmp-inventory.md
+python3 exp/task37-closeout-inventory/reconcile-inventory.py docs/mandatory-block-delivery-h2-observability/2026-08-09-task-37-closeout-job-tmp-inventory.md
 ```
 
 ## 它踩过的三个坑（都在脚本注释里，这里只列索引）
 
 1. 输入指向 `.txt` → 被 `.gitignore` 吞掉、改名后 `FileNotFoundError`，「已对账」的说法不可复现。
 2. 用 `sum(counter) == len(members)` 当校验 → 同源恒等式，按构造恒真。
-3. 清单路径写死进一棵**后来被收尾删掉的 worktree** → 归档时才发现，它以与坑 1 完全相同的方式再次失效。现在按脚本自身位置解析。
+3. 清单路径写死进一棵**后来被收尾删掉的 worktree** → 归档时才发现，它以与坑 1 完全相同的方式再次失效。
+
+**第四次（2026-08-11）终于改了修法。** 系列文档收进 `docs/<topic>/` 时清单又搬了家，脚本第三次因为写死路径而失效。三次同形之后，再改一次路径显然不是修根因——**它一直在用一个会移动的坐标去找文件**。现在改成按**内容**定位：扫 `docs/` 下首行为 `# frozen inventory of $CLAUDE_JOB_DIR/tmp` 的那个文件，路径和文件名怎么变都不受影响；命中多份则报歧义而不是随便挑一份。显式传参仍然优先。
+
