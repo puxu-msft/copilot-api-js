@@ -101,6 +101,7 @@
 - [appliesTo 命中 ≠ 链被驱动](methodology-appliesto-matches-but-chain-never-driven.md) — 先数驱动点的生产调用点
 - [config.yaml 每请求覆盖 setStateForTests](reference-config-yaml-overwrites-setstatefortests-per-request.md) — 全应用测试钉 config-managed 键是空操作
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓+抽共享 primitive
+- [删一个概念要扫它的全部称呼，不是一个关键词](methodology-sweep-a-concepts-whole-vocabulary-not-one-keyword.md) — 属性名/方法名/形容词/配套机制名各扫一遍并分别报数；漏的那些恰好活在面向作者的契约文档里，清扫顺序与风险顺序相反
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 值取自会撒谎的源（原始 vs 已变换）
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 类型系统逼出全站点
