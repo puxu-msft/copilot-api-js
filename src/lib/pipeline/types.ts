@@ -264,7 +264,7 @@ const historyBodySnapshotBrand: unique symbol = Symbol("historyBodySnapshot")
  */
 export interface HistoryBodySnapshot {
   readonly body: unknown
-  readonly [historyBodySnapshotBrand]?: true
+  readonly [historyBodySnapshotBrand]: true
 }
 
 /** Create the private History snapshot required when a route will mutate its wire body. */
@@ -274,6 +274,7 @@ export function snapshotHistoryBody(source: unknown): HistoryBodySnapshot {
 
 /** Read a route-created snapshot and reject forged, aliased history bodies at the codec boundary. */
 export function historySnapshotBody(snapshot: HistoryBodySnapshot): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/no-unnecessary-boolean-literal-compare -- runtime must reject values forged through `as`, outside TypeScript's nominal brand.
   if (snapshot[historyBodySnapshotBrand] !== true) throw new Error("originalBodyForHistory must be created by snapshotHistoryBody")
   return snapshot.body
 }
