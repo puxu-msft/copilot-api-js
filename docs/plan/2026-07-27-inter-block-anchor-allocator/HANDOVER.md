@@ -2,7 +2,7 @@
 
 **状态（核验于 `0a302e0199c9bb20272b7183419250eb706b7853`，2026-08-07）**：**三层计划已放行 · M1 已合入 master · Commit -1 实现、mutation、traceability、whole-branch remediation、current-master 同步与独立 merged-state review 全部闭合**。分支 `command-algebra-commit-minus-1` 已同步 `master@03c3dd131e15b13ac4294fd09fc10a95ad86c04b`；同步态门为 typecheck 绿、focused evidence `63 pass / 0 fail`、canonical 20× `80 pass / 0 fail`、backend `6265 pass / 0 fail / 7091 executed / 30 skipped`、runtime-dependency generator zero-diff；最终 reviewer 结论 0 blocker／0 major，可正式 merge。
 
-**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出。下一动作是 T0.0d（validator 出 receipt）→ T0.1。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
+**Entry candidate A 已确定（2026-08-10）**：`15c43e40d3c4c172425ec2356721b73bebd8315b`。它是 Commit -1 合入 master、并把入场前置修复也合入之后的 master commit。T0.0f 已在该 commit 的干净 worktree 上跑完 15 轮全绿，producer rc=0，manifest 已原子写出；**T0.0d 与 T0.1 随后也已通过**（详见下面两节）。下一动作是按 ADR 收窄 cutover-plan，然后才进 T0.2／Commit 0。**本节此前写着「Pre-merge A 不存在」，那句话到 2026-08-10 为止一直成立，现在不再成立。**
 
 **A 在这一天前进过两次，两次都是入场门自己挡下来的，不是被测代码的问题**：`22136b9c` 的批次在 run 02 撞上 `package-boundaries.unit` 的默认超时；`c38baa6a` 与 `14f354ff` 的批次都 15 轮全绿却相继停在 validator 的 C9 上——producer 与 validator 同批冻结却从未端到端跑过，run log 先是缺 `canonical_command=`、补上后又缺 `verdict=`。三处都已修复并合入，**旧的 A、旧的 manifest、旧的 pointer 全部作废，不得作为任何后续步骤的输入**。
 
@@ -28,7 +28,22 @@ archive_path=/home/xp/.claude/entry-evidence/A-15c43e40
 | `verdict` | `green` |
 | 执行树 | `/home/xp/src/copilot-api-js/.worktrees/command-algebra-cutover-a5`（detached 在 A，干净） |
 
-**下一步是 T0.1**，判据见 `cutover-plan.md` 的 T0.1 行：读该 receipt、重算 hash，并在任何 C0 测试/实现之前先分别注入 receipt 缺失、`entry_sha` 与执行树 HEAD 不同、`pointer_sha` 不可由 master 到达、manifest hash 漂移、validator blob 不同、`verdict != green` 六种情形，逐一确认 fail-closed。**T0.1 不重跑 15 次、不生成新的 manifest/P/receipt。**
+**T0.1 已通过（2026-08-10）**：正确状态七项全绿（receipt hash 与 T0.0d 记录一致、`entry_sha` == 执行树 HEAD、树干净、`pointer_sha` 可由 master 到达、manifest hash 未漂移、validator blob 与 entry 一致、`verdict=green`），六项注入 + 两项额外对照**全部 fail-closed 且各自点名**：
+
+| 注入 | rc | 消息 |
+|---|---|---|
+| receipt 缺失 | 11 | `receipt missing` |
+| `entry_sha` ≠ 执行树 HEAD | 14 | `entry_sha is not the execution tree HEAD` |
+| `pointer_sha` 不可由 master 到达 | 16 | `pointer_sha is not reachable from master` |
+| manifest hash 漂移 | 17 | `manifest hash drifted` |
+| validator blob 不同 | 18 | `validator blob differs from entry` |
+| `verdict != green` | 19 | `verdict is not green` |
+| receipt hash 与 T0.0d 记录不符 | 13 | `receipt hash differs from the one T0.0d recorded` |
+| 执行树 dirty | 15 | `execution tree is dirty` |
+
+判据脚本与注入产物在 `/home/xp/.claude/jobs/757dc257/tmp/t01/`（一次性入场确认，非常驻门，故不入库）。注入全部对**副本**做，entry 树未被弄脏；dirty 那条用临时未追踪文件触发后已移除并复验正样本仍绿。**T0.1 未重跑 15 次，未生成新的 manifest/P/receipt。**
+
+**范围裁决（2026-08-10，用户）**：cutover 只做原子性/并发、类型层收窄与遥测，不做 classifier 运行时授权与拒绝、不做 D2 的 owner-minted provenance。权威在 ADR [2026-08-10-trust-the-caller-over-emission-authorization](../../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)；cutover-plan 的 Commit 2–4 正按该 ADR 收窄，**收窄完成前不要照旧 plan 进 Commit 0**。
 
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：

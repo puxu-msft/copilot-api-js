@@ -34,9 +34,9 @@
 | 探针 / 分析脚本（`.py`） | 7 | **部分有**，见下「唯一产出方」节 | 见该节 | 同上 |
 | 报告草稿（`.md`） | 2 | 无。已蒸馏进正式报告 | `docs/tmp/2026-08-09-task37-seam-review-*.md` | 同上 |
 | 其他 | 2 | 无 | —— | 同上 |
-| 符号链接（2 条，均指向 `node_modules`） | 2 | 无。其一指向 `.claude/worktrees/placeholder/node_modules`（本 job 早期 Task 9 阶段的树，仍存在） | —— | 同上；**不删**，删链接对目标无影响但无收益 |
+| 符号链接（2 条，均指向 `node_modules`） | 2 | 无 | —— | 同上；**不删**，删链接对目标无影响但无收益。⚠️ **2026-08-10 更正**：此行原写「其一指向 `.claude/worktrees/placeholder/node_modules`（本 job 早期 Task 9 阶段的树，仍存在）」——收尾末尾按用户要求删除了本会话建的三棵 worktree，**该链接现已悬空**（`find <job tmp> -type l ! -exec test -e {} \; -print` 返回 1 条）。无功能影响（job 目录待回收），但那是一条被我自己的清理动作证伪的已交付状态断言，照实记在这里 |
 
-**合计 427，与冻结清单成员数相等**（`recompute-classes.py` 机械对账，OK）。
+**合计 427，与冻结清单成员数相等**（机械对账：`python3 exp/task37-closeout-inventory/reconcile-inventory.py`，输出与本表逐行相符，含正样本对照；**脚本原先只存在于会被回收的 job 临时目录里**，2026-08-10 归档进仓，见 `exp/task37-closeout-inventory/README.md`）。
 
 **不执行删除。这是一个选择，不再是失败关闭。**
 
@@ -62,7 +62,7 @@
 
 文件清单结构上看不见的知识。**每行标 provisional，处置与文件行同权。**
 
-**事件源与范围（第一版没写，是 RR4 判 MAJOR 的直接原因）**：本 job 的 transcript 实际位于 `/home/xp/.claude/projects/-home-xp-src-copilot-api-js--claude-worktrees-task37-closeout/a7c2cc1a-1103-4c54-8ae1-e2837bda4112.jsonl`。⚠️ **transcript 路径随会话所在 worktree 变化**——第一版我给评审的是 worktree 前缀之前的旧路径，那个文件不存在，评审自己定位到了真路径。
+**事件源与范围（第一版没写，是 RR4 判 MAJOR 的直接原因）**：本 job 的 transcript 是 `a7c2cc1a-1103-4c54-8ae1-e2837bda4112.jsonl`。⚠️ **别把它的绝对路径当固定值引用——它随会话当时所在的 worktree 变化，而不是随 job 变化。** 这条已经踩过两次、方向相反：① 做 receipt 时我给评审的是 worktree 前缀**之前**的旧路径，文件不存在，评审自己定位到真路径 `…/projects/-home-xp-src-copilot-api-js--claude-worktrees-task37-closeout/`；② 收尾末尾删掉那棵 worktree 后，它**又挪回**了 `…/projects/-home-xp-src-copilot-api-js/`，于是①里那个被写进本文的路径反过来失效了（2026-08-10 清理增量评审实测 `test -f` 为 false）。**用文件名去找，别用路径**：`find /home/xp/.claude/projects -name 'a7c2cc1a-*.jsonl'`。
 
 **枚举范围收窄为 JSONL 第 12000–15108 行（Task 37 阶段），这是一次有理由的缩窄，不是放弃。**
 

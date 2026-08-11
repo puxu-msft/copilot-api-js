@@ -1,6 +1,6 @@
 ---
 name: process-lifecycle-shutdown
-description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT/SIGTERM、SIGUSR2 交接、首信号无损 drain、重复终止信号的三档升级（放弃 drain 但仍 finalize vs 立即强退）、优雅重启时旧进程迟迟不退、TUI raw/cooked 恢复、runtime PID 投递、waitForShutdown latch、History/Telemetry/Diagnostic finalization 或 shutdown 状态真值时使用。
+description: 当在 copilot-api-js 修改或排查进程信号、Ctrl+C、SIGINT/SIGTERM、SIGUSR2 交接、首信号无损 drain、重复终止信号的三档升级（放弃 drain 但仍 finalize vs 立即强退）、第二个终止信号后进程仍未退出／是否卡住、优雅重启时旧进程迟迟不退、shutdown 横幅／状态文本与实际 drain／flush 不符（如声称 now flushing 但仍被 operation 阻塞）、TUI raw/cooked 恢复、runtime PID 投递、waitForShutdown latch、History/Telemetry/Diagnostic finalization 或 shutdown 状态真值时使用。
 ---
 
 # 进程生命周期与分类信号关闭

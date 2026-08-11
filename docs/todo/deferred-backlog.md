@@ -2,6 +2,25 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `package-boundaries` 的全仓 AST 扫描在繁忙 CI 上会撞 5s 默认超时（2026-08-10）
+
+- **现状**：`tests/architecture/package-boundaries.unit.test.ts` 的 `no object literal with \`kind: "stream-error"\` outside \`streamErrorOutcome\`` 会 AST 解析全仓源码。正常耗时 **0.856s**（实测取自仓库内 JUnit fixture `tests/infra/fixtures/bun-junit-shard-14.xml:467` 的 `time="0.856002"`），对 bun 的 5000ms 默认超时有约 5.8 倍余量；但在 `bun run test:fast` 的 16 shard 争抢下实测跑到 **5071ms 而超时**，使整个 shard 崩溃（`0 fail` + `1 shard(s) crashed`）。
+- **为何这次不修**：`[hard]` **它不是零余量的脆弱测试，不该按 `validate-entry-evidence` 那样放宽超时。** 判据是「无负载单跑是否零余量」——该文件在 load 25 下单跑仍 `24 pass / 0 fail`，而 `validate-entry-evidence` 单跑无负载就要 5–6s。给所有超时一刀切放宽会掩盖真回归，所以只改真正没余量的那个。本次超时的直接诱因是外部长跑进程（load average 25，三个无关进程各占满一核），属环境。
+- **但它仍会复发**：争抢有一部分来自 `test:fast` **自身的 16 shard**，不全来自外部进程，所以繁忙 CI 上同一格仍可能撞线。**发现方**：语义桥 C0.3 的评审复核（2026-08-10）。
+- **若做需改什么**：`[hard]` **改的是该用例的 fixture 策略，不是超时值。** 方向：把全仓 AST 解析的结果在文件级 `beforeAll` 里做一次并复用（该文件有多条守卫各自重复解析），或把源码集合缓存到 shard 之间可共享的位置。改完须用「注入一处违规写法 → 该守卫变红」的正控确认判别力未损，且不得放宽超时来充数。
+- **判定该不该动手的命令**：`bun test tests/architecture/package-boundaries.unit.test.ts` 单跑——若它在**空闲机器**上开始逼近 5s，那才说明余量真的没了，此时按上面的方向改 fixture 策略。
+
+## orphan 清理不区分「尾随待执行 tool_use」与「中段真孤儿」（2026-08-09）
+
+- **根因 / 现状**：`processToolBlocks()` 的第二遍扫描（`src/lib/anthropic/sanitize/tool-blocks.ts:80` 的 `for (const msg of messages)`）对**所有位置**的 assistant 消息施加同一条规则——`:91-97` 只判 `!toolResultIds.has(block.id)`，命中即删。循环体内**没有** message index、`messages.at(-1)` 或任何「是否还有后续消息」的判断，因此「最后一条 assistant 消息里尚无 `tool_result` 的 `tool_use`」（agent loop 中合法的待执行状态）与「中段未配对的真孤儿」不可区分。`server_tool_use` 同条件（`:117-123`）。删空后整条 assistant 消息不进入结果（`:141-142`）。基线 commit `63869fa0`。
+- **当前行为**：作用面是**发往上游的 payload**——`sanitize-messages` 作为 always-on rewrite 经 `src/lib/anthropic/payload-rewrites.ts:111-126` → `src/lib/anthropic/sanitize/index.ts:140-142` 调用，挂在 driver 的 S3 request rewrite（`src/lib/pipeline/driver.ts:477-484`）。**History 的 `originalRequest` 快照不受影响**（快照在 `src/routes/messages/handler-v4.ts:651-654` 另行采集）。客户端若在后续请求里重放旧历史，这些消息会再次经过同一清理。
+- **它是不是缺陷，尚未判定**：`[hard]` **以上全部为代码静态推断，未打上游探针**。关键前提未证——**上游是否接受尾随的未配对 `tool_use`**。若上游会 400，当前的删除就是**修复**而非缺陷，保留它反而制造故障；只有在上游接受的前提下，删除才构成语义损失。这必须用真实上游取证（独立 oracle），不能靠读源码或读客户端代码认定。
+- **相邻但不覆盖它的已有裁决**：[docs/sync-ghc-api/messages-api.md:72-74](../sync-ghc-api/messages-api.md) 记「`sanitize.ts` 管道处理 orphaned tool blocks，不负责尾随 assistant 修复——客户端自行保证消息结构。P2，暂不实施」。**那条裁的是「要不要为尾随 assistant 追加 `Please continue.`」，并未裁决「尾随未配对 `tool_use` 该算待执行还是算孤儿」。** 重启此项时应先向用户确认是否属于该裁决射程。
+- **既有测试的覆盖状态**：没有任何测试断言「尾随合法待执行 `tool_use` 应保留」。`tests/anthropic/message-sanitizer.it.test.ts` 的相关用例均为中段删除。`tests/anthropic/assistant-block-layout-terminal-order.it.test.ts:19-30` 虽然其 fixture 恰是「唯一且最后一条 assistant 消息里的未配对 `tool_use` 被删」，但**它守的不变量是「de-stack 必须作为终末 sanitize pass 运行」**，孤儿删除只是它用来制造相邻 thinking 块的手法。若将来改变尾随处理，该测试要动的是 fixture（把孤儿挪到会话中段），属占位数据机械更新，**不构成推翻一条守卫**。
+- **理想架构 / 若做需改什么**：先打上游探针定性；若确为缺陷，修复点在 `processToolBlocks()` 的第二遍——引入位置感知（尾随 assistant 消息的未配对 `tool_use` 保留），并同步 `docs/sanitize-pipeline.md` 的契约描述；补一条正向测试（尾随保留）与一条反向测试（中段仍删）；调整上述 terminal-order 测试的 fixture。
+- **为何暂缓**：定性依赖上游探针，属独立取证；且改动的是 always-on 的请求 sanitize 契约，与本次 Anthropic↔Responses 语义桥 RFC 无关，不应夹带。**发现方**：语义桥 C0.2 的 G4 fixture 构造过程（2026-08-09）——初版 fixture 缺配对 `tool_result` 触发了该清理，才暴露出这个不区分。
+- **触发条件**：客户端出现「尾随未配对 `tool_use`」形态的请求并报告工具调用丢失，或需要支持 assistant prefill 续写含待执行工具调用的回合。
+
 ## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
 
 - **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。direct Anthropic live B2 已在 pre-ready、ready transport close 与 ready clean EOF 三个入口接线，但 buffered loop 没有接入 owner batch publication。实现基线为 `dd79edb3`；交付状态以本文件所在 commit 与 [tracked implementation report](../plan/2026-07-23-upstream-silence-recovery/task-4.3b-implementation-report.md) 为准。
@@ -1496,3 +1515,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **若做需改什么**：① 让 `isNativeHistorySearchAvailable()` 同时比对产物 mtime 与 `native/history-search/{src,Cargo.toml,Cargo.lock}` 的最新 mtime，过期则**当作不可用而 skip 并打印一行「产物过期，跑 `bun run build:history-search`」**——保持「绝不红」的原意；② 或在 `test:backend` 前置一个廉价的过期检查（不构建、只告警）。两者都要正样本对照：故意 touch 一个 Rust 源文件，确认判据翻转。
 - **立即可用的绕过**：`bun run build:history-search`（需 Rust toolchain）。
 - **发现方**：三档信号契约合并后的合并态复验（主会话，2026-08-10）。
+
+## generation emission 的第三类机制（运行时授权与拒绝）本轮不做（2026-08-10 用户裁决）
+
+- **根因 / 现状**：`docs/rfc/2026-08-03-generation-emission-command-algebra/` 的 command port 里混着三类性质不同的机制：原子性与并发、类型层收窄、运行时授权。第三类防的是「调用方拿着新 command、却声明了与实际 effect 不符的 intent」。
+- **为何暂缓**：用户原则是信任调用方、内容错时自然报错、不为未出现的问题预设防护，与 ADR `2026-07-05-internal-tool-security-posture` 同源。技术上也成立：D1/D3/D4 那类 state 与 wire 分裂的修复靠 Commit 6 真删旧 write 路径（population 归零）加新 command 的原子性，**不靠运行时拦截**；而 RFC §11.1 自己承认 classifier 证不了正确、且可能与 producer 共享谓词而共因判绿。
+- **本轮不做的三项**：① classifier 校验 intent × effect × authority 并拒绝 mismatch；② D2——provenance 由 owner 从 active lease 铸造，取代 caller 声明的 `kind`；③ command identity 作为**授权凭据**（作为诊断标识随遥测保留）。
+- **理想架构 / 若做需改什么**：三项各自独立可加，都不要求重做第一类的 command 形状。classifier 可作为 owner 内的一层后置校验引入；D2 只需把 `WireEnvelopeFactory.anchor` 的 caller 参数换成 owner 对自己 lease 的查询。
+- **触发条件（值得做）**：出现**真实的** intent/effect mismatch 缺陷——不是设想的。设想不构成触发条件，这正是本次裁决的内容。
+- **完整理由与诚实边界**：ADR [2026-08-10-trust-the-caller-over-emission-authorization](../decisions/2026-08-10-trust-the-caller-over-emission-authorization.md)。

@@ -45,11 +45,13 @@ metadata:
 | 我要回答的问题 | worktree 该建在哪 | 建错了会怎样 |
 |---|---|---|
 | 这个子项目脱离宿主能不能自立 | **仓库外** | 建在仓库内 → 向上借到主树 node_modules → **假绿** |
-| 这批测试在 X 提交上是红是绿（A/B 对照） | **仓库内**（`.worktrees/`） | 建在仓库外 → 零 node_modules → **假红** |
+| 这批测试在 X 提交上是红是绿（A/B 对照） | **A 与 B 各自处在「按该提交的 lockfile 完整安装」的等价依赖环境里**——位置本身不是不变量 | 任一侧依赖环境不等价（仓库外＝零依赖，或借到与该提交 lockfile 不符的陈旧依赖）→ **假红或假绿** |
 
 2026-08-09 实例：为判断 `test:backend` 的 28 条红是不是自己合出来的，我在 `$CLAUDE_JOB_DIR/tmp/ab-master` 建了 detached worktree 跑对照，得到 `0 pass / 4 fail / Ran 4 tests across 4 files [122ms]`。**差点据此断言「master 自己就是红的」**——真因是 `error: Cannot find module 'undici/index.js'`，四个文件全部加载失败，每个文件算 1 条“失败”。挪进 `.worktrees/ab-master` 重跑即 `24 pass / 20 skip / 0 fail`。
 
-**判据（比记住结论便宜）**：A/B 树里的失败若**数量恰好等于文件数、耗时在百毫秒量级、错误是 `Cannot find module`**，那是缺依赖不是缺陷。跑对照前先 `ls <worktree>/node_modules` 或直接看首条错误，别读失败计数。
+**别把这条记成「A/B 就该建在仓库内」**：仓库内当时之所以有效，只因为它向上借到的主树 `node_modules` **恰好**与被测提交的 lockfile 相符——那是偶然代理，不是不变量。承重条件是**两侧依赖环境等价、且各自与所测提交的 lockfile 对齐**。可执行做法：先 `git diff <A> <B> -- '**/package.json' bun.lock` 看依赖清单是否同一；不同就必须各自按自己的 lockfile 安装（`ls node_modules` 不是证据，见 [[reference-node-modules-presence-not-lockfile-truth]]），相同才允许用仓库内树共享根安装省这一步。
+
+**判据（这是分流信号，不是定性结论）**：A/B 树里的失败若**数量恰好等于文件数、耗时在百毫秒量级、错误是 `Cannot find module`**，**先暂停「是不是我改坏了」这个归因、转去查环境**——但**不得就此判为环境问题**：目标提交自己把 import 写错、删掉直接依赖声明、或 lockfile 漏项时，症状**一模一样**（三个信号同源于同一次 module-load 失败，按 [[feedback-pass-null-clean-not-self-validating]] 不构成独立 oracle）。判为「环境缺依赖」要四条全成立：①目标提交的 `package.json`／lockfile 声明完整；②按该 lockfile 干净安装成功；③真实 resolver 解析得到那个模块；④补齐后重跑恢复。任一条不成立就**保留为产品缺陷**。跑对照永远先看首条错误，别读失败计数。
 
 ## 第四方向（2026-07-29 新增）：验证命令实际落在哪棵树，委派消息说了不算
 

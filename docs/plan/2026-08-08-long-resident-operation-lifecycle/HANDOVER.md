@@ -11,7 +11,9 @@
   - **Task 1–4 实现期的断言**（硬事实表、各 Task 的评审结论与门禁读数）取证于特性分支 `3e418cdb` / `a8eeaf4c`（2026-08-08）。那些 commit 已随合并进入 master，结论未变。
 - **从哪起步**：从 **master** 新开隔离 worktree（放 `.worktrees/`）。历史分支 `fix-long-resident-operations` 与集成分支 `merge-long-resident-lifecycle` 都已被合并取代，**不要从它们起步**。
 - **主树状态**：合并落地时主树只有其他会话的 WIP（本特性零残留）。**接手时自己跑一次 `git status --short`**，别采信这句——它是快照。
-- **已跑门禁（合并态，master `3df0e08d`——这是该引用的那一组）**：十文件 focused gate + Task 4 焦点集 + `tests/history/worker/admission-shutdown.unit.test.ts` + `tests/infra/entry-evidence-schema.unit.test.ts`，共 15 文件 → **`236 pass / 0 fail`**；`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。
+- **已跑门禁**：十文件 focused gate + **Task 4 焦点集（`tests/context/manager-dual-registry.unit.test.ts`、`tests/context/context-manager.it.test.ts`、`tests/shutdown/drain-waits-operation.unit.test.ts`）** + `tests/history/worker/admission-shutdown.unit.test.ts` + `tests/infra/entry-evidence-schema.unit.test.ts`，共 15 文件 → **`0 fail`**；`bun run typecheck` exit 0；`bun run lint:all` exit 0（全树）；`bun run test:backend` 见下方专节。**可复制的完整 15 文件命令在 KICKOFF「测试门禁现状」节**——那里给的是命令，不是数字。
+  - **判据是 `0 fail`，不是某个通过数。** 通过数会随后续提交增长：`3df0e08d` 上测得 236，`e120a49c` 上复测为 **239**，两次都 `0 fail`。写死通过数只会让接手方把正常增长误判成回归（项目裁决：文档里直接写易变数字是怪味）。要当前值就跑那条命令。
+  - **口径必须说清**：`236` 那组读数取自 **`3df0e08d`**，而它比最终合并态 `0e0768ee` 早 **17 个提交**（`git rev-list --count 3df0e08d..0e0768ee`）——**这道 gate 没有在 `0e0768ee` 上原样跑过**；合并之后的实测是 `e120a49c` 上的 `239 pass / 0 fail`。别把「已跑门禁」读成「最终合并态已被这道门覆盖」。
   - **实现期的读数（分支上，供追溯，不要拿来当合并态判据）**：十文件 gate `197 pass / 0 fail / 687 expect`（`e397720a`）；Task 4 焦点集 `30 pass / 0 fail / 74 expect`（`a8eeaf4c` 之后，独立 reviewer 在自己的副本复现同一数字）。
   ⚠️ **不要引用更早的 `26 pass / 62 expect`**——那是 `3e418cdb`（修 blocker 之前）的真实读数，blocker 整改新增了用例后已变为 30/74。它不是错数，是**陈旧数**；照它核对会误判成回归。
   `bun run test:backend` 见下方专节（**负载敏感，红了先判归属再下结论**）。
@@ -49,7 +51,7 @@
 3. `docs/tmp/2026-08-08-long-resident-operation-lifecycle-progress-impl-1.md`——逐轮进度、在途意图、**已作废路线（四条，别重试）**。
 4. 三份评审证据（都已进仓库，不会被 `git clean` 删）：`docs/tmp/*-task-3-report.md`（M1–M9 变异证据）、`*-b1-verification.md`（verifier 三轮）、`*-b1-merged-review.md`（reviewer 三轮）。
 
-## ~~必须最先做的事：先合并 master~~ —— 已完成（2026-08-09），不要重做
+## 已完成、不要重做：先合并 master（2026-08-09 完成）
 
 **这一节曾是本交接最重要的一条；它已经做完了。** 保留在此是为了让接手方一眼看出「不必再合一次」，并留下当时的取舍。
 
