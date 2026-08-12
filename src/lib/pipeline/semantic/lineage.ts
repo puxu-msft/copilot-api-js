@@ -35,11 +35,28 @@ export type DeliveryAuthorityState =
 /**
  * Why this candidate exists.
  *
- * `fallback` and `continuation` are **different kinds and do not share an ID namespace** (RFC §3.4).
- * They look alike — both make a new candidate off a parent — but their parent disposition is
- * opposite: a fallback's parent is void, a continuation's parent is an already-delivered prefix.
+ * **Deliberately not an alias of `CandidateRole`** — that equation was tried and disproved. Three
+ * values do line up (`primary`, `hedge`, `continuation`), but the two enums diverge at both ends, and
+ * each divergence is load-bearing:
+ *
+ * - `retry` was **removed** from RFC §6's original five. It names nothing at this granularity: a
+ *   retry is a new **dispatch** under the *same* candidate (`dispatch-scheduler.ts` calls
+ *   `beginDispatch` inside a `for(;;)` loop keyed by one `candidate`), so its counterpart is
+ *   `DispatchReason`, one level down. Offering it here invites a writer to record an event that
+ *   cannot occur.
+ * - `fallback` is **broader than** the coordinator's `recovery` role, not a rename of it.
+ *   `runRecovery` (`coordinator.ts:212`) discards the parent's ready upstream and settles it `failed`
+ *   — the client has received nothing — which is precisely RFC §6's *pre-commit* fallback. RFC's
+ *   *post-commit* fallback, a model switch after irrevocable client bytes, has **no candidate role
+ *   today**; the only post-commit hand-off the coordinator can express is `runContinuation`, whose
+ *   parent settles `continued`. So `recovery` covers one half of `fallback`.
+ *
+ * What RFC §3.4 asserts survives intact: `fallback` and `continuation` are different kinds and do not
+ * share an ID namespace. They look alike (both fork a candidate off a parent) but their parent
+ * disposition is opposite: a fallback's parent is void, a continuation's parent is an
+ * already-delivered prefix.
  */
-export type LineageCause = "primary" | "retry" | "hedge" | "fallback" | "continuation"
+export type LineageCause = "primary" | "hedge" | "fallback" | "continuation"
 
 /**
  * `candidateId` / `dispatchId` reuse the **existing branded handles** rather than declaring a second
@@ -48,6 +65,15 @@ export type LineageCause = "primary" | "retry" | "hedge" | "fallback" | "continu
  * V3 projects as `candidateId` (`history/v3/projection.ts:281`). A parallel `string` id here would be
  * the "normalized-key bug recurring at many comparison sites" shape — and worse, `string` lets a
  * dispatchId, a segmentId, or a candidateId be swapped for one another with no diagnostic.
+ *
+ * `parentCandidateId` is a **mirrored foreign key, not a second source of truth**: the recorder owns
+ * the parent edge (`beginCandidate({ parentCandidate })`), and History V3 already projects it as
+ * `parentCandidateId`. It is restated here so a lineage value is self-contained where the recorder is
+ * not reachable; if the two ever disagree, the recorder wins.
+ *
+ * Genuinely new on this record — the reason it exists at all — are `segmentId`, `parentSegmentId`,
+ * `configSnapshotId`, `policy` and `deliveryAuthority`. Everything else is a key into the existing
+ * observability model.
  */
 export type CandidateTranslationLineage = Readonly<{
   candidateId: CandidateHandle

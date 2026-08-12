@@ -125,7 +125,6 @@ describe("candidate lineage (RFC §6)", () => {
     expect(causeStartsNewSegment("fallback")).toBe(true)
     expect(causeStartsNewSegment("continuation")).toBe(true)
     expect(causeStartsNewSegment("hedge")).toBe(false)
-    expect(causeStartsNewSegment("retry")).toBe(false)
     expect(causeStartsNewSegment("primary")).toBe(false)
   })
 })

@@ -528,27 +528,34 @@ type DeliveryAuthorityState =
       kind: "transferred"
       epoch: number
       cause: "fallback" | "continuation"
-      toCandidateId: string
+      toCandidateId: CandidateHandle
     }
   | { kind: "terminal"; epoch: number }
   | { kind: "discarded" }
 
 type CandidateTranslationLineage = Readonly<{
-  candidateId: string
-  dispatchId: string
+  candidateId: CandidateHandle
+  dispatchId: DispatchHandle
   segmentId: SegmentId
-  parentCandidateId?: string
+  parentCandidateId?: CandidateHandle
   parentSegmentId?: SegmentId
-  cause: "primary" | "retry" | "hedge" | "fallback" | "continuation"
+  cause: "primary" | "hedge" | "fallback" | "continuation"
   configSnapshotId: string
   policy: PairTranslationPolicy
   deliveryAuthority: DeliveryAuthorityState
 }>
 ```
 
+`CandidateHandle`／`DispatchHandle` 是仓库既有的 branded id（`src/lib/context/model-operation-record.ts`），由 `beginCandidate`／`beginDispatch` 铸造、History V3 已投影为 `candidateId`／`dispatchId`。本 RFC **复用它们而不另立 id 命名空间**：裸 `string` 会让 dispatchId、segmentId 与 candidateId 互相顶替而无任何诊断。同理 `parentCandidateId` 是既有 parent edge 的**镜像外键**，权威在 recorder，二者不一致时以 recorder 为准。
+
+`cause` 与既有 `CandidateRole`（`primary | hedge | recovery | continuation`）**三值重合、两端分歧**，实现时必须显式换算，不得当作同一枚举：
+
+- `retry` 不在本枚举内。retry 是同一 candidate 下的新 **dispatch**（`dispatch-scheduler.ts` 在 `for(;;)` 循环里对同一 `candidate` 反复 `beginDispatch`），其对应概念是低一层的 `DispatchReason`；放进 per-candidate 记录会诱导写入一个不可能发生的事件。
+- `fallback` **宽于** coordinator 的 `recovery` role。`runRecovery` 丢弃父 candidate 的 ready upstream 并将其 settle 为 `failed`——客户端未收到任何字节——即本节的 pre-commit fallback；而 post-commit fallback（已发不可撤回字节后切模型）**当前没有任何 candidate role**，coordinator 唯一能表达的 post-commit 交接是 `runContinuation`。该 role 需在 C2.3 落地。
+
 Lineage与delivery authority不变量：
 
-- retry、hedge、fallback和continuation都创建candidate-local ledger；不得共享可变item state。若要复用已冻结的请求语义，只能从immutable ingress baseline或已提交segment snapshot fork。
+- hedge、fallback和continuation都创建candidate-local ledger；retry在同一candidate下创建新dispatch，其ledger随dispatch而非candidate。任何一种都不得共享可变item state。若要复用已冻结的请求语义，只能从immutable ingress baseline或已提交segment snapshot fork。
 - 通常首次不可逆客户端emission是初始authority commit point。两类无普通内容帧的终态也必须选择唯一authority：preflight fail-closed由driver在接受该candidate的typed rejection时建立`active(epoch=0)`、晋级其semantic observations并冻结`failed/preflight-reject` response terminal；错误wire仍由该active authority发送并等待sink结果，随后才原子转为`terminal`。发送／ACK失败时同一authority记录wire delivery failure后再转terminal，不允许无authority writer代发。合法contentless success同样先建立active authority，发送并确认terminal wire后才转terminal。commit前可重试失败仍从immutable baseline fork，旧candidate标`discarded`，其proposed observations只作candidate诊断，不进入请求级actual effect。
 - request在任一时刻至多一个candidate持`active` delivery authority。未持authority的candidate不得写任何客户端sink；`active` candidate只有在其terminal wire发送完成或明确记录wire delivery failure后，才能原子转为`terminal`。
 - commit后恢复不是第二个winner，而是同一committed lineage中的authority transfer。旧authority须先把祖先开放part／item按真实provenance终结为partial，并按目标协议顺序发送且确认所有必需的closing wire effects；同时准备好后代首个可发送effect。只有祖先wire lifecycle已闭合后，driver才在同一临界动作把祖先`active(epoch=N)`改为`transferred(epoch=N,toCandidateId)`、后代`uncommitted`改为`active(epoch=N+1)`；准备、closing sink ACK或临界校验失败时不发布transfer、authority仍归祖先，发布成功后authority只归后代，任何瞬间都不可双writer。后代首个effect只能在transfer成功后发送。
