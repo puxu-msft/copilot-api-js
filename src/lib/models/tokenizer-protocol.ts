@@ -27,8 +27,11 @@ export type TokenizerRequest =
 
 export type TokenizerOp = TokenizerRequest["op"]
 
-/** A job as the caller describes it; the client assigns the `id`. Distributes over the union so the `op` discriminant survives — a plain `Omit` would collapse the four shapes into their common keys and lose it. */
-export type TokenizerJob = TokenizerRequest extends infer T ? (T extends TokenizerRequest ? Omit<T, "id"> : never) : never
+/** `Omit` that distributes over a union instead of collapsing it to its common keys — without this the four request shapes would lose their `op` discriminant. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+/** A job as the caller describes it; the client assigns the `id`. */
+export type TokenizerJob = DistributiveOmit<TokenizerRequest, "id">
 
 /** Every value any op can produce. */
 export type TokenizerResultValue = number | Array<number> | { input: number; output: number }

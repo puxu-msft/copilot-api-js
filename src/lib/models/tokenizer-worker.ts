@@ -6,6 +6,8 @@
  * Imports are deliberately narrow — the protocol types and the counting core, nothing else. A Worker entry that reached the server, config, or logging modules would boot a second copy of the application, not a thread.
  */
 
+/* eslint-disable unicorn/require-post-message-target-origin -- `targetOrigin` is a `window.postMessage` parameter; a `MessagePort` has no such argument and passing one would be a type error. The rule's own metadata marks it `recommended: false` for exactly this reason: it cannot tell `window.postMessage` from `{Worker,MessagePort}#postMessage` (unicorn#1396). */
+
 import {
   //
   parentPort,
@@ -46,6 +48,10 @@ const compute = async (request: TokenizerRequest): Promise<TokenizerResultValue>
     }
     case "tools": {
       return await computeToolsTokenCount(request.payload, request.model)
+    }
+    default: {
+      // Unreachable for any well-formed message — TypeScript proves the four cases exhaust the union. It is here because this is a cross-thread boundary: a malformed message is a real possibility, and answering it with a plausible number would be far worse than failing. The caller receives this as `ok: false`.
+      throw new Error(`Unknown tokenizer op: ${JSON.stringify((request as { op: unknown }).op)}`)
     }
   }
 }

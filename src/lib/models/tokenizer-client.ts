@@ -6,6 +6,8 @@
  * The fallback is not a nicety. Token counting decides truncation boundaries and calibration, so a Worker that fails to spawn on some platform must degrade to a slow main thread, never to a wrong number or a thrown request.
  */
 
+/* eslint-disable unicorn/require-post-message-target-origin -- `targetOrigin` is a `window.postMessage` parameter; a `Worker` has no such argument and passing one would be a type error. The rule's own metadata marks it `recommended: false` for exactly this reason: it cannot tell `window.postMessage` from `{Worker,MessagePort}#postMessage` (unicorn#1396). */
+
 import consola from "consola"
 import {
   //

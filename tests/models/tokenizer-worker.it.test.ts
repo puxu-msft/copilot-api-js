@@ -24,6 +24,13 @@ import type {
 
 import {
   //
+  countTextTokens,
+  getPerMessageTokenCounts,
+  getTokenCount,
+  getToolsTokenCount,
+} from "~/lib/models/tokenizer"
+import {
+  //
   _resetTokenizerClient,
   getTokenizerWorkerDiagnostics,
   setTokenizerWorkerUrlForTests,
@@ -35,13 +42,6 @@ import {
   computeTokenCount,
   computeToolsTokenCount,
 } from "~/lib/models/tokenizer-core"
-import {
-  //
-  countTextTokens,
-  getPerMessageTokenCounts,
-  getTokenCount,
-  getToolsTokenCount,
-} from "~/lib/models/tokenizer"
 
 const model = { id: "claude-sonnet-4", capabilities: { tokenizer: "o200k_base" } } as unknown as Model
 
@@ -54,7 +54,16 @@ const messages = [
 const payload = {
   model: "claude-sonnet-4",
   messages,
-  tools: [{ type: "function", function: { name: "read_file", description: "Read a file.", parameters: { type: "object", properties: { path: { type: "string", description: "Absolute path" } } } } }],
+  tools: [
+    {
+      type: "function",
+      function: {
+        name: "read_file",
+        description: "Read a file.",
+        parameters: { type: "object", properties: { path: { type: "string", description: "Absolute path" } } },
+      },
+    },
+  ],
 } as unknown as ChatCompletionsPayload
 
 afterEach(async () => {

@@ -28,15 +28,15 @@ import {
 
 export {
   //
-  getTokenizerFromModel,
-  numTokensForTools,
-} from "./tokenizer-core"
-
-export {
-  //
   getTokenizerWorkerDiagnostics,
   shutdownTokenizerWorker,
 } from "./tokenizer-client"
+
+export {
+  //
+  getTokenizerFromModel,
+  numTokensForTools,
+} from "./tokenizer-core"
 
 /**
  * Count tokens in a text string using the model's tokenizer.
