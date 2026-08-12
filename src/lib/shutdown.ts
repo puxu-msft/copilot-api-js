@@ -46,6 +46,7 @@ import {
   stopHistoryAdmission,
 } from "./history/worker/http-admission"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
+import { shutdownTokenizerWorker } from "./models/tokenizer"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { notifyStopping } from "./restart/notify"
 import { closeHttp2Sessions } from "./transport/http2-client"
@@ -622,6 +623,14 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   if (remaining > 0) {
     deps.closeWsClients()
     consola.info(`Disconnected ${remaining} WebSocket client(s) at finalize`)
+  }
+
+  // The tokenizer thread holds no durable state, so this is housekeeping rather than persistence — but a shutdown that announces completion while a thread of ours is still running is the kind of thing that makes the next reader doubt the announcement. Deliberately last: token counting runs on the calibration sink's `request.completed`, so counts are still being issued during the drain above.
+  try {
+    await shutdownTokenizerWorker()
+  } catch (error) {
+    // Best-effort by design. A thread that will not stop is not a reason to report a failed shutdown, and the process is about to exit regardless.
+    writeEmergencyNoThrow(`[shutdown] Tokenizer Worker did not stop cleanly: ${error instanceof Error ? error.message : String(error)}`)
   }
 
   if (failures.length > 0) {

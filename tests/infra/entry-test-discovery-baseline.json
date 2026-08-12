@@ -393,6 +393,7 @@
     "tests/models/run-collapse.unit.test.ts",
     "tests/models/supported-endpoints.unit.test.ts",
     "tests/models/timeout-resolver.unit.test.ts",
+    "tests/models/tokenizer-worker.it.test.ts",
     "tests/observability/active-request-wire.unit.test.ts",
     "tests/observability/activity-current-attempt.unit.test.ts",
     "tests/observability/bus.unit.test.ts",
