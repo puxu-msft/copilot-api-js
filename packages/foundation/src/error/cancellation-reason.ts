@@ -29,8 +29,10 @@ const CANCELLATION_CAUSE = Symbol("cancellationCause")
  * - `client-request-deadline`: the whole-request hard deadline (`timeouts.client_request_deadline`)
  *   fired. Semantically a TIMEOUT, not a generic cancellation — boundaries map it to 504.
  * - `upstream-request-deadline`: ONE upstream attempt outlived `timeouts.upstream_request_deadline`.
- *   Also a timeout, but attempt-scoped: the retry/hedge budget is untouched, so this only reaches a
- *   client when it was the last attempt available.
+ *   Also a timeout, but attempt-scoped: it ends ONE attempt rather than the request, which then takes
+ *   the normal retry path — so it DOES spend one retry, exactly as a transport failure does, and only
+ *   reaches a client once the retry budget is exhausted. Spending the budget is deliberate: otherwise a
+ *   persistently slow upstream would be retried forever and the request would lose its bound.
  * - `request-cancel`: any other explicit `ctx.cancel(reason)`; the reason text is
  *   the error message.
  * - `dispatch-cancel`: a candidate/dispatch-local teardown (hedge loser, forced

@@ -46,6 +46,7 @@ import {
   stopHistoryAdmission,
 } from "./history/worker/http-admission"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
+import { shutdownTokenizerWorker } from "./models/tokenizer"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { notifyStopping } from "./restart/notify"
 import { closeHttp2Sessions } from "./transport/http2-client"
@@ -361,6 +362,20 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   if (shutdownPhase === "stopped") return
   if (shutdownPhase !== "idle" && shutdownPhase !== "stopping") return shutdownCompletion.promise
 
+  try {
+    await runGracefulShutdown(signal, deps)
+  } finally {
+    // EVERY exit path must disarm, not just the finalize one. `armShutdownWaits` fires before the
+    // pre-drain awaits (`drainAdmissionHandoffs`, the handoff freezes, the drain loop itself), and
+    // a reject from any of those leaves this function without ever reaching the inner try/finally
+    // around `finalize()`. A timer that outlives its shutdown is not inert: `graceful_wait` would
+    // call `abandonDrain()` against a stale drain source, and `abort_wait` would `process.exit` a
+    // process that has already given up shutting down — or, in tests, take the runner with it.
+    clearShutdownWaitTimers()
+  }
+}
+
+async function runGracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
   const tracker: ShutdownDrainSource = deps?.tracker ?? {
     // Drain waits on the OPERATION/finalization registry, not the visible logical-settle registry.
     // A settled request remains here through orphan settle-before work (fetch/backoff/response pump),
@@ -624,6 +639,14 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
     consola.info(`Disconnected ${remaining} WebSocket client(s) at finalize`)
   }
 
+  // The tokenizer thread holds no durable state, so this is housekeeping rather than persistence — but a shutdown that announces completion while a thread of ours is still running is the kind of thing that makes the next reader doubt the announcement. Deliberately last: token counting runs on the calibration sink's `request.completed`, so counts are still being issued during the drain above.
+  try {
+    await shutdownTokenizerWorker()
+  } catch (error) {
+    // Best-effort by design. A thread that will not stop is not a reason to report a failed shutdown, and the process is about to exit regardless.
+    writeEmergencyNoThrow(`[shutdown] Tokenizer Worker did not stop cleanly: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   if (failures.length > 0) {
     shutdownPhase = "failed"
     throw new AggregateError(failures, "Shutdown persistence failed")
@@ -683,9 +706,7 @@ function writeEmergencyNoThrow(message: string): void {
  * "did a human give up, or did the configured bound elapse?". Those are different events and must
  * not share a label (`abort-provenance-tag-at-source`).
  */
-type DrainAbandonmentTrigger =
-  | { kind: "operator"; signal: string }
-  | { kind: "graceful-wait"; seconds: number }
+type DrainAbandonmentTrigger = { kind: "operator"; signal: string } | { kind: "graceful-wait"; seconds: number }
 
 function drainAbandonmentAttribution(trigger: DrainAbandonmentTrigger): { code: string; message: string } {
   if (trigger.kind === "operator") {

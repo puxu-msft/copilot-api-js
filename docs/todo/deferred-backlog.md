@@ -2,6 +2,15 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `tests/history/v3/migrations-wiring.it.test.ts` 单跑必挂，只有分片跑才绿（2026-08-11，合并态评审撞到）
+
+- **根因 / 现状**：该文件**单独运行时三例必定 5s 超时并挂住 runner**（`initHistory drains an in-flight summary backfill…`、`the integrity migration invalidates legacy authority…`、`a non-empty injected MIGRATIONS array runs REAL DDL…`），带不带 `--isolate` 都一样，主检出与隔离 worktree 都复现。而 `bun run test:backend` 报 0 fail——它经 `scripts/parallel-test.ts` 做 LPT 分片，**同片文件共享 module context**，于是该文件靠同片兄弟初始化的 module-global 状态才跑得通。
+- **当前行为**：交付档（`test:backend`）绿，因此不阻塞任何人；代价是这三条测试的**判别力实际为零**——它们守的东西一旦坏掉，在分片模式下也未必红，而任何人想单跑该文件调试都会直接挂住。这是「只有被污染时才通过」的反向污染形态（既有 playbook `full-suite-red-classify-before-pollution-playbook` 讲的是正向）。
+- **不是本轮引入**：A/B 已做——在 `69bea997^`（三作用域重构之前）的 in-repo worktree 上跑同一文件，**同样三例、同样 5s 超时、同样 rc=124**。故与 envelope 重构无关，是既有缺陷。按 `evidence-weaker-than-it-looks`，「不是回归」只降优先级、不移出嫌疑名单。
+- **为何暂缓**：属 History V3 子系统，与本轮 pipeline envelope 任务结构不相交；且「挂住不退出」的根因需要系统性排查（谁没 drain、谁在等一个永不 settle 的 promise），不是顺手能改对的。
+- **理想架构 / 若做需改什么**：定位那三例各自等在什么上（建议 `gpt-souls:debugger`），让文件自带所需的初始化而非依赖同片兄弟；修好后应能 `bun test --isolate <该文件>` 独立绿。顺带值得查的同类：还有多少文件处在同样状态——判据是「逐文件单跑一遍，看谁挂」。
+- **触发条件**：① 有人要动 History V3 migrations / initHistory 时（会先撞上无法单跑调试）；② 想让 `test:backend` 的绿真正可依赖时。**发现方**：2026-08-11 合并态评审在隔离 worktree 撞到，主检出复现确认。
+
 ## 语义桥 `PairTranslationPolicy.serverTools` 的类型从未定义（2026-08-11，C2.2 执行时发现）
 
 - **根因 / 现状**：RFC §6 的 `PairTranslationPolicy` 列了 `serverTools: ServerToolCapabilities`，但 **`ServerToolCapabilities` 全仓只出现这一次**——就是该类型块里的这个引用本身，没有任何定义（复算：`rg -rn 'ServerToolCapabilities' --glob '*.ts' --glob '*.md' .`）。属**定义滞后**，不是 aspirational 引用：这个字段确有消费者预期（§7 的 server-tool 四格）。
@@ -1606,6 +1615,14 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：① 先给它一个真读者（`/api/status` 或 diagnostic 端点暴露 `getReaperDiagnostics()`）；② 再决定 tick 的宿主——可以是一个独立的、名字诚实的 suspend probe（固定 cadence，与任何 deadline 无关），也可以挂在既有的某个周期任务上（`history/v3/maintenance` 的 tick 是现成的候选，省一个 timer）；③ 顺带把模块与 API 从 `reaper-*` 改名成它实际在做的事——reaper 已经不存在了，这批名字现在全是名实不符。
 - **触发条件（值得做）**：① 又遇到一次「timer 集体迟到 / 请求龄读数异常」而分不清是 suspend 还是事件循环阻塞；② 有人要做进程健康度面板，需要 event-loop delay 之外的挂起证据；③ 任何人下次动这个模块时顺手连读者一起补。
 - **发现方**：两档 deadline 重整（本轮）删 reaper 时的调用点盘查——`git grep startReaper` 当时还漏看了 `packages/` 下的生产调用点，第二次全仓 grep 才发现 `packages/cli/src/start.ts` 里有一个。
+
+## bundled 默认下没有任何「整请求超龄」终止者（2026-08-11 合并前评审提出，部分驳回、部分留作待决）
+
+- **评审原话与部分驳回**：独立评审判定「删除 reaper 后，旧 `stale_request_max_age>0` 配置的『整个请求到龄必终止』能力被删除而非等价迁移」。**这半句不成立，已驳回**：`src/lib/config/compat.ts` 有两条 `renameLeaf`，把顶层 `stale_request_max_age` 与 `timeouts.stale_request_max_age` 两种拼写都迁移到 `timeouts.client_request_deadline`，实测覆盖在 `tests/config/config-compat.unit.test.ts`（「timeouts.stale_request_max_age → timeouts.client_request_deadline」等三条）。设过正值的旧配置**能力完整保留**，只是换了执行机制（精确 timer 取代周期扫描）。评审未查 compat 层。
+- **但另一半成立，登记在此**：bundled 默认 `client_request_deadline: 0`，所以**开箱状态下没有任何 request-wide 终止者**。`upstream_request_deadline: 1200` 只管单次尝试；一个反复超时→重试的请求，其总寿命上界等于「retry 预算 × 1200s」而非一个直接的墙钟上限，且 retry 预算本身可能因其它成因被消耗。
+- **为何不自行改默认值**：`client_request_deadline: 0` 是**用户裁决**（never-false-kill：`response_header`／`stream_idle` 在静默上触发且无重试可用，`client_request_deadline` 跨所有重试、烧完就没有第二次机会），有机器守卫 `tests/config/never-false-kill-legit-thinking.unit.test.ts` 钉住。改它属 A 级——不由主会话裁决。
+- **触发条件（值得重议）**：① 真实出现一条请求靠反复重试长时间不终结；② 用户希望给「整请求」也设一个默认上界；③ retry 预算的语义改变，使「预算 × attempt deadline」不再是有效的间接上界。
+- **发现方**：2026-08-11 合并前对抗评审（实现正确性视角，C4）。主会话驳回其「能力被删除」的定性并给出 compat 证据，保留其「默认无 request-wide 终止者」的观察。
 
 ## coordinator 的 `active` 是一个只写不读的候选状态，且它很可能是 delivery authority 的退化前身（2026-08-12，semantic bridge C2.2 接线时的结构怪味扫描）
 

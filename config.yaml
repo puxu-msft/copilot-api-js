@@ -233,8 +233,11 @@ timeouts:
   # gpt-5.5 (effort=high) has shown 266–462s zero-frame silent-reasoning gaps before a burst; this proves fixed positive bounds can kill valid requests, so the bundled config sets no override.
   stream_idle_overrides: {}
 
-  # 单次上游尝试的最大存活秒数（0 = 禁用）。烧完只中止这一次尝试，重试／hedge 预算不受影响。
-  # Max seconds ONE upstream attempt can live (0 = disabled). Firing aborts only that attempt; the retry/hedge budget is untouched.
+  # 单次上游尝试的最大存活秒数（0 = 禁用）。烧完只中止这一次尝试、不直接终结整个请求；请求随后走**正常重试路径**，因此**会消耗一次重试预算**（与任何 transport 失败一样）。
+  # Max seconds ONE upstream attempt can live (0 = disabled). Firing aborts only that attempt rather than the whole request; the request then takes the NORMAL retry path and therefore DOES consume one retry (exactly as any transport failure does).
+  #
+  # 消耗预算是有意的：不消耗的话，一个持续超时的上游会被无限重试，请求反而失去上界。
+  # Consuming the budget is deliberate: if it did not, a persistently slow upstream would be retried forever and the request would lose its bound entirely.
   #
   # 与另外两个上游守卫互补：response_header 只管首字节前，stream_idle 只管帧间空档，两者都拦不住「一直滴水但永不结束」的尝试。
   # Complements the two phase-scoped guards: response_header covers only the pre-header wait and stream_idle only the gap between frames — neither bounds an attempt that trickles forever.
@@ -265,9 +268,10 @@ shutdown:
   # 放弃排空之后、硬退出之前再等的秒数（0 = 无限等）。它逃的正是持久化 barrier 本身，所以**不落盘**。
   # Seconds to wait AFTER abandoning the drain before hard-exiting (0 = wait forever). This escapes the persistence barriers themselves, so it exits WITHOUT flushing.
   #
-  # ⚠️ 顺序不变量：abort_wait 从 graceful_wait 到点才开始计，所以进程管理器要撑过的是**两者之和**
+  # ⚠️ 顺序不变量：abort_wait 在「排空被放弃」那一刻开始计——通常是 graceful_wait 到点，**但运维手动按第二次
+  # Ctrl+C 也会立刻开始计**（那一刻 graceful_wait 被取消）。所以进程管理器要撑过的是**两者之和**
   # （当前 660s）。contrib/systemd 的 TimeoutStopSec 与 pm2 的 kill_timeout 都必须大于它。
-  # Ordering invariant: abort_wait only starts counting once graceful_wait expires, so a supervisor must outlast the SUM (currently 660s).
+  # Ordering invariant: abort_wait starts counting when the drain is ABANDONED — normally that is graceful_wait expiring, but an operator's second Ctrl+C starts it too (and cancels graceful_wait). A supervisor must outlast the SUM (currently 660s), which is the worst case.
   abort_wait: 60
 
 # ============================================================================
@@ -353,7 +357,7 @@ buffered_retry:
   # 续写重试（spec 2026-07-22）：首个块提交给客户端后，mid-stream RST（如 NGHTTP2_CANCEL 掐断 tool_use）不再降级 partial-degrade——代理带合成续写轮（已提交块作 assistant 轮 + 下方 user 消息）重投上游，让模型续写而非重来。共享上方 max_retries（保底 1 次，防首块前重试饿死续写）。可 per-vendor 覆盖（<vendor>.buffered_retry.continuation.*）。
   continuation:
     enabled: true
-    message: "network issue. please continue"
+    message: "network issue occurred, please continue"
 
 # Max-token terminal continuation is separately opt-in. P0 only observes and records the real terminal; with enabled=false it never changes the client wire.
 # max_tokens 终局续传独立 opt-in。P0 只观察并记录真实终局；enabled=false 时绝不改变客户端 wire。
@@ -785,7 +789,7 @@ anthropic:
   #   false:           disabled (default) — live streaming, no buffering. / 禁用（默认）——实时流式，不缓冲。
   #   on:              buffer every streaming Anthropic response. / 缓冲每个流式 Anthropic 响应。
   #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live. / 仅当请求带 `tools`（大 Write/Edit 场景）才缓冲；纯文本对话仍实时。
-  protect_streaming_generation: false
+  protect_streaming_generation: on
   # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
   # 每次缓冲 RST/truncation 重试时，FORCE 一次渐进激进的原生 clear_tool_uses context_management（更低 trigger + 更少 keep）压缩上下文，让生成更快、更可能在下个 RST 窗口前完成。独立于 context_editing（仅重试时的应急压缩）；模型不支持 context_management 时跳过。改变请求语义（删更多旧上下文）。默认 false（opt-in；建议遥测证实裸重试命中率低后再开）。
   protect_streaming_escalate_context: false

@@ -26,7 +26,8 @@
 2. 将状态置为 `stopping`，随后进入 `draining`。
 3. 立即关闭 HTTP listener，并由 middleware 拒绝信号后进入的新请求。
 4. 停止只属于后台维护的 producer，例如 History maintenance 和 Telemetry rollup。
-5. 等待信号前已接纳的 operation registry 清零，不设置 shutdown 自有 deadline，也不发送进程级 shutdown abort。
+5. 等待信号前已接纳的 operation registry 清零，不发送进程级 shutdown abort。
+   > **2026-08-11 订正**：本步原文还写着「不设置 shutdown 自有 deadline」，该半句已被推翻——现在有 `shutdown.graceful_wait`（bundled 600s）。**未被推翻的是「不发送进程级 shutdown abort」**：到点走的仍是请求级原语的无损放弃排空。见 [decisions/2026-08-11-shutdown-owns-bounded-waits-again.md](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md)。
 
 ### 2.2 已接纳请求
 

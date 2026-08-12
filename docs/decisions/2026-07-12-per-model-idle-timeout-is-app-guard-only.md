@@ -1,5 +1,7 @@
 # ADR: per-model idle timeout 是 app-guard-only —— 无需 transport backstop 耦合
 
+> **2026-08-11 键名订正（本文正文按当时状态写作，保留原样以存档）**：文中出现的 `stale_request_max_age` 与 `timeouts.request_deadline` **均已不再是有效配置键**。周期式 stale reaper 已删除，两者统一迁移为 `timeouts.client_request_deadline`（整个客户端请求、跨重试不重置）；另新增 attempt 作用域的 `timeouts.upstream_request_deadline`（bundled 1200s）。compat 层会自动迁移旧键并告警。裁决与完整语义见 [decisions/2026-08-11-shutdown-owns-bounded-waits-again.md](2026-08-11-shutdown-owns-bounded-waits-again.md) 与 [lifecycle.md](../lifecycle.md)「两档请求 deadline」。
+
 - **状态**：Accepted（架构边界继续有效；2026-08-08 起 bundled 正超时默认已被 later decision `never-false-kill-legit-thinking` 取代，见下）
 - **日期**：2026-07-12
 - **相关**：[spec/2026-07-12-per-model-idle-timeout.md](../spec/2026-07-12-per-model-idle-timeout.md) §7、[plan/2026-07-12-per-model-idle-timeout.md](../plan/2026-07-12-per-model-idle-timeout.md) Phase 4b、DESIGN.md「活的架构现状」`streamIdleTimeout`/`streamIdleTimeoutOverrides` 行、`src/lib/models/timeout-resolver.ts`、实测 `exp/ws-upstream-keepalive/REPORT.md`（2026-07-12 归因更正节）

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "runner_git_blob": "09a273247f2b2ef821dbc3b354d2bb350fcc861a",
-  "minimum_executed": 7619,
+  "minimum_executed": 7620,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",
     "tests/anthropic/anthropic-client.it.test.ts",
@@ -309,6 +309,7 @@
     "tests/history/v3/transient-retry.unit.test.ts",
     "tests/history/v3/transport-evidence-migration.it.test.ts",
     "tests/history/v3/transport-evidence.it.test.ts",
+    "tests/history/v3/transport-failure-summary.unit.test.ts",
     "tests/history/worker/admission-shutdown.unit.test.ts",
     "tests/history/worker/admission-wiring.http.test.ts",
     "tests/history/worker/admission-ws.it.test.ts",
@@ -390,8 +391,10 @@
     "tests/models/models-capabilities.unit.test.ts",
     "tests/models/models-client.it.test.ts",
     "tests/models/openai-models-extended.http.test.ts",
+    "tests/models/run-collapse.unit.test.ts",
     "tests/models/supported-endpoints.unit.test.ts",
     "tests/models/timeout-resolver.unit.test.ts",
+    "tests/models/tokenizer-worker.it.test.ts",
     "tests/observability/active-request-wire.unit.test.ts",
     "tests/observability/activity-current-attempt.unit.test.ts",
     "tests/observability/bus.unit.test.ts",

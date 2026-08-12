@@ -64,6 +64,8 @@
 
 用户裁决保留一个可配的自动放弃预算，但**默认关闭**，语义是「操作者预设的放弃点」而非「shutdown 拥有请求终止权」。默认 0 意味着不引入任何行为变化。
 
+> **2026-08-11 已被推翻，方向相反。** 用户改判为 `shutdown.graceful_wait: 600` / `abort_wait: 60` **写入 bundled 默认**——即**默认开启**，是一次默认行为变更；且它现在就是 shutdown 自己的时限，不再是「操作者预设的放弃点」这个措辞所描述的东西。取代它的论证不是换名字，而是**到点后的动作变了**（无损放弃排空，走完 finalize）。见 [2026-08-11-shutdown-owns-bounded-waits-again](2026-08-11-shutdown-owns-bounded-waits-again.md)。
+
 ## 不采纳
 
 | 方案 | 不采纳原因 |
@@ -81,4 +83,4 @@
 ## 状态
 
 - ✅ 三档信号：`src/lib/shutdown.ts`，unit（含双向变异对照）+ PTY（真实进程，`tier2Alive` 断言，连跑 3 次确定性）。
-- ⛔ **可配自动预算尚未实现**——本轮未做，默认 0 意味着缺它不改变任何现有行为。按 `no-silently-cut-but-defer` 登记在 [todo/deferred-backlog.md](../todo/deferred-backlog.md)，等用户决定是否单独起一轮。
+- ~~⛔ **可配自动预算尚未实现**——本轮未做，默认 0 意味着缺它不改变任何现有行为。~~ **2026-08-11 已实现，且默认值与此处设想相反（600/60，默认开启）**：见 [2026-08-11-shutdown-owns-bounded-waits-again](2026-08-11-shutdown-owns-bounded-waits-again.md)；backlog 条目已关闭并记录该偏离。
