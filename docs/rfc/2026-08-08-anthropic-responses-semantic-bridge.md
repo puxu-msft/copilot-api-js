@@ -535,7 +535,6 @@ type DeliveryAuthorityState =
 
 type CandidateTranslationLineage = Readonly<{
   candidateId: CandidateHandle
-  dispatchId: DispatchHandle
   segmentId: SegmentId
   parentCandidateId?: CandidateHandle
   parentSegmentId?: SegmentId
@@ -547,6 +546,8 @@ type CandidateTranslationLineage = Readonly<{
 ```
 
 `CandidateHandle`／`DispatchHandle` 是仓库既有的 branded id（`src/lib/context/model-operation-record.ts`），由 `beginCandidate`／`beginDispatch` 铸造、History V3 已投影为 `candidateId`／`dispatchId`。本 RFC **复用它们而不另立 id 命名空间**：裸 `string` 会让 dispatchId、segmentId 与 candidateId 互相顶替而无任何诊断。同理 `parentCandidateId` 是既有 parent edge 的**镜像外键**，权威在 recorder，二者不一致时以 recorder 为准。
+
+`CandidateTranslationLineage` **刻意不带 `dispatchId`**：它是 per-candidate 记录、随 candidate 出生，那一刻还没有任何 dispatch；而一个 candidate 之后拥有 *N* 个 dispatch（`dispatch-scheduler.ts` 在同一 candidate 下循环 `beginDispatch` 实现 retry）。在这里钉一个 dispatch，对每个重试过的 candidate 都是假话，却仍以权威语气呈现。粒度本身不是随意选的：policy 在 candidate 边界冻结、retry 不得重读热配置（本节），所以同一 candidate 下每个 dispatch 共享这条记录、逐字相同。反过来，**在 dispatch 已存在之后才铸造**的记录——`TranslationObservation`、`AuthorityIdentity`、`CandidateHistoryDiagnostic`——各自携带自己的 `dispatchId`，铸造那一刻它是已知且无歧义的。
 
 `cause` 与既有 `CandidateRole`（`primary | hedge | recovery | continuation`）**三值重合、两端分歧**，实现时必须显式换算，不得当作同一枚举：
 

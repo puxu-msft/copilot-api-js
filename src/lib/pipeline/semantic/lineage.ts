@@ -12,7 +12,7 @@
  * one invariant that matters most (at most one `active` writer per request).
  */
 
-import type { CandidateHandle, DispatchHandle } from "~/lib/context/model-operation-record"
+import type { CandidateHandle } from "~/lib/context/model-operation-record"
 
 import type { PairTranslationPolicy } from "./policy-resolver"
 import type { SegmentId } from "./types"
@@ -59,12 +59,21 @@ export type DeliveryAuthorityState =
 export type LineageCause = "primary" | "hedge" | "fallback" | "continuation"
 
 /**
- * `candidateId` / `dispatchId` reuse the **existing branded handles** rather than declaring a second
- * id namespace of plain strings. RFC §6 names these fields abstractly, but the repository already
- * mints them: `beginCandidate` (`dispatch-scheduler.ts:50`) issues the `CandidateHandle` that History
- * V3 projects as `candidateId` (`history/v3/projection.ts:281`). A parallel `string` id here would be
- * the "normalized-key bug recurring at many comparison sites" shape — and worse, `string` lets a
- * dispatchId, a segmentId, or a candidateId be swapped for one another with no diagnostic.
+ * `candidateId` reuses the **existing branded handle** rather than declaring a second id namespace of
+ * plain strings. RFC §6 names it abstractly, but the repository already mints it: `beginCandidate`
+ * (`dispatch-scheduler.ts:50`) issues the `CandidateHandle` that History V3 projects as `candidateId`
+ * (`history/v3/projection.ts:281`). A parallel `string` id here would be the "normalized-key bug
+ * recurring at many comparison sites" shape — and worse, `string` lets a dispatchId, a segmentId or a
+ * candidateId be swapped for one another with no diagnostic.
+ *
+ * **There is deliberately no `dispatchId`.** This record is per-candidate and is born with the
+ * candidate, at which point no dispatch exists yet; a candidate then owns *N* dispatches, since
+ * `dispatch-scheduler.ts` retries by looping `beginDispatch` under one candidate. Pinning one
+ * dispatch here would be a lie for every retried candidate while still reading as authoritative. The
+ * granularity is not arbitrary: policy is frozen at candidate boundaries and a retry may not re-read
+ * hot config (RFC §6), so every dispatch under one candidate shares this record verbatim. Records
+ * that ARE minted after a dispatch exists — `TranslationObservation`, `AuthorityIdentity` — carry
+ * their own `dispatchId`, known at the moment they are made.
  *
  * `parentCandidateId` is a **mirrored foreign key, not a second source of truth**: the recorder owns
  * the parent edge (`beginCandidate({ parentCandidate })`), and History V3 already projects it as
@@ -77,7 +86,6 @@ export type LineageCause = "primary" | "hedge" | "fallback" | "continuation"
  */
 export type CandidateTranslationLineage = Readonly<{
   candidateId: CandidateHandle
-  dispatchId: DispatchHandle
   segmentId: SegmentId
   parentCandidateId?: CandidateHandle
   parentSegmentId?: SegmentId
@@ -89,7 +97,6 @@ export type CandidateTranslationLineage = Readonly<{
 
 export type CreateLineageInput = Readonly<{
   candidateId: CandidateHandle
-  dispatchId: DispatchHandle
   segmentId: SegmentId
   cause: LineageCause
   policy: PairTranslationPolicy
@@ -107,7 +114,6 @@ export type CreateLineageInput = Readonly<{
 export function createCandidateLineage(input: CreateLineageInput): CandidateTranslationLineage {
   return Object.freeze({
     candidateId: input.candidateId,
-    dispatchId: input.dispatchId,
     segmentId: input.segmentId,
     ...(input.parentCandidateId === undefined ? {} : { parentCandidateId: input.parentCandidateId }),
     ...(input.parentSegmentId === undefined ? {} : { parentSegmentId: input.parentSegmentId }),

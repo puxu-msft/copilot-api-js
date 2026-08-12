@@ -5,7 +5,7 @@ import {
   test,
 } from "bun:test"
 
-import type { CandidateHandle, DispatchHandle } from "../../../src/lib/context/model-operation-record"
+import type { CandidateHandle } from "../../../src/lib/context/model-operation-record"
 import type { TranslationConfigSnapshot } from "../../../src/lib/pipeline/semantic/config-snapshot"
 import type { ModelIdentity } from "../../../src/lib/pipeline/semantic/types"
 
@@ -98,7 +98,7 @@ describe("candidate lineage (RFC §6)", () => {
   })()
 
   test("a candidate is born without delivery authority", () => {
-    const lineage = createCandidateLineage({ candidateId: "c1" as CandidateHandle, dispatchId: "d1" as DispatchHandle, segmentId: asSegmentId("s1"), cause: "primary", policy })
+    const lineage = createCandidateLineage({ candidateId: "c1" as CandidateHandle, segmentId: asSegmentId("s1"), cause: "primary", policy })
 
     expect(lineage.deliveryAuthority).toEqual({ kind: "uncommitted" })
     expect(lineage.configSnapshotId).toBe(policy.configSnapshotId)
@@ -108,7 +108,6 @@ describe("candidate lineage (RFC §6)", () => {
   test("a descendant records its parent and cause", () => {
     const lineage = createCandidateLineage({
       candidateId: "c2" as CandidateHandle,
-      dispatchId: "d2" as DispatchHandle,
       segmentId: asSegmentId("s2"),
       cause: "continuation",
       policy,
