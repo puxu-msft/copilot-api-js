@@ -81,4 +81,3 @@ describe("translation config snapshot — a hot reload only reaches later reques
  *
  * 本文件此前有一条读 codec 源码文本的守卫（先查 `with()` 里手抄了没有，后改查有没有自建 `function makeEnvelope(`）。独立评审构造出反例证明它只守住某一种拼写：本地 builder 换个名字就能绕过且类型正确。守卫追不上合法写法时应当把不变量搬到行为层，而不是继续给正则加分支。
  */
-
