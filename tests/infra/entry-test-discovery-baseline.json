@@ -581,6 +581,7 @@
     "tests/pipeline/semantic/ledger-declare.unit.test.ts",
     "tests/pipeline/semantic/ledger-property.unit.test.ts",
     "tests/pipeline/semantic/ledger-terminal.unit.test.ts",
+    "tests/pipeline/semantic/lineage-driver-wiring.it.test.ts",
     "tests/pipeline/semantic/lineage-registry.unit.test.ts",
     "tests/pipeline/semantic/lineage.unit.test.ts",
     "tests/pipeline/semantic/model-identity.unit.test.ts",
