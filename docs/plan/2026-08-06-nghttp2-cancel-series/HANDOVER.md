@@ -278,7 +278,7 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 | A4-2 | `H2StreamDiagnostic` schema + `onTermination` 发射 + 经既有 `AttemptDiagnostic` 持久化 | **已实施**（2026-08-11，实现提交 `61acc9f0`，分支 `worktree-a4-h2-diagnostics`）。见下方「A4-2 实施记录」 |
 | A4-3 | `H2SessionDiagnostic`、session ring、GOAWAY code/lastStreamID/opaqueData、真实 PING ACK/RTT（不改 cadence、不据此关 session） | **已完成**（2026-08-11）：GOAWAY ledger 接线 `923dd4e6`、真实 PING ACK/RTT `6c8427f4`、session 身份 + settle 时采样 `f566f734`。见下方「A4-3 实施记录」 |
 | A4-4 | teardown barrier + `open → forcing → sealed` sink 状态机 + exactly-once `releaseStreamSlot()` | **已完成**（2026-08-11）：exactly-once slot `3173d29d`、teardown barrier `61731d34`、强制处置 `0ea9ba5f`、sink 状态机 + forced-session-dispose `49f52073`。见下方「A4-4 实施记录」 |
-| A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | 未开始 |
+| A4-5 | `EntrySummary.transportFailure` 紧凑分类 + `docs/API.md` 加性诊断字段说明 | **已完成**（2026-08-11，`03933f9b`）。见下方「A4-5 实施记录」 |
 
 **怎么重取这张表的状态**（三条都要跑，缺一会误判）：
 
@@ -387,6 +387,24 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 `docs/API.md`（端点 SSOT）已于 `f566f734` 补上这两个字段的说明与 ACK 解释边界。记在这里是因为**「诊断只进内部」这个说法本身是错的**，下一个人不该继续沿用它做判断。
 
 **未做、仍属 A4-5**：`EntrySummary.transportFailure`。（写这句时 teardown barrier、`open → forcing → sealed`、exactly-once `releaseStreamSlot()` 三项尚未开始，**现均已于 2026-08-11 完成**，见下方实施记录。）⚠️ **本节其后关于「`docs/API.md` 未改、未新增对外字段」的说法对 A4-3 已被证否**，见上面那条更正。
+
+### A4-5 实施记录（2026-08-11，已完成）—— A4 整体收口
+
+`03933f9b`。`EntrySummary` 新增可选 `transportFailure`：`{kind, h2SessionId?, rstCode?, localCancelSource?}`，由 `recordToEntrySummary` 从 dispatch 的 `transport.h2.*` 诊断归约而来。此前这些诊断只在 dispatch detail 里，**得先怀疑某条请求才找得到**；现在扫列表就能看见麻烦。
+
+**分类刻意保守。** `transport-error` 只表示「传输层报了错」，**不表示「对端 reset 了我们」**——本轮系列实测已确认：本地 abort、真 peer RST_STREAM(CANCEL)、连接已死，三者**都带 `rstCode: 8`**，流这一层分不开。编一个凶手出来会在 UI 上显得言之凿凿。
+
+**优先级同理**：forced-teardown > local-cancel > transport-error > session-goaway。强制拆除压过引发它的那次终止（「这条流不得不被拆掉」是更强的真陈述）；自己发起的取消压过裸错误（那是唯一按构造可观测的成因）。
+
+**缺失刻意保持歧义**并写进文档：干净结束没有该字段，早于 A4 诊断的历史请求也没有。**编一个值出来等于给所有历史请求发了张假的健康证明。**
+
+⚠️ **命名撞车，被守卫抓到。** 我最初用 `kind: "stream-error"`，触发 `package-boundaries` 的「stream-error outcome 只能在 `streamErrorOutcome` 单点铸造」守卫——`stream-error` 已是流水线的一种 outcome。**改名而非豁免**：同一个词两种含义，是代码库开始自欺的起点。守卫做的正是它该做的事。
+
+**范围按计划收住**：**未**新增 query 过滤维、**未**加 SQL 投影列（故暂不能按它做 stats 分组——加列要迁移，超出 A4-5 表述）。这一条是**显式暂缓、非静默略过**：若需按 `transportFailure` 分组统计，需补 `SUMMARY_PROJECTION_FIELDS` 列 + 迁移 + 回填。
+
+**验收**：`bun run typecheck` 绿、改动文件 eslint 干净、`bun run test:backend` **7935 pass / 0 fail**。变异对照：把「forced-teardown 优先」那一支去掉，**恰好且仅有**优先级那条测试转红。
+
+**A4 至此全部完成**（A4-1…A4-5）。计划 §A5「文档、结构复核与独立评审」仍未做：独立 `gpt-souls:reviewer` 代码评审、`verifier` 从 API/History schema 独立推导 oracle、以及 merged-state review——按本节验收边界，这三道在 **A4 最终 commit** 上闭合，尚未派。
 
 ### A4-4 实施记录（2026-08-11，已完成）
 
