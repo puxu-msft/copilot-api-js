@@ -1615,3 +1615,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：① 先给它一个真读者（`/api/status` 或 diagnostic 端点暴露 `getReaperDiagnostics()`）；② 再决定 tick 的宿主——可以是一个独立的、名字诚实的 suspend probe（固定 cadence，与任何 deadline 无关），也可以挂在既有的某个周期任务上（`history/v3/maintenance` 的 tick 是现成的候选，省一个 timer）；③ 顺带把模块与 API 从 `reaper-*` 改名成它实际在做的事——reaper 已经不存在了，这批名字现在全是名实不符。
 - **触发条件（值得做）**：① 又遇到一次「timer 集体迟到 / 请求龄读数异常」而分不清是 suspend 还是事件循环阻塞；② 有人要做进程健康度面板，需要 event-loop delay 之外的挂起证据；③ 任何人下次动这个模块时顺手连读者一起补。
 - **发现方**：两档 deadline 重整（本轮）删 reaper 时的调用点盘查——`git grep startReaper` 当时还漏看了 `packages/` 下的生产调用点，第二次全仓 grep 才发现 `packages/cli/src/start.ts` 里有一个。
+
+## bundled 默认下没有任何「整请求超龄」终止者（2026-08-11 合并前评审提出，部分驳回、部分留作待决）
+
+- **评审原话与部分驳回**：独立评审判定「删除 reaper 后，旧 `stale_request_max_age>0` 配置的『整个请求到龄必终止』能力被删除而非等价迁移」。**这半句不成立，已驳回**：`src/lib/config/compat.ts` 有两条 `renameLeaf`，把顶层 `stale_request_max_age` 与 `timeouts.stale_request_max_age` 两种拼写都迁移到 `timeouts.client_request_deadline`，实测覆盖在 `tests/config/config-compat.unit.test.ts`（「timeouts.stale_request_max_age → timeouts.client_request_deadline」等三条）。设过正值的旧配置**能力完整保留**，只是换了执行机制（精确 timer 取代周期扫描）。评审未查 compat 层。
+- **但另一半成立，登记在此**：bundled 默认 `client_request_deadline: 0`，所以**开箱状态下没有任何 request-wide 终止者**。`upstream_request_deadline: 1200` 只管单次尝试；一个反复超时→重试的请求，其总寿命上界等于「retry 预算 × 1200s」而非一个直接的墙钟上限，且 retry 预算本身可能因其它成因被消耗。
+- **为何不自行改默认值**：`client_request_deadline: 0` 是**用户裁决**（never-false-kill：`response_header`／`stream_idle` 在静默上触发且无重试可用，`client_request_deadline` 跨所有重试、烧完就没有第二次机会），有机器守卫 `tests/config/never-false-kill-legit-thinking.unit.test.ts` 钉住。改它属 A 级——不由主会话裁决。
+- **触发条件（值得重议）**：① 真实出现一条请求靠反复重试长时间不终结；② 用户希望给「整请求」也设一个默认上界；③ retry 预算的语义改变，使「预算 × attempt deadline」不再是有效的间接上界。
+- **发现方**：2026-08-11 合并前对抗评审（实现正确性视角，C4）。主会话驳回其「能力被删除」的定性并给出 compat 证据，保留其「默认无 request-wide 终止者」的观察。

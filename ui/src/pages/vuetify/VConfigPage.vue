@@ -377,7 +377,7 @@ function nestedField<
             <ConfigNumber
               v-model="upstreamRequestDeadline"
               label="Upstream Request Deadline"
-              description="Abort ONE upstream attempt that outlives this. Retry/hedge budget is untouched."
+              description="Abort ONE upstream attempt that outlives this; the request retries, spending one retry."
               suffix="s"
               :min="0"
             />

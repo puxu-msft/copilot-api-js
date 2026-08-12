@@ -782,7 +782,8 @@ export interface State {
    * is the bundled default so legitimate unbounded thinking is never terminated by elapsed time.
    *
    * Sibling knob: {@link upstreamRequestDeadline} caps ONE upstream attempt, leaving the retry
-   * budget intact. This one is the outer bound; that one is the inner bound.
+   * budget — it spends one retry like any transport failure. This one is the outer bound; that one is
+   * the inner bound, and the outer one is what ultimately terminates a request that keeps timing out.
    */
   readonly clientRequestDeadline: number
 
@@ -813,8 +814,10 @@ export interface State {
    * Seconds shutdown waits AFTER abandoning the drain before hard-exiting. 0 = wait forever.
    *
    * This is the escape from the persistence barriers themselves — equivalent to the third signal,
-   * so it exits WITHOUT flushing. It only starts counting once {@link shutdownGracefulWait} has
-   * expired, so the total bound a supervisor must outlast is the SUM of the two.
+   * so it exits WITHOUT flushing. It starts counting when the drain is ABANDONED — normally that is
+   * {@link shutdownGracefulWait} expiring, but an operator's second termination signal starts it too
+   * (cancelling the graceful timer). The SUM of the two is therefore the WORST case a supervisor must
+   * outlast, not a fixed schedule.
    */
   readonly shutdownAbortWait: number
 
@@ -1662,7 +1665,16 @@ export function setGenerationRuntimeConfig(
 
 export function setTimeoutConfig(
   patch: Partial<
-    Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "clientRequestDeadline" | "upstreamRequestDeadline" | "shutdownGracefulWait" | "shutdownAbortWait" | "modelRefreshInterval">
+    Pick<
+      MutableState,
+      | "responseHeaderTimeout"
+      | "streamIdleTimeout"
+      | "clientRequestDeadline"
+      | "upstreamRequestDeadline"
+      | "shutdownGracefulWait"
+      | "shutdownAbortWait"
+      | "modelRefreshInterval"
+    >
   >,
 ): void {
   const transportChanged =

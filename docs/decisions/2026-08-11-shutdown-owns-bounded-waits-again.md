@@ -28,7 +28,7 @@
 ## 两个界的确切语义
 
 - **`graceful_wait`（600s，0 = 无限等）**：从**认领 lifecycle 那一刻**起计，而不是从 drain 循环起计。这是刻意的——`drainAdmissionHandoffs` 与交接 freeze 跑在 drain 之前、同样无上界，且**此前没有任何一档能够到它们**（第二档在那里发现 `activeDrainSource` 为 null，只能如实报告自己帮不上）。到点执行无损放弃排空。
-- **`abort_wait`（60s，0 = 无限等）**：**从 `graceful_wait` 到点才开始计**，逃的是持久化 barrier 本身，因此**不落盘**——语义等同第三档信号。
+- **`abort_wait`（60s，0 = 无限等）**：**从「排空被放弃」那一刻开始计**。通常那是 `graceful_wait` 到点；**运维手动按第二次终止信号同样立刻启动它**（并取消尚未到点的 `graceful_wait`）。逃的是持久化 barrier 本身，因此**不落盘**——语义等同第三档信号。因此 `graceful + abort` 是**最坏情形**的总界，不是固定时刻表。
 - **顺序不变量**：进程自己的总界 = `graceful_wait + abort_wait`（当前 660s）。任何进程管理器的上限必须**大于**这个和，否则会在无损 flush 中途 SIGKILL、正好毁掉这一档存在的意义。`contrib/systemd` 的 `TimeoutStopSec` 已由 `infinity` 改为 `900`；pm2 的 `kill_timeout` 保留 1300s 作为大余量兜底。
 - **操作者路径也继承 `abort_wait`**：手动按第二次 Ctrl+C 之后同样武装它。放弃等待请求并不等于同意无限等待 barrier，而在此之前，唯一的出路是一次可能根本没人在场去按的第三次信号。
 - **已武装的界不随热重载移动**：值在认领 lifecycle 时读一次。运维问「最多还要多久」，得到的答案不该在脚下变。
