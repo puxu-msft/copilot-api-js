@@ -7,12 +7,14 @@ import type {
 import type {
   //
   EntrySummary,
+  EntryTransportFailure,
   HistoryEntry,
   HistoryState,
   ModelInfo,
   QueryOptions,
   SseEventRecord,
 } from "~/lib/history/types"
+import type { TransportTerminationSnapshot } from "~/lib/transport/http2-observation-types"
 import type {
   //
   CopilotAnnotations,
@@ -453,12 +455,42 @@ export function recordToHistoryEntry(
   }
 }
 
+/**
+ * Reduce a dispatch's `transport.h2.*` diagnostics to one headline for list display.
+ *
+ * Order matters and encodes what is actually knowable. A forced teardown is reported first because it is the strongest statement — we gave up and tore the stream down — and it would be misleading to headline the termination that provoked it instead. `local-cancel` comes next because our own cancel is the one cause observable by construction. Only then a stream error, which is reported as exactly that: the transport raised an error, NOT "the peer reset us", because a local abort, a real peer RST_STREAM(CANCEL) and a dead connection all carry rstCode 8 and cannot be told apart from the stream alone (measured, exp/h2-termination-observability/).
+ *
+ * A clean end yields `undefined`: this field exists to flag trouble, not to annotate every request.
+ */
+function transportFailureFromDiagnostics(record: ModelOperationRecord): EntryTransportFailure | undefined {
+  const forcedKinds = new Set(["transport.h2.forced_session_dispose", "transport.h2.close_missing", "transport.h2.barrier_timeout"])
+
+  for (const dispatch of record.dispatches) {
+    const diagnostics = dispatch.diagnostics
+    const snapshot = diagnostics.find((d) => d.kind === "transport.h2.termination")?.data as TransportTerminationSnapshot | undefined
+    // `?? undefined` collapses the snapshot's explicit nulls so the rest only has to handle absence.
+    const h2SessionId = snapshot?.session?.sessionId
+    const rstCode = snapshot?.rstCode ?? undefined
+    const context = { ...(h2SessionId !== undefined && { h2SessionId }), ...(rstCode !== undefined && { rstCode }) }
+
+    if (diagnostics.some((d) => forcedKinds.has(d.kind))) return { kind: "forced-teardown", ...context }
+    if (snapshot === undefined) continue
+
+    const localCancelSource = snapshot.localCancel.source ?? undefined
+    if (localCancelSource !== undefined) return { kind: "local-cancel", localCancelSource, ...context }
+    if (snapshot.firstObservedSignal === "error" || snapshot.firstObservedSignal === "close-before-end") return { kind: "transport-error", ...context }
+    if (snapshot.goaway.availability === "observed-before-snapshot") return { kind: "session-goaway", ...context }
+  }
+  return undefined
+}
+
 export function recordToEntrySummary(
   record: ModelOperationRecord,
   stored: { pinned?: boolean; endedAt?: number; timingSource?: V3TimingSource } = {},
 ): EntrySummary {
   const entry = recordToHistoryEntry(record, stored)
-  return { ...toEntrySummary(entry), active: false, pinned: stored.pinned ?? false }
+  const transportFailure = transportFailureFromDiagnostics(record)
+  return { ...toEntrySummary(entry), active: false, pinned: stored.pinned ?? false, ...(transportFailure && { transportFailure }) }
 }
 
 export function recordMatchesQuery(record: ModelOperationRecord, options: QueryOptions & { operationKind?: string }): boolean {

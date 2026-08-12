@@ -309,6 +309,7 @@
     "tests/history/v3/transient-retry.unit.test.ts",
     "tests/history/v3/transport-evidence-migration.it.test.ts",
     "tests/history/v3/transport-evidence.it.test.ts",
+    "tests/history/v3/transport-failure-summary.unit.test.ts",
     "tests/history/worker/admission-shutdown.unit.test.ts",
     "tests/history/worker/admission-wiring.http.test.ts",
     "tests/history/worker/admission-ws.it.test.ts",

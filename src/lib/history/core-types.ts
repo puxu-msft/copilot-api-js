@@ -72,6 +72,33 @@ export interface SessionSummary {
   preview: string
 }
 
+/**
+ * Compact transport-level failure classification for list display and grouping.
+ *
+ * Additive and frequently absent: a request that ended cleanly has none, and so does every request that predates the A4 transport diagnostics. Absence therefore means "nothing to report OR not recorded", never "the transport was healthy".
+ *
+ * The full evidence stays in the dispatch's `transport.h2.*` diagnostics; this is only the headline.
+ */
+export interface EntryTransportFailure {
+  /**
+   * What the transport actually observed — deliberately NOT "who cancelled".
+   *
+   * `transport-error` is not narrowed to "the peer reset us", because that cannot be established from the stream alone: a local abort, a genuine peer RST_STREAM(CANCEL) and a dead connection all surface with `rstCode` 8, and only the presence of a stream error separates them — and only on some runtimes (measured, `exp/h2-termination-observability/`). Claiming a culprit here would be inventing one.
+   *
+   * Named `transport-error` rather than `stream-error` on purpose: the latter is an existing pipeline OUTCOME with a single-minting guard, and reusing the word here would give one term two meanings in one codebase.
+   */
+  kind: "local-cancel" | "transport-error" | "forced-teardown" | "session-goaway"
+  /**
+   * The h2 CONNECTION this ran on, so siblings that died together can be correlated.
+   *
+   * ⚠️ Not `EntrySummary.sessionId`, which is the client conversation. Two different identity domains.
+   */
+  h2SessionId?: string
+  rstCode?: number
+  /** Set only when the local side initiated the cancel, which is the one thing observable by construction. */
+  localCancelSource?: string
+}
+
 export interface EntrySummary {
   id: string
   operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
@@ -111,6 +138,8 @@ export interface EntrySummary {
   multiplier?: number
   previewText: string
   responsePreviewText: string
+  /** Absent when nothing went wrong at the transport, and also when the request predates A4 diagnostics. */
+  transportFailure?: EntryTransportFailure
 }
 
 export interface SummaryResult {

@@ -42,6 +42,7 @@ export type {
   //
   EndpointType,
   EntrySummary,
+  EntryTransportFailure,
   HistoryStats,
   QueryOptions,
   RequestLifecycleState,
