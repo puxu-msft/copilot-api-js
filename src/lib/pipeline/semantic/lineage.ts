@@ -12,6 +12,8 @@
  * one invariant that matters most (at most one `active` writer per request).
  */
 
+import type { CandidateHandle, DispatchHandle } from "~/lib/context/model-operation-record"
+
 import type { PairTranslationPolicy } from "./policy-resolver"
 import type { SegmentId } from "./types"
 
@@ -26,7 +28,7 @@ import type { SegmentId } from "./types"
 export type DeliveryAuthorityState =
   | Readonly<{ kind: "uncommitted" }>
   | Readonly<{ kind: "active"; epoch: number }>
-  | Readonly<{ kind: "transferred"; epoch: number; cause: "fallback" | "continuation"; toCandidateId: string }>
+  | Readonly<{ kind: "transferred"; epoch: number; cause: "fallback" | "continuation"; toCandidateId: CandidateHandle }>
   | Readonly<{ kind: "terminal"; epoch: number }>
   | Readonly<{ kind: "discarded" }>
 
@@ -39,11 +41,19 @@ export type DeliveryAuthorityState =
  */
 export type LineageCause = "primary" | "retry" | "hedge" | "fallback" | "continuation"
 
+/**
+ * `candidateId` / `dispatchId` reuse the **existing branded handles** rather than declaring a second
+ * id namespace of plain strings. RFC §6 names these fields abstractly, but the repository already
+ * mints them: `beginCandidate` (`dispatch-scheduler.ts:50`) issues the `CandidateHandle` that History
+ * V3 projects as `candidateId` (`history/v3/projection.ts:281`). A parallel `string` id here would be
+ * the "normalized-key bug recurring at many comparison sites" shape — and worse, `string` lets a
+ * dispatchId, a segmentId, or a candidateId be swapped for one another with no diagnostic.
+ */
 export type CandidateTranslationLineage = Readonly<{
-  candidateId: string
-  dispatchId: string
+  candidateId: CandidateHandle
+  dispatchId: DispatchHandle
   segmentId: SegmentId
-  parentCandidateId?: string
+  parentCandidateId?: CandidateHandle
   parentSegmentId?: SegmentId
   cause: LineageCause
   configSnapshotId: string
@@ -52,12 +62,12 @@ export type CandidateTranslationLineage = Readonly<{
 }>
 
 export type CreateLineageInput = Readonly<{
-  candidateId: string
-  dispatchId: string
+  candidateId: CandidateHandle
+  dispatchId: DispatchHandle
   segmentId: SegmentId
   cause: LineageCause
   policy: PairTranslationPolicy
-  parentCandidateId?: string
+  parentCandidateId?: CandidateHandle
   parentSegmentId?: SegmentId
 }>
 
