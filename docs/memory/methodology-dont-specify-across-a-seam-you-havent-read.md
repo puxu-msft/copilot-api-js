@@ -1,6 +1,6 @@
 ---
 name: methodology-dont-specify-across-a-seam-you-havent-read
-description: 在 plan/skill 里跨缝规定行为前必须读过缝的两侧，否则产出的是看起来权威、执行者物理上做不到的空指令
+description: 在 plan/skill/spec 里跨缝规定行为或字段形状前必须读过缝的两侧，否则产出两种缺陷——执行者物理上做不到的假指令，或跑得通却记下假话的错粒度字段
 metadata:
   type: feedback
 ---
@@ -14,6 +14,13 @@ metadata:
 4. **要求 owner「一并维护 legacy 字段」** —— owner 只持 `GenerationWireState`（`session.ts:46`），够不到 handler 持有的 `AnchorState`。**而我为修复它写的候选方案之一（mirror 写留在 injector wrapper 层）本身也不可执行**：那个 wrapper 只中介 open，11 个 close 站点不经过它。
 
 **四次的动机都是「把事情定死、消除歧义」**——动机是对的，但**不掌握定死所需的事实时，「定死」产出的比留白更坏**：留白会让实施者去查，假指令会让他照着做然后卡住，而且指令的权威外观会压制他的怀疑。
+
+**第二种形态：粒度缝——指令可执行，但执行的结果是假话**（2026-08-12，semantic bridge C2.2，一份 RFC 里一次撞出三处）。前四次的失效是「照做会卡住」，这一种更隐蔽：**照做完全跑得通，只是记下来的东西不成立**，没有任何报错。成因同源——按语义给字段起了抽象名字，却没去读**真正铸造这些 id 的那段代码**：
+- `cause: "retry"` 挂在 per-candidate 记录上，而 retry 是同一 candidate 下的新 **dispatch**（`dispatch-scheduler.ts` 在 `for(;;)` 里对同一 candidate 反复 `beginDispatch`）——这个值永远不会发生，却邀请写入方去记它。
+- `dispatchId` 挂在 per-candidate 记录上，而该记录随 candidate **出生**（那一刻没有任何 dispatch），且一个 candidate 拥有 N 个 dispatch——对每个重试过的 candidate 都是假话，却仍以权威语气呈现。
+- `cause` 与既有 `CandidateRole` 是同一根轴的两套词汇，三值重合、两端分歧；**而修这一条时我差点犯反方向的错**——把两个枚举直接判成别名，那会静默吞掉「post-commit fallback 今天没有对应 role」这个真实缺口。**粒度错配的修法本身极易过度合并。**
+
+**这三处不是新教训，是上面 How-to-apply 第一条第三问（「这个 id／对象在那一刻存在吗」）的一次失败应用**——问题不在判据没写，在写规格时根本没意识到自己正在跨缝定形状。所以判据要前移：**凡在规格里给一个 id、枚举或记录定字段，就已经是在跨缝定形状**，必须当场去读铸造方。
 
 **缝不只是代码缝**（2026-08-03 三个新实例，同一形状、不同介质，全部由外部证据打回、自审一次都没抓到）：
 5. **角色边界缝** —— 规则写「收尾时交给一个 agent 审」，而全局硬规则禁止 leaf executor 派 agent。我写指令时**默认自己是能派 agent 的那种会话**，于是给一部分执行者写了条物理上执行不了的指令。修法是补转交分支（义务转移、不消灭）。

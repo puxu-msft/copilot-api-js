@@ -37,7 +37,7 @@
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) → skill `editing-files-precisely` — assert 在写盘前→失败全丢而 commit 照跑；验证须针对新写入的字符串，`bash -n` 绿在未编辑文件上同样通过
 - [连续多轮「修复引入新回归且照绿」](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=改回原 bug 仍全绿即无裁决力；验收必须走真实 HTTP 入口
 - [plan 陈旧的两条机制：返工轮数 + 共享 master churn](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — ①返工型：按已知形态 grep 查不全、从 types.ts 逐签名出发、五类藏身处逐类过；②churn 型：写完到执行隔数日 master 前进数百提交，**行号锚点漂后仍指向看似合理的接缝**，故交未来会话的计划一律用符号锚点不用行号，并顺手吸收 churn 里新立的契约
-- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）
+- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 假指令比留白更坏；写形状前答三问（导出了吗·返回什么·那一刻存在吗）；**给 id／枚举／记录定字段也是跨缝定形状**，粒度错配跑得通却记假话，且修它极易过度合并成别名
 - [输出过滤会伪造失败](methodology-output-filter-fakes-a-failure.md) — `| rg`/`tail` 让退出码变成过滤器的且吞掉判据；要判成败就别过滤，嫌长先落盘再筛
 - [门写了但没人去执行它](methodology-gates-i-write-fail-at-the-execution-seam.md) → skill `making-a-gate-actually-fire` — 九形态+四问（谁在哪个未越过的时刻执行·判否回哪步·拿得到输入吗·可逆吗）；`&&` 是门而换行不是；对账到 diff 为空
 - [`--ff-only` 被拒别按成因清单对号入座](methodology-ff-only-refusal-is-not-a-conflict.md) — 读 in-progress 状态+`ls-files -u`+实际 stderr 分流；别把「工作区干净」当前置；`ls-tree` 第二列是类型不是 OID
