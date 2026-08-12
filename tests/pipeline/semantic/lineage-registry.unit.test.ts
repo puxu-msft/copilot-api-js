@@ -24,7 +24,6 @@ import type { TranslationConfigSnapshot } from "../../../src/lib/pipeline/semant
 
 import { makeEnvelope } from "../../../src/lib/pipeline/envelope"
 import { createCandidateLineageRegistry } from "../../../src/lib/pipeline/semantic/lineage-registry"
-import { asSegmentId } from "../../../src/lib/pipeline/semantic/types"
 import {
   //
   mockModel,
@@ -75,7 +74,6 @@ describe("candidate lineage registry (RFC §6, slice C2.2)", () => {
       candidate: C1,
       role: "primary",
       env: envelopeFor({ translationConfigSnapshot: snapshotWith({}) }),
-      segmentId: asSegmentId("s1"),
     })
 
     expect(outcome.kind).toBe("recorded")
@@ -99,19 +97,39 @@ describe("candidate lineage registry (RFC §6, slice C2.2)", () => {
     const registry = createCandidateLineageRegistry()
     const env = envelopeFor({ translationConfigSnapshot: snapshotWith({}) })
 
-    registry.register({ candidate: C1, role: "primary", env, segmentId: asSegmentId("s1") })
+    registry.register({ candidate: C1, role: "primary", env })
     const outcome = registry.register({
       candidate: C2,
       role: "recovery",
       env,
-      segmentId: asSegmentId("s2"),
       parentCandidate: C1,
-      parentSegmentId: asSegmentId("s1"),
     })
 
     expect(outcome.kind === "recorded" && outcome.lineage.cause).toBe("fallback")
     expect(outcome.kind === "recorded" && outcome.lineage.parentCandidateId).toBe(C1)
     expect(registry.recorded().map((lineage) => lineage.candidateId)).toEqual([C1, C2])
+  })
+
+  /**
+   * Segments are 1:1 with candidates today (RFC §6 opens a new candidate AND a new ledger segment in
+   * the same act), so they are derived rather than counted. What this pins is the part that would be
+   * silently wrong if the derivation drifted: a descendant's `parentSegmentId` must be its parent's
+   * OWN segment, not its own — get that backwards and every boundary in History points at itself.
+   */
+  test("a descendant's parent segment is the parent's segment, and distinct from its own", () => {
+    setStateForTests({ ghcApiBaseUrl: "", accountType: "individual" })
+    const registry = createCandidateLineageRegistry()
+    const env = envelopeFor({ translationConfigSnapshot: snapshotWith({}) })
+
+    registry.register({ candidate: C1, role: "primary", env })
+    registry.register({ candidate: C2, role: "continuation", env, parentCandidate: C1 })
+
+    const parent = registry.lineageOf(C1)
+    const child = registry.lineageOf(C2)
+    expect(child?.parentSegmentId).toBe(parent?.segmentId as never)
+    expect(child?.segmentId).not.toBe(parent?.segmentId as never)
+    // A candidate with no parent claims no parent segment, rather than pointing at itself.
+    expect(parent?.parentSegmentId).toBeUndefined()
   })
 
   /**
@@ -123,14 +141,13 @@ describe("candidate lineage registry (RFC §6, slice C2.2)", () => {
     setStateForTests({ ghcApiBaseUrl: "", accountType: "individual" })
     const registry = createCandidateLineageRegistry()
 
-    const noSnapshot = registry.register({ candidate: C1, role: "primary", env: envelopeFor(), segmentId: asSegmentId("s1") })
+    const noSnapshot = registry.register({ candidate: C1, role: "primary", env: envelopeFor() })
     expect(noSnapshot).toEqual({ kind: "out-of-scope", reason: "no-config-snapshot" })
 
     const notABridge = registry.register({
       candidate: C2,
       role: "primary",
       env: envelopeFor({ clientFormat: "gemini", translationConfigSnapshot: snapshotWith({}) }),
-      segmentId: asSegmentId("s1"),
     })
     expect(notABridge).toEqual({ kind: "out-of-scope", reason: "not-a-bridge-pair" })
 
@@ -145,8 +162,8 @@ describe("candidate lineage registry (RFC §6, slice C2.2)", () => {
     const registry = createCandidateLineageRegistry()
     const env = envelopeFor({ translationConfigSnapshot: snapshotWith({}) })
 
-    registry.register({ candidate: C1, role: "primary", env, segmentId: asSegmentId("s1") })
-    expect(() => registry.register({ candidate: C1, role: "hedge", env, segmentId: asSegmentId("s2") })).toThrow(/already registered/)
+    registry.register({ candidate: C1, role: "primary", env })
+    expect(() => registry.register({ candidate: C1, role: "hedge", env })).toThrow(/already registered/)
     expect(registry.lineageOf(C1)?.cause).toBe("primary")
   })
 
@@ -160,7 +177,6 @@ describe("candidate lineage registry (RFC §6, slice C2.2)", () => {
       candidate: C1,
       role: "primary",
       env: envelopeFor({ translationConfigSnapshot: snapshot }),
-      segmentId: asSegmentId("s1"),
     })
 
     expect(outcome.kind === "recorded" && outcome.lineage.policy.carrierFallback).toBe("strip")

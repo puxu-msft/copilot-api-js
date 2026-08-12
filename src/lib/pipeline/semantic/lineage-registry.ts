@@ -16,6 +16,7 @@ import type {
   CandidateHandle,
   CandidateRole,
 } from "~/lib/context/model-operation-record"
+import type { RequestContext } from "~/lib/context/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 
 import type {
@@ -28,6 +29,7 @@ import type { SegmentId } from "./types"
 import { createCandidateLineage } from "./lineage"
 import { bridgePairFor } from "./pair-identity"
 import { resolvePairPolicy } from "./policy-resolver"
+import { asSegmentId } from "./types"
 
 /**
  * Why a candidate may end up with no lineage. Both non-recorded arms are **stored**, not discarded:
@@ -58,10 +60,25 @@ export type RegisterCandidateInput = Readonly<{
   candidate: CandidateHandle
   role: CandidateRole
   env: RequestEnvelope
-  segmentId: SegmentId
   parentCandidate?: CandidateHandle
-  parentSegmentId?: SegmentId
 }>
+
+/**
+ * Segments are derived from the candidate, not allocated by a second counter, because **today they
+ * are 1:1**. RFC §6 has a fallback or continuation boundary create a new candidate *and* a new ledger
+ * segment in the same act, and §6's ledger rules forbid two hedge candidates from sharing a mutable
+ * ledger — so every candidate owns exactly one segment and no segment spans two candidates.
+ *
+ * `causeStartsNewSegment` is therefore about **boundaries**, not about allocation: a hedge has its own
+ * segment (every racer does) without declaring a boundary, because a race has no boundary to declare.
+ *
+ * If a boundary ever needs to land *without* opening a candidate, this derivation is the thing that
+ * breaks, and it breaks loudly — two boundaries in one candidate would collide on one id rather than
+ * silently interleave.
+ */
+function segmentOf(candidate: CandidateHandle): SegmentId {
+  return asSegmentId(`seg:${candidate}`)
+}
 
 export interface CandidateLineageRegistry {
   /** Resolve and store this candidate's lineage. Called once per candidate, at creation. */
@@ -89,11 +106,10 @@ export function createCandidateLineageRegistry(): CandidateLineageRegistry {
       kind: "recorded",
       lineage: createCandidateLineage({
         candidateId: input.candidate,
-        segmentId: input.segmentId,
+        segmentId: segmentOf(input.candidate),
         cause: CAUSE_BY_ROLE[input.role],
         policy: resolution.policy,
-        ...(input.parentCandidate !== undefined && { parentCandidateId: input.parentCandidate }),
-        ...(input.parentSegmentId !== undefined && { parentSegmentId: input.parentSegmentId }),
+        ...(input.parentCandidate !== undefined && { parentCandidateId: input.parentCandidate, parentSegmentId: segmentOf(input.parentCandidate) }),
       }),
     }
   }
@@ -122,4 +138,30 @@ export function createCandidateLineageRegistry(): CandidateLineageRegistry {
       return [...outcomes.values()].flatMap((outcome) => (outcome.kind === "recorded" ? [outcome.lineage] : []))
     },
   }
+}
+
+/**
+ * One registry per request, keyed on the request's `RequestContext` identity.
+ *
+ * **Why a side table rather than a field on `RequestContext` or `RequestScope`.** Both would work,
+ * and `RequestScope.translationConfigSnapshot` is precedent for the latter — but `src/lib/context/`
+ * currently has no import edge into `~/lib/pipeline` at all, and putting a semantic-bridge type in
+ * the core context types would open one. That is the same argument that moved this wiring off the
+ * generation coordinator: a protocol-neutral component should not learn the bridge's vocabulary just
+ * to carry its data.
+ *
+ * `RequestContext` is the right key rather than the coordinator, because the lineage is per-REQUEST:
+ * `createDriverCoordinator` runs more than once for a request whose continuation leg opens a new
+ * coordinator, and all of those legs share one ctx and must share one lineage record. Keying on the
+ * coordinator would silently split a continuation chain into unrelated halves.
+ */
+const byRequestContext = new WeakMap<RequestContext, CandidateLineageRegistry>()
+
+export function candidateLineageFor(ctx: RequestContext): CandidateLineageRegistry {
+  const existing = byRequestContext.get(ctx)
+  if (existing) return existing
+
+  const registry = createCandidateLineageRegistry()
+  byRequestContext.set(ctx, registry)
+  return registry
 }

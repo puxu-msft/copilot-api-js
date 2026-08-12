@@ -139,6 +139,7 @@ import {
   type ResponseRewrite,
 } from "./rewrite-registry"
 import { decideRoute } from "./router"
+import { candidateLineageFor } from "./semantic/lineage-registry"
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
  * selects the codec by prefix and constructs a driver per request.
@@ -690,7 +691,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       ...(deps.monotonicNow && { monotonicNow: deps.monotonicNow }),
       generationBudget,
     })
-    return createCandidateRuntime({
+    const runtime = createCandidateRuntime({
       role,
       ...(parentCandidate !== undefined && { parentCandidate }),
       ...(metadata !== undefined && { metadata }),
@@ -721,6 +722,18 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
         return createSession({ candidate, dispatch, env: processorEnv, responseRewrites, renderer })
       },
     })
+
+    // Record this candidate's translation lineage (RFC §6, slice C2.2). Deliberately inert: nothing reads the record yet, and C2.3 owns delivery-authority transfer — granting authority here would put two owners on the one invariant that matters most.
+    // The registry is keyed on `env.ctx` rather than on this coordinator because lineage is per-REQUEST: a continuation leg opens a NEW coordinator against the same ctx, and both halves of that chain belong to one record.
+    // Registration must follow `createCandidateRuntime`, which is where `beginCandidate` mints the handle this is keyed on. Out-of-scope requests (a non-bridge pair, or an envelope built outside the HTTP ingress) are stored as such rather than skipped, so "no policy by design" stays distinguishable from "this leg was never wired".
+    candidateLineageFor(env.ctx).register({
+      candidate: runtime.handle,
+      role,
+      env,
+      ...(parentCandidate !== undefined && { parentCandidate }),
+    })
+
+    return runtime
   }
   return createGenerationCoordinator({ env: initialEnv, createCandidate, generationBudget })
 }
@@ -804,7 +817,20 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
   }
 }
 
+/**
+ * Discriminates the compat handle namespace per recording port.
+ *
+ * A recording port is created per COORDINATOR, but a single request can build more than one — a
+ * continuation leg opens a fresh coordinator against the same `RequestContext`. Without this, the
+ * compat path's per-port counter restarts and the second coordinator re-mints `compat-candidate:1`,
+ * so two distinct candidates in one request share an id. The explicit path is unaffected: its
+ * handles come from the request-scoped recorder. Found by wiring a per-request table keyed on
+ * `CandidateHandle` (RFC §6 lineage) and watching it collide.
+ */
+let recordingPortSequence = 0
+
 function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): DispatchRecordingPort {
+  const port = ++recordingPortSequence
   let candidateSequence = 0
   let dispatchSequence = 0
   const candidateRoles = new Map<CandidateHandle, CandidateRole>()
@@ -823,7 +849,7 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
 
   return {
     beginCandidate(input) {
-      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
+      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${port}.${++candidateSequence}` as CandidateHandle)
       candidateRoles.set(handle, input.role)
       if (!explicit) fallbackCandidates.add(handle)
       return handle
@@ -836,7 +862,9 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
     beginDispatch({ candidate, reason, strategy: explicitStrategy, wire, env }) {
       const strategy = explicitStrategy ?? (reason === "initial" ? undefined : reason)
       const handle =
-        explicit ? ctx.beginGenerationDispatch({ candidate, ...(strategy && { strategy }) }) : (`compat-dispatch:${++dispatchSequence}` as DispatchHandle)
+        explicit ?
+          ctx.beginGenerationDispatch({ candidate, ...(strategy && { strategy }) })
+        : (`compat-dispatch:${port}.${++dispatchSequence}` as DispatchHandle)
       // eslint-disable-next-line @typescript-eslint/no-deprecated -- mock/legacy contexts intentionally exercise the temporary serial adapter until P9 removes it
       if (!explicit) ctx.beginAttempt({ ...(strategy && { strategy }) })
       const sample = selectSample(wire, env)
