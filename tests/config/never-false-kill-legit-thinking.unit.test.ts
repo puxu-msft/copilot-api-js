@@ -54,8 +54,9 @@ test("client_request_deadline stays disabled: it is the one bound nothing can re
 
 test("upstream_request_deadline ships at the ruled 1200s (attempt-scoped, so a false kill is retried)", () => {
   // Positive by user ruling 2026-08-11. It is defensible where the others are not BECAUSE it is
-  // attempt-scoped: firing it aborts one upstream attempt and leaves the retry/hedge budget intact,
-  // so a request cut short here gets another go rather than being lost.
+  // attempt-scoped: firing it aborts one upstream attempt rather than the request, so a request cut
+  // short here gets another go rather than being lost. It DOES spend one retry from the normal budget
+  // (`driver.ts` classifies it as retryable), which is what keeps a persistently slow upstream bounded.
   //
   // The honest cost, recorded so nobody has to rediscover it: a single generation that legitimately
   // needs more than 20 minutes on ONE attempt is restarted from scratch instead of finishing. The

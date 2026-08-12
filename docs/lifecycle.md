@@ -17,7 +17,7 @@
 | 操作者 | 按第二次 SIGINT／SIGTERM | 第 2 档：无损放弃排空，归因 `shutdown`／`operator-abandoned-drain` |
 | 配置 | `shutdown.graceful_wait`（bundled 600s，0 = 无限等） | 同上，但归因 `shutdown`／`graceful-wait-elapsed`——两者**刻意不同码**，事后要分得清是人放弃了还是界到了 |
 
-放弃排空之后还有第二个界：`shutdown.abort_wait`（bundled 60s，0 = 无限等），**从 graceful 到点才开始计**，逃的是持久化 barrier 本身，因此**不落盘**（等同第 3 档）。手动按第二次的操作者同样继承它——放弃等请求不等于同意无限等 barrier。
+放弃排空之后还有第二个界：`shutdown.abort_wait`（bundled 60s，0 = 无限等），**从「排空被放弃」那一刻开始计**——通常是 graceful 到点，**但运维手动按第二次也会立刻开始计**（那一刻 graceful 计时被取消）。它逃的是持久化 barrier 本身，因此**不落盘**（等同第 3 档）。所以 660s 是**最坏情形**的总界，不是一张固定时刻表。
 
 > ⚠️ **顺序不变量**：进程自己的总界 = `graceful_wait + abort_wait`（当前 **660s**）。进程管理器的上限必须**大于**它，否则会在无损 flush 中途 SIGKILL、正好毁掉这一档的意义。`contrib/systemd` 的 `TimeoutStopSec` 已由 `infinity` 改为 900。
 
@@ -204,12 +204,12 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 
 ### 两档请求 deadline（2026-08-11 重整）
 
-寿命上限分成**两档，各管各的作用域**，都由精确 `setTimeout` 强制、都以 `0` 为 bundled 默认（禁用），避免仅凭 wall-clock 误杀无上界的合法思考。
+寿命上限分成**两档，各管各的作用域**，都由精确 `setTimeout` 强制。**bundled 默认并不相同**：外层 `client_request_deadline` 为 `0`（禁用，避免仅凭 wall-clock 误杀无上界的合法思考），内层 `upstream_request_deadline` 为 **`1200` 秒**（用户 2026-08-11 裁决——它是 attempt 作用域，误杀会被重试，所以是四个墙钟终止器里唯一适合默认开启的）。
 
 | 档 | config 键 | state 字段 | 作用域 | 烧完的后果 |
 |---|---|---|---|---|
 | 外层 | `timeouts.client_request_deadline` | `state.clientRequestDeadline` | 一次**客户端请求**，自受理起计，重试与 hedge **都不重置** | 取消并 fail 整个请求 |
-| 内层 | `timeouts.upstream_request_deadline` | `state.upstreamRequestDeadline` | 一次**上游尝试**（一次物理 dispatch），每次尝试重新起算 | 只中止该次尝试，retry／hedge 预算不受影响 |
+| 内层 | `timeouts.upstream_request_deadline` | `state.upstreamRequestDeadline` | 一次**上游尝试**（一次物理 dispatch），每次尝试重新起算 | 只中止该次尝试、不终结整个请求；请求走正常重试路径，**会消耗一次重试预算** |
 
 - **外层**由 `manager.create` 武装、`onSettled` 清除、`unref`；到点走 `ctx.cancel(client_request_deadline)` → `reapInFlight()`（取消在飞上游）+ `fail()`（记终态）。
 - **内层**由 `createDispatchLifecycle` 武装（`src/lib/transport/dispatch-lifecycle.ts`），dispatch quiesce 时清除。到点**先用自己的 tagged error abort、再走 dispose**——顺序是承重的：`dispose → cancel` 只在信号未 abort 时才打标，反过来写会把成因盖成 `dispatch-cancel`，让一次尝试超时与 hedge loser 拆卸无法区分。

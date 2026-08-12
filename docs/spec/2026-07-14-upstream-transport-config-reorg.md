@@ -1,5 +1,7 @@
 # Spec：上游 transport 配置重组（按「请求生命周期 × 通信方向 × 协议能力」三轴归位）
 
+> **2026-08-11 键名订正（本文正文按当时状态写作，保留原样以存档）**：文中出现的 `stale_request_max_age` 与 `timeouts.request_deadline` **均已不再是有效配置键**。周期式 stale reaper 已删除，两者统一迁移为 `timeouts.client_request_deadline`（整个客户端请求、跨重试不重置）；另新增 attempt 作用域的 `timeouts.upstream_request_deadline`（bundled 1200s）。compat 层会自动迁移旧键并告警。裁决与完整语义见 [decisions/2026-08-11-shutdown-owns-bounded-waits-again.md](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md) 与 [lifecycle.md](../lifecycle.md)「两档请求 deadline」。
+
 - 状态：草案（待用户审 → 转 plan）
 - 日期：2026-07-14
 - 上位依据：ADR [docs/decisions/2026-07-12-per-model-idle-timeout-is-app-guard-only.md](../decisions/2026-07-12-per-model-idle-timeout-is-app-guard-only.md)（per-model 超时只作 app-guard、不碰 dispatcher）

@@ -233,8 +233,11 @@ timeouts:
   # gpt-5.5 (effort=high) has shown 266–462s zero-frame silent-reasoning gaps before a burst; this proves fixed positive bounds can kill valid requests, so the bundled config sets no override.
   stream_idle_overrides: {}
 
-  # 单次上游尝试的最大存活秒数（0 = 禁用）。烧完只中止这一次尝试，重试／hedge 预算不受影响。
-  # Max seconds ONE upstream attempt can live (0 = disabled). Firing aborts only that attempt; the retry/hedge budget is untouched.
+  # 单次上游尝试的最大存活秒数（0 = 禁用）。烧完只中止这一次尝试、不直接终结整个请求；请求随后走**正常重试路径**，因此**会消耗一次重试预算**（与任何 transport 失败一样）。
+  # Max seconds ONE upstream attempt can live (0 = disabled). Firing aborts only that attempt rather than the whole request; the request then takes the NORMAL retry path and therefore DOES consume one retry (exactly as any transport failure does).
+  #
+  # 消耗预算是有意的：不消耗的话，一个持续超时的上游会被无限重试，请求反而失去上界。
+  # Consuming the budget is deliberate: if it did not, a persistently slow upstream would be retried forever and the request would lose its bound entirely.
   #
   # 与另外两个上游守卫互补：response_header 只管首字节前，stream_idle 只管帧间空档，两者都拦不住「一直滴水但永不结束」的尝试。
   # Complements the two phase-scoped guards: response_header covers only the pre-header wait and stream_idle only the gap between frames — neither bounds an attempt that trickles forever.
@@ -265,9 +268,10 @@ shutdown:
   # 放弃排空之后、硬退出之前再等的秒数（0 = 无限等）。它逃的正是持久化 barrier 本身，所以**不落盘**。
   # Seconds to wait AFTER abandoning the drain before hard-exiting (0 = wait forever). This escapes the persistence barriers themselves, so it exits WITHOUT flushing.
   #
-  # ⚠️ 顺序不变量：abort_wait 从 graceful_wait 到点才开始计，所以进程管理器要撑过的是**两者之和**
+  # ⚠️ 顺序不变量：abort_wait 在「排空被放弃」那一刻开始计——通常是 graceful_wait 到点，**但运维手动按第二次
+  # Ctrl+C 也会立刻开始计**（那一刻 graceful_wait 被取消）。所以进程管理器要撑过的是**两者之和**
   # （当前 660s）。contrib/systemd 的 TimeoutStopSec 与 pm2 的 kill_timeout 都必须大于它。
-  # Ordering invariant: abort_wait only starts counting once graceful_wait expires, so a supervisor must outlast the SUM (currently 660s).
+  # Ordering invariant: abort_wait starts counting when the drain is ABANDONED — normally that is graceful_wait expiring, but an operator's second Ctrl+C starts it too (and cancels graceful_wait). A supervisor must outlast the SUM (currently 660s), which is the worst case.
   abort_wait: 60
 
 # ============================================================================

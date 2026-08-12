@@ -1138,7 +1138,8 @@ export const TimeoutsConfigSchema = z
     /**
      * Hard total-duration deadline (seconds) for ONE upstream attempt, enforced by a per-dispatch
      * timer. Restarts every attempt, so firing it aborts only that attempt and leaves the retry /
-     * hedge budget intact. Complements `response_header` (pre-header only) and `stream_idle` (gap
+     * hedge budget — the retried attempt spends one, as any transport failure would. Complements
+     * `response_header` (pre-header only) and `stream_idle` (gap
      * between frames only), neither of which bounds an attempt that trickles bytes forever.
      * 0 = disabled and is the bundled default.
      */

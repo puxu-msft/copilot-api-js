@@ -362,6 +362,20 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   if (shutdownPhase === "stopped") return
   if (shutdownPhase !== "idle" && shutdownPhase !== "stopping") return shutdownCompletion.promise
 
+  try {
+    await runGracefulShutdown(signal, deps)
+  } finally {
+    // EVERY exit path must disarm, not just the finalize one. `armShutdownWaits` fires before the
+    // pre-drain awaits (`drainAdmissionHandoffs`, the handoff freezes, the drain loop itself), and
+    // a reject from any of those leaves this function without ever reaching the inner try/finally
+    // around `finalize()`. A timer that outlives its shutdown is not inert: `graceful_wait` would
+    // call `abandonDrain()` against a stale drain source, and `abort_wait` would `process.exit` a
+    // process that has already given up shutting down — or, in tests, take the runner with it.
+    clearShutdownWaitTimers()
+  }
+}
+
+async function runGracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
   const tracker: ShutdownDrainSource = deps?.tracker ?? {
     // Drain waits on the OPERATION/finalization registry, not the visible logical-settle registry.
     // A settled request remains here through orphan settle-before work (fetch/backoff/response pump),
@@ -692,9 +706,7 @@ function writeEmergencyNoThrow(message: string): void {
  * "did a human give up, or did the configured bound elapse?". Those are different events and must
  * not share a label (`abort-provenance-tag-at-source`).
  */
-type DrainAbandonmentTrigger =
-  | { kind: "operator"; signal: string }
-  | { kind: "graceful-wait"; seconds: number }
+type DrainAbandonmentTrigger = { kind: "operator"; signal: string } | { kind: "graceful-wait"; seconds: number }
 
 function drainAbandonmentAttribution(trigger: DrainAbandonmentTrigger): { code: string; message: string } {
   if (trigger.kind === "operator") {
