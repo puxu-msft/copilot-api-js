@@ -46,6 +46,7 @@ import { getRawModels } from "~/lib/models/cache"
 import { loadPersistedLimits } from "~/lib/models/calibration"
 import { normalizeForMatching } from "~/lib/models/model-name"
 import { startModelRefreshLoop } from "~/lib/models/refresh-loop"
+import { warmTokenizer } from "~/lib/models/tokenizer"
 import { initBus } from "~/lib/observability"
 import { toActiveRequestWire } from "~/lib/observability/active-request-wire"
 import { installConsolaRepublish } from "~/lib/observability/republish"
@@ -583,6 +584,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   notifyReady()
   // 裸手动接管：现在才向前任发交接信号（新进程已监听同端口，前任此刻停 accept 是安全的）。
   if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
+
+  // Build the tokenizer's merge table on its Worker thread now, rather than on whichever request arrives first. Measured at ~1.4s, and after a restart it always lands on a real user: the calibration sink counts tokens on the very first completed request.
+  // Deliberately after the server is listening and not awaited — delaying readiness to save a later request is backwards.
+  warmTokenizer()
 
   // Fire-and-forget the recoverable background backfills now that the server is
   // listening: the usage net-of-cache normalization first (fast, guarded by

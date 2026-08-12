@@ -39,6 +39,21 @@ export {
 } from "./tokenizer-core"
 
 /**
+ * Spawn the Worker and load its encoder before the first real request needs them.
+ *
+ * Measured: the first count in a process costs ~1443ms through the Worker and ~1188ms in-thread, almost all of it building the `o200k_base` merge table. Lazily, that whole cost lands on whichever request happens to be first — and after a restart the calibration sink counts tokens on the very first completed request, so it always lands on a real user.
+ *
+ * Fire-and-forget on purpose: the caller must not await it, because delaying readiness to save a later request is the wrong trade. If no Worker can be had, there is nothing to warm and this does nothing rather than loading the encoder on this thread.
+ */
+export const warmTokenizer = (): void => {
+  // The `async () => 0` is the in-thread branch, and returning without working is the correct behaviour there: if no Worker can be had there is nothing to warm, and loading the encoder on this thread would inflict the very stall this exists to avoid. Nobody reads the value.
+  const warming = runTokenizerJob({ op: "text", model: { capabilities: { tokenizer: "o200k_base" } } as Model, text: "warm" }, async () => 0)
+  void warming.catch(() => {
+    // Warming is an optimization and the client already logs its own failures. Failing a startup over it would be strictly worse than starting cold.
+  })
+}
+
+/**
  * Count tokens in a text string using the model's tokenizer.
  * This is a simple wrapper for counting tokens in plain text.
  */
