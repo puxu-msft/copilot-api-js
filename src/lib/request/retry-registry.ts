@@ -21,7 +21,7 @@
  * **deps are optional + throwMissing, never `?? []` (RFC §3.1)**: `betaProbe`/`resanitize` are optional
  * on {@link RetryStrategyDeps} because the CC-family direct legs (openai-cc / openai-responses direct)
  * never populate them — only entries gated to `targetEndpoint===MESSAGES` need them, and those FOUR legs
- * always populate both (`RequestState.betaProbe`/`resanitize`, RFC known WS-reverse-leg footnote aside —
+ * always populate both (`CandidateScope.betaProbe`/`resanitize`, RFC known WS-reverse-leg footnote aside —
  * that path throws earlier, at `reverseMapperHolder`, before strategies assembly is ever reached). The
  * consuming entries assert this invariant explicitly (`?? throwMissing(...)`) rather than silently
  * degrading to an empty candidate list / no-op resanitize — a wiring bug (appliesTo/config drifting from

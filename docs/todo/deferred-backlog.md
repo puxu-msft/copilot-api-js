@@ -2,6 +2,15 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `tests/history/v3/migrations-wiring.it.test.ts` 单跑必挂，只有分片跑才绿（2026-08-11，合并态评审撞到）
+
+- **根因 / 现状**：该文件**单独运行时三例必定 5s 超时并挂住 runner**（`initHistory drains an in-flight summary backfill…`、`the integrity migration invalidates legacy authority…`、`a non-empty injected MIGRATIONS array runs REAL DDL…`），带不带 `--isolate` 都一样，主检出与隔离 worktree 都复现。而 `bun run test:backend` 报 0 fail——它经 `scripts/parallel-test.ts` 做 LPT 分片，**同片文件共享 module context**，于是该文件靠同片兄弟初始化的 module-global 状态才跑得通。
+- **当前行为**：交付档（`test:backend`）绿，因此不阻塞任何人；代价是这三条测试的**判别力实际为零**——它们守的东西一旦坏掉，在分片模式下也未必红，而任何人想单跑该文件调试都会直接挂住。这是「只有被污染时才通过」的反向污染形态（既有 playbook `full-suite-red-classify-before-pollution-playbook` 讲的是正向）。
+- **不是本轮引入**：A/B 已做——在 `69bea997^`（三作用域重构之前）的 in-repo worktree 上跑同一文件，**同样三例、同样 5s 超时、同样 rc=124**。故与 envelope 重构无关，是既有缺陷。按 `evidence-weaker-than-it-looks`，「不是回归」只降优先级、不移出嫌疑名单。
+- **为何暂缓**：属 History V3 子系统，与本轮 pipeline envelope 任务结构不相交；且「挂住不退出」的根因需要系统性排查（谁没 drain、谁在等一个永不 settle 的 promise），不是顺手能改对的。
+- **理想架构 / 若做需改什么**：定位那三例各自等在什么上（建议 `gpt-souls:debugger`），让文件自带所需的初始化而非依赖同片兄弟；修好后应能 `bun test --isolate <该文件>` 独立绿。顺带值得查的同类：还有多少文件处在同样状态——判据是「逐文件单跑一遍，看谁挂」。
+- **触发条件**：① 有人要动 History V3 migrations / initHistory 时（会先撞上无法单跑调试）；② 想让 `test:backend` 的绿真正可依赖时。**发现方**：2026-08-11 合并态评审在隔离 worktree 撞到，主检出复现确认。
+
 ## 语义桥 `PairTranslationPolicy.serverTools` 的类型从未定义（2026-08-11，C2.2 执行时发现）
 
 - **根因 / 现状**：RFC §6 的 `PairTranslationPolicy` 列了 `serverTools: ServerToolCapabilities`，但 **`ServerToolCapabilities` 全仓只出现这一次**——就是该类型块里的这个引用本身，没有任何定义（复算：`rg -rn 'ServerToolCapabilities' --glob '*.ts' --glob '*.md' .`）。属**定义滞后**，不是 aspirational 引用：这个字段确有消费者预期（§7 的 server-tool 四格）。

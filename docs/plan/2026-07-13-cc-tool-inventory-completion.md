@@ -60,7 +60,7 @@ CC 客户端相关审计发现两处名单陈旧（`src/lib/anthropic/message-to
 ## 备注：未纳入本 plan 的相邻 findings（后续独立）
 
 - **F23**（vision 检测漏 tool_result 内嵌 image）：不同文件（request-preparation.ts），独立任务。
-- **F27**（tool-search 关时不剥孤儿 defer_loading）：行为改动，需 e2e 验证，独立任务。
+- **F27**（tool-search 关时不剥孤儿 defer_loading）：行为改动，需 e2e 验证，独立任务。**已于 2026-08-11 落地（commit `d11cec13`），修复面比此处描述更宽**——落在 `processToolPipeline` 的整个 non-deferred 分支，不只 tool-search 关时；详见审计文档 F27 节的「实施期修正」。
 - **F19/F20**（richest-data-flow 捕获）：较大设计，独立。
 - Agent/MultiEdit 是否补：需真实 CC 抓包（skill `client-proxy-e2e-testing`）确认后再定。
 
