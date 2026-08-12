@@ -1059,17 +1059,39 @@ describe("shutdown's own wall-clock bounds", () => {
     // must drive the same two request-level primitives the operator's second Ctrl+C drives, and
     // the shutdown must then complete normally so every persistence barrier still runs.
     const tracker = createMockTracker([{ id: "live", status: "executing" }])
-    const closeHistory = mock(async () => {})
+    // "Lossless" is a claim about EVERY durability barrier, so assert on every one of them. Watching
+    // only `closeHistory` would let an implementation that skipped Telemetry, Diagnostics, the
+    // finalization join or the completion publish pass as lossless — the exact shape this bound is
+    // supposed to be distinguishable from.
+    const barriers: Array<string> = []
+    const record = (name: string) => mock(async () => void barriers.push(name))
+    const drainFinalizations = record("finalizations")
+    const drainAdmission = record("history-admission")
+    const closeHistory = record("history")
+    const closeTelemetry = record("telemetry")
+    const closeDiagnostics = record("diagnostics")
+    const publishStopped = record("stopped-publish")
 
     await gracefulShutdown(
       "SIGTERM",
-      createNoopDeps({ tracker, shutdownHistoryFn: closeHistory, gracefulWaitSec: 0.05, abortWaitSec: 0, exitFn: mock((_code: number) => {}) }),
+      createNoopDeps({
+        tracker,
+        drainModelOperationFinalizationsFn: drainFinalizations,
+        drainHistoryAdmissionFn: drainAdmission,
+        shutdownHistoryFn: closeHistory,
+        shutdownRequestTelemetryFn: closeTelemetry,
+        shutdownDiagnosticLoggingFn: closeDiagnostics,
+        publishStoppedFn: publishStopped,
+        gracefulWaitSec: 0.05,
+        abortWaitSec: 0,
+        exitFn: mock((_code: number) => {}),
+      }),
     )
 
     expect(tracker._reapInFlight.mock.calls.map((call) => call[0])).toEqual(["live"])
     expect(tracker._fail.mock.calls.map((call) => call[0])).toEqual(["live"])
-    // Lossless: the run reached finalize rather than exiting out from under it.
-    expect(closeHistory).toHaveBeenCalledTimes(1)
+    // Every barrier ran, exactly once, in the documented order — not merely "History was touched".
+    expect(barriers).toEqual(["finalizations", "history-admission", "history", "telemetry", "diagnostics", "stopped-publish"])
     expect(getShutdownPhase()).toBe("stopped")
   })
 
@@ -1101,23 +1123,59 @@ describe("shutdown's own wall-clock bounds", () => {
 
   test("abort_wait hard-exits after the drain was abandoned, and only counts from THEN", async () => {
     // `abort_wait` bounds the persistence barriers, which is why it exits without flushing. It
-    // starts at graceful expiry, so the total a supervisor must outlast is the SUM of the two.
+    // starts when the drain is abandoned, so the SUM is the worst case a supervisor must outlast.
     const exitFn = mock((_code: number) => {})
     // Never releases: `fail()` cannot free it, so the drain stays held and finalize is never reached
     // — precisely the wedge shape `abort_wait` exists to escape.
     const tracker = createMockTracker([{ id: "wedged", status: "executing", settled: true, releasesOnSettle: false }])
 
-    const shutdown = gracefulShutdown("SIGTERM", createNoopDeps({ tracker, gracefulWaitSec: 0.05, abortWaitSec: 0.05, exitFn }))
+    // 60ms graceful + 60ms abort. The three probes below are what give this test its discriminating
+    // power: a two-point check (before 60, after 120) would ALSO pass an implementation that armed
+    // `abort_wait` at shutdown start instead of at graceful expiry — that bug shortens the real bound
+    // by a whole graceful window, and the 90ms probe is the only one that sees it.
+    const shutdown = gracefulShutdown("SIGTERM", createNoopDeps({ tracker, gracefulWaitSec: 0.06, abortWaitSec: 0.06, exitFn }))
 
-    // Before graceful expiry + abort window, nothing has exited.
     await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(exitFn).not.toHaveBeenCalled() // t≈30ms: graceful has not even expired
+
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // t≈90ms: graceful expired at 60, so abort is armed but its own 60ms window is only half spent.
+    // An implementation that started abort at t=0 would already have exited here.
     expect(exitFn).not.toHaveBeenCalled()
 
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(exitFn).toHaveBeenCalledWith(143) // SIGTERM's forced code, same as the third signal
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(exitFn).toHaveBeenCalledWith(143) // t≈210ms: SIGTERM's forced code, same as the third signal
 
     tracker._clearRequests()
     await shutdown
+  })
+
+  test("a reject BEFORE the drain still disarms both bounds — a timer must never outlive its shutdown", async () => {
+    // Regression for a real defect (found in review): the bounds are armed before the pre-drain
+    // awaits, but the only `finally` that cleared them wrapped `finalize()` — which those awaits
+    // never reach when they reject. The leaked timer is not inert: `abort_wait` would `process.exit`
+    // a process that already gave up shutting down, and in tests it takes the runner with it.
+    const exitFn = mock((_code: number) => {})
+    const boom = new Error("admission handoff drain failed")
+
+    await expect(
+      gracefulShutdown(
+        "SIGTERM",
+        createNoopDeps({
+          drainHistoryAdmissionHandoffsFn: async () => {
+            throw boom
+          },
+          gracefulWaitSec: 0.05,
+          abortWaitSec: 0.05,
+          exitFn,
+        }),
+      ),
+    ).rejects.toThrow("admission handoff drain failed")
+
+    // Well past graceful (50ms) + abort (50ms): had either timer survived the reject, it would have
+    // fired by now. This is the whole assertion — a leaked timer is silent until it acts.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(exitFn).not.toHaveBeenCalled()
   })
 
   test("an operator who abandons the drain inherits the abort bound instead of waiting forever", async () => {

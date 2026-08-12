@@ -49,8 +49,9 @@ export interface DispatchLifecycleOptions {
   /**
    * Wall-clock cap for this ONE upstream attempt (`timeouts.upstream_request_deadline`, ms).
    * 0/undefined = disabled and nothing is armed. On fire the dispatch is aborted with an
-   * `upstream-request-deadline` cause and torn down like any other disposal — the owning
-   * candidate's retry/hedge budget is untouched, so this bounds the attempt, not the request.
+   * `upstream-request-deadline` cause and torn down like any other disposal. It bounds the ATTEMPT,
+   * not the request: the driver classifies it as retryable, so the request continues — spending one
+   * retry from the same budget any transport failure spends.
    */
   readonly deadlineMs?: number
 }

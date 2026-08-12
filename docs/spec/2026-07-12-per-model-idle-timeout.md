@@ -1,5 +1,7 @@
 # Spec：per-model 流超时（stream idle + response header timeout override）
 
+> **2026-08-11 键名订正（本文正文按当时状态写作，保留原样以存档）**：文中出现的 `stale_request_max_age` 与 `timeouts.request_deadline` **均已不再是有效配置键**。周期式 stale reaper 已删除，两者统一迁移为 `timeouts.client_request_deadline`（整个客户端请求、跨重试不重置）；另新增 attempt 作用域的 `timeouts.upstream_request_deadline`（bundled 1200s）。compat 层会自动迁移旧键并告警。裁决与完整语义见 [decisions/2026-08-11-shutdown-owns-bounded-waits-again.md](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md) 与 [lifecycle.md](../lifecycle.md)「两档请求 deadline」。
+
 > **实施状态（2026-07-12）**：已落地 master。P1 d7883b05 / P2 b21b10ea / P3 c72e6f31 / P4a e8112c82 / P4b(ADR+守卫)。handler setStreamTimeouts 调用点随并发 commit 00f2a38a 落地（shared-worktree git-add sweep）。**2026-08-08 后续裁决：**本 spec 的 resolver、hot reload、per-model map 与 app-guard-only 架构继续有效，但 bundled 正超时默认已由 `never-false-kill-legit-thinking` 取代为全 `0`；下文出现的 300/600 与 `gpt-5.5:600` 是历史设计快照，不再是当前默认值。
 
 - 状态：草案 v2（并入一轮对抗审查 + coordinator 亲手核验：改正 undici backstop 假前提 BLOCKER、内置默认机制 H1、config schema 集成缺口 H3、读点行号漂移；用户定 D1/D2/D4）

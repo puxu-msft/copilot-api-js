@@ -1,5 +1,7 @@
 # Spec: 反应式学习记录 生命周期 + 查看/编辑页面
 
+> **2026-08-11 键名订正（本文正文按当时状态写作，保留原样以存档）**：文中出现的 `stale_request_max_age` 与 `timeouts.request_deadline` **均已不再是有效配置键**。周期式 stale reaper 已删除，两者统一迁移为 `timeouts.client_request_deadline`（整个客户端请求、跨重试不重置）；另新增 attempt 作用域的 `timeouts.upstream_request_deadline`（bundled 1200s）。compat 层会自动迁移旧键并告警。裁决与完整语义见 [decisions/2026-08-11-shutdown-owns-bounded-waits-again.md](../decisions/2026-08-11-shutdown-owns-bounded-waits-again.md) 与 [lifecycle.md](../lifecycle.md)「两档请求 deadline」。
+
 - 状态: Draft（待实现）
 - 日期: 2026-07-08
 - 归属: 本项目 spec（docs/spec/），路线图挂在 History/管理面板 + feature-negotiation 子系统
