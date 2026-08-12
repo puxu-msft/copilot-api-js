@@ -48,7 +48,7 @@ function buildContextStub(r: FakeRequest): RequestContext {
 export function createMockTracker(initialRequests: Array<FakeRequest> = []) {
   let requests = initialRequests.map(buildContextStub)
 
-  // Shared spies for the request-level termination primitives that the stale reaper, `timeouts.request_deadline`, and shutdown's drain abandonment all drive.
+  // Shared spies for the request-level termination primitives that the stale reaper, `timeouts.client_request_deadline`, and shutdown's drain abandonment all drive.
   // The stub above deliberately omits most of RequestContext, but these two MUST be mirrored: production's `abandonDrain` calls them, and a stub without them sends that call into a catch block — the test would then go green having exercised nothing (`fake-must-mirror-real-protocol`).
   const reapInFlight = mock((_id: string) => {})
   const fail = mock((_id: string, _model: string, _error: unknown, _opts?: unknown) => {})

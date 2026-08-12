@@ -60,7 +60,6 @@ test("an accepted rate-limited request completes during shutdown drain", async (
     closeTokenRuntimeFn: async () => {},
     closeAllClientsFn: () => {},
     getClientCountFn: () => 0,
-    contextManager: { stopReaper: () => {} },
     drainModelOperationFinalizationsFn: async () => {},
     shutdownHistoryFn: async () => {},
     shutdownRequestTelemetryFn: async () => {},

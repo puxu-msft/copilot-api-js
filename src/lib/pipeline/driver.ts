@@ -1142,7 +1142,19 @@ async function maybeRunHedgedResponseSink(
         try {
           next = await iterator.next()
         } catch (error) {
-          return streamErrorOutcome(error, env, responseFailureSource(error))
+          // Same post-terminal teardown as the unhedged loop below: these frames went to the REAL
+          // client sink (writeWinnerFrame), so once the winner reached its terminal the wire holds a
+          // complete response. `client-abort` is not classified here (the iterator pull is upstream-
+          // side), so no abort can be swallowed by this gate.
+          const source = responseFailureSource(error)
+          if (isPostTerminalTeardown(source, selected.processor.responseOpts)) {
+            consola.warn(
+              `[driver] hedge winner transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            binding.coordinator.releaseCandidate(selected.candidate)
+            return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+          }
+          return streamErrorOutcome(error, env, source)
         }
         if (next.done) {
           liveDrained = true
@@ -1241,6 +1253,32 @@ async function writeWinnerFrame(sink: ClientSink, frame: ClientFrame): Promise<v
  */
 function responseFailureSource(error: unknown): "upstream-transport" | "codec-render" {
   return isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
+}
+
+/**
+ * The upstream tore the transport down AFTER the response already reached its terminal on the
+ * client wire. Observed against GHC: `message_delta` + `message_stop`, then RST_STREAM(CANCEL)
+ * 21-44s later (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11).
+ *
+ * Such a teardown carries nothing the client can act on: it already holds a complete, terminated
+ * response. Minting `stream-error` makes the format handler append a SECOND terminal (an `error`
+ * frame after `message_stop`, breaking the one-terminal contract) and settle a successful turn as
+ * failed. Both live drain loops (unhedged and the hedge WINNER loop) share this one definition —
+ * the invariant is a property of the bytes already on the sink, not of which loop wrote them.
+ *
+ * Each conjunct is load-bearing:
+ *   - `upstream-transport` only: `downstream-sink` / `codec-render` / `delivery-owner` mean the
+ *     client's copy may be broken or incomplete.
+ *   - `sawMessageStop() === true` (not `!== false`): a caller that never wired the predicate must
+ *     NOT be treated as having reached a terminal.
+ *   - `sawUpstreamError() !== true`: `sawMessageStop()` is true for ANY terminal including a FAILED
+ *     one (`response.failed` sets `sawFailure`, candidate-response-session.ts:128-130).
+ *
+ * Callers must apply this AFTER the `client-abort` classification: a client that disconnects after
+ * the terminal is still an abort, not a completion.
+ */
+function isPostTerminalTeardown(source: ResponseFailureSource, opts: Pick<RunResponseOpts, "sawMessageStop" | "sawUpstreamError"> | undefined): boolean {
+  return source === "upstream-transport" && opts?.sawMessageStop?.() === true && opts.sawUpstreamError?.() !== true
 }
 
 function streamErrorOutcome(
@@ -1379,7 +1417,12 @@ async function runResponseSink(
     if (error instanceof LiveOwnerFailureError) return ownerFailureOutcome(error.failure, "close-anchor-before-real", env)
     if (isResponseCodecRenderError(error)) return streamErrorOutcome(error, env, "codec-render")
     // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
-    return streamErrorOutcome(error, env, responseFailureSource(error))
+    const source = responseFailureSource(error)
+    if (isPostTerminalTeardown(source, effectiveOpts)) {
+      consola.warn(`[driver] upstream transport torn down AFTER the terminal — settling complete: ${error instanceof Error ? error.message : String(error)}`)
+      return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
+    }
+    return streamErrorOutcome(error, env, source)
   } finally {
     if (!evaluating) sink.close?.()
   }
@@ -1843,11 +1886,16 @@ export async function runResponseBufferedSink(
       }
 
       // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).
-      // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
-      // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
-      // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
-      // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
-      const retryable = (failure ? classifyStreamError(failure.error) === "other" : true) && !committedAny
+      // Retry a transport-close throw (`"other"`), an attempt-scoped upstream deadline, or a
+      // truncation (no throw) — never a shutdown / idle-timeout / whole-request-deadline throw.
+      // `upstream-request-deadline` belongs on the retryable side precisely because it is OUR
+      // decision to stop THIS attempt so another may start; treating it like the other cancellation
+      // kinds would collapse it into a shorter `client_request_deadline` and make the knob pointless.
+      // `!committedAny` closes the retry window once a block was committed live (P0): a committed
+      // prefix is on the wire, so re-exchanging would double-send it. On the terminal-only path
+      // `committedAny` is always false → the gate is unchanged (R1).
+      const failureKind = failure ? classifyStreamError(failure.error) : undefined
+      const retryable = (failureKind === undefined || failureKind === "other" || failureKind === "upstream-request-deadline") && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the

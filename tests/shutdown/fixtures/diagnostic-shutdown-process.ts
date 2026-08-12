@@ -56,7 +56,6 @@ setupShutdownHandlers({
       closeTokenRuntimeFn: async () => {},
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
       shutdownHistoryFn: async () => {},
       shutdownRequestTelemetryFn: async () => {},
       // Intentionally omit shutdownDiagnosticLoggingFn: this fixture proves

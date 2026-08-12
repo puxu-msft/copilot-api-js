@@ -247,8 +247,8 @@ describe("pre-content late-open seal race", () => {
 
   test("deadline-style failure discards a deferred header that arrives after terminal seal", async () => {
     const result = await runLateHeaderAfterSeal((ctx) => {
-      ctx.cancel("request_deadline")
-      ctx.fail("test-model", new Error("request_deadline"), undefined, { attribution: { category: "timeout", code: "request_deadline" } })
+      ctx.cancel("client_request_deadline")
+      ctx.fail("test-model", new Error("client_request_deadline"), undefined, { attribution: { category: "timeout", code: "client_request_deadline" } })
     })
 
     expect(result.requestError).toBeDefined()

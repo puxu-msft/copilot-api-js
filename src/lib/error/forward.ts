@@ -521,6 +521,18 @@ function finalizeErrorDelivery(c: Context, body: Record<string, unknown>, status
   return response
 }
 
+/**
+ * Operator-facing name of OUR clock, for the cancellation causes that mean "we gave up on time",
+ * as opposed to an upstream or client-driven failure. A Record (not a ternary chain) so adding a
+ * fourth self-inflicted cause is a compile error here rather than a silently mislabelled log line.
+ * Values are thunks because two of them read live config.
+ */
+const OUR_CLOCK_LABELS: Record<"client-request-deadline" | "upstream-request-deadline" | "stale-reaper", () => string> = {
+  "client-request-deadline": () => `client request deadline ${state.clientRequestDeadline}s`,
+  "upstream-request-deadline": () => `upstream attempt deadline ${state.upstreamRequestDeadline}s`,
+  "stale-reaper": () => "operator-abandoned drain",
+}
+
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {
   const helpers = pickHelpers(format)
 
@@ -570,13 +582,13 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
     }
     const cancellation = getCancellationCause(error)
-    if (cancellation === "request-deadline" || cancellation === "stale-reaper") {
-      // Both are OUR clock running out, not a generic unavailability: `request_deadline` is
-      // the precise per-request one, `stale_request_max_age` the leak-safety net above it
-      // (its config even carries a TODO to rename it `upstream_request_deadline`). They keep
-      // 504 and say WHICH clock ran out — the same grouping the SSE `error.type` tables use,
-      // so a cause does not change category depending on where it was caught.
-      const clock = cancellation === "request-deadline" ? `request deadline ${state.requestDeadline}s` : `stale-request reaper ${state.staleRequestMaxAge}s`
+    if (cancellation === "client-request-deadline" || cancellation === "upstream-request-deadline" || cancellation === "stale-reaper") {
+      // All three are OUR clock running out, not a generic unavailability: `client_request_deadline`
+      // bounds the whole client request, `upstream_request_deadline` bounds one upstream attempt, and
+      // a `stale-reaper` cancel is today's operator-abandoned shutdown drain. They keep 504 and say
+      // WHICH clock ran out — the same grouping the SSE `error.type` tables use, so a cause does not
+      // change category depending on where it was caught.
+      const clock = OUR_CLOCK_LABELS[cancellation]()
       consola.warn(`Request cancelled by our own clock (${clock}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
       return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 504), 504 as ContentfulStatusCode)
     }

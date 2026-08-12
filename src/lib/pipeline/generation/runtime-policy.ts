@@ -5,11 +5,11 @@ import { createFrozenHedgePolicy } from "./hedge-policy"
 
 /** Snapshot hot-reloadable generation settings for one newly-created logical request. */
 export function createRuntimeHedgePolicy(modelId: string | undefined, monotonicNow = performance.now.bind(performance)) {
-  const requestDeadlineAtMs = state.requestDeadline > 0 ? monotonicNow() + state.requestDeadline * 1000 : 0
+  const requestDeadlineAtMs = state.clientRequestDeadline > 0 ? monotonicNow() + state.clientRequestDeadline * 1000 : 0
   const responseHeaderTimeoutMs = resolveResponseHeaderTimeoutMs(modelId)
   let expectedHedgeCompletionMs: number | undefined
   if (responseHeaderTimeoutMs > 0) expectedHedgeCompletionMs = responseHeaderTimeoutMs
-  else if (state.requestDeadline > 0) expectedHedgeCompletionMs = Math.max(1, (state.requestDeadline - state.generationCleanupGraceSec) * 1000)
+  else if (state.clientRequestDeadline > 0) expectedHedgeCompletionMs = Math.max(1, (state.clientRequestDeadline - state.generationCleanupGraceSec) * 1000)
   const enabled = state.generationHedgeEnabled && expectedHedgeCompletionMs !== undefined
   return createFrozenHedgePolicy({
     enabled,

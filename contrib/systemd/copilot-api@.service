@@ -14,9 +14,11 @@ ExecStart=/usr/bin/bun /opt/copilot-api/src/main.ts start
 # 交接时旧槽 drain 完 exit 0 → 不复活；仅真崩溃（非零退出）重启同色槽。
 # 定成 always 会把每次交接（正常 exit 0）当故障无限拉起，见 README。
 Restart=on-failure
-# shutdown 没有应用级排空 deadline，且 bundled request_deadline=0。让 systemd
-# 无限等待首信号无损 drain；需要放弃时由操作者再发 SIGINT/SIGTERM 触发强退。
-TimeoutStopSec=infinity
+# shutdown 自己的界是 bundled shutdown.graceful_wait=600 + abort_wait=60；abort_wait 从
+# graceful_wait 到点才开始计，所以进程自己最多用 660s 就会退出。systemd 的上限必须**大于**
+# 这个和，否则会在无损 flush 中途 SIGKILL、丢掉这一档存在的意义。留出余量取 900s。
+# 想恢复「无限等到操作者手动放弃」的旧行为，把 shutdown.graceful_wait 设成 0 并改回 infinity。
+TimeoutStopSec=900
 KillSignal=SIGTERM
 
 [Install]

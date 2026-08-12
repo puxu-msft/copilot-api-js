@@ -112,7 +112,6 @@ describe("graceful shutdown vs the h2 session pool", () => {
       closeTokenRuntimeFn: async () => {},
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
       drainPollIntervalMs: 10,
       drainProgressIntervalMs: 50_000,
     })

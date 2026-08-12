@@ -170,7 +170,6 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
-      staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
@@ -499,7 +498,6 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (strea
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
-      staleRequestMaxAge: 0,
       // User did NOT configure a heartbeat — the buffered path must FORCE one from protect_streaming_heartbeat.
       streamKeepalivePingSec: 0,
       // Pin `ping` mode so this test stays focused on its distinct subject — the FORCED heartbeat that the

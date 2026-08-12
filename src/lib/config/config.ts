@@ -1024,19 +1024,19 @@ export async function applyConfigToState(): Promise<Config> {
 
     // Timeouts section (scalar: override only when present)
     if (config.timeouts) {
-      // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
-      // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
-      // than inferred. Pure observation — reads state, records a diff, no behavior change.
+      // Snapshot timeout scalars before/after apply so a hot reload that changes an upstream guard
+      // is observable rather than inferred. Pure observation — reads state, records a diff.
       const timeoutBefore = {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       }
       const t = config.timeouts
       if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
       if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-      if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
-      if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
+      if (t.client_request_deadline !== undefined) setTimeoutConfig({ clientRequestDeadline: t.client_request_deadline })
+      if (t.upstream_request_deadline !== undefined) setTimeoutConfig({ upstreamRequestDeadline: t.upstream_request_deadline })
       // Per-model override maps (already bundled+user per-key merged upstream).
       // Replace semantics per field; app-guard only (no dispatcher rebuild).
       if (t.stream_idle_overrides !== undefined) {
@@ -1048,10 +1048,21 @@ export async function applyConfigToState(): Promise<Config> {
         })
       }
       recordConfigReloadTimeoutDiff(timeoutBefore, {
-        staleRequestMaxAge: state.staleRequestMaxAge,
+        clientRequestDeadline: state.clientRequestDeadline,
+        upstreamRequestDeadline: state.upstreamRequestDeadline,
         responseHeaderTimeout: state.responseHeaderTimeout,
         streamIdleTimeout: state.streamIdleTimeout,
       })
+    }
+
+    // Shutdown's own wall-clock bounds. Hot-reloadable like every other scalar, but note that a
+    // reload landing DURING a shutdown cannot move an already-armed timer — the values are read
+    // once when the lifecycle is claimed, which is the only reading that gives an operator a
+    // stable answer to "how long will this take at most".
+    if (config.shutdown) {
+      const sd = config.shutdown
+      if (sd.graceful_wait !== undefined) setTimeoutConfig({ shutdownGracefulWait: sd.graceful_wait })
+      if (sd.abort_wait !== undefined) setTimeoutConfig({ shutdownAbortWait: sd.abort_wait })
     }
     if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
@@ -1195,14 +1206,19 @@ export async function applyConfigToState(): Promise<Config> {
       const timeouts = config.timeouts
       if ((timeouts?.response_header ?? 0) > 0) boundedWaits.push("response_header (TTFB / time-to-first-byte)")
       if ((timeouts?.stream_idle ?? 0) > 0) boundedWaits.push("stream_idle (mid-stream silence)")
-      if ((timeouts?.stale_request_max_age ?? 0) > 0) boundedWaits.push("stale_request_max_age (active upstream lifetime)")
-      if ((timeouts?.request_deadline ?? 0) > 0) boundedWaits.push("request_deadline (client request lifetime)")
+      if ((timeouts?.upstream_request_deadline ?? 0) > 0) boundedWaits.push("upstream_request_deadline (one upstream attempt)")
+      if ((timeouts?.client_request_deadline ?? 0) > 0) boundedWaits.push("client_request_deadline (whole client request)")
       for (const [model, seconds] of Object.entries(timeouts?.response_header_overrides ?? {})) {
         if (seconds > 0) boundedWaits.push(`response_header_overrides.${model}=${seconds}s`)
       }
       for (const [model, seconds] of Object.entries(timeouts?.stream_idle_overrides ?? {})) {
         if (seconds > 0) boundedWaits.push(`stream_idle_overrides.${model}=${seconds}s`)
       }
+      // Shutdown's own bounds belong in the same warning: `graceful_wait` expiring terminates live
+      // operations exactly as the other terminators do. It is losslessly attributed, but a request
+      // that was still legitimately thinking is still cut short.
+      if ((config.shutdown?.graceful_wait ?? 0) > 0) boundedWaits.push("shutdown.graceful_wait (drain wait before abandoning it)")
+      if ((config.shutdown?.abort_wait ?? 0) > 0) boundedWaits.push("shutdown.abort_wait (post-abandon wait before hard exit)")
       if (boundedWaits.length > 0) {
         consola.warn(
           `[config] bounded-wait override enabled: ${boundedWaits.join(", ")}. `

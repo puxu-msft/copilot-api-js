@@ -1305,7 +1305,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
   // production constructor; `header-timeout` and `unknown-abort` have no cancellation tag by design.
   test.each([
     ["header-timeout", () => Object.assign(new Error("header timeout"), { name: "TimeoutError" }), "timeout_error"],
-    ["request-deadline", () => cancellationAbortError("request-deadline", "request_deadline"), "timeout_error"],
+    ["client-request-deadline", () => cancellationAbortError("client-request-deadline", "client_request_deadline"), "timeout_error"],
     ["reaper-cancel", () => cancellationAbortError("stale-reaper", "reaped"), "timeout_error"],
     ["request-cancel", () => cancellationAbortError("request-cancel", "cancelled"), "api_error"],
     ["dispatch-cancel", () => cancellationAbortError("dispatch-cancel", "lost hedge race"), "api_error"],

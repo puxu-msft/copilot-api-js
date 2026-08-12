@@ -5,6 +5,7 @@ import {
   test,
 } from "bun:test"
 
+import { getCancellationCause } from "~/lib/error/cancellation-reason"
 import { guardSseIterable } from "~/lib/stream"
 import { createDispatchLifecycle } from "~/lib/transport/dispatch-lifecycle"
 
@@ -436,5 +437,48 @@ describe("physical dispatch lifecycle", () => {
 
     // Transports that own no physical stream (and every pre-A4-4 caller) must be unaffected.
     await expect(lifecycle.dispose("test")).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+})
+
+describe("per-attempt upstream deadline (timeouts.upstream_request_deadline)", () => {
+  test("firing aborts the dispatch with an `upstream-request-deadline` cause, distinct from a plain dispatch-cancel", async () => {
+    const lifecycle = createDispatchLifecycle(undefined, { deadlineMs: 20 })
+    const { source } = pendingSource()
+    lifecycle.ownFrames(source)
+
+    expect(lifecycle.signal.aborted).toBe(false)
+    await new Promise((r) => setTimeout(r, 60))
+
+    expect(lifecycle.signal.aborted).toBe(true)
+    // The cause must survive the dispose() -> cancel() path, which would otherwise re-tag it
+    // `dispatch-cancel` and make an attempt timeout indistinguishable from a hedge-loser teardown.
+    expect(getCancellationCause(lifecycle.signal.reason)).toBe("upstream-request-deadline")
+    expect(String((lifecycle.signal.reason as Error).message)).toContain("upstream_request_deadline")
+    await expect(lifecycle.quiesced).resolves.toBeUndefined()
+  })
+
+  test("a dispatch that completes before the deadline is never aborted and clears its timer", async () => {
+    const lifecycle = createDispatchLifecycle(undefined, { deadlineMs: 40 })
+    const frames = lifecycle.ownFrames(
+      (async function* () {
+        yield "frame"
+      })(),
+    )
+
+    expect(await Array.fromAsync(frames)).toEqual(["frame"])
+    await new Promise((r) => setTimeout(r, 80))
+
+    expect(lifecycle.signal.aborted).toBe(false)
+  })
+
+  test("deadlineMs 0 arms nothing (byte-identical to the no-options path)", async () => {
+    const lifecycle = createDispatchLifecycle(undefined, { deadlineMs: 0 })
+    const { source } = pendingSource()
+    lifecycle.ownFrames(source)
+
+    await new Promise((r) => setTimeout(r, 60))
+
+    expect(lifecycle.signal.aborted).toBe(false)
+    await lifecycle.dispose()
   })
 })

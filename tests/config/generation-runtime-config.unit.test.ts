@@ -54,12 +54,12 @@ describe("generation runtime config", () => {
   test("disables hedging for a request whose header and absolute deadlines are both disabled", () => {
     setGenerationRuntimeConfig({ generationHedgeEnabled: true })
     const originalHeaderTimeout = state.responseHeaderTimeout
-    const originalDeadline = state.requestDeadline
+    const originalDeadline = state.clientRequestDeadline
     try {
-      setTimeoutConfig({ responseHeaderTimeout: 0, requestDeadline: 0 })
+      setTimeoutConfig({ responseHeaderTimeout: 0, clientRequestDeadline: 0 })
       expect(createRuntimeHedgePolicy("model").enabled).toBe(false)
     } finally {
-      setTimeoutConfig({ responseHeaderTimeout: originalHeaderTimeout, requestDeadline: originalDeadline })
+      setTimeoutConfig({ responseHeaderTimeout: originalHeaderTimeout, clientRequestDeadline: originalDeadline })
     }
   })
 })

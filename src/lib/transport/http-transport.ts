@@ -59,7 +59,9 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
     env: RequestEnvelope,
     options?: TransportDispatchOptions,
   ): Promise<UpstreamStream<import("./parsed-sse-frame").ParsedSseFrame | UpstreamFrame>> => {
-    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal))
+    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal), {
+      deadlineMs: state.upstreamRequestDeadline * 1000,
+    })
     // The h2 path reports its physical stream close here, so `dispose()` can wait on the WIRE rather than on our own bookkeeping.
     // The barrier is registered when a stream is actually OPENED, never up front: the plain-HTTP (undici) path owns no h2 stream and would never report a close, so an unconditional barrier would stall every one of its disposals for the full grace and then declare a healthy connection unusable.
     let resolveStreamClosed!: () => void

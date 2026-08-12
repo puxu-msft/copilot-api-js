@@ -73,7 +73,6 @@ describe.skip("[GATED — requires Task 4 owner cutover: the buffered terminal d
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
-      staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },

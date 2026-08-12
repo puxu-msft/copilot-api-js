@@ -39,6 +39,7 @@ import { applyFetchMock } from "../../helpers/mock-fetch"
 import { createSseResponse } from "../../helpers/sse"
 import {
   //
+  createSseResponseThenError,
   dataFramesOfType,
   frameTypesInOrder,
 } from "../../helpers/sse"
@@ -73,6 +74,15 @@ function nonCanonicalH2Frames(model: string): Array<string> {
 /** A stream that begins then CLEANLY ends WITHOUT message_stop (truncation → terminus ③). */
 function truncatedFrames(model: string): Array<string> {
   return [startFrame(model, "msg-trunc"), OPEN_TEXT, TEXT_DELTA]
+}
+
+const CLOSE_TEXT = `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`
+const MESSAGE_DELTA = `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 7 } })}\n\n`
+const MESSAGE_STOP = `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`
+
+/** A COMPLETE Anthropic message — every frame through `message_stop`. */
+function completeFrames(model: string): Array<string> {
+  return [startFrame(model, "msg-complete"), OPEN_TEXT, TEXT_DELTA, CLOSE_TEXT, MESSAGE_DELTA, MESSAGE_STOP]
 }
 
 function errorFrame(text: string): { type?: string; message?: string } | undefined {
@@ -236,5 +246,18 @@ describe("post-commit shaping ①'/H2/truncation — immediate commit (real time
     const text = await (await streamRequest(`trunc-${enabled}`)).text()
     expect(errorFrame(text)?.type).toBe("api_error")
     expect(errorFrame(text)?.message).toBe("Upstream stream truncated before completion (no message_stop)")
+  })
+
+  // WIRING proof for the driver-level post-terminal gate (driver.unit.test.ts covers the gate itself).
+  // GHC has been observed to RST_STREAM(CANCEL) 21-44s AFTER it already sent message_delta + message_stop
+  // (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11). The complete message is already
+  // on the client wire, so the teardown must NOT append a SECOND terminal — `message_stop` is THE terminal.
+  test("upstream transport tears down AFTER message_stop → no post-terminal error frame", async () => {
+    setStateForTests({ errorShapingEnabled: true })
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError(completeFrames(MODEL), new Error("Stream closed with error code NGHTTP2_CANCEL")))))
+    const text = await (await streamRequest("post-terminal-teardown")).text()
+    const types = frameTypesInOrder(text)
+    expect(types).not.toContain("error")
+    expect(types.at(-1)).toBe("message_stop")
   })
 })

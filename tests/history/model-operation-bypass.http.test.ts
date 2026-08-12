@@ -317,7 +317,6 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
       closeTokenRuntimeFn: async () => void closeOrder.push("token"),
       closeAllClientsFn: () => {},
       getClientCountFn: () => 0,
-      contextManager: { stopReaper: () => {} },
       drainModelOperationFinalizationsFn: async () => {},
       shutdownHistoryFn: async () => void closeOrder.push("history"),
       shutdownRequestTelemetryFn: async () => void closeOrder.push("telemetry"),

@@ -199,9 +199,17 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       && !historyToolNames.has(tool.name)
 
     if (shouldDefer) {
-      deferred.push({ ...normalized, defer_loading: true })
+      // Drop any client-supplied cache breakpoint: upstream rejects a tool carrying both `defer_loading: true` and `cache_control` ("Tools with defer_loading cannot use prompt caching").
+      // Clients that place breakpoints positionally (e.g. nanobot marks the last non-MCP tool and the tail tool) have no way to know which tools we are about to defer.
+      // `addToolCacheControl` (request-preparation.ts) re-anchors on the last non-deferred function tool when budget remains, so the request keeps a tool-level breakpoint.
+      const { cache_control: _droppedCacheControl, ...withoutCacheControl } = normalized
+      deferred.push({ ...withoutCacheControl, defer_loading: true })
     } else {
-      nonDeferred.push(normalized)
+      // Reaching this branch IS the decision that the tool is not deferred, so it must not travel upstream still claiming otherwise.
+      // A client's `defer_loading: true` lands here two ways, and both are broken if the flag survives: tool_search is off for this model (GHC has no such mechanism, so the orphan flag is either rejected as an unknown tool field or defers a tool that can never be loaded), or we deliberately kept the tool loaded via NON_DEFERRED_TOOL_NAMES / `tool_search_non_deferred` / message history — where leaving the flag on defeats the very protection just applied.
+      // Dropping the key rather than writing `false` keeps the wire shape identical to tools that never carried it; absent already means non-deferred.
+      const { defer_loading: _droppedDeferLoading, ...withoutDeferLoading } = normalized
+      nonDeferred.push(withoutDeferLoading)
     }
   }
 

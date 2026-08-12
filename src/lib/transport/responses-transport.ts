@@ -41,6 +41,7 @@ import {
   attemptUpstreamResponsesWs,
   canUseUpstreamWebSocket,
 } from "~/lib/openai/upstream-ws-attempt"
+import { state } from "~/lib/state"
 import {
   //
   combineAbortSignals,
@@ -118,7 +119,9 @@ async function sendViaHttp(
   dispatchSignal?: AbortSignal,
   forwardedQuery = "",
 ): Promise<UpstreamStream> {
-  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal))
+  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal), {
+    deadlineMs: state.upstreamRequestDeadline * 1000,
+  })
   // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
   // so we can surface upstream response headers as `UpstreamStream.headers` (read by
   // the driver to write ctx.httpHeaders.outboundResponse).

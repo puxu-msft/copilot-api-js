@@ -1395,6 +1395,97 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport", error: raw })
   })
 
+  // GHC has been observed to RST_STREAM(CANCEL) 21-44s AFTER it already sent message_delta +
+  // message_stop (history req_1786437123426_330 / req_1786447974367_2607, 2026-08-11). On the live
+  // sink the terminal frame is already on the client wire by then, so that teardown is not a failure.
+  test("an upstream-transport throw AFTER the terminal settles complete (post-terminal teardown)", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* terminalThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: terminalThenThrow(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome.kind).toBe("complete")
+  })
+
+  // Negative control for the gate above: the SAME throw without the terminal must stay an error, or
+  // the gate would swallow every mid-generation cut.
+  test("an upstream-transport throw BEFORE the terminal still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* throwMidStream(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: throwMidStream(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => false,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
+  })
+
+  // Third negative control: `sawMessageStop()` is true for ANY terminal, including a FAILED one
+  // (`response.failed` sets sawFailure). A failed terminal followed by a torn transport must NOT
+  // drain as complete — the fail-closed `sawUpstreamError()` vetoes the gate.
+  test("a FAILED terminal followed by an upstream-transport throw still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* failedTerminalThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new Error("Stream closed with error code NGHTTP2_CANCEL")
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: failedTerminalThenThrow(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+      sawUpstreamError: () => true,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport" })
+  })
+
+  // Fourth negative control — the ORDERING one. The gate must sit AFTER the client-abort
+  // classification: a client that disconnects after the terminal is still an abort, not a
+  // completion. Without this, moving the gate above the abort check passes every other test here
+  // while turning a real abort into a recorded success.
+  test("a client-abort after the terminal is still settled-abort, not complete", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    async function* abortAfterTerminal(): AsyncIterable<UpstreamFrame> {
+      yield { data: "1" }
+      throw new StreamClientAbortError()
+    }
+    const { sink } = makeArraySink()
+    const outcome = await driver.runResponseSink({ frames: abortAfterTerminal(), headers: new Headers() }, makeEnv(ctx), sink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome.kind).toBe("settled-abort")
+  })
+
+  // Second negative control: the gate is upstream-transport-only. A sink write that rejects means the
+  // client's copy may be broken even though the upstream reached its terminal, so it must stay an error.
+  test("a downstream-sink failure after the terminal still mints stream-error", async () => {
+    const { ctx } = makeCtx()
+    const { codec } = makeCodec({ env: makeEnv(ctx) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    const errSink: ClientSink = { write: () => Promise.reject(new Error("sink is gone")) }
+    const outcome = await driver.runResponseSink(okStream([{ data: "1" }]), makeEnv(ctx), errSink, {
+      sawMessageStop: () => true,
+    })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
+  })
+
   test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
