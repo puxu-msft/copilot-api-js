@@ -124,7 +124,7 @@
 4. **测试须直接断言 snapshot 机制本身，不能拿真 codec 的 `clientRequest.body` 当 oracle（评审 HIGH-2，已核实）**：真 codec 已 clone，`clientRequest.body` 对 snapshot 是**盲的**——「删 driver snapshot 该测变红」用真 codec 逻辑上不可能（两种情况都 PASS）。正确 oracle 二选一：（a）断言 **hook 收到的 `env.body` 与 driver 继续使用的 `parsed.body` 是独立对象**（引用不等 + 深拷贝），删 snapshot 使该引用-独立断言变红；（b）注入一个**不 clone 的 codec double**（其 `_originalRequest.payload` 与 `env.body` 共享引用），此时删 snapshot → hook 原地 splice → `clientRequest.body` 被污染 → 测变红。首版用 (a)（更小、直测机制）。
 5. **改写的发散可观测**：hook 改写只流向下游（translate→sanitize→upstream-bound）；「客户端发了 A、上游收到 A'」经 history 两轨对照可见（`clientRequest.body` = A vs wire 侧 = A'）——用一个「不可变返回删块」的 hook 断言朝上游 wire 确实少了该块、而 `clientRequest.body` 仍是 A（两轨发散）。是否额外加请求侧改写诊断标记记 §10 待评估。
 
-**gemini 形状警示（评审 HIGH-1，§4.1 详）**：`client.inbound` 处 `env.body` 对 anthropic/openai-cc/openai-responses 是 client-native，但对 **gemini 已是 route 层翻译后的 CC 形状**——§3.2「S2 translate 之前是唯一 client-native 位置」的前提对 gemini 不成立（gemini 翻译早于 driver）。剥块 helper 对 gemini 在 CC messages[] 上操作（§4.1）。
+**gemini 形状警示（评审 HIGH-1，§4.1 详）**：`client.inbound` 处 `env.attempt.body` 对 anthropic/openai-cc/openai-responses 是 client-native，但对 **gemini 已是 route 层翻译后的 CC 形状**——§3.2「S2 translate 之前是唯一 client-native 位置」的前提对 gemini 不成立（gemini 翻译早于 driver）。剥块 helper 对 gemini 在 CC messages[] 上操作（§4.1）。
 
 ## 4. hook 模块契约 + helper 工具箱
 
@@ -152,14 +152,14 @@ export const hooks = {
 }
 ```
 
-**首个生产示例 `client.inbound`（剥 TodoWrite，替代作废的 config+regex 引擎）**：hook 按 `env.clientFormat` 拿到入站请求 body，命中 TodoWrite 样板则**返回删除了该块的新 env**（~~不可变，§3.5 契约 + driver 防御性 snapshot 兜底~~ —— **2026-08-11 起 `writeAttempt` 返回同一个 env、无 snapshot 兜底；就地改后返回 `undefined` 同样到得了 wire**），并恢复该形状不变量。**关键（评审 HIGH-1，已核实）：client.inbound 处的 `env.body` 真相域只有三种形状，不是四种**——因为 **gemini 在 route 层（[gemini/handler-v4.ts:151](../../src/routes/gemini/handler-v4.ts#L151) `convertGeminiRequestToOpenAI` → `body: ccPayload`）先翻成 CC 再进 driver**，故 client.inbound（driver S1 parse 后）拿到的 gemini `env.body` 已是 **CC messages[]**、原生 `contents[].parts[]`/`systemInstruction` 只存在于不可改的 `orig.payload`（history 快照）。三种真相域 + 各自匹配对象/不变量恢复：
-- **anthropic**（`env.clientFormat==="anthropic"`）：`messages[]` 里 `role:"system"` 块 → 删块 + 复用 [system-messages.ts](../../src/lib/anthropic/sanitize/system-messages.ts) 的 starts-with-user / tool_use↔tool_result 配对 / 相邻同角色合并不变量。
-- **CC messages[]**（`env.clientFormat` ∈ {`"openai-cc"`, **`"gemini"`**}——**两者共用同一 accessor**）：`messages[]` 里 `role:"system"` 块 → 删块 + 空-messages 保护、首消息合法性。gemini 客户端的系统噪声经 route 层 Gemini→CC 翻译后落在 CC `role:"system"` 消息里，故在此形状上剥离即覆盖 gemini 客户端。
-- **openai-responses**（`env.clientFormat==="openai-responses"`）：**形状异构**——无 top-level `messages`，是 `input` items 数组 + 独立 `instructions` 字段（[codec/openai-responses/codec.ts](../../src/lib/codec/openai-responses/codec.ts)）。剥离目标是某个 `input` item 或 `instructions` 文本 → accessor 与前两者**根本不同**。
+**首个生产示例 `client.inbound`（剥 TodoWrite，替代作废的 config+regex 引擎）**：hook 按 `env.request.clientFormat` 拿到入站请求 body（`env.attempt.body`），命中 TodoWrite 样板则**返回删除了该块的新 env**（~~不可变，§3.5 契约 + driver 防御性 snapshot 兜底~~ —— **2026-08-11 起 `writeAttempt` 返回同一个 env、无 snapshot 兜底；就地改后返回 `undefined` 同样到得了 wire**），并恢复该形状不变量。**关键（评审 HIGH-1，已核实）：client.inbound 处的 `env.body` 真相域只有三种形状，不是四种**——因为 **gemini 在 route 层（[gemini/handler-v4.ts:151](../../src/routes/gemini/handler-v4.ts#L151) `convertGeminiRequestToOpenAI` → `body: ccPayload`）先翻成 CC 再进 driver**，故 client.inbound（driver S1 parse 后）拿到的 gemini `env.body` 已是 **CC messages[]**、原生 `contents[].parts[]`/`systemInstruction` 只存在于不可改的 `orig.payload`（history 快照）。三种真相域 + 各自匹配对象/不变量恢复：
+- **anthropic**（`env.request.clientFormat==="anthropic"`）：`messages[]` 里 `role:"system"` 块 → 删块 + 复用 [system-messages.ts](../../src/lib/anthropic/sanitize/system-messages.ts) 的 starts-with-user / tool_use↔tool_result 配对 / 相邻同角色合并不变量。
+- **CC messages[]**（`env.request.clientFormat` ∈ {`"openai-cc"`, **`"gemini"`**}——**两者共用同一 accessor**）：`messages[]` 里 `role:"system"` 块 → 删块 + 空-messages 保护、首消息合法性。gemini 客户端的系统噪声经 route 层 Gemini→CC 翻译后落在 CC `role:"system"` 消息里，故在此形状上剥离即覆盖 gemini 客户端。
+- **openai-responses**（`env.request.clientFormat==="openai-responses"`）：**形状异构**——无 top-level `messages`，是 `input` items 数组 + 独立 `instructions` 字段（[codec/openai-responses/codec.ts](../../src/lib/codec/openai-responses/codec.ts)）。剥离目标是某个 `input` item 或 `instructions` 文本 → accessor 与前两者**根本不同**。
 
 **四客户端格式功能全覆盖 ≠ 四 accessor**：`client.inbound` 覆盖全部四种客户端入站格式（含 gemini），但实现只需**三个 accessor**（gemini 走 CC accessor）——这是「四格式全覆盖」的正确落地，非缩减。**若确需在 gemini 原生 `contents` 形状上改写**（而非 CC 翻译后），当前架构做不到（翻译早于 driver），须另设 route 层挂载点——记 [deferred-backlog.md](../todo/deferred-backlog.md)「gemini 原生 contents 改写需 route 层挂载点」节。
 
-不变量恢复复用现有 primitive；helper `stripMessageBlock`/`mapClientMessages`（§4.2）按 `env.clientFormat` 分派到三个 accessor（gemini→CC）。此逻辑作为 helper 或用户自写皆可。
+不变量恢复复用现有 primitive；helper `stripMessageBlock`/`mapClientMessages`（§4.2）按 `env.request.clientFormat` 分派到三个 accessor（gemini→CC）。此逻辑作为 helper 或用户自写皆可。
 
 ### 4.2 helper 工具箱
 
@@ -174,7 +174,7 @@ export const hooks = {
 | `mockUpstreamError(status, body?)` | 抛出真正的 `HTTPError`，其 `.responseText` 携带 `body`（见下契约） | 注入故障 + **驱动 reactive retry 腿**（核心动机） |
 | `replayFromHistory(reqId \| filter)` | 从 history `upstreamResponse.sseEvents` 重建 UpstreamStream | 录制-回放（见 §5） |
 | `delay(ms)` / `truncateAfter(n, stream)` | 延迟 / 断流包装器 | 注入延迟/断流 |
-| `stripMessageBlock(env, predicate)` / `mapClientMessages(env, fn)`（v3，client-native 请求改写） | 按 `env.clientFormat` 分派到四格式 accessor，**不可变**删/改命中的消息块并恢复该格式不变量（§3.5 契约 + §4.1 不变量收口），返回新 env | `client.inbound` 生产改写（剥 TodoWrite 等） |
+| `stripMessageBlock(env, predicate)` / `mapClientMessages(env, fn)`（v3，client-native 请求改写） | 按 `env.request.clientFormat` 分派到四格式 accessor，删/改命中的消息块（**2026-08-11 起返回的是同一个 env、换了新 body**——`writeAttempt`，不是新 envelope）并恢复该格式不变量（§3.5 契约 + §4.1 不变量收口），返回新 env | `client.inbound` 生产改写（剥 TodoWrite 等） |
 
 **`mockUpstreamError` 契约（评审 H3，已核实）**：核心动机是「驱动 reactive retry 腿」，但 reactive 策略的 `canHandle` 匹配依据是 `error.message` 正则 **与** `error.raw.responseText`（[tool-field-rejection-retry.ts:89](../../src/lib/request/strategies/tool-field-rejection-retry.ts#L89) 等），而 `classifyError` 只对 `instanceof HTTPError` 保留 `responseText`（[classify.ts:50](../../src/lib/error/classify.ts#L50)）。故 helper **必须**构造真正的 `HTTPError(message, status, responseText, …)`，`body` 序列化进 `responseText`。若只塞 `{type:"invalid_request_error"}`（如 §4.1 示例的简化），`canHandle` 不命中 → 核心用途**静默失败**。因此 helper 附带**命中各 reactive 策略的判别性 body 预设**：`mockUpstreamError.toolFieldRejection()` / `.serverToolRejection()` / `.unsupportedBeta()` / `.cacheControlSubfield()` 等（每个产出该策略正则能命中的 responseText 腔），并用**独立 oracle**（真跑一遍 driver 确认策略被触发）校验、而非自证。
 
