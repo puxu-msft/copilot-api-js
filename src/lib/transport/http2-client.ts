@@ -1185,6 +1185,7 @@ interface Http2TerminalStream {
   readonly rstCode: number | null
   once(event: "end" | "close", listener: () => void): this
   once(event: "error", listener: (error: unknown) => void): this
+  off?(event: "data", listener: (chunk: Buffer) => void): this
   close(code: number): void
 }
 
@@ -1199,9 +1200,16 @@ export function registerHttp2BodyTerminationHandlers(
   controller: Http2BodyController,
   termination: ReturnType<typeof createHttp2TerminationRecorder>,
   signal?: AbortSignal,
+  dataListener?: (chunk: Buffer) => void,
 ): { cancel(reason: unknown): void } {
   let ended = false
   let abortAttached = false
+  let dataDetached = false
+  const detachData = (): void => {
+    if (dataDetached || !dataListener) return
+    dataDetached = true
+    req.off?.("data", dataListener)
+  }
   const detachAbort = (): void => {
     if (!abortAttached) return
     abortAttached = false
@@ -1209,12 +1217,14 @@ export function registerHttp2BodyTerminationHandlers(
   }
   const onAbort = (): void => {
     detachAbort()
+    detachData()
     termination.recordLocalCancel("post-response-signal-abort", signal?.reason, req.rstCode)
     req.close(http2.constants.NGHTTP2_CANCEL)
   }
   req.once("end", () => {
     ended = true
     detachAbort()
+    detachData()
     termination.recordEnd(req.rstCode)
     try {
       controller.close()
@@ -1224,6 +1234,7 @@ export function registerHttp2BodyTerminationHandlers(
   })
   req.once("error", (error) => {
     detachAbort()
+    detachData()
     termination.recordError(error, req.rstCode)
     try {
       controller.error(error instanceof Error ? tagTransportError(error, "mid-body-close") : error)
@@ -1233,6 +1244,7 @@ export function registerHttp2BodyTerminationHandlers(
   })
   req.once("close", () => {
     detachAbort()
+    detachData()
     if (ended) return
     const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
     termination.recordCloseBeforeEnd(error, req.rstCode)
@@ -1248,6 +1260,7 @@ export function registerHttp2BodyTerminationHandlers(
   }
   return {
     cancel(reason) {
+      detachData()
       termination.recordLocalCancel("body-cancel", reason, req.rstCode)
       req.close(http2.constants.NGHTTP2_CANCEL)
     },
@@ -1449,8 +1462,15 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       let bodyTermination!: ReturnType<typeof registerHttp2BodyTerminationHandlers>
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
-          req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-          bodyTermination = registerHttp2BodyTerminationHandlers(req, controller, termination, signal)
+          const onData = (chunk: Buffer): void => {
+            try {
+              controller.enqueue(new Uint8Array(chunk))
+            } catch {
+              req.off("data", onData)
+            }
+          }
+          req.on("data", onData)
+          bodyTermination = registerHttp2BodyTerminationHandlers(req, controller, termination, signal, onData)
         },
         async cancel(reason) {
           bodyTermination.cancel(reason)

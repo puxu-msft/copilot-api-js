@@ -31,10 +31,36 @@ import {
 const ROOT = path.resolve(import.meta.dir, "../..")
 const HTTP2_CLIENT_PATH = path.join(ROOT, "src/lib/transport/http2-client.ts")
 
+function isExactEnqueueCall(expr: ts.Expression, paramName: string): boolean {
+  const call = unwrapParentheses(expr)
+  if (!ts.isCallExpression(call) || call.arguments.length !== 1) return false
+  if (!ts.isPropertyAccessExpression(call.expression)) return false
+  if (!ts.isIdentifier(call.expression.expression) || call.expression.expression.text !== "controller" || call.expression.name.text !== "enqueue") return false
+  const allocation = unwrapParentheses(call.arguments[0])
+  if (!ts.isNewExpression(allocation) || !ts.isIdentifier(allocation.expression) || allocation.expression.text !== "Uint8Array") return false
+  if (allocation.arguments?.length !== 1) return false
+  const argument = unwrapParentheses(allocation.arguments[0])
+  return ts.isIdentifier(argument) && argument.text === paramName
+}
+
+function isExactDetachCall(expr: ts.Expression, listenerName: string): boolean {
+  const call = unwrapParentheses(expr)
+  if (!ts.isCallExpression(call) || call.arguments.length !== 2) return false
+  if (!ts.isPropertyAccessExpression(call.expression)) return false
+  if (!ts.isIdentifier(call.expression.expression) || call.expression.expression.text !== "req" || call.expression.name.text !== "off") return false
+  const eventArg = unwrapParentheses(call.arguments[0])
+  const listenerArg = unwrapParentheses(call.arguments[1])
+  return ts.isStringLiteral(eventArg) && eventArg.text === "data" && ts.isIdentifier(listenerArg) && listenerArg.text === listenerName
+}
+
 function isExactDataCallback(source: string): boolean {
   const file = ts.createSourceFile(HTTP2_CLIENT_PATH, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const matches: Array<ts.ArrowFunction> = []
+  const registrations: Array<ts.Expression> = []
+  const namedCallbacks = new Map<string, ts.ArrowFunction>()
   const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isArrowFunction(node.initializer)) {
+      namedCallbacks.set(node.name.text, node.initializer)
+    }
     if (
       ts.isCallExpression(node)
       && ts.isPropertyAccessExpression(node.expression)
@@ -42,26 +68,36 @@ function isExactDataCallback(source: string): boolean {
       && node.arguments.length === 2
       && ts.isStringLiteral(node.arguments[0])
       && node.arguments[0].text === "data"
-      && ts.isArrowFunction(node.arguments[1])
     ) {
-      matches.push(node.arguments[1])
+      registrations.push(node.arguments[1])
     }
     ts.forEachChild(node, visit)
   }
   visit(file)
-  if (matches.length !== 1) return false
+  if (registrations.length !== 1) return false
 
-  const callback = matches[0]
+  const registered = unwrapParentheses(registrations[0])
+  let callback: ts.ArrowFunction | undefined
+  let listenerName: string | undefined
+  if (ts.isArrowFunction(registered)) {
+    callback = registered
+  } else if (ts.isIdentifier(registered)) {
+    listenerName = registered.text
+    callback = namedCallbacks.get(listenerName)
+  }
+  if (!callback) return false
   if (callback.parameters.length !== 1 || !ts.isIdentifier(callback.parameters[0].name)) return false
-  const body = unwrapParentheses(callback.body)
-  if (!ts.isCallExpression(body) || body.arguments.length !== 1) return false
-  if (!ts.isPropertyAccessExpression(body.expression)) return false
-  if (!ts.isIdentifier(body.expression.expression) || body.expression.expression.text !== "controller" || body.expression.name.text !== "enqueue") return false
-  const allocation = unwrapParentheses(body.arguments[0])
-  if (!ts.isNewExpression(allocation) || !ts.isIdentifier(allocation.expression) || allocation.expression.text !== "Uint8Array") return false
-  if (allocation.arguments?.length !== 1) return false
-  const argument = unwrapParentheses(allocation.arguments[0])
-  return ts.isIdentifier(argument) && argument.text === callback.parameters[0].name.text
+  const paramName = callback.parameters[0].name.text
+
+  if (!ts.isBlock(callback.body)) return isExactEnqueueCall(callback.body, paramName)
+  if (callback.body.statements.length !== 1 || !listenerName) return false
+  const stmt = callback.body.statements[0]
+  if (!ts.isTryStatement(stmt) || stmt.finallyBlock || !stmt.catchClause) return false
+  if (stmt.tryBlock.statements.length !== 1 || stmt.catchClause.block.statements.length !== 1) return false
+  const tryStmt = stmt.tryBlock.statements[0]
+  const catchStmt = stmt.catchClause.block.statements[0]
+  if (!ts.isExpressionStatement(tryStmt) || !ts.isExpressionStatement(catchStmt)) return false
+  return isExactEnqueueCall(tryStmt.expression, paramName) && isExactDetachCall(catchStmt.expression, listenerName)
 }
 
 function unwrapParentheses(node: ts.Node): ts.Node {
@@ -399,11 +435,25 @@ describe("HTTP/2 first-terminal recorder", () => {
 class FakeTerminalStream {
   rstCode: number | null = 0
   private readonly listeners = new Map<string, Array<(...args: Array<unknown>) => void>>()
+  private readonly dataListeners = new Set<(chunk: Buffer) => void>()
 
   readonly actions: Array<string>
 
   constructor(actions: Array<string> = []) {
     this.actions = actions
+  }
+
+  on(event: "data", listener: (chunk: Buffer) => void): this {
+    this.dataListeners.add(listener)
+    return this
+  }
+
+  off(event: "data", listener: (chunk: Buffer) => void): this {
+    if (event === "data") {
+      this.dataListeners.delete(listener)
+      this.actions.push("req.off:data")
+    }
+    return this
   }
 
   once(event: "end" | "error" | "close", listener: (...args: Array<unknown>) => void): this {
@@ -420,6 +470,14 @@ class FakeTerminalStream {
   emit(event: "end" | "error" | "close", ...args: Array<unknown>): void {
     for (const listener of this.listeners.get(event) ?? []) listener(...args)
     this.listeners.delete(event)
+  }
+
+  emitData(chunk: Buffer): void {
+    for (const listener of [...this.dataListeners]) listener(chunk)
+  }
+
+  get dataListenerCount(): number {
+    return this.dataListeners.size
   }
 }
 
@@ -544,26 +602,83 @@ describe("HTTP/2 production terminal seam", () => {
     errorClose.stream.emit("close")
     expect(errorClose.snapshots.map((snapshot) => snapshot.firstObservedSignal)).toEqual(["error"])
   })
+
+  test("detaches the DATA listener across all five body termination paths and survives late chunks on a closed ReadableStream", () => {
+    const runPath = (trigger: (stream: FakeTerminalStream, handlers: { cancel(reason: unknown): void }, abort: AbortController) => void): void => {
+      const { stream, recorder } = seamHarness()
+      const abort = new AbortController()
+      let handlers!: { cancel(reason: unknown): void }
+      const readable = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const onData = (chunk: Buffer): void => {
+            try {
+              controller.enqueue(new Uint8Array(chunk))
+            } catch {
+              stream.off("data", onData)
+            }
+          }
+          stream.on("data", onData)
+          handlers = registerHttp2BodyTerminationHandlers(stream, controller, recorder, abort.signal, onData)
+        },
+        cancel(reason) {
+          handlers.cancel(reason)
+        },
+      })
+
+      expect(stream.dataListenerCount).toBe(1)
+      stream.emitData(Buffer.from("before"))
+      trigger(stream, handlers, abort)
+      expect(stream.dataListenerCount).toBe(0)
+      expect(() => stream.emitData(Buffer.from("late-after-terminal"))).not.toThrow()
+      void readable.cancel("cleanup").catch(() => {})
+    }
+
+    runPath((stream) => stream.emit("end"))
+    runPath((stream) => stream.emit("error", new Error("reset")))
+    runPath((stream) => stream.emit("close"))
+    runPath((_stream, handlers) => handlers.cancel("reader cancel"))
+    runPath((_stream, _handlers, abort) => abort.abort(new Error("signal abort")))
+
+    // Direct controller closure before any stream terminal event (the exact race that previously threw ERR_INVALID_STATE)
+    const directStream = new FakeTerminalStream()
+    let directController!: ReadableStreamDefaultController<Uint8Array>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        directController = controller
+        const onData = (chunk: Buffer): void => {
+          try {
+            controller.enqueue(new Uint8Array(chunk))
+          } catch {
+            directStream.off("data", onData)
+          }
+        }
+        directStream.on("data", onData)
+      },
+    })
+    directController.close()
+    expect(() => directStream.emitData(Buffer.from("late-chunk-on-closed-controller"))).not.toThrow()
+    expect(directStream.dataListenerCount).toBe(0)
+  })
 })
 
 describe("HTTP/2 DATA hot-path architecture guard", () => {
   const productionSource = readFileSync(HTTP2_CLIENT_PATH, "utf8")
-  const callbackLine = 'req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))'
-  const variant = (replacement: string): string => productionSource.replace(callbackLine, replacement)
+  const enqueueLine = "controller.enqueue(new Uint8Array(chunk))"
+  const variant = (replacement: string): string => productionSource.replace(enqueueLine, replacement)
 
   test("the sole DATA callback remains the exact AST shape", () => {
     expect(isExactDataCallback(productionSource)).toBe(true)
   })
 
   test("accepts formatting, parentheses, parameter rename, and omitted type annotation", () => {
-    expect(isExactDataCallback(variant('req.on("data", value => ((controller.enqueue(new Uint8Array((value))))))'))).toBe(true)
+    expect(isExactDataCallback(variant("((controller.enqueue(new Uint8Array((chunk)))))"))).toBe(true)
   })
 
   test.each([
-    ["clock", 'req.on("data", (chunk: Buffer) => (Date.now(), controller.enqueue(new Uint8Array(chunk))))'],
-    ["object", 'req.on("data", (chunk: Buffer) => ({ chunk }, controller.enqueue(new Uint8Array(chunk))))'],
-    ["copy", 'req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk.slice())))'],
-    ["callback", 'req.on("data", (chunk: Buffer) => (init.onStreamClosed?.(), controller.enqueue(new Uint8Array(chunk))))'],
+    ["clock", "(Date.now(), controller.enqueue(new Uint8Array(chunk)))"],
+    ["object", "({ chunk }, controller.enqueue(new Uint8Array(chunk)))"],
+    ["copy", "controller.enqueue(new Uint8Array(chunk.slice()))"],
+    ["callback", "(init.onStreamClosed?.(), controller.enqueue(new Uint8Array(chunk)))"],
   ])("rejects the %s mutation", (_name, replacement) => {
     expect(isExactDataCallback(variant(replacement))).toBe(false)
   })
